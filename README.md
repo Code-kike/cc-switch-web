@@ -8,7 +8,7 @@
 [![Built with Tauri](https://img.shields.io/badge/backend-Tauri%202%20Web%20Server-orange.svg)](https://tauri.app/)
 [![Frontend](https://img.shields.io/badge/frontend-React%20%2B%20Vite-646cff.svg)](#development)
 
-English | 中文 (WIP) | 日本語 (WIP)
+
 
 </div>
 
