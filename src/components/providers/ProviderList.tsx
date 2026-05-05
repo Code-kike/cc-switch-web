@@ -47,6 +47,9 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { settingsApi } from "@/lib/api/settings";
+import { isWebMode } from "@/lib/api/adapter";
+import { importCurrentProviderConfig } from "@/lib/providers/import-current-config";
+import { extractErrorMessage } from "@/utils/errorUtils";
 
 interface ProviderListProps {
   providers: Record<string, Provider>;
@@ -92,6 +95,7 @@ export function ProviderList({
   onSetAsDefault,
 }: ProviderListProps) {
   const { t } = useTranslation();
+  const webMode = isWebMode();
   const { checkProvider, isChecking } = useStreamCheck(appId);
   const { sortedProviders, sensors, handleDragEnd } = useDragSort(
     providers,
@@ -234,31 +238,17 @@ export function ProviderList({
   // Import current live config as default provider
   const queryClient = useQueryClient();
   const importMutation = useMutation({
-    mutationFn: async (): Promise<boolean> => {
-      if (appId === "opencode") {
-        const count = await providersApi.importOpenCodeFromLive();
-        return count > 0;
-      }
-      if (appId === "openclaw") {
-        const count = await providersApi.importOpenClawFromLive();
-        return count > 0;
-      }
-      if (appId === "hermes") {
-        const count = await providersApi.importHermesFromLive();
-        return count > 0;
-      }
-      return providersApi.importDefault(appId);
-    },
-    onSuccess: (imported) => {
-      if (imported) {
+    mutationFn: () => importCurrentProviderConfig(appId),
+    onSuccess: (result) => {
+      if (result === "imported") {
         queryClient.invalidateQueries({ queryKey: ["providers", appId] });
         toast.success(t("provider.importCurrentDescription"));
       } else {
-        toast.info(t("provider.noProviders"));
+        toast.info(t("provider.importCurrentNoChanges"));
       }
     },
-    onError: (error: Error) => {
-      toast.error(error.message);
+    onError: (error: unknown) => {
+      toast.error(extractErrorMessage(error) || t("common.unknown"));
     },
   });
 
@@ -369,7 +359,7 @@ export function ProviderList({
                 onDuplicate={onDuplicate}
                 onConfigureUsage={onConfigureUsage}
                 onOpenWebsite={onOpenWebsite}
-                onOpenTerminal={onOpenTerminal}
+                onOpenTerminal={webMode ? undefined : onOpenTerminal}
                 onTest={handleTest}
                 isTesting={isChecking(provider.id)}
                 isProxyRunning={isProxyRunning}

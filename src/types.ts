@@ -151,6 +151,10 @@ export interface ProviderMeta {
   costMultiplier?: string;
   // 供应商计费模式来源
   pricingModelSource?: string;
+  // 供应商每日消费限额（USD）
+  limitDailyUsd?: string;
+  // 供应商每月消费限额（USD）
+  limitMonthlyUsd?: string;
   // Claude API 格式（仅 Claude 供应商使用）
   // - "anthropic": 原生 Anthropic Messages API 格式，直接透传
   // - "openai_chat": OpenAI Chat Completions 格式，需要格式转换

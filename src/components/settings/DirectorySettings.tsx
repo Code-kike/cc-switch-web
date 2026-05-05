@@ -4,6 +4,7 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { useTranslation } from "react-i18next";
 import type { AppId } from "@/lib/api";
+import { isWebMode } from "@/lib/api/adapter";
 import type { ResolvedDirectories } from "@/hooks/useSettings";
 
 interface DirectorySettingsProps {
@@ -40,6 +41,12 @@ export function DirectorySettings({
   onResetDirectory,
 }: DirectorySettingsProps) {
   const { t } = useTranslation();
+  const webMode = isWebMode();
+  const browseTitle = webMode
+    ? t("settings.webManualPathHint", {
+        defaultValue: "Web 模式无法浏览服务端文件系统，请手动输入路径",
+      })
+    : t("settings.browseDirectory");
 
   return (
     <div className="space-y-6">
@@ -64,7 +71,8 @@ export function DirectorySettings({
             variant="outline"
             size="icon"
             onClick={onBrowseAppConfig}
-            title={t("settings.browseDirectory")}
+            title={browseTitle}
+            disabled={webMode}
           >
             <FolderSearch className="h-4 w-4" />
           </Button>
@@ -100,6 +108,8 @@ export function DirectorySettings({
           onChange={(val) => onDirectoryChange("claude", val)}
           onBrowse={() => onBrowseDirectory("claude")}
           onReset={() => onResetDirectory("claude")}
+          webMode={webMode}
+          browseTitle={browseTitle}
         />
 
         <DirectoryInput
@@ -111,6 +121,8 @@ export function DirectorySettings({
           onChange={(val) => onDirectoryChange("codex", val)}
           onBrowse={() => onBrowseDirectory("codex")}
           onReset={() => onResetDirectory("codex")}
+          webMode={webMode}
+          browseTitle={browseTitle}
         />
 
         <DirectoryInput
@@ -122,6 +134,8 @@ export function DirectorySettings({
           onChange={(val) => onDirectoryChange("gemini", val)}
           onBrowse={() => onBrowseDirectory("gemini")}
           onReset={() => onResetDirectory("gemini")}
+          webMode={webMode}
+          browseTitle={browseTitle}
         />
 
         <DirectoryInput
@@ -133,6 +147,8 @@ export function DirectorySettings({
           onChange={(val) => onDirectoryChange("opencode", val)}
           onBrowse={() => onBrowseDirectory("opencode")}
           onReset={() => onResetDirectory("opencode")}
+          webMode={webMode}
+          browseTitle={browseTitle}
         />
 
         <DirectoryInput
@@ -144,6 +160,8 @@ export function DirectorySettings({
           onChange={(val) => onDirectoryChange("openclaw", val)}
           onBrowse={() => onBrowseDirectory("openclaw")}
           onReset={() => onResetDirectory("openclaw")}
+          webMode={webMode}
+          browseTitle={browseTitle}
         />
 
         <DirectoryInput
@@ -155,6 +173,8 @@ export function DirectorySettings({
           onChange={(val) => onDirectoryChange("hermes", val)}
           onBrowse={() => onBrowseDirectory("hermes")}
           onReset={() => onResetDirectory("hermes")}
+          webMode={webMode}
+          browseTitle={browseTitle}
         />
       </section>
     </div>
@@ -170,6 +190,8 @@ interface DirectoryInputProps {
   onChange: (value?: string) => void;
   onBrowse: () => Promise<void>;
   onReset: () => Promise<void>;
+  webMode: boolean;
+  browseTitle: string;
 }
 
 function DirectoryInput({
@@ -181,6 +203,8 @@ function DirectoryInput({
   onChange,
   onBrowse,
   onReset,
+  webMode,
+  browseTitle,
 }: DirectoryInputProps) {
   const { t } = useTranslation();
   const displayValue = useMemo(
@@ -208,7 +232,8 @@ function DirectoryInput({
           variant="outline"
           size="icon"
           onClick={onBrowse}
-          title={t("settings.browseDirectory")}
+          title={browseTitle}
+          disabled={webMode}
         >
           <FolderSearch className="h-4 w-4" />
         </Button>

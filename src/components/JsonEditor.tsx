@@ -63,8 +63,7 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
           }
         } catch (e) {
           // 简单处理JSON解析错误
-          const message =
-            e instanceof SyntaxError ? e.message : t("jsonEditor.invalidJson");
+          const message = t("jsonEditor.invalidJson");
           diagnostics.push({
             from: 0,
             to: doc.length,
@@ -238,8 +237,7 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
         closeButton: true,
       });
     } catch (error) {
-      const errorMessage =
-        error instanceof Error ? error.message : String(error);
+      const errorMessage = t("jsonEditor.invalidJson");
       toast.error(
         t("common.formatError", {
           defaultValue: "格式化失败：{{error}}",

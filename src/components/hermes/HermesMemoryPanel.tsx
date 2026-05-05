@@ -1,12 +1,13 @@
 import React, { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
-import { ExternalLink } from "lucide-react";
+import { ExternalLink, Info } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import MarkdownEditor from "@/components/MarkdownEditor";
 import {
+  HERMES_WEB_LOCAL_BASE_URL,
   useHermesMemory,
   useHermesMemoryLimits,
   useOpenHermesWebUI,
@@ -15,6 +16,7 @@ import {
 } from "@/hooks/useHermes";
 import { useDarkMode } from "@/hooks/useDarkMode";
 import type { HermesMemoryKind } from "@/types";
+import { isWebMode } from "@/lib/api/adapter";
 import { cn } from "@/lib/utils";
 
 interface MemoryTabPaneProps {
@@ -131,6 +133,8 @@ const HermesMemoryPanel: React.FC = () => {
   const [activeTab, setActiveTab] = useState<HermesMemoryKind>("memory");
   const openHermesWebUI = useOpenHermesWebUI();
   const { data: limits } = useHermesMemoryLimits(true);
+  const webMode = isWebMode();
+  const configUrl = `${HERMES_WEB_LOCAL_BASE_URL}/config`;
 
   const memoryLimit = limits?.memory ?? 2200;
   const userLimit = limits?.user ?? 1375;
@@ -155,11 +159,33 @@ const HermesMemoryPanel: React.FC = () => {
             variant="outline"
             size="sm"
             onClick={() => void openHermesWebUI("/config")}
+            disabled={webMode}
+            title={
+              webMode
+                ? t("hermes.webui.remoteHintDescription", { url: configUrl })
+                : undefined
+            }
           >
             <ExternalLink className="w-3.5 h-3.5 mr-1" />
             {t("hermes.memory.openConfig")}
           </Button>
         </div>
+
+        {webMode && (
+          <div className="mx-6 mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2">
+            <div className="flex items-start gap-2">
+              <Info className="mt-0.5 h-4 w-4 shrink-0 text-amber-700 dark:text-amber-400" />
+              <div className="space-y-1 text-sm">
+                <p className="font-medium text-amber-900 dark:text-amber-200">
+                  {t("hermes.webui.remoteHint")}
+                </p>
+                <p className="text-amber-800/90 dark:text-amber-300/90">
+                  {t("hermes.webui.remoteHintDescription", { url: configUrl })}
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
 
         <TabsContent value="memory" className="flex-1 px-6 pb-4 mt-4">
           <MemoryTabPane

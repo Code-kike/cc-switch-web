@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { listen } from "@/lib/api/event-adapter";
 import { useQueryClient } from "@tanstack/react-query";
 import type { AppId } from "@/lib/api/types";
 import type { UsageResult } from "@/types";
@@ -29,7 +29,7 @@ export function useUsageCacheBridge() {
   const queryClient = useQueryClient();
 
   useEffect(() => {
-    let unlisten: UnlistenFn | undefined;
+    let unlisten: (() => void) | undefined;
     let disposed = false;
 
     (async () => {

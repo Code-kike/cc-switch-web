@@ -4,7 +4,8 @@
  * 提供获取、设置和测试全局代理的功能。
  */
 
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./adapter";
+import { extractErrorMessage } from "@/utils/errorUtils";
 
 /**
  * 代理测试结果
@@ -51,8 +52,9 @@ export async function setGlobalProxyUrl(url: string): Promise<void> {
   try {
     return await invoke("set_global_proxy_url", { url });
   } catch (error) {
-    // Tauri invoke 错误可能是字符串
-    throw new Error(typeof error === "string" ? error : String(error));
+    throw new Error(
+      extractErrorMessage(error) || "Failed to set global proxy URL",
+    );
   }
 }
 

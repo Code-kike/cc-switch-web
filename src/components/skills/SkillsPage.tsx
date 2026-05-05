@@ -35,6 +35,7 @@ import type {
   SkillsShDiscoverableSkill,
 } from "@/lib/api/skills";
 import { formatSkillError } from "@/lib/errors/skillErrorParser";
+import { extractErrorMessage } from "@/utils/errorUtils";
 
 interface SkillsPageProps {
   initialApp?: AppId;
@@ -65,6 +66,8 @@ export const SkillsPage = forwardRef<SkillsPageHandle, SkillsPageProps>(
 
     // skills.sh 搜索状态
     const [searchSource, setSearchSource] = useState<SearchSource>("repos");
+    const [hasExplicitSourceSelection, setHasExplicitSourceSelection] =
+      useState(false);
     const [skillsShInput, setSkillsShInput] = useState("");
     const [skillsShQuery, setSkillsShQuery] = useState("");
     const [skillsShOffset, setSkillsShOffset] = useState(0);
@@ -90,23 +93,68 @@ export const SkillsPage = forwardRef<SkillsPageHandle, SkillsPageProps>(
       data: skillsShResult,
       isLoading: loadingSkillsSh,
       isFetching: fetchingSkillsSh,
+      error: skillsShError,
+      refetch: refetchSkillsSh,
     } = useSearchSkillsSh(skillsShQuery, SKILLSSH_PAGE_SIZE, skillsShOffset);
+
+    const currentSkillsShResult =
+      skillsShResult?.query === skillsShQuery ? skillsShResult : null;
 
     // 当搜索结果返回时累积
     useEffect(() => {
-      if (skillsShResult) {
+      if (currentSkillsShResult) {
         if (skillsShOffset === 0) {
-          setAccumulatedResults(skillsShResult.skills);
+          setAccumulatedResults(currentSkillsShResult.skills);
         } else {
-          setAccumulatedResults((prev) => [...prev, ...skillsShResult.skills]);
+          setAccumulatedResults((prev) => {
+            const merged = [...prev];
+            const seen = new Set(prev.map((skill) => skill.key));
+
+            for (const skill of currentSkillsShResult.skills) {
+              if (seen.has(skill.key)) continue;
+              seen.add(skill.key);
+              merged.push(skill);
+            }
+
+            return merged;
+          });
         }
       }
-    }, [skillsShResult, skillsShOffset]);
+    }, [currentSkillsShResult, skillsShOffset]);
+
+    useEffect(() => {
+      if (skillsShInput.trim().length >= 2) {
+        return;
+      }
+
+      if (skillsShQuery === "" && skillsShOffset === 0 && accumulatedResults.length === 0) {
+        return;
+      }
+
+      setSkillsShQuery("");
+      setSkillsShOffset(0);
+      setAccumulatedResults([]);
+    }, [
+      accumulatedResults.length,
+      skillsShInput,
+      skillsShOffset,
+      skillsShQuery,
+    ]);
 
     // 手动提交搜索
     const handleSkillsShSearch = () => {
       const trimmed = skillsShInput.trim();
       if (trimmed.length < 2) return;
+
+      if (trimmed === skillsShQuery) {
+        if (skillsShOffset !== 0) {
+          setSkillsShOffset(0);
+          return;
+        }
+        void refetchSkillsSh();
+        return;
+      }
+
       setSkillsShOffset(0);
       setAccumulatedResults([]);
       setSkillsShQuery(trimmed);
@@ -225,7 +273,7 @@ export const SkillsPage = forwardRef<SkillsPageHandle, SkillsPageProps>(
         });
       } catch (error) {
         const errorMessage =
-          error instanceof Error ? error.message : String(error);
+          extractErrorMessage(error) || t("skills.installFailed");
         const { title, description } = formatSkillError(
           errorMessage,
           t,
@@ -247,8 +295,13 @@ export const SkillsPage = forwardRef<SkillsPageHandle, SkillsPageProps>(
     const handleAddRepo = async (repo: SkillRepo) => {
       try {
         await addRepoMutation.mutateAsync(repo);
-        // Await discovery so we can report the real count
-        const { data: freshSkills } = await refetchDiscoverable();
+        let freshSkills: DiscoverableSkill[] | undefined;
+        try {
+          const result = await refetchDiscoverable();
+          freshSkills = result.data;
+        } catch {
+          freshSkills = discoverableSkills;
+        }
         const count =
           freshSkills?.filter(
             (s) =>
@@ -265,9 +318,11 @@ export const SkillsPage = forwardRef<SkillsPageHandle, SkillsPageProps>(
           { closeButton: true },
         );
       } catch (error) {
+        const detail = extractErrorMessage(error) || t("skills.repo.addFailed");
         toast.error(t("common.error"), {
-          description: String(error),
+          description: detail,
         });
+        throw error instanceof Error ? error : new Error(detail);
       }
     };
 
@@ -278,9 +333,12 @@ export const SkillsPage = forwardRef<SkillsPageHandle, SkillsPageProps>(
           closeButton: true,
         });
       } catch (error) {
+        const detail =
+          extractErrorMessage(error) || t("skills.repo.removeFailed");
         toast.error(t("common.error"), {
-          description: String(error),
+          description: detail,
         });
+        throw error instanceof Error ? error : new Error(detail);
       }
     };
 
@@ -317,13 +375,40 @@ export const SkillsPage = forwardRef<SkillsPageHandle, SkillsPageProps>(
 
     // 是否有更多 skills.sh 结果
     const hasMoreSkillsSh =
-      skillsShResult && accumulatedResults.length < skillsShResult.totalCount;
+      currentSkillsShResult &&
+      accumulatedResults.length < currentSkillsShResult.totalCount;
 
-    // 无仓库时默认切换到 skills.sh
-    const effectiveSource =
-      searchSource === "repos" && skills.length === 0 && !loading
-        ? "skillssh"
-        : searchSource;
+    useEffect(() => {
+      if (
+        hasExplicitSourceSelection ||
+        loadingDiscoverable ||
+        fetchingDiscoverable
+      ) {
+        return;
+      }
+
+      if (repos.length === 0 && searchSource === "repos") {
+        setSearchSource("skillssh");
+        return;
+      }
+
+      if (repos.length > 0 && searchSource === "skillssh") {
+        setSearchSource("repos");
+      }
+    }, [
+      fetchingDiscoverable,
+      hasExplicitSourceSelection,
+      loadingDiscoverable,
+      repos.length,
+      searchSource,
+    ]);
+
+    const effectiveSource = searchSource;
+    const skillsShErrorMessage = extractErrorMessage(skillsShError);
+    const waitingForCurrentSkillsShResult =
+      skillsShQuery.length >= 2 &&
+      accumulatedResults.length === 0 &&
+      (loadingSkillsSh || (fetchingSkillsSh && currentSkillsShResult === null));
 
     return (
       <div className="px-6 flex flex-col flex-1 min-h-0 overflow-hidden bg-background/50">
@@ -343,7 +428,10 @@ export const SkillsPage = forwardRef<SkillsPageHandle, SkillsPageProps>(
                       ? "shadow-sm min-w-[64px]"
                       : "text-muted-foreground hover:text-foreground hover:bg-muted min-w-[64px]"
                   }
-                  onClick={() => setSearchSource("repos")}
+                  onClick={() => {
+                    setHasExplicitSourceSelection(true);
+                    setSearchSource("repos");
+                  }}
                 >
                   {t("skills.searchSource.repos")}
                 </Button>
@@ -356,7 +444,10 @@ export const SkillsPage = forwardRef<SkillsPageHandle, SkillsPageProps>(
                       ? "shadow-sm min-w-[80px]"
                       : "text-muted-foreground hover:text-foreground hover:bg-muted min-w-[80px]"
                   }
-                  onClick={() => setSearchSource("skillssh")}
+                  onClick={() => {
+                    setHasExplicitSourceSelection(true);
+                    setSearchSource("skillssh");
+                  }}
                 >
                   skills.sh
                 </Button>
@@ -532,12 +623,44 @@ export const SkillsPage = forwardRef<SkillsPageHandle, SkillsPageProps>(
             ) : (
               /* ===== skills.sh 模式 ===== */
               <>
-                {loadingSkillsSh && accumulatedResults.length === 0 ? (
+                {skillsShError ? (
+                  <div className="mb-4 rounded-xl border border-red-500/20 bg-red-500/5 p-4">
+                    <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                      <div className="space-y-1">
+                        <p className="text-sm font-medium text-foreground">
+                          {t("skills.skillssh.error")}
+                        </p>
+                        {skillsShErrorMessage ? (
+                          <p className="text-xs text-muted-foreground">
+                            {skillsShErrorMessage}
+                          </p>
+                        ) : null}
+                      </div>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => void refetchSkillsSh()}
+                        disabled={fetchingSkillsSh || skillsShQuery.length < 2}
+                      >
+                        {t("common.refresh")}
+                      </Button>
+                    </div>
+                  </div>
+                ) : null}
+
+                {waitingForCurrentSkillsShResult ? (
                   <div className="flex items-center justify-center h-64">
                     <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
                     <span className="ml-3 text-sm text-muted-foreground">
                       {t("skills.skillssh.loading")}
                     </span>
+                  </div>
+                ) : skillsShError && accumulatedResults.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center h-48 text-center">
+                    <p className="text-lg font-medium text-foreground">
+                      {t("skills.skillssh.error")}
+                    </p>
                   </div>
                 ) : skillsShQuery.length < 2 ? (
                   <div className="flex flex-col items-center justify-center h-64 text-center">

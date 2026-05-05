@@ -21,6 +21,10 @@ import { MCP_APP_IDS } from "@/config/appConfig";
 import { AppCountBar } from "@/components/common/AppCountBar";
 import { AppToggleGroup } from "@/components/common/AppToggleGroup";
 import { ListItemRow } from "@/components/common/ListItemRow";
+import {
+  extractErrorMessage,
+  translateMcpBackendError,
+} from "@/utils/errorUtils";
 
 interface UnifiedMcpPanelProps {
   onOpenChange: (open: boolean) => void;
@@ -72,6 +76,21 @@ const UnifiedMcpPanel = React.forwardRef<
     return counts;
   }, [serverEntries]);
 
+  const showMcpActionError = (
+    error: unknown,
+    fallbackKey:
+      | "mcp.unifiedPanel.importFailed"
+      | "mcp.unifiedPanel.toggleFailed"
+      | "mcp.unifiedPanel.deleteFailed",
+  ) => {
+    const detail = extractErrorMessage(error);
+    const mapped = detail ? translateMcpBackendError(detail, t) : "";
+    const message = mapped || detail || t(fallbackKey);
+    toast.error(message, {
+      duration: mapped || detail ? 6000 : 4000,
+    });
+  };
+
   const handleToggleApp = async (
     serverId: string,
     app: AppId,
@@ -80,7 +99,7 @@ const UnifiedMcpPanel = React.forwardRef<
     try {
       await toggleAppMutation.mutateAsync({ serverId, app, enabled });
     } catch (error) {
-      toast.error(t("common.error"), { description: String(error) });
+      showMcpActionError(error, "mcp.unifiedPanel.toggleFailed");
     }
   };
 
@@ -107,7 +126,7 @@ const UnifiedMcpPanel = React.forwardRef<
         });
       }
     } catch (error) {
-      toast.error(t("common.error"), { description: String(error) });
+      showMcpActionError(error, "mcp.unifiedPanel.importFailed");
     }
   };
 
@@ -127,7 +146,7 @@ const UnifiedMcpPanel = React.forwardRef<
           setConfirmDialog(null);
           toast.success(t("common.success"), { closeButton: true });
         } catch (error) {
-          toast.error(t("common.error"), { description: String(error) });
+          showMcpActionError(error, "mcp.unifiedPanel.deleteFailed");
         }
       },
     });

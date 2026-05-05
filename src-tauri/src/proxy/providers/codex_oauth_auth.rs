@@ -57,6 +57,36 @@ const POLLING_SAFETY_MARGIN_SECS: u64 = 3;
 /// User-Agent
 const CODEX_USER_AGENT: &str = "cc-switch-codex-oauth";
 
+const TEST_DEVICE_AUTH_USERCODE_URL_ENV: &str =
+    "CC_SWITCH_TEST_CODEX_DEVICE_AUTH_USERCODE_URL";
+const TEST_DEVICE_AUTH_TOKEN_URL_ENV: &str = "CC_SWITCH_TEST_CODEX_DEVICE_AUTH_TOKEN_URL";
+const TEST_OAUTH_TOKEN_URL_ENV: &str = "CC_SWITCH_TEST_CODEX_OAUTH_TOKEN_URL";
+const TEST_DEVICE_VERIFICATION_URL_ENV: &str =
+    "CC_SWITCH_TEST_CODEX_DEVICE_VERIFICATION_URL";
+
+fn env_or_default_url(env_name: &str, default: &str) -> String {
+    match std::env::var(env_name) {
+        Ok(value) if !value.trim().is_empty() => value,
+        _ => default.to_string(),
+    }
+}
+
+fn device_auth_usercode_url() -> String {
+    env_or_default_url(TEST_DEVICE_AUTH_USERCODE_URL_ENV, DEVICE_AUTH_USERCODE_URL)
+}
+
+fn device_auth_token_url() -> String {
+    env_or_default_url(TEST_DEVICE_AUTH_TOKEN_URL_ENV, DEVICE_AUTH_TOKEN_URL)
+}
+
+fn oauth_token_url() -> String {
+    env_or_default_url(TEST_OAUTH_TOKEN_URL_ENV, OAUTH_TOKEN_URL)
+}
+
+fn device_verification_url() -> String {
+    env_or_default_url(TEST_DEVICE_VERIFICATION_URL_ENV, DEVICE_VERIFICATION_URL)
+}
+
 /// Codex OAuth 错误
 #[derive(Debug, thiserror::Error)]
 pub enum CodexOAuthError {
@@ -268,7 +298,7 @@ impl CodexOAuthManager {
 
         let response = self
             .http_client
-            .post(DEVICE_AUTH_USERCODE_URL)
+            .post(device_auth_usercode_url())
             .header("Content-Type", "application/json")
             .header("User-Agent", CODEX_USER_AGENT)
             .json(&serde_json::json!({ "client_id": CODEX_CLIENT_ID }))
@@ -315,7 +345,7 @@ impl CodexOAuthManager {
         Ok(GitHubDeviceCodeResponse {
             device_code: device.device_auth_id,
             user_code: device.user_code,
-            verification_uri: DEVICE_VERIFICATION_URL.to_string(),
+            verification_uri: device_verification_url(),
             expires_in,
             interval,
         })
@@ -351,7 +381,7 @@ impl CodexOAuthManager {
 
         let poll_response = self
             .http_client
-            .post(DEVICE_AUTH_TOKEN_URL)
+            .post(device_auth_token_url())
             .header("Content-Type", "application/json")
             .header("User-Agent", CODEX_USER_AGENT)
             .json(&serde_json::json!({
@@ -433,7 +463,7 @@ impl CodexOAuthManager {
     ) -> Result<OAuthTokenResponse, CodexOAuthError> {
         let response = self
             .http_client
-            .post(OAUTH_TOKEN_URL)
+            .post(oauth_token_url())
             .header("Content-Type", "application/x-www-form-urlencoded")
             .header("User-Agent", CODEX_USER_AGENT)
             .form(&[
@@ -467,7 +497,7 @@ impl CodexOAuthManager {
     ) -> Result<OAuthTokenResponse, CodexOAuthError> {
         let response = self
             .http_client
-            .post(OAUTH_TOKEN_URL)
+            .post(oauth_token_url())
             .header("Content-Type", "application/x-www-form-urlencoded")
             .header("User-Agent", CODEX_USER_AGENT)
             .form(&[

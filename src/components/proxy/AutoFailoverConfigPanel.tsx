@@ -7,6 +7,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Save, Loader2, Info } from "lucide-react";
 import { toast } from "sonner";
 import { useAppProxyConfig, useUpdateAppProxyConfig } from "@/lib/query/proxy";
+import { extractErrorMessage } from "@/utils/errorUtils";
 
 export interface AutoFailoverConfigPanelProps {
   appType: string;
@@ -178,8 +179,14 @@ export function AutoFailoverConfigPanel({
         { closeButton: true },
       );
     } catch (e) {
+      const detail =
+        extractErrorMessage(e) ||
+        t("common.unknown", { defaultValue: "未知错误" });
       toast.error(
-        t("proxy.autoFailover.configSaveFailed", "保存失败") + ": " + String(e),
+        t("proxy.autoFailover.configSaveFailed", {
+          detail,
+          defaultValue: "保存失败: {{detail}}",
+        }),
       );
     }
   };
@@ -218,7 +225,14 @@ export function AutoFailoverConfigPanel({
       <div className="space-y-4">
         {error && (
           <Alert variant="destructive">
-            <AlertDescription>{String(error)}</AlertDescription>
+            <AlertDescription>
+              {t("proxy.autoFailover.loadFailed", {
+                detail:
+                  extractErrorMessage(error) ||
+                  t("common.unknown", { defaultValue: "未知错误" }),
+                defaultValue: "加载自动故障转移配置失败: {{detail}}",
+              })}
+            </AlertDescription>
           </Alert>
         )}
 

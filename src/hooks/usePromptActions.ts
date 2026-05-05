@@ -2,6 +2,16 @@ import { useState, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { promptsApi, type Prompt, type AppId } from "@/lib/api";
+import { extractErrorMessage } from "@/utils/errorUtils";
+
+type PromptErrorKey =
+  | "prompts.loadFailed"
+  | "prompts.currentFileLoadFailed"
+  | "prompts.saveFailed"
+  | "prompts.deleteFailed"
+  | "prompts.enableFailed"
+  | "prompts.disableFailed"
+  | "prompts.importFailed";
 
 export function usePromptActions(appId: AppId) {
   const { t } = useTranslation();
@@ -11,8 +21,20 @@ export function usePromptActions(appId: AppId) {
     null,
   );
 
-  const reload = useCallback(async () => {
-    setLoading(true);
+  const showPromptError = useCallback(
+    (key: PromptErrorKey, error: unknown) => {
+      toast.error(t(key), {
+        description: extractErrorMessage(error) || undefined,
+      });
+    },
+    [t],
+  );
+
+  const reload = useCallback(async (options?: { silent?: boolean }) => {
+    const silent = options?.silent === true;
+    if (!silent) {
+      setLoading(true);
+    }
     try {
       const data = await promptsApi.getPrompts(appId);
       setPrompts(data);
@@ -23,26 +45,36 @@ export function usePromptActions(appId: AppId) {
         setCurrentFileContent(content);
       } catch (error) {
         setCurrentFileContent(null);
+        showPromptError("prompts.currentFileLoadFailed", error);
       }
     } catch (error) {
-      toast.error(t("prompts.loadFailed"));
+      showPromptError("prompts.loadFailed", error);
     } finally {
-      setLoading(false);
+      if (!silent) {
+        setLoading(false);
+      }
     }
-  }, [appId, t]);
+  }, [appId, showPromptError]);
 
   const savePrompt = useCallback(
     async (id: string, prompt: Prompt) => {
       try {
         await promptsApi.upsertPrompt(appId, id, prompt);
-        await reload();
+        setPrompts((prev) => ({
+          ...prev,
+          [id]: prompt,
+        }));
+        if (prompt.enabled) {
+          setCurrentFileContent(prompt.content);
+        }
+        void reload({ silent: true });
         toast.success(t("prompts.saveSuccess"), { closeButton: true });
       } catch (error) {
-        toast.error(t("prompts.saveFailed"));
+        showPromptError("prompts.saveFailed", error);
         throw error;
       }
     },
-    [appId, reload, t],
+    [appId, reload, showPromptError, t],
   );
 
   const deletePrompt = useCallback(
@@ -52,11 +84,11 @@ export function usePromptActions(appId: AppId) {
         await reload();
         toast.success(t("prompts.deleteSuccess"), { closeButton: true });
       } catch (error) {
-        toast.error(t("prompts.deleteFailed"));
+        showPromptError("prompts.deleteFailed", error);
         throw error;
       }
     },
-    [appId, reload, t],
+    [appId, reload, showPromptError, t],
   );
 
   const enablePrompt = useCallback(
@@ -66,11 +98,11 @@ export function usePromptActions(appId: AppId) {
         await reload();
         toast.success(t("prompts.enableSuccess"), { closeButton: true });
       } catch (error) {
-        toast.error(t("prompts.enableFailed"));
+        showPromptError("prompts.enableFailed", error);
         throw error;
       }
     },
-    [appId, reload, t],
+    [appId, reload, showPromptError, t],
   );
 
   const toggleEnabled = useCallback(
@@ -117,26 +149,30 @@ export function usePromptActions(appId: AppId) {
       } catch (error) {
         // Rollback on failure
         setPrompts(previousPrompts);
-        toast.error(
-          enabled ? t("prompts.enableFailed") : t("prompts.disableFailed"),
+        showPromptError(
+          enabled ? "prompts.enableFailed" : "prompts.disableFailed",
+          error,
         );
         throw error;
       }
     },
-    [appId, prompts, reload, t],
+    [appId, prompts, reload, showPromptError, t],
   );
 
   const importFromFile = useCallback(async () => {
     try {
       const id = await promptsApi.importFromFile(appId);
+      if (!id) {
+        return null;
+      }
       await reload();
       toast.success(t("prompts.importSuccess"), { closeButton: true });
       return id;
     } catch (error) {
-      toast.error(t("prompts.importFailed"));
+      showPromptError("prompts.importFailed", error);
       throw error;
     }
-  }, [appId, reload, t]);
+  }, [appId, reload, showPromptError, t]);
 
   return {
     prompts,

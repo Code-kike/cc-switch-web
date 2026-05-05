@@ -105,6 +105,7 @@
     "noProvidersDescriptionSnippet": "除 Key 和请求地址外的数据（如插件配置）会被保存到通用配置片段，用于在不同供应商之间共享",
     "importCurrent": "导入当前配置",
     "importCurrentDescription": "将当前正在使用的配置导入为默认供应商",
+    "importCurrentNoChanges": "当前配置中没有可导入的新供应商",
     "currentlyUsing": "当前使用",
     "enable": "启用",
     "inUse": "使用中",
@@ -261,7 +262,9 @@
       "description": "在 Claude Code 中使用您的其他订阅，请注意合规风险。",
       "beta": "Beta",
       "copilotDescription": "管理 GitHub Copilot 账号",
-      "codexOauthDescription": "管理 ChatGPT 账号"
+      "codexOauthDescription": "管理 ChatGPT 账号",
+      "webRemoteHint": "远程 Web 模式会把 OAuth 账号保存到服务端机器",
+      "webRemoteHintDescription": "授权页面会在当前浏览器打开，但登录成功后的 Copilot / ChatGPT 账号会绑定到运行 cc-switch Web 的那台机器。仅在您信任该服务端时继续。"
     },
     "advanced": {
       "configDir": {
@@ -309,6 +312,8 @@
       "rectifier": {
         "title": "整流器",
         "description": "自动修复 API 请求中的兼容性问题",
+        "loadFailed": "加载整流器配置失败：{{error}}",
+        "saveFailed": "保存整流器配置失败：{{error}}",
         "enabled": "启用整流器",
         "enabledDescription": "总开关，关闭后所有整流功能将被禁用",
         "requestGroup": "请求整流",
@@ -321,6 +326,8 @@
       "optimizer": {
         "title": "Bedrock 请求优化器",
         "description": "在请求发送前自动优化 Thinking 和 Cache 配置（仅 Bedrock 供应商生效）",
+        "loadFailed": "加载 Bedrock 请求优化器配置失败：{{error}}",
+        "saveFailed": "保存 Bedrock 请求优化器配置失败：{{error}}",
         "enabled": "启用优化器",
         "thinkingOptimizer": "Thinking 优化",
         "thinkingOptimizerDescription": "自动为 Opus/Sonnet 启用 Adaptive Thinking，为旧模型注入 Extended Thinking",
@@ -335,6 +342,8 @@
         "description": "控制日志输出级别",
         "enabled": "启用日志",
         "enabledDescription": "总开关，关闭后所有日志将被禁用",
+        "loadFailed": "加载日志配置失败：{{error}}",
+        "saveFailed": "保存日志配置失败：{{error}}",
         "level": "日志级别",
         "levelDescription": "设置输出的最低日志级别",
         "levels": {
@@ -528,7 +537,8 @@
       "confirmTitle": "迁移技能存储",
       "confirmMessage": "将移动 {{count}} 个技能到新位置，是否继续？",
       "migrationSuccess": "已成功迁移 {{count}} 个技能",
-      "migrationPartial": "迁移了 {{migrated}} 个技能，{{errors}} 个失败，请查看日志"
+      "migrationPartial": "迁移了 {{migrated}} 个技能，{{errors}} 个失败，请查看日志",
+      "migrationFailed": "迁移技能存储失败：{{error}}"
     },
     "skillSync": {
       "title": "Skills 同步方式",
@@ -549,8 +559,7 @@
           "kitty": "Kitty",
           "ghostty": "Ghostty",
           "wezterm": "WezTerm",
-          "kaku": "Kaku",
-          "warp": "Warp"
+          "kaku": "Kaku"
         },
         "windows": {
           "cmd": "命令提示符",
@@ -599,8 +608,10 @@
     "upToDate": "已是最新",
     "aboutHint": "查看版本信息与更新状态。",
     "portableMode": "当前为便携版，更新需手动下载。",
+    "webUpdateHint": "Web 模式下会在浏览器中打开发布/下载页面；实际安装与重启仍需要在运行 cc-switch 的主机上完成。",
     "updateAvailable": "检测到新版本：{{version}}",
     "updateBadge": "有更新可用",
+    "updateDownloadOpened": "已打开下载页面，请在浏览器中完成更新。",
     "updateFailed": "更新安装失败，已尝试打开下载页面。",
     "checkUpdateFailed": "检查更新失败，请稍后重试。",
     "openReleaseNotesFailed": "打开更新日志失败",
@@ -609,7 +620,11 @@
     "viewCurrentReleaseNotes": "查看当前版本更新日志",
     "oneClickInstall": "一键安装",
     "oneClickInstallHint": "安装 Claude Code / Codex / Gemini CLI / OpenCode",
+    "serverInstallHint": "请在运行 cc-switch Web 的服务器主机上执行这些命令，而不是在当前浏览器所在设备上执行。",
     "localEnvCheck": "本地环境检查",
+    "serverEnvCheck": "服务端环境检查",
+    "serverEnvCheckFailed": "无法加载服务端环境信息",
+    "serverEnvCheckHint": "这里展示的是运行 cc-switch Web 的主机环境，而不是当前浏览器所在设备的环境。",
     "envBadge": {
       "wsl": "WSL",
       "windows": "Win",
@@ -803,7 +818,6 @@
     },
     "presets": {
       "ucloud": "优云智算",
-      "ucloudCoding": "优云智算Coding Plan",
       "shengsuanyun": "胜算云",
       "openrouter": "OpenRouter",
       "deepseek": "DeepSeek",
@@ -825,11 +839,6 @@
     "fillTemplateValue": "请填写 {{label}}",
     "endpointRequired": "非官方供应商请填写 API 端点",
     "apiKeyRequired": "非官方供应商请填写 API Key",
-    "softValidation": {
-      "title": "配置存在以下问题",
-      "hint": "仍要保存吗？保存后切换此供应商时可能失败，可以之后再补全。",
-      "saveAnyway": "仍要保存"
-    },
     "configJsonError": "配置JSON格式错误，请检查语法",
     "authJsonRequired": "auth.json 必须是 JSON 对象",
     "authJsonError": "auth.json 格式错误，请检查JSON语法",
@@ -881,7 +890,6 @@
     "fetchModelsNeedConfig": "请先填写 API 端点和 API Key",
     "fetchModelsAuthFailed": "API Key 无效或无权限",
     "fetchModelsNotSupported": "该供应商不支持获取模型列表",
-    "fetchModelsEndpointNotFound": "未找到可用的模型列表端点，请检查 Base URL 或确认供应商是否开放该接口",
     "fetchModelsTimeout": "请求超时，请检查网络连接"
   },
   "copilot": {
@@ -1213,6 +1221,7 @@
     "timeRangeTooLarge": "时间范围过大，请缩小范围",
     "addPricing": "新增定价",
     "editPricing": "编辑定价",
+    "pricingSaveFailed": "保存定价失败：{{error}}",
     "pricingAdded": "定价已添加",
     "pricingUpdated": "定价已更新",
     "cacheReadCostPerMillion": "缓存读取成本 (每百万 tokens, USD)",
@@ -1324,6 +1333,9 @@
       "enabledApps": "启用的应用",
       "noImportFound": "未发现需要导入的 MCP 服务器。所有服务器已在 CC Switch 统一管理中。",
       "importSuccess": "成功导入 {{count}} 个 MCP 服务器",
+      "importFailed": "导入 MCP 服务器失败",
+      "toggleFailed": "更新 MCP 应用启用状态失败",
+      "deleteFailed": "删除 MCP 服务器失败",
       "apps": {
         "claude": "Claude",
         "codex": "Codex",
@@ -1488,6 +1500,7 @@
     "content": "内容",
     "contentPlaceholder": "# {{filename}}\n\n在此输入提示词内容...",
     "loadFailed": "加载提示词失败",
+    "currentFileLoadFailed": "读取当前提示词文件失败",
     "saveSuccess": "保存成功",
     "saveFailed": "保存失败",
     "deleteSuccess": "删除成功",
@@ -1690,6 +1703,8 @@
       "open": "打开 Hermes Web UI",
       "offline": "Hermes Web UI 未启动，请先运行 `hermes dashboard` 启动服务。",
       "openFailed": "打开 Hermes Web UI 失败",
+      "remoteHint": "远程 Web 模式下无法直接代您打开 Hermes Web UI",
+      "remoteHintDescription": "Hermes Web UI 运行在服务端本机的 {{url}}。请在服务端机器上打开，或先建立端口转发后再访问。",
       "launchConfirmTitle": "Hermes Dashboard 未启动",
       "launchConfirmMessage": "是否打开终端并运行 `hermes dashboard` 启动服务？\n\n启动完成后会自动打开浏览器。\n\n若终端提示找不到 hermes 或缺少 web 依赖，请先运行：\npip install hermes-agent[web]",
       "launchConfirmAction": "打开终端并启动",
@@ -1783,8 +1798,10 @@
     "updateFailed": "更新失败",
     "checkUpdates": "检查更新",
     "checkingUpdates": "检查中...",
+    "checkUpdatesFailed": "检查技能更新失败",
     "noUpdates": "所有技能已是最新版本",
     "updatesFound": "发现 {{count}} 个技能有可用更新",
+    "toggleFailed": "更新技能启用状态失败",
     "updateAll": "全部更新 ({{count}})",
     "updatingAll": "更新中...",
     "updateAllSuccess": "已成功更新 {{count}} 个技能",
@@ -1833,6 +1850,7 @@
       "list": "已添加的仓库",
       "empty": "暂无仓库",
       "invalidUrl": "无效的仓库 URL 格式",
+      "duplicateWarning": "仓库 {{owner}}/{{name}} 已存在，再次添加会覆盖当前保存的分支配置。",
       "addSuccess": "仓库 {{owner}}/{{name}} 已添加，识别到 {{count}} 个技能",
       "addFailed": "添加失败",
       "removeSuccess": "仓库 {{owner}}/{{name}} 已删除",
@@ -1869,6 +1887,7 @@
     "import": "导入已有",
     "importDescription": "选择要导入到 CC Switch 统一管理的技能",
     "importSuccess": "成功导入 {{count}} 个技能",
+    "importFailed": "导入技能失败",
     "importSelected": "导入已选 ({{count}})",
     "noUnmanagedFound": "未发现需要导入的技能。所有技能已在 CC Switch 统一管理中。",
     "foundIn": "发现于",
@@ -1954,6 +1973,13 @@
     "configDetails": "配置详情",
     "configUrl": "配置文件 URL",
     "configMergeError": "合并配置文件失败",
+    "pasteImport": "粘贴导入链接",
+    "pasteImportDescription": "粘贴 ccswitch:// 深链接，在 Web 模式下解析后继续导入",
+    "pasteImportPlaceholder": "粘贴 ccswitch://v1/import?... 链接",
+    "pasteImportHint": "Web 版不依赖系统协议注册。粘贴完整的 ccswitch:// 链接后，会先解析，再进入同一套确认导入流程。",
+    "parseAction": "解析链接",
+    "parsing": "解析中...",
+    "editLinkAction": "修改链接",
     "primaryEndpoint": "主",
     "mcp": {
       "title": "批量导入 MCP Servers",
@@ -2013,7 +2039,9 @@
     "skillsFailedDescription": "请打开 Skills 页面点击“导入已有”手动导入（或重启后再试）。"
   },
   "agents": {
-    "title": "智能体"
+    "title": "智能体",
+    "comingSoonTitle": "敬请期待",
+    "comingSoonDescription": "Agents 管理页当前在 Web 模式下有意保留为稳定占位页，用来保持导航结构一致；在完整功能收口前，这里不会暴露半成品操作。"
   },
   "modelTest": {
     "testProvider": "测试模型"
@@ -2151,7 +2179,9 @@
     "failover": {
       "proxyRequired": "需要先启动路由服务才能配置故障转移",
       "autoSwitch": "自动故障转移",
-      "autoSwitchDescription": "开启后将立即切换到队列 P1，并在请求失败时自动切换到队列中的下一个供应商"
+      "autoSwitchDescription": "开启后将立即切换到队列 P1，并在请求失败时自动切换到队列中的下一个供应商",
+      "runtimeStatsUnavailableTitle": "Web Server 模式暂不提供熔断器运行时统计",
+      "runtimeStatsUnavailableDescription": "可通过上方队列中的健康状态徽记和 Reset Circuit 操作查看与恢复故障转移状态；实时熔断计数仍需桌面版提供。"
     },
     "failoverQueue": {
       "title": "故障转移队列",
@@ -2222,6 +2252,8 @@
   "streamCheck": {
     "configSaved": "健康检查配置已保存",
     "configSaveFailed": "保存失败",
+    "configSaveFailedDetail": "保存失败：{{error}}",
+    "loadFailed": "加载健康检查配置失败：{{error}}",
     "testModels": "测试模型",
     "claudeModel": "Claude 模型",
     "codexModel": "Codex 模型",
@@ -2238,8 +2270,6 @@
     "error": "{{providerName}} 检查出错: {{error}}",
     "modelNotFound": "{{providerName}} 测试模型 {{model}} 不存在或已下架",
     "modelNotFoundHint": "该模型可能已被供应商弃用。请在\"模型测试配置\"中更新默认测试模型。",
-    "quotaExceeded": "{{providerName}} Coding Plan 额度已用尽",
-    "quotaExceededHint": "百度千帆返回了 Coding Plan 超额错误。请等待 5 小时/每周/每月额度刷新，或在千帆控制台切换套餐。",
     "httpHint": {
       "400": "供应商拒绝了请求格式。健康检查的探测格式可能与实际使用不同。",
       "401": "API Key 可能无效，或供应商使用 OAuth 等认证方式。检查失败不代表实际不可用。",
@@ -2294,9 +2324,6 @@
     }
   },
   "universalProvider": {
-    "duplicate": "复制",
-    "duplicatedAndSynced": "统一供应商已复制并同步",
-    "duplicateError": "复制统一供应商失败",
     "title": "统一供应商",
     "description": "统一供应商可以同时管理 Claude、Codex 和 Gemini 的配置。修改后会自动同步到所有启用的应用。",
     "add": "添加统一供应商",

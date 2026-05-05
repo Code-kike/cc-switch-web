@@ -6,6 +6,7 @@ import {
   validateJsonConfig,
 } from "@/utils/providerConfigUtils";
 import { configApi } from "@/lib/api";
+import { extractErrorMessage } from "@/utils/errorUtils";
 
 const LEGACY_STORAGE_KEY = "cc-switch:common-config-snippet";
 const DEFAULT_COMMON_CONFIG_SNIPPET = `{
@@ -44,6 +45,14 @@ export function useCommonConfigSnippet({
   const [commonConfigError, setCommonConfigError] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [isExtracting, setIsExtracting] = useState(false);
+
+  const formatConfigError = useCallback(
+    (error: unknown, key: string) =>
+      t(key, {
+        error: extractErrorMessage(error) || t("common.unknown"),
+      }),
+    [t],
+  );
 
   // 用于跟踪是否正在通过通用配置更新
   const isUpdatingFromCommonConfig = useRef(false);
@@ -240,9 +249,7 @@ export function useCommonConfigSnippet({
           .setCommonConfigSnippet("claude", "")
           .catch((error: unknown) => {
             console.error("保存通用配置失败:", error);
-            setCommonConfigError(
-              t("claudeConfig.saveFailed", { error: String(error) }),
-            );
+            setCommonConfigError(formatConfigError(error, "claudeConfig.saveFailed"));
           });
 
         if (useCommonConfig) {
@@ -268,9 +275,7 @@ export function useCommonConfigSnippet({
           .setCommonConfigSnippet("claude", value)
           .catch((error: unknown) => {
             console.error("保存通用配置失败:", error);
-            setCommonConfigError(
-              t("claudeConfig.saveFailed", { error: String(error) }),
-            );
+            setCommonConfigError(formatConfigError(error, "claudeConfig.saveFailed"));
           });
       }
 
@@ -350,13 +355,11 @@ export function useCommonConfigSnippet({
       await configApi.setCommonConfigSnippet("claude", extracted);
     } catch (error) {
       console.error("提取通用配置失败:", error);
-      setCommonConfigError(
-        t("claudeConfig.extractFailed", { error: String(error) }),
-      );
+      setCommonConfigError(formatConfigError(error, "claudeConfig.extractFailed"));
     } finally {
       setIsExtracting(false);
     }
-  }, [settingsConfig, t]);
+  }, [formatConfigError, settingsConfig, t]);
 
   return {
     useCommonConfig,

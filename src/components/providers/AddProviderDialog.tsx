@@ -63,6 +63,7 @@ export function AddProviderDialog({
         setUniversalFormOpen(false);
         setSelectedUniversalPreset(null);
         onOpenChange(false);
+        return true;
       } catch (error) {
         console.error(
           "[AddProviderDialog] Failed to save universal provider",
@@ -73,6 +74,7 @@ export function AddProviderDialog({
             defaultValue: "统一供应商添加失败",
           }),
         );
+        return false;
       }
     },
     [t, onOpenChange],

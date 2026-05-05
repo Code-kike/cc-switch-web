@@ -1,4 +1,10 @@
-import { invoke } from "@tauri-apps/api/core";
+import {
+  invoke,
+  isBrowserFile,
+  isWebMode,
+  pickWebFile,
+  webUpload,
+} from "./adapter";
 
 import type { AppId } from "@/lib/api/types";
 
@@ -267,15 +273,27 @@ export const skillsApi = {
   // ========== ZIP 安装 ==========
 
   /** 打开 ZIP 文件选择对话框 */
-  async openZipFileDialog(): Promise<string | null> {
+  async openZipFileDialog(): Promise<string | File | null> {
+    if (isWebMode()) {
+      return await pickWebFile(".zip,.skill,application/zip");
+    }
     return await invoke("open_zip_file_dialog");
   },
 
   /** 从 ZIP 文件安装 Skills */
   async installFromZip(
-    filePath: string,
+    filePath: string | File,
     currentApp: AppId,
   ): Promise<InstalledSkill[]> {
+    if (isWebMode()) {
+      if (!isBrowserFile(filePath)) return [];
+      const formData = new FormData();
+      formData.set("file", filePath);
+      return await webUpload(
+        `/api/skills/install-skills-upload?app=${encodeURIComponent(currentApp)}`,
+        formData,
+      );
+    }
     return await invoke("install_skills_from_zip", { filePath, currentApp });
   },
 };

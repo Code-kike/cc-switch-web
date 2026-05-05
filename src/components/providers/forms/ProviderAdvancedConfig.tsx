@@ -40,6 +40,8 @@ export function ProviderAdvancedConfig({
   const [isPricingConfigOpen, setIsPricingConfigOpen] = useState(
     pricingConfig.enabled,
   );
+  const testConfigPanelId = "provider-test-config-panel";
+  const pricingConfigPanelId = "provider-pricing-config-panel";
 
   useEffect(() => {
     setIsTestConfigOpen(testConfig.enabled);
@@ -52,49 +54,49 @@ export function ProviderAdvancedConfig({
   return (
     <div className="space-y-4">
       <div className="rounded-lg border border-border/50 bg-muted/20">
-        <button
-          type="button"
-          className="flex w-full items-center justify-between p-4 hover:bg-muted/30 transition-colors"
-          onClick={() => setIsTestConfigOpen(!isTestConfigOpen)}
-        >
-          <div className="flex items-center gap-3">
-            <FlaskConical className="h-4 w-4 text-muted-foreground" />
-            <span className="font-medium">
-              {t("providerAdvanced.testConfig", {
-                defaultValue: "模型测试配置",
-              })}
-            </span>
-          </div>
-          <div className="flex items-center gap-3">
-            <div
-              className="flex items-center gap-2"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <Label
-                htmlFor="test-config-enabled"
-                className="text-sm text-muted-foreground"
-              >
-                {t("providerAdvanced.useCustomConfig", {
-                  defaultValue: "使用单独配置",
+        <div className="flex items-center gap-3 p-4 hover:bg-muted/30 transition-colors">
+          <button
+            type="button"
+            className="flex min-w-0 flex-1 items-center justify-between text-left"
+            aria-expanded={isTestConfigOpen}
+            aria-controls={testConfigPanelId}
+            onClick={() => setIsTestConfigOpen(!isTestConfigOpen)}
+          >
+            <div className="flex items-center gap-3">
+              <FlaskConical className="h-4 w-4 text-muted-foreground" />
+              <span className="font-medium">
+                {t("providerAdvanced.testConfig", {
+                  defaultValue: "模型测试配置",
                 })}
-              </Label>
-              <Switch
-                id="test-config-enabled"
-                checked={testConfig.enabled}
-                onCheckedChange={(checked) => {
-                  onTestConfigChange({ ...testConfig, enabled: checked });
-                  if (checked) setIsTestConfigOpen(true);
-                }}
-              />
+              </span>
             </div>
             {isTestConfigOpen ? (
               <ChevronDown className="h-4 w-4 text-muted-foreground" />
             ) : (
               <ChevronRight className="h-4 w-4 text-muted-foreground" />
             )}
+          </button>
+          <div className="flex shrink-0 items-center gap-2 pl-3 border-l border-border/50">
+            <Label
+              htmlFor="test-config-enabled"
+              className="text-sm text-muted-foreground"
+            >
+              {t("providerAdvanced.useCustomConfig", {
+                defaultValue: "使用单独配置",
+              })}
+            </Label>
+            <Switch
+              id="test-config-enabled"
+              checked={testConfig.enabled}
+              onCheckedChange={(checked) => {
+                onTestConfigChange({ ...testConfig, enabled: checked });
+                if (checked) setIsTestConfigOpen(true);
+              }}
+            />
           </div>
-        </button>
+        </div>
         <div
+          id={testConfigPanelId}
           className={cn(
             "overflow-hidden transition-all duration-200",
             isTestConfigOpen
@@ -229,49 +231,49 @@ export function ProviderAdvancedConfig({
 
       {/* 计费配置 */}
       <div className="rounded-lg border border-border/50 bg-muted/20">
-        <button
-          type="button"
-          className="flex w-full items-center justify-between p-4 hover:bg-muted/30 transition-colors"
-          onClick={() => setIsPricingConfigOpen(!isPricingConfigOpen)}
-        >
-          <div className="flex items-center gap-3">
-            <Coins className="h-4 w-4 text-muted-foreground" />
-            <span className="font-medium">
-              {t("providerAdvanced.pricingConfig", {
-                defaultValue: "计费配置",
-              })}
-            </span>
-          </div>
-          <div className="flex items-center gap-3">
-            <div
-              className="flex items-center gap-2"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <Label
-                htmlFor="pricing-config-enabled"
-                className="text-sm text-muted-foreground"
-              >
-                {t("providerAdvanced.useCustomPricing", {
-                  defaultValue: "使用单独配置",
+        <div className="flex items-center gap-3 p-4 hover:bg-muted/30 transition-colors">
+          <button
+            type="button"
+            className="flex min-w-0 flex-1 items-center justify-between text-left"
+            aria-expanded={isPricingConfigOpen}
+            aria-controls={pricingConfigPanelId}
+            onClick={() => setIsPricingConfigOpen(!isPricingConfigOpen)}
+          >
+            <div className="flex items-center gap-3">
+              <Coins className="h-4 w-4 text-muted-foreground" />
+              <span className="font-medium">
+                {t("providerAdvanced.pricingConfig", {
+                  defaultValue: "计费配置",
                 })}
-              </Label>
-              <Switch
-                id="pricing-config-enabled"
-                checked={pricingConfig.enabled}
-                onCheckedChange={(checked) => {
-                  onPricingConfigChange({ ...pricingConfig, enabled: checked });
-                  if (checked) setIsPricingConfigOpen(true);
-                }}
-              />
+              </span>
             </div>
             {isPricingConfigOpen ? (
               <ChevronDown className="h-4 w-4 text-muted-foreground" />
             ) : (
               <ChevronRight className="h-4 w-4 text-muted-foreground" />
             )}
+          </button>
+          <div className="flex shrink-0 items-center gap-2 pl-3 border-l border-border/50">
+            <Label
+              htmlFor="pricing-config-enabled"
+              className="text-sm text-muted-foreground"
+            >
+              {t("providerAdvanced.useCustomPricing", {
+                defaultValue: "使用单独配置",
+              })}
+            </Label>
+            <Switch
+              id="pricing-config-enabled"
+              checked={pricingConfig.enabled}
+              onCheckedChange={(checked) => {
+                onPricingConfigChange({ ...pricingConfig, enabled: checked });
+                if (checked) setIsPricingConfigOpen(true);
+              }}
+            />
           </div>
-        </button>
+        </div>
         <div
+          id={pricingConfigPanelId}
           className={cn(
             "overflow-hidden transition-all duration-200",
             isPricingConfigOpen

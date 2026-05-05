@@ -35,6 +35,7 @@ interface ProxyPanelProps {
   onEnableLocalProxyChange: (checked: boolean) => void;
   onToggleProxy: (checked: boolean) => Promise<void>;
   isProxyPending: boolean;
+  disableRuntimeControls?: boolean;
 }
 
 export function ProxyPanel({
@@ -42,6 +43,7 @@ export function ProxyPanel({
   onEnableLocalProxyChange,
   onToggleProxy,
   isProxyPending,
+  disableRuntimeControls = false,
 }: ProxyPanelProps) {
   const { t } = useTranslation();
   const { status, isRunning } = useProxyStatus();
@@ -231,9 +233,25 @@ export function ProxyPanel({
           <Switch
             checked={isRunning}
             onCheckedChange={onToggleProxy}
-            disabled={isProxyPending}
+            disabled={isProxyPending || disableRuntimeControls}
           />
         </div>
+
+        {disableRuntimeControls ? (
+          <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-4">
+            <p className="text-sm font-medium">
+              {t("proxy.runtimeUnavailableTitle", {
+                defaultValue: "Web mode does not expose proxy runtime control",
+              })}
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {t("proxy.runtimeUnavailableDescription", {
+                defaultValue:
+                  "You can still edit proxy and failover settings here, but starting the local proxy runtime and app takeover stays desktop-only for now.",
+              })}
+            </p>
+          </div>
+        ) : null}
 
         {/* [3] App takeover switches — animated, visible only when proxy is running */}
         <AnimatePresence>

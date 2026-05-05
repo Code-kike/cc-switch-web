@@ -33,6 +33,13 @@ const GITHUB_CLIENT_ID_GHES: &str = "Ov23li8tweQw6odWQebz";
 /// 默认 GitHub 域名
 const DEFAULT_GITHUB_DOMAIN: &str = "github.com";
 
+const TEST_GITHUB_DEVICE_CODE_URL_TEMPLATE_ENV: &str =
+    "CC_SWITCH_TEST_GITHUB_DEVICE_CODE_URL_TEMPLATE";
+const TEST_GITHUB_OAUTH_TOKEN_URL_TEMPLATE_ENV: &str =
+    "CC_SWITCH_TEST_GITHUB_OAUTH_TOKEN_URL_TEMPLATE";
+const TEST_GITHUB_API_BASE_URL_TEMPLATE_ENV: &str =
+    "CC_SWITCH_TEST_GITHUB_API_BASE_URL_TEMPLATE";
+
 /// 根据域名选择 OAuth 客户端 ID
 fn github_client_id(domain: &str) -> &'static str {
     if domain == DEFAULT_GITHUB_DOMAIN {
@@ -46,23 +53,36 @@ fn default_github_domain() -> String {
     DEFAULT_GITHUB_DOMAIN.to_string()
 }
 
+fn env_template_url(env_name: &str, domain: &str, default: impl FnOnce() -> String) -> String {
+    match std::env::var(env_name) {
+        Ok(template) if !template.trim().is_empty() => template.replace("{domain}", domain),
+        _ => default(),
+    }
+}
+
 /// GitHub 设备码 URL
 fn github_device_code_url(domain: &str) -> String {
-    format!("https://{domain}/login/device/code")
+    env_template_url(TEST_GITHUB_DEVICE_CODE_URL_TEMPLATE_ENV, domain, || {
+        format!("https://{domain}/login/device/code")
+    })
 }
 
 /// GitHub OAuth Token URL
 fn github_oauth_token_url(domain: &str) -> String {
-    format!("https://{domain}/login/oauth/access_token")
+    env_template_url(TEST_GITHUB_OAUTH_TOKEN_URL_TEMPLATE_ENV, domain, || {
+        format!("https://{domain}/login/oauth/access_token")
+    })
 }
 
 /// GitHub API 基础 URL（github.com 用 api.github.com，GHES 用 {domain}/api/v3）
 fn github_api_base(domain: &str) -> String {
-    if domain == DEFAULT_GITHUB_DOMAIN {
-        "https://api.github.com".to_string()
-    } else {
-        format!("https://{domain}/api/v3")
-    }
+    env_template_url(TEST_GITHUB_API_BASE_URL_TEMPLATE_ENV, domain, || {
+        if domain == DEFAULT_GITHUB_DOMAIN {
+            "https://api.github.com".to_string()
+        } else {
+            format!("https://{domain}/api/v3")
+        }
+    })
 }
 
 /// Copilot Token URL

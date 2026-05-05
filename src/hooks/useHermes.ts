@@ -7,6 +7,7 @@ import {
 } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
+import { isWebMode } from "@/lib/api/adapter";
 import { hermesApi } from "@/lib/api/hermes";
 import { providersApi } from "@/lib/api/providers";
 import type { HermesMemoryKind } from "@/types";
@@ -18,6 +19,16 @@ import { extractErrorMessage } from "@/utils/errorUtils";
  * `src-tauri/src/commands/hermes.rs`.
  */
 export const HERMES_WEB_OFFLINE_ERROR = "hermes_web_offline";
+export const HERMES_WEB_LOCAL_BASE_URL = "http://127.0.0.1:9119";
+
+function buildHermesLocalUrl(path?: string): string {
+  if (!path) {
+    return `${HERMES_WEB_LOCAL_BASE_URL}/`;
+  }
+  return path.startsWith("/")
+    ? `${HERMES_WEB_LOCAL_BASE_URL}${path}`
+    : `${HERMES_WEB_LOCAL_BASE_URL}/${path}`;
+}
 
 /**
  * Centralized query keys for all Hermes-related queries.
@@ -152,6 +163,15 @@ export function useOpenHermesWebUI(onOffline?: () => void) {
   const { t } = useTranslation();
   return useCallback(
     async (path?: string) => {
+      if (isWebMode()) {
+        toast.error(t("hermes.webui.remoteHint"), {
+          description: t("hermes.webui.remoteHintDescription", {
+            url: buildHermesLocalUrl(path),
+          }),
+        });
+        return;
+      }
+
       try {
         await hermesApi.openWebUI(path);
       } catch (error) {

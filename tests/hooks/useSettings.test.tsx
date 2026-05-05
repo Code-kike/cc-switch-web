@@ -503,4 +503,43 @@ describe("useSettings hook", () => {
     expect(setAppConfigDirOverrideMock).not.toHaveBeenCalled();
     expect(metadataMock.setRequiresRestart).not.toHaveBeenCalledWith(true);
   });
+
+  it("surfaces structured detail when auto-save rejects", async () => {
+    const rejection = { detail: "auto save exploded" };
+    mutateAsyncMock.mockRejectedValueOnce(rejection);
+
+    const { result } = renderHook(() => useSettings());
+
+    await expect(
+      act(async () => {
+        await result.current.autoSaveSettings({ language: "en" });
+      }),
+    ).rejects.toBe(rejection);
+
+    expect(String(toastErrorMock.mock.calls.at(-1)?.[0])).toContain(
+      "auto save exploded",
+    );
+  });
+
+  it("surfaces structured detail when manual save rejects", async () => {
+    settingsFormMock = createSettingsFormMock();
+    directorySettingsMock = createDirectorySettingsMock({
+      appConfigDir: "/override/app",
+      initialAppConfigDir: "/override/app",
+    });
+    const rejection = { detail: "manual save exploded" };
+    mutateAsyncMock.mockRejectedValueOnce(rejection);
+
+    const { result } = renderHook(() => useSettings());
+
+    await expect(
+      act(async () => {
+        await result.current.saveSettings();
+      }),
+    ).rejects.toBe(rejection);
+
+    expect(String(toastErrorMock.mock.calls.at(-1)?.[0])).toContain(
+      "manual save exploded",
+    );
+  });
 });

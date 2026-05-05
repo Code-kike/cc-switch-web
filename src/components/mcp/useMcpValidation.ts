@@ -1,5 +1,6 @@
 import { useTranslation } from "react-i18next";
 import { validateToml, tomlToMcpServer } from "@/utils/tomlUtils";
+import { extractErrorMessage } from "@/utils/errorUtils";
 
 export function useMcpValidation() {
   const { t } = useTranslation();
@@ -47,9 +48,8 @@ export function useMcpValidation() {
         ) {
           return t("mcp.wizard.urlRequired");
         }
-      } catch (e: any) {
-        const msg = e?.message || String(e);
-        return formatTomlError(msg);
+      } catch (e) {
+        return formatTomlError(extractErrorMessage(e));
       }
     }
 

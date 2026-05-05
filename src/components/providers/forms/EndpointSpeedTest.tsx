@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { FullScreenPanel } from "@/components/common/FullScreenPanel";
 import type { CustomEndpoint, EndpointCandidate } from "@/types";
+import { extractErrorMessage } from "@/utils/errorUtils";
 
 // 端点测速超时配置（秒）
 const ENDPOINT_TIMEOUT_SECS: Record<AppId, number> = {
@@ -370,11 +371,12 @@ const EndpointSpeedTest: React.FC<EndpointSpeedTestProps> = ({
         }
       }
     } catch (error) {
-      const message =
-        error instanceof Error
-          ? error.message
-          : `${t("endpointTest.testFailed", { error: String(error) })}`;
-      setLastError(message);
+      const detail = extractErrorMessage(error) || t("common.unknown");
+      setLastError(
+        t("endpointTest.testFailed", {
+          error: detail,
+        }),
+      );
     } finally {
       setIsTesting(false);
     }
@@ -427,7 +429,7 @@ const EndpointSpeedTest: React.FC<EndpointSpeedTestProps> = ({
         setInitialCustomUrls(currentCustomUrls);
       } catch (error) {
         const message =
-          error instanceof Error ? error.message : t("endpointTest.saveFailed");
+          extractErrorMessage(error) || t("endpointTest.saveFailed");
         setLastError(message);
         setIsSaving(false);
         return;
@@ -612,8 +614,18 @@ const EndpointSpeedTest: React.FC<EndpointSpeedTestProps> = ({
                     ) : isTesting ? (
                       <Loader2 className="h-4 w-4 animate-spin text-gray-400" />
                     ) : entry.error ? (
-                      <div className="text-xs text-gray-400">
-                        {t("endpointTest.failed")}
+                      <div className="max-w-[9rem] text-right">
+                        <div
+                          className="truncate text-xs text-red-600 dark:text-red-400"
+                          title={entry.error}
+                        >
+                          {entry.error}
+                        </div>
+                        {typeof entry.status === "number" && (
+                          <div className="text-[10px] text-gray-400">
+                            HTTP {entry.status}
+                          </div>
+                        )}
                       </div>
                     ) : (
                       <div className="text-xs text-gray-400">—</div>

@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { workspaceApi } from "@/lib/api/workspace";
+import { isWebMode } from "@/lib/api/adapter";
 import WorkspaceFileEditor from "./WorkspaceFileEditor";
 import DailyMemoryPanel from "./DailyMemoryPanel";
 
@@ -53,6 +54,7 @@ const WORKSPACE_FILES: WorkspaceFile[] = [
 
 const WorkspaceFilesPanel: React.FC = () => {
   const { t } = useTranslation();
+  const webMode = isWebMode();
   const [editingFile, setEditingFile] = useState<string | null>(null);
   const [fileExists, setFileExists] = useState<Record<string, boolean>>({});
   const [showDailyMemory, setShowDailyMemory] = useState(false);
@@ -85,9 +87,17 @@ const WorkspaceFilesPanel: React.FC = () => {
   return (
     <div className="px-6 pt-4 pb-8">
       <p
-        className="text-sm text-muted-foreground mb-6 cursor-pointer hover:text-foreground transition-colors inline-flex items-center gap-1"
-        onClick={() => workspaceApi.openDirectory("workspace")}
-        title={t("workspace.openDirectory")}
+        className="text-sm text-muted-foreground mb-6 inline-flex items-center gap-1"
+        title={
+          webMode
+            ? t("settings.webManualPathHint", {
+                defaultValue: "Web 模式无法浏览服务端文件系统，请手动使用该路径",
+              })
+            : t("workspace.openDirectory")
+        }
+        onClick={
+          webMode ? undefined : () => workspaceApi.openDirectory("workspace")
+        }
       >
         ~/.openclaw/workspace/
         <FolderOpen className="w-3.5 h-3.5" />

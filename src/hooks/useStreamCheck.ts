@@ -7,6 +7,7 @@ import {
 } from "@/lib/api/model-test";
 import type { AppId } from "@/lib/api";
 import { useResetCircuitBreaker } from "@/lib/query/failover";
+import { extractErrorMessage } from "@/utils/errorUtils";
 
 export function useStreamCheck(appId: AppId) {
   const { t } = useTranslation();
@@ -62,20 +63,6 @@ export function useStreamCheck(appId: AppId) {
               closeButton: true,
             },
           );
-        } else if (result.errorCategory === "quotaExceeded") {
-          toast.warning(
-            t("streamCheck.quotaExceeded", {
-              providerName: providerName,
-              defaultValue: `${providerName} Coding Plan quota has been exceeded`,
-            }),
-            {
-              description: t("streamCheck.quotaExceededHint", {
-                defaultValue: "",
-              }),
-              duration: 10000,
-              closeButton: true,
-            },
-          );
         } else {
           const httpStatus = result.httpStatus;
           const hintKey = httpStatus
@@ -112,11 +99,12 @@ export function useStreamCheck(appId: AppId) {
 
         return result;
       } catch (e) {
+        const detail = extractErrorMessage(e) || t("common.unknown");
         toast.error(
           t("streamCheck.error", {
             providerName: providerName,
-            error: String(e),
-            defaultValue: `${providerName} 检查出错: ${String(e)}`,
+            error: detail,
+            defaultValue: `${providerName} 检查出错: ${detail}`,
           }),
         );
         return null;

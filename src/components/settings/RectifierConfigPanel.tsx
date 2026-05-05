@@ -3,11 +3,13 @@ import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
   settingsApi,
   type RectifierConfig,
   type OptimizerConfig,
 } from "@/lib/api/settings";
+import { extractErrorMessage } from "@/utils/errorUtils";
 
 export function RectifierConfigPanel() {
   const { t } = useTranslation();
@@ -23,44 +25,108 @@ export function RectifierConfigPanel() {
     cacheTtl: "1h",
   });
   const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
-    settingsApi
-      .getRectifierConfig()
-      .then(setConfig)
-      .catch((e) => console.error("Failed to load rectifier config:", e))
-      .finally(() => setIsLoading(false));
-    settingsApi
-      .getOptimizerConfig()
-      .then(setOptimizerConfig)
-      .catch((e) => console.error("Failed to load optimizer config:", e));
-  }, []);
+    let cancelled = false;
+
+    async function loadConfig() {
+      setIsLoading(true);
+      setLoadError(null);
+
+      const [rectifierResult, optimizerResult] = await Promise.allSettled([
+        settingsApi.getRectifierConfig(),
+        settingsApi.getOptimizerConfig(),
+      ]);
+
+      if (cancelled) return;
+
+      const errors: string[] = [];
+
+      if (rectifierResult.status === "fulfilled") {
+        setConfig(rectifierResult.value);
+      } else {
+        console.error("Failed to load rectifier config:", rectifierResult.reason);
+        const detail =
+          extractErrorMessage(rectifierResult.reason) || t("common.unknown");
+        errors.push(
+          t("settings.advanced.rectifier.loadFailed", {
+            error: detail,
+          }),
+        );
+      }
+
+      if (optimizerResult.status === "fulfilled") {
+        setOptimizerConfig(optimizerResult.value);
+      } else {
+        console.error("Failed to load optimizer config:", optimizerResult.reason);
+        const detail =
+          extractErrorMessage(optimizerResult.reason) || t("common.unknown");
+        errors.push(
+          t("settings.advanced.optimizer.loadFailed", {
+            error: detail,
+          }),
+        );
+      }
+
+      setLoadError(errors.length > 0 ? errors.join("\n") : null);
+      setIsLoading(false);
+    }
+
+    void loadConfig();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [t]);
 
   const handleChange = async (updates: Partial<RectifierConfig>) => {
-    const newConfig = { ...config, ...updates };
+    const previousConfig = config;
+    const newConfig = { ...previousConfig, ...updates };
     setConfig(newConfig);
     try {
       await settingsApi.setRectifierConfig(newConfig);
     } catch (e) {
       console.error("Failed to save rectifier config:", e);
-      toast.error(String(e));
-      setConfig(config);
+      const detail = extractErrorMessage(e) || t("common.unknown");
+      toast.error(
+        t("settings.advanced.rectifier.saveFailed", {
+          error: detail,
+        }),
+      );
+      setConfig(previousConfig);
     }
   };
 
   const handleOptimizerChange = async (updates: Partial<OptimizerConfig>) => {
-    const newConfig = { ...optimizerConfig, ...updates };
+    const previousConfig = optimizerConfig;
+    const newConfig = { ...previousConfig, ...updates };
     setOptimizerConfig(newConfig);
     try {
       await settingsApi.setOptimizerConfig(newConfig);
     } catch (e) {
       console.error("Failed to save optimizer config:", e);
-      toast.error(String(e));
-      setOptimizerConfig(optimizerConfig);
+      const detail = extractErrorMessage(e) || t("common.unknown");
+      toast.error(
+        t("settings.advanced.optimizer.saveFailed", {
+          error: detail,
+        }),
+      );
+      setOptimizerConfig(previousConfig);
     }
   };
 
   if (isLoading) return null;
+
+  if (loadError) {
+    return (
+      <Alert variant="destructive">
+        <AlertDescription className="whitespace-pre-line">
+          {loadError}
+        </AlertDescription>
+      </Alert>
+    );
+  }
 
   return (
     <div className="space-y-6">

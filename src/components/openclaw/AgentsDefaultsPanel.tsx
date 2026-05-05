@@ -130,7 +130,7 @@ const AgentsDefaultsPanel: React.FC = () => {
   const handleSave = async () => {
     try {
       // Preserve all unknown fields from original data
-      const updated: OpenClawAgentsDefaults = { ...defaults };
+      const updated: OpenClawAgentsDefaults = { ...(defaults ?? {}) };
 
       // Model configuration
       const fallbackList = fallbacks.filter(Boolean);
@@ -142,6 +142,8 @@ const AgentsDefaultsPanel: React.FC = () => {
         };
       } else if (fallbackList.length > 0) {
         updated.model = { primary: "", fallbacks: fallbackList };
+      } else {
+        delete updated.model;
       }
 
       // Optional fields

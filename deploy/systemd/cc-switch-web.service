@@ -1,0 +1,20 @@
+[Unit]
+Description=cc-switch Web Server
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/cc-switch-web
+Restart=on-failure
+RestartSec=3
+Environment=HOST=0.0.0.0
+Environment=PORT=3010
+Environment=ENABLE_HSTS=false
+Environment=ALLOW_HTTP_BASIC_OVER_HTTP=1
+Environment=CC_SWITCH_DATA_DIR=%h/.cc-switch
+Environment=CC_SWITCH_WEB_DIST_DIR=%h/.local/share/cc-switch-web/dist-web
+Environment=RUST_LOG=info,cc_switch=debug
+WorkingDirectory=%h
+
+[Install]
+WantedBy=default.target

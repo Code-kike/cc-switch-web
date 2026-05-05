@@ -255,9 +255,13 @@ const McpFormModal: React.FC<McpFormModalProps> = ({
         }
 
         setConfigError("");
-      } catch (err: any) {
-        const errorMessage = err?.message || String(err);
-        setConfigError(t("mcp.error.jsonInvalid") + ": " + errorMessage);
+      } catch (err) {
+        const detail = extractErrorMessage(err);
+        setConfigError(
+          detail
+            ? `${t("mcp.error.jsonInvalid")}: ${detail}`
+            : t("mcp.error.jsonInvalid"),
+        );
       }
     }
   };
@@ -313,9 +317,11 @@ const McpFormModal: React.FC<McpFormModalProps> = ({
       } else {
         try {
           serverSpec = tomlToMcpServer(formConfig);
-        } catch (e: any) {
-          const msg = e?.message || String(e);
-          setConfigError(formatTomlError(msg));
+        } catch (e) {
+          const detail = extractErrorMessage(e);
+          setConfigError(
+            detail ? formatTomlError(detail) : t("mcp.error.tomlInvalid"),
+          );
           toast.error(t("mcp.error.tomlInvalid"), { duration: 4000 });
           return;
         }
@@ -331,9 +337,13 @@ const McpFormModal: React.FC<McpFormModalProps> = ({
         try {
           const result = parseSmartMcpJson(formConfig);
           serverSpec = result.config as McpServerSpec;
-        } catch (e: any) {
-          const errorMessage = e?.message || String(e);
-          setConfigError(t("mcp.error.jsonInvalid") + ": " + errorMessage);
+        } catch (e) {
+          const detail = extractErrorMessage(e);
+          setConfigError(
+            detail
+              ? `${t("mcp.error.jsonInvalid")}: ${detail}`
+              : t("mcp.error.jsonInvalid"),
+          );
           toast.error(t("mcp.error.jsonInvalid"), { duration: 4000 });
           return;
         }

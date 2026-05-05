@@ -2,9 +2,12 @@ import { useTranslation } from "react-i18next";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
 import { useRequestDetail } from "@/lib/query/usage";
 
 interface RequestDetailPanelProps {
@@ -18,6 +21,10 @@ export function RequestDetailPanel({
 }: RequestDetailPanelProps) {
   const { t, i18n } = useTranslation();
   const { data: request, isLoading } = useRequestDetail(requestId);
+  const closeLabel = t("common.close", { defaultValue: "Close" });
+  const dialogDescription = t("usage.requestDetailDescription", {
+    defaultValue: "查看单次请求的 token、成本与性能详情。",
+  });
   const dateLocale =
     i18n.language === "zh"
       ? "zh-CN"
@@ -29,7 +36,18 @@ export function RequestDetailPanel({
     return (
       <Dialog open onOpenChange={onClose}>
         <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>{t("usage.requestDetail", "请求详情")}</DialogTitle>
+            <DialogDescription className="sr-only">
+              {dialogDescription}
+            </DialogDescription>
+          </DialogHeader>
           <div className="h-[400px] animate-pulse rounded bg-gray-100" />
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={onClose}>
+              {closeLabel}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     );
@@ -41,10 +59,18 @@ export function RequestDetailPanel({
         <DialogContent className="max-w-2xl">
           <DialogHeader>
             <DialogTitle>{t("usage.requestDetail", "请求详情")}</DialogTitle>
+            <DialogDescription className="sr-only">
+              {dialogDescription}
+            </DialogDescription>
           </DialogHeader>
           <div className="text-center text-muted-foreground">
             {t("usage.requestNotFound", "请求未找到")}
           </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={onClose}>
+              {closeLabel}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     );
@@ -55,6 +81,9 @@ export function RequestDetailPanel({
       <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>{t("usage.requestDetail", "请求详情")}</DialogTitle>
+          <DialogDescription className="sr-only">
+            {dialogDescription}
+          </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-4">
@@ -279,6 +308,11 @@ export function RequestDetailPanel({
             </div>
           )}
         </div>
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={onClose}>
+            {closeLabel}
+          </Button>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   );

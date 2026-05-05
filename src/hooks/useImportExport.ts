@@ -2,7 +2,9 @@ import { useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { settingsApi } from "@/lib/api";
+import type { SelectedWebFile } from "@/lib/api/settings";
 import { syncCurrentProvidersLiveSafe } from "@/utils/postChangeSync";
+import { extractErrorMessage } from "@/utils/errorUtils";
 
 export type ImportStatus =
   | "idle"
@@ -35,6 +37,7 @@ export function useImportExport(
   const { onImportSuccess } = options;
 
   const [selectedFile, setSelectedFile] = useState("");
+  const [selectedWebFile, setSelectedWebFile] = useState<File | null>(null);
   const [status, setStatus] = useState<ImportStatus>("idle");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [backupId, setBackupId] = useState<string | null>(null);
@@ -42,6 +45,7 @@ export function useImportExport(
 
   const clearSelection = useCallback(() => {
     setSelectedFile("");
+    setSelectedWebFile(null);
     setStatus("idle");
     setErrorMessage(null);
     setBackupId(null);
@@ -51,7 +55,13 @@ export function useImportExport(
     try {
       const filePath = await settingsApi.openFileDialog();
       if (filePath) {
-        setSelectedFile(filePath);
+        if (typeof filePath === "string") {
+          setSelectedFile(filePath);
+          setSelectedWebFile(null);
+        } else {
+          setSelectedFile(filePath.name);
+          setSelectedWebFile(filePath.file ?? null);
+        }
         setStatus("idle");
         setErrorMessage(null);
       }
@@ -82,7 +92,10 @@ export function useImportExport(
     setErrorMessage(null);
 
     try {
-      const result = await settingsApi.importConfigFromFile(selectedFile);
+      const uploadTarget: string | SelectedWebFile | File = selectedWebFile
+        ? { name: selectedFile, file: selectedWebFile }
+        : selectedFile;
+      const result = await settingsApi.importConfigFromFile(uploadTarget);
       if (!result.success) {
         setStatus("error");
         const message =
@@ -126,8 +139,7 @@ export function useImportExport(
     } catch (error) {
       console.error("[useImportExport] Failed to import config", error);
       setStatus("error");
-      const message =
-        error instanceof Error ? error.message : String(error ?? "");
+      const message = extractErrorMessage(error) || t("common.unknown");
       setErrorMessage(message);
       toast.error(
         t("settings.importFailedError", {
@@ -138,7 +150,7 @@ export function useImportExport(
     } finally {
       setIsImporting(false);
     }
-  }, [isImporting, onImportSuccess, selectedFile, t]);
+  }, [isImporting, onImportSuccess, selectedFile, selectedWebFile, t]);
 
   const exportConfig = useCallback(async () => {
     try {
@@ -147,11 +159,6 @@ export function useImportExport(
       const defaultName = `cc-switch-export-${stamp}.sql`;
       const destination = await settingsApi.saveFileDialog(defaultName);
       if (!destination) {
-        toast.error(
-          t("settings.selectFileFailed", {
-            defaultValue: "请选择 SQL 备份保存路径",
-          }),
-        );
         return;
       }
 
@@ -173,10 +180,11 @@ export function useImportExport(
       }
     } catch (error) {
       console.error("[useImportExport] Failed to export config", error);
+      const message = extractErrorMessage(error) || t("common.unknown");
       toast.error(
         t("settings.exportFailedError", {
           defaultValue: "导出配置失败: {{message}}",
-          message: error instanceof Error ? error.message : String(error ?? ""),
+          message,
         }),
       );
     }

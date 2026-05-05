@@ -9,6 +9,7 @@ import { copilotGetUsage, copilotGetUsageForAccount } from "@/lib/api/copilot";
 import { useSettingsQuery } from "@/lib/query";
 import { resolveManagedAccountId } from "@/lib/authBinding";
 import { extractCodexBaseUrl } from "@/utils/providerConfigUtils";
+import { extractErrorMessage } from "@/utils/errorUtils";
 import JsonEditor from "./JsonEditor";
 import * as prettier from "prettier/standalone";
 import * as parserBabel from "prettier/parser-babel";
@@ -508,7 +509,7 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
       }
     } catch (error: any) {
       toast.error(
-        `${t("usageScript.testFailed")}: ${error?.message || t("common.unknown")}`,
+        `${t("usageScript.testFailed")}: ${extractErrorMessage(error) || t("common.unknown")}`,
         {
           duration: 5000,
         },
@@ -535,7 +536,7 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
       });
     } catch (error: any) {
       toast.error(
-        `${t("usageScript.formatFailed")}: ${error?.message || t("jsonEditor.invalidJson")}`,
+        `${t("usageScript.formatFailed")}: ${extractErrorMessage(error) || t("jsonEditor.invalidJson")}`,
         {
           duration: 3000,
         },

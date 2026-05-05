@@ -28,10 +28,14 @@ impl PromptService {
     pub fn upsert_prompt(
         state: &AppState,
         app: AppType,
-        _id: &str,
+        id: &str,
         prompt: Prompt,
     ) -> Result<(), AppError> {
-        // 检查是否为已启用的提示词
+        let previous_prompt = state.db.get_prompts(app.as_str())?.get(id).cloned();
+        let was_enabled = previous_prompt
+            .as_ref()
+            .map(|existing| existing.enabled)
+            .unwrap_or(false);
         let is_enabled = prompt.enabled;
 
         state.db.save_prompt(app.as_str(), &prompt)?;
@@ -40,8 +44,9 @@ impl PromptService {
             // 启用提示词：写入内容到文件
             let target_path = prompt_file_path(&app)?;
             write_text_file(&target_path, &prompt.content)?;
-        } else {
-            // 禁用提示词：检查是否还有其他已启用的提示词
+        } else if was_enabled {
+            // 仅在“原本启用 -> 现在禁用”时才检查是否需要清空 live 文件。
+            // 新导入/新建/编辑 disabled prompt 不应触碰当前 live 文件。
             let prompts = state.db.get_prompts(app.as_str())?;
             let any_enabled = prompts.values().any(|p| p.enabled);
 

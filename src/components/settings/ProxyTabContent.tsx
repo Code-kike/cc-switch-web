@@ -19,6 +19,7 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { ToggleRow } from "@/components/ui/toggle-row";
 import { useProxyStatus } from "@/hooks/useProxyStatus";
 import type { SettingsFormState } from "@/hooks/useSettings";
+import { isWebMode } from "@/lib/api/adapter";
 
 interface ProxyTabContentProps {
   settings: SettingsFormState;
@@ -39,6 +40,9 @@ export function ProxyTabContent({
     stopWithRestore,
     isPending: isProxyPending,
   } = useProxyStatus();
+  const webMode = isWebMode();
+  const runtimeControlsUnavailable = webMode;
+  const failoverPanelsDisabled = !isRunning && !runtimeControlsUnavailable;
 
   const handleToggleProxy = async (checked: boolean) => {
     try {
@@ -126,6 +130,7 @@ export function ProxyTabContent({
               }
               onToggleProxy={handleToggleProxy}
               isProxyPending={isProxyPending}
+              disableRuntimeControls={runtimeControlsUnavailable}
             />
           </AccordionContent>
         </AccordionItem>
@@ -160,11 +165,27 @@ export function ProxyTabContent({
                 onCheckedChange={handleFailoverToggleChange}
               />
 
-              {!isRunning && (
+              {!isRunning && !runtimeControlsUnavailable && (
                 <div className="p-4 rounded-lg bg-yellow-500/10 border border-yellow-500/20">
                   <p className="text-sm text-yellow-600 dark:text-yellow-400">
                     {t("proxy.failover.proxyRequired", {
                       defaultValue: "需要先启动代理服务才能配置故障转移",
+                    })}
+                  </p>
+                </div>
+              )}
+
+              {runtimeControlsUnavailable && (
+                <div className="p-4 rounded-lg border border-blue-500/20 bg-blue-500/5">
+                  <p className="text-sm font-medium">
+                    {t("proxy.failover.webConfigOnlyTitle", {
+                      defaultValue: "Web mode keeps failover in configuration-only mode",
+                    })}
+                  </p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {t("proxy.failover.webConfigOnlyDescription", {
+                      defaultValue:
+                        "Queue order and thresholds can still be edited remotely. Runtime counters and local proxy execution remain unavailable in web-server mode.",
                     })}
                   </p>
                 </div>
@@ -188,13 +209,13 @@ export function ProxyTabContent({
                     </div>
                     <FailoverQueueManager
                       appType="claude"
-                      disabled={!isRunning}
+                      disabled={failoverPanelsDisabled}
                     />
                   </div>
                   <div className="border-t border-border/50 pt-6">
                     <AutoFailoverConfigPanel
                       appType="claude"
-                      disabled={!isRunning}
+                      disabled={failoverPanelsDisabled}
                     />
                   </div>
                 </TabsContent>
@@ -210,13 +231,13 @@ export function ProxyTabContent({
                     </div>
                     <FailoverQueueManager
                       appType="codex"
-                      disabled={!isRunning}
+                      disabled={failoverPanelsDisabled}
                     />
                   </div>
                   <div className="border-t border-border/50 pt-6">
                     <AutoFailoverConfigPanel
                       appType="codex"
-                      disabled={!isRunning}
+                      disabled={failoverPanelsDisabled}
                     />
                   </div>
                 </TabsContent>
@@ -232,17 +253,33 @@ export function ProxyTabContent({
                     </div>
                     <FailoverQueueManager
                       appType="gemini"
-                      disabled={!isRunning}
+                      disabled={failoverPanelsDisabled}
                     />
                   </div>
                   <div className="border-t border-border/50 pt-6">
                     <AutoFailoverConfigPanel
                       appType="gemini"
-                      disabled={!isRunning}
+                      disabled={failoverPanelsDisabled}
                     />
                   </div>
                 </TabsContent>
               </Tabs>
+
+              {webMode && (
+                <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-4">
+                  <div className="flex items-start gap-3">
+                    <ShieldAlert className="mt-0.5 h-4 w-4 text-amber-600 dark:text-amber-400" />
+                    <div className="space-y-1">
+                      <p className="text-sm font-medium">
+                        {t("proxy.failover.runtimeStatsUnavailableTitle")}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        {t("proxy.failover.runtimeStatsUnavailableDescription")}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           </AccordionContent>
         </AccordionItem>

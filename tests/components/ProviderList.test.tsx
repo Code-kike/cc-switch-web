@@ -1,9 +1,21 @@
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { ReactElement } from "react";
 import type { Provider } from "@/types";
 import { ProviderList } from "@/components/providers/ProviderList";
+import { providersApi } from "@/lib/api/providers";
+import * as importCurrentConfigModule from "@/lib/providers/import-current-config";
+
+const toastErrorMock = vi.fn();
+
+vi.mock("sonner", () => ({
+  toast: {
+    error: (...args: unknown[]) => toastErrorMock(...args),
+    success: vi.fn(),
+    info: vi.fn(),
+  },
+}));
 
 const useDragSortMock = vi.fn();
 const useSortableMock = vi.fn();
@@ -97,6 +109,11 @@ vi.mock("@/lib/query/failover", () => ({
   useReorderFailoverQueue: () => ({ mutate: vi.fn() }),
 }));
 
+vi.mock("@/lib/query/omo", () => ({
+  useCurrentOmoProviderId: () => ({ data: null }),
+  useCurrentOmoSlimProviderId: () => ({ data: null }),
+}));
+
 function createProvider(overrides: Partial<Provider> = {}): Provider {
   return {
     id: overrides.id ?? "provider-1",
@@ -124,6 +141,7 @@ beforeEach(() => {
   useDragSortMock.mockReset();
   useSortableMock.mockReset();
   providerCardRenderSpy.mockClear();
+  toastErrorMock.mockReset();
 
   useSortableMock.mockImplementation(({ id }: { id: string }) => ({
     setNodeRef: vi.fn(),
@@ -142,6 +160,13 @@ beforeEach(() => {
 });
 
 describe("ProviderList Component", () => {
+  beforeEach(() => {
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: {},
+    });
+  });
+
   it("should render skeleton placeholders when loading", () => {
     const { container } = renderWithQueryClient(
       <ProviderList
@@ -191,6 +216,172 @@ describe("ProviderList Component", () => {
     fireEvent.click(addButton);
 
     expect(handleCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it("imports default config for non-additive apps from the empty state", async () => {
+    const importDefaultSpy = vi
+      .spyOn(providersApi, "importDefault")
+      .mockResolvedValue(true);
+
+    useDragSortMock.mockReturnValueOnce({
+      sortedProviders: [],
+      sensors: [],
+      handleDragEnd: vi.fn(),
+    });
+
+    renderWithQueryClient(
+      <ProviderList
+        providers={{}}
+        currentProviderId=""
+        appId="claude"
+        onSwitch={vi.fn()}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onDuplicate={vi.fn()}
+        onOpenWebsite={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "provider.importCurrent" }),
+    );
+
+    await waitFor(() =>
+      expect(importDefaultSpy).toHaveBeenCalledWith("claude"),
+    );
+    importDefaultSpy.mockRestore();
+  });
+
+  it("imports OpenClaw live config from the empty state", async () => {
+    const importOpenClawSpy = vi
+      .spyOn(providersApi, "importOpenClawFromLive")
+      .mockResolvedValue(1);
+
+    useDragSortMock.mockReturnValueOnce({
+      sortedProviders: [],
+      sensors: [],
+      handleDragEnd: vi.fn(),
+    });
+
+    renderWithQueryClient(
+      <ProviderList
+        providers={{}}
+        currentProviderId=""
+        appId="openclaw"
+        onSwitch={vi.fn()}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onDuplicate={vi.fn()}
+        onOpenWebsite={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "provider.importCurrent" }),
+    );
+
+    await waitFor(() => expect(importOpenClawSpy).toHaveBeenCalledTimes(1));
+    importOpenClawSpy.mockRestore();
+  });
+
+  it("imports OpenCode live config from the empty state", async () => {
+    const importOpenCodeSpy = vi
+      .spyOn(providersApi, "importOpenCodeFromLive")
+      .mockResolvedValue(1);
+
+    useDragSortMock.mockReturnValueOnce({
+      sortedProviders: [],
+      sensors: [],
+      handleDragEnd: vi.fn(),
+    });
+
+    renderWithQueryClient(
+      <ProviderList
+        providers={{}}
+        currentProviderId=""
+        appId="opencode"
+        onSwitch={vi.fn()}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onDuplicate={vi.fn()}
+        onOpenWebsite={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "provider.importCurrent" }),
+    );
+
+    await waitFor(() => expect(importOpenCodeSpy).toHaveBeenCalledTimes(1));
+    importOpenCodeSpy.mockRestore();
+  });
+
+  it("imports Hermes live config from the empty state", async () => {
+    const importHermesSpy = vi
+      .spyOn(providersApi, "importHermesFromLive")
+      .mockResolvedValue(1);
+
+    useDragSortMock.mockReturnValueOnce({
+      sortedProviders: [],
+      sensors: [],
+      handleDragEnd: vi.fn(),
+    });
+
+    renderWithQueryClient(
+      <ProviderList
+        providers={{}}
+        currentProviderId=""
+        appId="hermes"
+        onSwitch={vi.fn()}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onDuplicate={vi.fn()}
+        onOpenWebsite={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "provider.importCurrent" }),
+    );
+
+    await waitFor(() => expect(importHermesSpy).toHaveBeenCalledTimes(1));
+    importHermesSpy.mockRestore();
+  });
+
+  it("shows extracted detail when importing current config fails", async () => {
+    vi.spyOn(
+      importCurrentConfigModule,
+      "importCurrentProviderConfig",
+    ).mockRejectedValueOnce({ detail: "current config import failed" });
+
+    useDragSortMock.mockReturnValueOnce({
+      sortedProviders: [],
+      sensors: [],
+      handleDragEnd: vi.fn(),
+    });
+
+    renderWithQueryClient(
+      <ProviderList
+        providers={{}}
+        currentProviderId=""
+        appId="claude"
+        onSwitch={vi.fn()}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onDuplicate={vi.fn()}
+        onOpenWebsite={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "provider.importCurrent" }),
+    );
+
+    await waitFor(() => {
+      expect(toastErrorMock).toHaveBeenCalledWith(
+        "current config import failed",
+      );
+    });
   });
 
   it("should render in order returned by useDragSort and pass through action callbacks", () => {
@@ -305,5 +496,36 @@ describe("ProviderList Component", () => {
     expect(
       screen.getByText("No providers match your search."),
     ).toBeInTheDocument();
+  });
+
+  it("does not pass onOpenTerminal to provider cards in web mode", () => {
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: undefined,
+    });
+
+    const provider = createProvider({ id: "alpha", name: "Alpha Labs" });
+    useDragSortMock.mockReturnValue({
+      sortedProviders: [provider],
+      sensors: [],
+      handleDragEnd: vi.fn(),
+    });
+
+    renderWithQueryClient(
+      <ProviderList
+        providers={{ alpha: provider }}
+        currentProviderId=""
+        appId="claude"
+        onSwitch={vi.fn()}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onDuplicate={vi.fn()}
+        onOpenWebsite={vi.fn()}
+        onOpenTerminal={vi.fn()}
+      />,
+    );
+
+    expect(providerCardRenderSpy).toHaveBeenCalled();
+    expect(providerCardRenderSpy.mock.calls[0][0].onOpenTerminal).toBeUndefined();
   });
 });

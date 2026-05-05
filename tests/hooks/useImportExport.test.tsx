@@ -61,6 +61,34 @@ describe("useImportExport Hook", () => {
     expect(result.current.errorMessage).toBeNull();
   });
 
+  it("passes the selected browser File through to importConfigFromFile in web mode", async () => {
+    const webFile = new File(["sql"], "backup.sql", {
+      type: "application/sql",
+    });
+    openFileDialogMock.mockResolvedValue({ name: "backup.sql", file: webFile });
+    importConfigMock.mockResolvedValue({
+      success: true,
+      backupId: "backup-123",
+    });
+
+    const { result } = renderHook(() => useImportExport());
+
+    await act(async () => {
+      await result.current.selectImportFile();
+    });
+
+    await act(async () => {
+      await result.current.importConfig();
+    });
+
+    expect(importConfigMock).toHaveBeenCalledWith({
+      name: "backup.sql",
+      file: webFile,
+    });
+    expect(result.current.selectedFile).toBe("backup.sql");
+    expect(result.current.status).toBe("success");
+  });
+
   it("should show error toast and keep initial state when file dialog fails", async () => {
     openFileDialogMock.mockRejectedValue(new Error("file dialog error"));
     const { result } = renderHook(() => useImportExport());
@@ -138,7 +166,9 @@ describe("useImportExport Hook", () => {
 
   it("should catch and display error when import process throws exception", async () => {
     openFileDialogMock.mockResolvedValue("/config.json");
-    importConfigMock.mockRejectedValue(new Error("Import failed"));
+    importConfigMock.mockRejectedValue({
+      payload: { detail: "Import failed" },
+    });
 
     const { result } = renderHook(() => useImportExport());
 
@@ -198,7 +228,9 @@ describe("useImportExport Hook", () => {
 
   it("should catch and show error when export throws exception", async () => {
     saveFileDialogMock.mockResolvedValue("/export.json");
-    exportConfigMock.mockRejectedValue(new Error("Disk read-only"));
+    exportConfigMock.mockRejectedValue({
+      payload: { detail: "Disk read-only" },
+    });
 
     const { result } = renderHook(() => useImportExport());
 
@@ -211,7 +243,7 @@ describe("useImportExport Hook", () => {
     );
   });
 
-  it("should show error and return when user cancels save dialog during export", async () => {
+  it("should silently no-op when user cancels save dialog during export", async () => {
     saveFileDialogMock.mockResolvedValue(null);
 
     const { result } = renderHook(() => useImportExport());
@@ -221,7 +253,7 @@ describe("useImportExport Hook", () => {
     });
 
     expect(exportConfigMock).not.toHaveBeenCalled();
-    expect(toastErrorMock).toHaveBeenCalledTimes(1);
+    expect(toastErrorMock).not.toHaveBeenCalled();
   });
 
   it("should restore initial values when clearing selection and resetting status", async () => {

@@ -1,8 +1,9 @@
 import { useState, useCallback, useEffect } from "react";
 import { useTranslation } from "react-i18next";
-import { Layers } from "lucide-react";
+import { Layers, Plus } from "lucide-react";
 import { toast } from "sonner";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { Button } from "@/components/ui/button";
 import { UniversalProviderCard } from "./UniversalProviderCard";
 import { UniversalProviderFormModal } from "./UniversalProviderFormModal";
 import { universalProvidersApi } from "@/lib/api";
@@ -33,7 +34,7 @@ export function UniversalProviderPanel() {
     try {
       setLoading(true);
       const data = await universalProvidersApi.getAll();
-      setProviders(data);
+      setProviders(data ?? {});
     } catch (error) {
       console.error("Failed to load universal providers:", error);
       toast.error(
@@ -72,6 +73,7 @@ export function UniversalProviderPanel() {
         );
         loadProviders();
         setEditingProvider(null);
+        return true;
       } catch (error) {
         console.error("Failed to save universal provider:", error);
         toast.error(
@@ -79,6 +81,7 @@ export function UniversalProviderPanel() {
             defaultValue: "保存统一供应商失败",
           }),
         );
+        return false;
       }
     },
     [editingProvider, loadProviders, t],
@@ -97,6 +100,7 @@ export function UniversalProviderPanel() {
         );
         loadProviders();
         setEditingProvider(null);
+        return true;
       } catch (error) {
         console.error("Failed to save and sync universal provider:", error);
         toast.error(
@@ -104,6 +108,7 @@ export function UniversalProviderPanel() {
             defaultValue: "保存并同步失败",
           }),
         );
+        return false;
       }
     },
     [loadProviders, t],
@@ -165,39 +170,14 @@ export function UniversalProviderPanel() {
     [providers],
   );
 
-  // 复制供应商
-  const handleDuplicate = useCallback(
-    async (provider: UniversalProvider) => {
-      const duplicated: UniversalProvider = {
-        ...JSON.parse(JSON.stringify(provider)),
-        id: crypto.randomUUID(),
-        name: `${provider.name} copy`,
-        createdAt: Date.now(),
-      };
-      try {
-        await universalProvidersApi.upsert(duplicated);
-        await universalProvidersApi.sync(duplicated.id);
-        toast.success(
-          t("universalProvider.duplicatedAndSynced", {
-            defaultValue: "统一供应商已复制并同步",
-          }),
-        );
-        loadProviders();
-      } catch (error) {
-        console.error("Failed to duplicate universal provider:", error);
-        toast.error(
-          t("universalProvider.duplicateError", {
-            defaultValue: "复制统一供应商失败",
-          }),
-        );
-      }
-    },
-    [loadProviders, t],
-  );
-
   // 打开编辑
   const handleEdit = useCallback((provider: UniversalProvider) => {
     setEditingProvider(provider);
+    setIsFormOpen(true);
+  }, []);
+
+  const handleCreate = useCallback(() => {
+    setEditingProvider(null);
     setIsFormOpen(true);
   }, []);
 
@@ -214,19 +194,27 @@ export function UniversalProviderPanel() {
     [providers],
   );
 
-  const providerList = Object.values(providers);
+  const providerList = Object.values(providers ?? {});
 
   return (
     <div className="space-y-4">
       {/* 头部 */}
-      <div className="flex items-center gap-2">
-        <Layers className="h-5 w-5 text-primary" />
-        <h2 className="text-lg font-semibold">
-          {t("universalProvider.title", { defaultValue: "统一供应商" })}
-        </h2>
-        <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
-          {providerList.length}
-        </span>
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <Layers className="h-5 w-5 text-primary" />
+          <h2 className="text-lg font-semibold">
+            {t("universalProvider.title", { defaultValue: "统一供应商" })}
+          </h2>
+          <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+            {providerList.length}
+          </span>
+        </div>
+        <Button type="button" onClick={handleCreate}>
+          <Plus className="mr-2 h-4 w-4" />
+          {t("universalProvider.add", {
+            defaultValue: "添加统一供应商",
+          })}
+        </Button>
       </div>
 
       {/* 描述 */}
@@ -255,6 +243,12 @@ export function UniversalProviderPanel() {
               defaultValue: "点击下方「添加统一供应商」按钮创建一个",
             })}
           </p>
+          <Button type="button" className="mt-4" onClick={handleCreate}>
+            <Plus className="mr-2 h-4 w-4" />
+            {t("universalProvider.add", {
+              defaultValue: "添加统一供应商",
+            })}
+          </Button>
         </div>
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -265,7 +259,6 @@ export function UniversalProviderPanel() {
               onEdit={handleEdit}
               onDelete={handleDeleteClick}
               onSync={handleSyncClick}
-              onDuplicate={handleDuplicate}
             />
           ))}
         </div>

@@ -2,6 +2,7 @@ import { useState, useCallback, useRef, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { authApi, settingsApi } from "@/lib/api";
 import { copyText } from "@/lib/clipboard";
+import { extractErrorMessage } from "@/utils/errorUtils";
 import type {
   ManagedAuthProvider,
   ManagedAuthStatus,
@@ -14,6 +15,10 @@ export function useManagedAuth(
   authProvider: ManagedAuthProvider,
   githubDomain?: string,
 ) {
+  const getAuthErrorMessage = (
+    error: unknown,
+    fallback = "Authentication failed. Please try again.",
+  ) => extractErrorMessage(error) || fallback;
   const queryClient = useQueryClient();
   const queryKey = ["managed-auth-status", authProvider];
 
@@ -101,7 +106,7 @@ export function useManagedAuth(
             setDeviceCode(null);
           }
         } catch (e) {
-          const errorMessage = e instanceof Error ? e.message : String(e);
+          const errorMessage = getAuthErrorMessage(e);
           if (
             !errorMessage.includes("pending") &&
             !errorMessage.includes("slow_down")
@@ -123,7 +128,7 @@ export function useManagedAuth(
     },
     onError: (e) => {
       setPollingState("error");
-      setError(e instanceof Error ? e.message : String(e));
+      setError(getAuthErrorMessage(e));
     },
   });
 
@@ -143,7 +148,7 @@ export function useManagedAuth(
     },
     onError: async (e) => {
       console.error("[ManagedAuth] Failed to logout:", e);
-      setError(e instanceof Error ? e.message : String(e));
+      setError(getAuthErrorMessage(e, "Failed to logout. Please try again."));
       await refetchStatus();
     },
   });
@@ -160,7 +165,9 @@ export function useManagedAuth(
     },
     onError: (e) => {
       console.error("[ManagedAuth] Failed to remove account:", e);
-      setError(e instanceof Error ? e.message : String(e));
+      setError(
+        getAuthErrorMessage(e, "Failed to remove account. Please try again."),
+      );
     },
   });
 
@@ -173,7 +180,12 @@ export function useManagedAuth(
     },
     onError: (e) => {
       console.error("[ManagedAuth] Failed to set default account:", e);
-      setError(e instanceof Error ? e.message : String(e));
+      setError(
+        getAuthErrorMessage(
+          e,
+          "Failed to set the default account. Please try again.",
+        ),
+      );
     },
   });
 
