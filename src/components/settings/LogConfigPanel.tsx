@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
   Select,
   SelectContent,
@@ -11,6 +12,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { settingsApi, type LogConfig } from "@/lib/api/settings";
+import { extractErrorMessage } from "@/utils/errorUtils";
 
 const LOG_LEVELS = ["error", "warn", "info", "debug", "trace"] as const;
 
@@ -21,28 +23,52 @@ export function LogConfigPanel() {
     level: "info",
   });
   const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
+    setLoadError(null);
     settingsApi
       .getLogConfig()
       .then(setConfig)
-      .catch((e) => console.error("Failed to load log config:", e))
+      .catch((e) => {
+        console.error("Failed to load log config:", e);
+        const detail = extractErrorMessage(e) || t("common.unknown");
+        setLoadError(
+          t("settings.advanced.logConfig.loadFailed", {
+            error: detail,
+          }),
+        );
+      })
       .finally(() => setIsLoading(false));
-  }, []);
+  }, [t]);
 
   const handleChange = async (updates: Partial<LogConfig>) => {
-    const newConfig = { ...config, ...updates };
+    const previousConfig = config;
+    const newConfig = { ...previousConfig, ...updates };
     setConfig(newConfig);
     try {
       await settingsApi.setLogConfig(newConfig);
     } catch (e) {
       console.error("Failed to save log config:", e);
-      toast.error(String(e));
-      setConfig(config);
+      const detail = extractErrorMessage(e) || t("common.unknown");
+      toast.error(
+        t("settings.advanced.logConfig.saveFailed", {
+          error: detail,
+        }),
+      );
+      setConfig(previousConfig);
     }
   };
 
   if (isLoading) return null;
+
+  if (loadError) {
+    return (
+      <Alert variant="destructive">
+        <AlertDescription>{loadError}</AlertDescription>
+      </Alert>
+    );
+  }
 
   return (
     <div className="space-y-6">

@@ -15,7 +15,7 @@ use std::sync::Arc;
 use tokio::time::timeout;
 
 use crate::app_config::{AppType, InstalledSkill, SkillApps, UnmanagedSkill};
-use crate::config::get_app_config_dir;
+use crate::config::{get_app_config_dir, get_home_dir};
 use crate::database::Database;
 use crate::error::format_skill_error;
 
@@ -373,20 +373,12 @@ fn parse_branch_from_source_url(source_url: Option<&str>) -> Option<String> {
 
 /// 获取 `~/.agents/skills/` 目录（存在时返回）
 fn get_agents_skills_dir() -> Option<PathBuf> {
-    dirs::home_dir()
-        .map(|h| h.join(".agents").join("skills"))
-        .filter(|p| p.exists())
+    Some(get_home_dir().join(".agents").join("skills")).filter(|p| p.exists())
 }
 
 /// 解析 `~/.agents/.skill-lock.json`，返回 skill_name -> 仓库信息
 fn parse_agents_lock() -> HashMap<String, LockRepoInfo> {
-    let path = match dirs::home_dir() {
-        Some(h) => h.join(".agents").join(".skill-lock.json"),
-        None => {
-            log::warn!("无法获取 HOME 目录，跳过解析 agents lock 文件");
-            return HashMap::new();
-        }
-    };
+    let path = get_home_dir().join(".agents").join(".skill-lock.json");
     let content = match fs::read_to_string(&path) {
         Ok(c) => c,
         Err(e) => {
@@ -450,9 +442,36 @@ impl SkillService {
         Self
     }
 
+    fn external_base_url(env_key: &str, default: &str) -> String {
+        std::env::var(env_key)
+            .ok()
+            .map(|value| value.trim().trim_end_matches('/').to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| default.to_string())
+    }
+
+    fn skill_archive_base_url() -> String {
+        Self::external_base_url("CC_SWITCH_SKILL_ARCHIVE_BASE_URL", "https://github.com")
+    }
+
+    fn skill_doc_base_url() -> String {
+        Self::external_base_url("CC_SWITCH_SKILL_DOC_BASE_URL", "https://github.com")
+    }
+
+    fn skills_sh_api_base_url() -> String {
+        Self::external_base_url("CC_SWITCH_SKILLS_SH_API_BASE_URL", "https://skills.sh")
+    }
+
+    fn build_repo_url(owner: &str, repo: &str) -> String {
+        format!("{}/{owner}/{repo}", Self::skill_doc_base_url())
+    }
+
     /// 构建 Skill 文档 URL（指向仓库中的 SKILL.md 文件）
     fn build_skill_doc_url(owner: &str, repo: &str, branch: &str, doc_path: &str) -> String {
-        format!("https://github.com/{owner}/{repo}/blob/{branch}/{doc_path}")
+        format!(
+            "{}/{owner}/{repo}/blob/{branch}/{doc_path}",
+            Self::skill_doc_base_url()
+        )
     }
 
     /// 从旧 readme_url 中提取仓库内文档路径，兼容 `blob`/`tree` 两种格式
@@ -480,14 +499,7 @@ impl SkillService {
         let location = crate::settings::get_skill_storage_location();
         let dir = match location {
             SkillStorageLocation::CcSwitch => get_app_config_dir().join("skills"),
-            SkillStorageLocation::Unified => {
-                let home = dirs::home_dir().context(format_skill_error(
-                    "GET_HOME_DIR_FAILED",
-                    &[],
-                    Some("checkPermission"),
-                ))?;
-                home.join(".agents").join("skills")
-            }
+            SkillStorageLocation::Unified => get_home_dir().join(".agents").join("skills"),
         };
         fs::create_dir_all(&dir)?;
         Ok(dir)
@@ -537,11 +549,7 @@ impl SkillService {
         }
 
         // 默认路径：回退到用户主目录下的标准位置
-        let home = dirs::home_dir().context(format_skill_error(
-            "GET_HOME_DIR_FAILED",
-            &[],
-            Some("checkPermission"),
-        ))?;
+        let home = get_home_dir();
 
         Ok(match app {
             AppType::Claude => home.join(".claude").join("skills"),
@@ -1163,10 +1171,7 @@ impl SkillService {
         let old_dir = Self::get_ssot_dir()?;
         let new_dir = match target {
             SkillStorageLocation::CcSwitch => get_app_config_dir().join("skills"),
-            SkillStorageLocation::Unified => {
-                let home = dirs::home_dir().context("Cannot determine home directory")?;
-                home.join(".agents").join("skills")
-            }
+            SkillStorageLocation::Unified => get_home_dir().join(".agents").join("skills"),
         };
         fs::create_dir_all(&new_dir)?;
 
@@ -1535,6 +1540,19 @@ impl SkillService {
 
             // 保存到数据库
             db.save_skill(&skill)?;
+
+            // 同步到已启用的应用目录（创建 symlink 或复制文件）
+            for app in AppType::all() {
+                if skill.apps.is_enabled_for(&app) {
+                    if let Err(e) = Self::sync_to_app_dir(&skill.directory, &app) {
+                        log::warn!(
+                            "导入后同步 Skill '{}' 到 {:?} 失败: {e:#}",
+                            skill.directory,
+                            app
+                        );
+                    }
+                }
+            }
 
             imported.push(skill);
         }
@@ -2145,8 +2163,11 @@ impl SkillService {
         let mut last_error = None;
         for branch in branches {
             let url = format!(
-                "https://github.com/{}/{}/archive/refs/heads/{}.zip",
-                repo.owner, repo.name, branch
+                "{}/{}/{}/archive/refs/heads/{}.zip",
+                Self::skill_archive_base_url(),
+                repo.owner,
+                repo.name,
+                branch
             );
 
             match self.download_and_extract(&url, &temp_path).await {
@@ -2726,9 +2747,10 @@ impl SkillService {
         offset: usize,
     ) -> Result<SkillsShSearchResult> {
         let client = crate::proxy::http_client::get();
+        let search_url = format!("{}/api/search", Self::skills_sh_api_base_url());
 
         let url = url::Url::parse_with_params(
-            "https://skills.sh/api/search",
+            &search_url,
             &[
                 ("q", query),
                 ("limit", &limit.to_string()),
@@ -2766,7 +2788,7 @@ impl SkillService {
                     repo_name: repo.clone(),
                     repo_branch: "main".to_string(),
                     installs: s.installs,
-                    readme_url: Some(format!("https://github.com/{}/{}", owner, repo)),
+                    readme_url: Some(Self::build_repo_url(&owner, &repo)),
                 })
             })
             .collect();

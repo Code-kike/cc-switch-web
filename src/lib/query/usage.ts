@@ -242,11 +242,15 @@ export function useModelPricing() {
   });
 }
 
-export function useProviderLimits(providerId: string, appType: string) {
+export function useProviderLimits(
+  providerId: string,
+  appType: string,
+  enabled: boolean = true,
+) {
   return useQuery({
     queryKey: usageKeys.limits(providerId, appType),
     queryFn: () => usageApi.checkProviderLimits(providerId, appType),
-    enabled: !!providerId && !!appType,
+    enabled: enabled && !!providerId && !!appType,
   });
 }
 

@@ -11,6 +11,7 @@ import McpFormModal from "@/components/mcp/McpFormModal";
 
 const toastErrorMock = vi.hoisted(() => vi.fn());
 const toastSuccessMock = vi.hoisted(() => vi.fn());
+const parseSmartMcpJsonMock = vi.hoisted(() => vi.fn());
 const upsertMock = vi.hoisted(() => {
   const fn = vi.fn();
   fn.mockResolvedValue(undefined);
@@ -45,6 +46,10 @@ vi.mock("@/config/mcpPresets", () => ({
     description: "Preset description",
     tags: ["preset"],
   }),
+}));
+
+vi.mock("@/utils/formatters", () => ({
+  parseSmartMcpJson: (...args: unknown[]) => parseSmartMcpJsonMock(...args),
 }));
 
 vi.mock("@/components/ui/button", () => ({
@@ -143,6 +148,14 @@ describe("McpFormModal", () => {
   beforeEach(() => {
     toastErrorMock.mockClear();
     toastSuccessMock.mockClear();
+    parseSmartMcpJsonMock.mockReset();
+    parseSmartMcpJsonMock.mockImplementation((jsonText: string) => {
+      const parsed = JSON.parse(jsonText);
+      return {
+        config: parsed,
+        formattedConfig: JSON.stringify(parsed, null, 2),
+      };
+    });
     upsertMock.mockClear();
   });
 
@@ -347,6 +360,32 @@ type = "stdio"
       }),
     );
     expect(upsertMock).not.toHaveBeenCalled();
+  });
+
+  it("JSON 解析失败时展示提取后的结构化错误详情", async () => {
+    parseSmartMcpJsonMock.mockImplementation(() => {
+      throw { detail: "json payload exploded" };
+    });
+
+    renderForm();
+
+    fireEvent.change(screen.getByPlaceholderText("mcp.form.titlePlaceholder"), {
+      target: { value: "broken-json" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("mcp.form.jsonPlaceholder"), {
+      target: { value: '{"type":"stdio","command":"run"}' },
+    });
+
+    fireEvent.click(screen.getByText("common.add"));
+
+    await waitFor(() =>
+      expect(toastErrorMock).toHaveBeenCalledWith("mcp.error.jsonInvalid", {
+        duration: 4000,
+      }),
+    );
+    expect(upsertMock).not.toHaveBeenCalled();
+    expect(screen.getByText("mcp.error.jsonInvalid: json payload exploded"))
+      .toBeInTheDocument();
   });
 
   it("编辑模式下保持 ID 并更新配置", async () => {

@@ -1,3 +1,8 @@
+// Web mode: register the central command map at module load. The adapter
+// looks up commands in this registry to translate `invoke(name, args)` into
+// HTTP routes. In Tauri mode the registry is unused but the import is cheap.
+import "./web-commands"
+
 export type { AppId } from "./types";
 export { providersApi, universalProvidersApi } from "./providers";
 export { settingsApi } from "./settings";

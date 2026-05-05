@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "@/lib/api/adapter";
 
 export async function copyText(text: string): Promise<void> {
   try {

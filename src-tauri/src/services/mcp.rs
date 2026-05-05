@@ -268,8 +268,8 @@ impl McpService {
                     state.db.save_mcp_server(&to_save)?;
                     existing.insert(to_save.id.clone(), to_save.clone());
 
-                    // 导入是读取已有配置，不应反向写回任何应用的 live 配置。
-                    // 显式编辑、启用/禁用或手动同步时再执行写回。
+                    // 同步到对应应用 live 配置
+                    Self::sync_server_to_apps(state, &to_save)?;
                 }
             }
         }
@@ -306,8 +306,8 @@ impl McpService {
                     state.db.save_mcp_server(&to_save)?;
                     existing.insert(to_save.id.clone(), to_save.clone());
 
-                    // 导入是读取已有配置，不应反向写回任何应用的 live 配置。
-                    // 显式编辑、启用/禁用或手动同步时再执行写回。
+                    // 同步到对应应用 live 配置
+                    Self::sync_server_to_apps(state, &to_save)?;
                 }
             }
         }
@@ -344,8 +344,8 @@ impl McpService {
                     state.db.save_mcp_server(&to_save)?;
                     existing.insert(to_save.id.clone(), to_save.clone());
 
-                    // 导入是读取已有配置，不应反向写回任何应用的 live 配置。
-                    // 显式编辑、启用/禁用或手动同步时再执行写回。
+                    // 同步到对应应用 live 配置
+                    Self::sync_server_to_apps(state, &to_save)?;
                 }
             }
         }
@@ -382,8 +382,8 @@ impl McpService {
                     state.db.save_mcp_server(&to_save)?;
                     existing.insert(to_save.id.clone(), to_save.clone());
 
-                    // 导入是读取已有配置，不应反向写回任何应用的 live 配置。
-                    // 显式编辑、启用/禁用或手动同步时再执行写回。
+                    // 同步到对应应用 live 配置
+                    Self::sync_server_to_apps(state, &to_save)?;
                 }
             }
         }
@@ -420,12 +420,55 @@ impl McpService {
                     state.db.save_mcp_server(&to_save)?;
                     existing.insert(to_save.id.clone(), to_save.clone());
 
-                    // 导入是读取已有配置，不应反向写回任何应用的 live 配置。
-                    // 显式编辑、启用/禁用或手动同步时再执行写回。
+                    // 同步到对应应用 live 配置
+                    Self::sync_server_to_apps(state, &to_save)?;
                 }
             }
         }
 
         Ok(new_count)
+    }
+
+    /// 从所有支持的应用导入 MCP。部分来源失败时保留成功导入的结果；
+    /// 若所有来源都失败且没有导入任何服务器，则向 UI 暴露失败原因。
+    pub fn import_from_all_apps(state: &AppState) -> Result<usize, AppError> {
+        let importers: [(&str, fn(&AppState) -> Result<usize, AppError>); 5] = [
+            ("Claude", Self::import_from_claude),
+            ("Codex", Self::import_from_codex),
+            ("Gemini", Self::import_from_gemini),
+            ("OpenCode", Self::import_from_opencode),
+            ("Hermes", Self::import_from_hermes),
+        ];
+
+        let mut total = 0usize;
+        let mut errors = Vec::new();
+
+        for (app, importer) in importers {
+            match importer(state) {
+                Ok(count) => {
+                    total += count;
+                }
+                Err(error) => {
+                    errors.push(format!("{app}: {error}"));
+                }
+            }
+        }
+
+        if !errors.is_empty() {
+            log::warn!(
+                "MCP import from apps completed with {} failures: {}",
+                errors.len(),
+                errors.join("; ")
+            );
+        }
+
+        if total == 0 && !errors.is_empty() {
+            return Err(AppError::McpValidation(format!(
+                "从应用导入 MCP 失败: {}",
+                errors.join("; ")
+            )));
+        }
+
+        Ok(total)
     }
 }

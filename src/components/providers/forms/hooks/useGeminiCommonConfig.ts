@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { configApi } from "@/lib/api";
+import { extractErrorMessage } from "@/utils/errorUtils";
 
 const LEGACY_STORAGE_KEY = "cc-switch:gemini-common-config-snippet";
 const DEFAULT_GEMINI_COMMON_CONFIG_SNIPPET = "{}";
@@ -55,6 +56,14 @@ export function useGeminiCommonConfig({
   const [commonConfigError, setCommonConfigError] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [isExtracting, setIsExtracting] = useState(false);
+
+  const formatConfigError = useCallback(
+    (error: unknown, key: string) =>
+      t(key, {
+        error: extractErrorMessage(error) || t("common.unknown"),
+      }),
+    [t],
+  );
 
   // 用于跟踪是否正在通过通用配置更新
   const isUpdatingFromCommonConfig = useRef(false);
@@ -403,7 +412,7 @@ export function useGeminiCommonConfig({
           .catch((error: unknown) => {
             console.error("保存 Gemini 通用配置失败:", error);
             setCommonConfigError(
-              t("geminiConfig.saveFailed", { error: String(error) }),
+              formatConfigError(error, "geminiConfig.saveFailed"),
             );
           });
         return true;
@@ -446,7 +455,7 @@ export function useGeminiCommonConfig({
         .catch((error: unknown) => {
           console.error("保存 Gemini 通用配置失败:", error);
           setCommonConfigError(
-            t("geminiConfig.saveFailed", { error: String(error) }),
+            formatConfigError(error, "geminiConfig.saveFailed"),
           );
         });
 
@@ -518,12 +527,12 @@ export function useGeminiCommonConfig({
     } catch (error) {
       console.error("提取 Gemini 通用配置失败:", error);
       setCommonConfigError(
-        t("geminiConfig.extractFailed", { error: String(error) }),
+        formatConfigError(error, "geminiConfig.extractFailed"),
       );
     } finally {
       setIsExtracting(false);
     }
-  }, [envStringToObj, envValue, parseSnippetEnv, t]);
+  }, [envStringToObj, envValue, formatConfigError, parseSnippetEnv, t]);
 
   const clearCommonConfigError = useCallback(() => {
     setCommonConfigError("");

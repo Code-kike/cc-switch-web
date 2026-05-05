@@ -7,6 +7,7 @@ import {
 } from "@/utils/providerConfigUtils";
 import { configApi } from "@/lib/api";
 import { normalizeTomlText } from "@/utils/textNormalization";
+import { extractErrorMessage } from "@/utils/errorUtils";
 
 const LEGACY_STORAGE_KEY = "cc-switch:codex-common-config-snippet";
 const DEFAULT_CODEX_COMMON_CONFIG_SNIPPET = `# Common Codex config
@@ -42,6 +43,14 @@ export function useCodexCommonConfig({
   const [isLoading, setIsLoading] = useState(true);
   const [isExtracting, setIsExtracting] = useState(false);
 
+  const formatConfigError = useCallback(
+    (error: unknown, key: string) =>
+      t(key, {
+        error: extractErrorMessage(error) || t("common.unknown"),
+      }),
+    [t],
+  );
+
   // 用于跟踪是否正在通过通用配置更新
   const isUpdatingFromCommonConfig = useRef(false);
   // 用于跟踪新建模式是否已初始化默认勾选
@@ -74,10 +83,10 @@ export function useCodexCommonConfig({
     } catch (error) {
       return {
         hasContent: false,
-        error: error instanceof Error ? error.message : String(error),
+        error: extractErrorMessage(error) || t("common.unknown"),
       };
     }
-  }, []);
+  }, [t]);
 
   // 初始化：从 config.json 加载，支持从 localStorage 迁移
   useEffect(() => {
@@ -333,9 +342,7 @@ export function useCodexCommonConfig({
           .setCommonConfigSnippet("codex", "")
           .catch((error: unknown) => {
             console.error("保存 Codex 通用配置失败:", error);
-            setCommonConfigError(
-              t("codexConfig.saveFailed", { error: String(error) }),
-            );
+            setCommonConfigError(formatConfigError(error, "codexConfig.saveFailed"));
           });
         return true;
       }
@@ -390,9 +397,7 @@ export function useCodexCommonConfig({
         .setCommonConfigSnippet("codex", value)
         .catch((error: unknown) => {
           console.error("保存 Codex 通用配置失败:", error);
-          setCommonConfigError(
-            t("codexConfig.saveFailed", { error: String(error) }),
-          );
+          setCommonConfigError(formatConfigError(error, "codexConfig.saveFailed"));
         });
 
       return true;
@@ -448,13 +453,11 @@ export function useCodexCommonConfig({
       await configApi.setCommonConfigSnippet("codex", extracted);
     } catch (error) {
       console.error("提取 Codex 通用配置失败:", error);
-      setCommonConfigError(
-        t("codexConfig.extractFailed", { error: String(error) }),
-      );
+      setCommonConfigError(formatConfigError(error, "codexConfig.extractFailed"));
     } finally {
       setIsExtracting(false);
     }
-  }, [codexConfig, t]);
+  }, [codexConfig, formatConfigError, t]);
 
   const clearCommonConfigError = useCallback(() => {
     setCommonConfigError("");

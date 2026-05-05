@@ -14,6 +14,8 @@ import { Input } from "@/components/ui/input";
 import { FullScreenPanel } from "@/components/common/FullScreenPanel";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import MarkdownEditor from "@/components/MarkdownEditor";
+import { isWebMode } from "@/lib/api/adapter";
+import { extractErrorMessage } from "@/utils/errorUtils";
 import {
   workspaceApi,
   type DailyMemoryFileInfo,
@@ -44,6 +46,7 @@ const DailyMemoryPanel: React.FC<DailyMemoryPanelProps> = ({
   onClose,
 }) => {
   const { t } = useTranslation();
+  const webMode = isWebMode();
 
   // List state
   const [files, setFiles] = useState<DailyMemoryFileInfo[]>([]);
@@ -103,7 +106,9 @@ const DailyMemoryPanel: React.FC<DailyMemoryPanelProps> = ({
         setSearchResults(results);
       } catch (err) {
         console.error("Failed to search daily memory files:", err);
-        toast.error(t("workspace.dailyMemory.searchFailed"));
+        toast.error(t("workspace.dailyMemory.searchFailed"), {
+          description: extractErrorMessage(err) || t("common.unknown"),
+        });
       } finally {
         setSearching(false);
       }
@@ -185,7 +190,9 @@ const DailyMemoryPanel: React.FC<DailyMemoryPanelProps> = ({
       setFiles(list);
     } catch (err) {
       console.error("Failed to load daily memory files:", err);
-      toast.error(t("workspace.dailyMemory.loadFailed"));
+      toast.error(t("workspace.dailyMemory.loadFailed"), {
+        description: extractErrorMessage(err) || t("common.unknown"),
+      });
     } finally {
       setLoadingList(false);
     }
@@ -207,7 +214,9 @@ const DailyMemoryPanel: React.FC<DailyMemoryPanelProps> = ({
         setContent(data ?? "");
       } catch (err) {
         console.error("Failed to read daily memory file:", err);
-        toast.error(t("workspace.dailyMemory.loadFailed"));
+        toast.error(t("workspace.dailyMemory.loadFailed"), {
+          description: extractErrorMessage(err) || t("common.unknown"),
+        });
         setEditingFile(null);
       } finally {
         setLoadingContent(false);
@@ -240,7 +249,9 @@ const DailyMemoryPanel: React.FC<DailyMemoryPanelProps> = ({
       toast.success(t("workspace.saveSuccess"));
     } catch (err) {
       console.error("Failed to save daily memory file:", err);
-      toast.error(t("workspace.saveFailed"));
+      toast.error(t("workspace.saveFailed"), {
+        description: extractErrorMessage(err) || t("common.unknown"),
+      });
     } finally {
       setSaving(false);
     }
@@ -264,7 +275,9 @@ const DailyMemoryPanel: React.FC<DailyMemoryPanelProps> = ({
       }
     } catch (err) {
       console.error("Failed to delete daily memory file:", err);
-      toast.error(t("workspace.dailyMemory.deleteFailed"));
+      toast.error(t("workspace.dailyMemory.deleteFailed"), {
+        description: extractErrorMessage(err) || t("common.unknown"),
+      });
       setDeletingFile(null);
     }
   }, [
@@ -353,9 +366,17 @@ const DailyMemoryPanel: React.FC<DailyMemoryPanelProps> = ({
           {/* Header with path, search, and create button */}
           <div className="flex items-center justify-between gap-2">
             <p
-              className="text-sm text-muted-foreground shrink-0 cursor-pointer hover:text-foreground transition-colors inline-flex items-center gap-1"
-              onClick={() => workspaceApi.openDirectory("memory")}
-              title={t("workspace.openDirectory")}
+              className="text-sm text-muted-foreground shrink-0 inline-flex items-center gap-1"
+              onClick={
+                webMode ? undefined : () => workspaceApi.openDirectory("memory")
+              }
+              title={
+                webMode
+                  ? t("settings.webManualPathHint", {
+                      defaultValue: "Web 模式无法浏览服务端文件系统，请手动使用该路径",
+                    })
+                  : t("workspace.openDirectory")
+              }
             >
               ~/.openclaw/workspace/memory/
               <FolderOpen className="w-3.5 h-3.5" />

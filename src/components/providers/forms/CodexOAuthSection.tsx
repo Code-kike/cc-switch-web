@@ -232,6 +232,7 @@ export const CodexOAuthSection: React.FC<CodexOAuthSectionProps> = ({
           onClick={addAccount}
           className="w-full"
           variant="outline"
+          disabled={isAddingAccount}
         >
           <Sparkles className="mr-2 h-4 w-4" />
           {t("codexOauth.loginWithChatGPT", "使用 ChatGPT 登录")}

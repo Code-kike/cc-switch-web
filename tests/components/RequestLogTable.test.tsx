@@ -4,6 +4,7 @@ import { RequestLogTable } from "@/components/usage/RequestLogTable";
 import type { UsageRangeSelection } from "@/types/usage";
 
 const useRequestLogsMock = vi.hoisted(() => vi.fn());
+const requestDetailPanelMock = vi.hoisted(() => vi.fn());
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
@@ -55,9 +56,30 @@ vi.mock("@/components/ui/table", () => ({
   TableRow: ({ children }: any) => <tr>{children}</tr>,
 }));
 
+vi.mock("@/components/usage/RequestDetailPanel", () => ({
+  RequestDetailPanel: (props: any) => requestDetailPanelMock(props),
+}));
+
 describe("RequestLogTable", () => {
   beforeEach(() => {
     useRequestLogsMock.mockReset();
+    requestDetailPanelMock.mockReset();
+    requestDetailPanelMock.mockImplementation(
+      ({
+        requestId,
+        onClose,
+      }: {
+        requestId: string;
+        onClose: () => void;
+      }) => (
+        <div data-testid="request-detail-panel">
+          <span>{requestId}</span>
+          <button type="button" onClick={onClose}>
+            Close detail
+          </button>
+        </div>
+      ),
+    );
     useRequestLogsMock.mockImplementation(
       ({ page = 0, pageSize = 20 }: { page?: number; pageSize?: number }) => ({
         data: {
@@ -156,6 +178,67 @@ describe("RequestLogTable", () => {
           range,
         }),
       );
+    });
+  });
+
+  it("opens and closes the request detail panel from the row action", async () => {
+    useRequestLogsMock.mockImplementation(() => ({
+      data: {
+        data: [
+          {
+            requestId: "req-123",
+            providerId: "provider-1",
+            providerName: "Provider One",
+            appType: "claude",
+            model: "claude-3-7-sonnet",
+            requestModel: "claude-3-7-sonnet",
+            costMultiplier: "1",
+            inputTokens: 10,
+            outputTokens: 5,
+            cacheReadTokens: 0,
+            cacheCreationTokens: 0,
+            inputCostUsd: "0.010000",
+            outputCostUsd: "0.020000",
+            cacheReadCostUsd: "0.000000",
+            cacheCreationCostUsd: "0.000000",
+            totalCostUsd: "0.030000",
+            isStreaming: true,
+            latencyMs: 1200,
+            firstTokenMs: 400,
+            durationMs: 1500,
+            statusCode: 200,
+            createdAt: 1_710_000_000,
+            dataSource: "proxy",
+          },
+        ],
+        total: 1,
+        page: 0,
+        pageSize: 20,
+      },
+      isLoading: false,
+    }));
+
+    render(
+      <RequestLogTable
+        range={{ preset: "today" }}
+        rangeLabel="Today"
+        appType="all"
+        refreshIntervalMs={0}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "View" }));
+
+    expect(await screen.findByTestId("request-detail-panel")).toHaveTextContent(
+      "req-123",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Close detail" }));
+
+    await waitFor(() => {
+      expect(
+        screen.queryByTestId("request-detail-panel"),
+      ).not.toBeInTheDocument();
     });
   });
 });

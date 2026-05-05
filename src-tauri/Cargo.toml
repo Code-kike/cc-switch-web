@@ -7,6 +7,8 @@ license = "MIT"
 repository = "https://github.com/farion1231/cc-switch"
 edition = "2021"
 rust-version = "1.85.0"
+default-run = "cc-switch"
+autobins = false
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -16,26 +18,60 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 doctest = false
 
 [features]
-default = []
+default = ["desktop"]
+desktop = [
+    "tauri",
+    "tauri-build",
+    "tauri-plugin-log",
+    "tauri-plugin-opener",
+    "tauri-plugin-process",
+    "tauri-plugin-updater",
+    "tauri-plugin-dialog",
+    "tauri-plugin-store",
+    "tauri-plugin-deep-link",
+    "tauri-plugin-single-instance",
+    "webkit2gtk",
+]
+web-server = [
+    "rust-embed",
+    "env_logger",
+    "mime_guess",
+    "rand",
+    "fs2",
+    "nix",
+]
 test-hooks = []
 
+[[bin]]
+name = "cc-switch"
+path = "src/main.rs"
+required-features = ["desktop"]
+
+[[bin]]
+name = "gen-command-manifest"
+path = "src/bin/gen-command-manifest.rs"
+required-features = []
+
+[[example]]
+name = "server"
+required-features = ["web-server"]
+
 [build-dependencies]
-tauri-build = { version = "2.4.0", features = [] }
+tauri-build = { version = "2.4.0", features = [], optional = true }
 
 [dependencies]
 serde_json = { version = "1.0", features = ["preserve_order"] }
 serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
 chrono = { version = "0.4", features = ["serde"] }
-tauri = { version = "2.8.2", features = ["tray-icon", "protocol-asset", "image-png"] }
-tauri-plugin-log = "2"
-tauri-plugin-opener = "2"
-tauri-plugin-process = "2"
-tauri-plugin-updater = "2"
-tauri-plugin-dialog = "2"
-tauri-plugin-store = "2"
-tauri-plugin-deep-link = "2"
-tauri-plugin-window-state = "2"
+tauri = { version = "2.8.2", features = ["tray-icon", "protocol-asset", "image-png"], optional = true }
+tauri-plugin-log = { version = "2", optional = true }
+tauri-plugin-opener = { version = "2", optional = true }
+tauri-plugin-process = { version = "2", optional = true }
+tauri-plugin-updater = { version = "2", optional = true }
+tauri-plugin-dialog = { version = "2", optional = true }
+tauri-plugin-store = { version = "2", optional = true }
+tauri-plugin-deep-link = { version = "2", optional = true }
 dirs = "5.0"
 toml = "0.8"
 toml_edit = "0.22"
@@ -43,13 +79,13 @@ reqwest = { version = "0.12", features = ["rustls-tls", "json", "stream", "socks
 arboard = "3.6"
 flate2 = "1"
 brotli = "7"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync", "signal"] }
 futures = "0.3"
 async-stream = "0.3"
 bytes = "1.5"
-axum = "0.7"
-tower = "0.4"
-tower-http = { version = "0.5", features = ["cors"] }
+axum = { version = "0.7", features = ["macros", "json", "tokio", "multipart"] }
+tower = { version = "0.4", features = ["limit", "timeout", "util"] }
+tower-http = { version = "0.5", features = ["cors", "auth", "validate-request", "fs", "trace", "request-id", "sensitive-headers", "compression-br", "compression-gzip"] }
 hyper = { version = "1.0", features = ["full"] }
 hyper-util = { version = "0.1", features = ["tokio", "http1", "client-legacy"] }
 hyper-rustls = { version = "0.27", features = ["http1", "tls12", "ring", "webpki-tokio"] }
@@ -80,11 +116,25 @@ sha2 = "0.10"
 json5 = "0.4"
 json-five = "0.3.1"
 
-[target.'cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))'.dependencies]
-tauri-plugin-single-instance = "2"
+# Web-server feature dependencies (Layer 1 / Task 1)
+rust-embed = { version = "8", features = ["compression"], optional = true }
+env_logger = { version = "0.11", optional = true }
+mime_guess = { version = "2", optional = true }
+rand = { version = "0.8", optional = true }
+fs2 = { version = "0.4", optional = true }
 
+# Command manifest binary dependencies (Task 0 generates AST manifest)
+syn = { version = "2", features = ["full", "extra-traits", "parsing", "visit"] }
+walkdir = "2"
+proc-macro2 = "1"
+
+# Linux-only filesystem detection (mount type check) — gated by web-server
 [target.'cfg(target_os = "linux")'.dependencies]
-webkit2gtk = { version = "2.0.1", features = ["v2_16"] }
+nix = { version = "0.29", features = ["fs"], optional = true }
+webkit2gtk = { version = "2.0.1", features = ["v2_16"], optional = true }
+
+[target.'cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))'.dependencies]
+tauri-plugin-single-instance = { version = "2", optional = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 winreg = "0.52"

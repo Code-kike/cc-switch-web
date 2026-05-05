@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { useQueryClient } from "@tanstack/react-query";
 import { providersApi, settingsApi, type AppId } from "@/lib/api";
 import { syncCurrentProvidersLiveSafe } from "@/utils/postChangeSync";
+import { extractErrorMessage } from "@/utils/errorUtils";
 import { useSettingsQuery, useSaveSettingsMutation } from "@/lib/query";
 import type { Settings } from "@/types";
 import { useSettingsForm, type SettingsFormState } from "./useSettingsForm";
@@ -65,6 +66,14 @@ export function useSettings(): UseSettingsResult {
   const { data } = useSettingsQuery();
   const saveMutation = useSaveSettingsMutation();
   const queryClient = useQueryClient();
+  const formatSaveError = useCallback(
+    (error: unknown) =>
+      t("notifications.settingsSaveFailed", {
+        defaultValue: "保存设置失败: {{error}}",
+        error: extractErrorMessage(error) || t("common.unknown"),
+      }),
+    [t],
+  );
 
   // 1️⃣ 表单状态管理
   const {
@@ -290,16 +299,19 @@ export function useSettings(): UseSettingsResult {
         return { requiresRestart: false };
       } catch (error) {
         console.error("[useSettings] Failed to auto-save settings", error);
-        toast.error(
-          t("notifications.settingsSaveFailed", {
-            defaultValue: "保存设置失败: {{error}}",
-            error: (error as Error)?.message ?? String(error),
-          }),
-        );
+        toast.error(formatSaveError(error));
         throw error;
       }
     },
-    [data, queryClient, saveMutation, settings, syncClaudePluginIfChanged, t],
+    [
+      data,
+      formatSaveError,
+      queryClient,
+      saveMutation,
+      settings,
+      syncClaudePluginIfChanged,
+      t,
+    ],
   );
 
   // 完整保存设置（用于 Advanced 标签页的手动保存）
@@ -459,18 +471,14 @@ export function useSettings(): UseSettingsResult {
         return { requiresRestart: appDirChanged };
       } catch (error) {
         console.error("[useSettings] Failed to save settings", error);
-        toast.error(
-          t("notifications.settingsSaveFailed", {
-            defaultValue: "保存设置失败: {{error}}",
-            error: (error as Error)?.message ?? String(error),
-          }),
-        );
+        toast.error(formatSaveError(error));
         throw error;
       }
     },
     [
       appConfigDir,
       data,
+      formatSaveError,
       initialAppConfigDir,
       queryClient,
       saveMutation,

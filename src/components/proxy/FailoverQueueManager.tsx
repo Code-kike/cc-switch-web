@@ -9,7 +9,14 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
-import { Plus, Trash2, Loader2, Info, AlertTriangle } from "lucide-react";
+import {
+  Plus,
+  Trash2,
+  Loader2,
+  Info,
+  AlertTriangle,
+  RotateCcw,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -30,7 +37,10 @@ import {
   useRemoveFromFailoverQueue,
   useAutoFailoverEnabled,
   useSetAutoFailoverEnabled,
+  useProviderHealth,
+  useResetCircuitBreaker,
 } from "@/lib/query/failover";
+import { extractErrorMessage } from "@/utils/errorUtils";
 
 interface FailoverQueueManagerProps {
   appType: AppId;
@@ -43,6 +53,23 @@ export function FailoverQueueManager({
 }: FailoverQueueManagerProps) {
   const { t } = useTranslation();
   const [selectedProviderId, setSelectedProviderId] = useState<string>("");
+
+  const formatActionError = (
+    error: unknown,
+    key:
+      | "proxy.failoverQueue.addFailed"
+      | "proxy.failoverQueue.removeFailed"
+      | "proxy.failoverQueue.loadFailed",
+    defaultValue: string,
+  ) => {
+    const detail =
+      extractErrorMessage(error) ||
+      t("common.unknown", { defaultValue: "未知错误" });
+    return t(key, {
+      detail,
+      defaultValue: `${defaultValue}: {{detail}}`,
+    });
+  };
 
   // 故障转移开关状态（每个应用独立）
   const { data: isFailoverEnabled = false } = useAutoFailoverEnabled(appType);
@@ -82,7 +109,11 @@ export function FailoverQueueManager({
       );
     } catch (error) {
       toast.error(
-        t("proxy.failoverQueue.addFailed", "添加失败") + ": " + String(error),
+        formatActionError(
+          error,
+          "proxy.failoverQueue.addFailed",
+          "添加失败",
+        ),
       );
     }
   };
@@ -97,9 +128,11 @@ export function FailoverQueueManager({
       );
     } catch (error) {
       toast.error(
-        t("proxy.failoverQueue.removeFailed", "移除失败") +
-          ": " +
-          String(error),
+        formatActionError(
+          error,
+          "proxy.failoverQueue.removeFailed",
+          "移除失败",
+        ),
       );
     }
   };
@@ -116,7 +149,13 @@ export function FailoverQueueManager({
     return (
       <Alert variant="destructive">
         <AlertTriangle className="h-4 w-4" />
-        <AlertDescription>{String(queueError)}</AlertDescription>
+        <AlertDescription>
+          {formatActionError(
+            queueError,
+            "proxy.failoverQueue.loadFailed",
+            "加载故障转移队列失败",
+          )}
+        </AlertDescription>
       </Alert>
     );
   }
@@ -204,6 +243,7 @@ export function FailoverQueueManager({
           disabled={disabled || !selectedProviderId || addToQueue.isPending}
           size="icon"
           variant="outline"
+          aria-label={t("common.add", "添加")}
         >
           {addToQueue.isPending ? (
             <Loader2 className="h-4 w-4 animate-spin" />
@@ -229,6 +269,7 @@ export function FailoverQueueManager({
             <QueueItem
               key={item.providerId}
               item={item}
+              appType={appType}
               index={index}
               disabled={disabled}
               onRemove={handleRemoveProvider}
@@ -253,6 +294,7 @@ export function FailoverQueueManager({
 
 interface QueueItemProps {
   item: FailoverQueueItem;
+  appType: AppId;
   index: number;
   disabled: boolean;
   onRemove: (providerId: string) => void;
@@ -261,12 +303,95 @@ interface QueueItemProps {
 
 function QueueItem({
   item,
+  appType,
   index,
   disabled,
   onRemove,
   isRemoving,
 }: QueueItemProps) {
   const { t } = useTranslation();
+  const { data: health, error: healthError, isLoading: isHealthLoading } =
+    useProviderHealth(item.providerId, appType, !disabled);
+  const resetCircuitBreaker = useResetCircuitBreaker();
+
+  const handleResetCircuit = async () => {
+    try {
+      await resetCircuitBreaker.mutateAsync({
+        providerId: item.providerId,
+        appType,
+      });
+      toast.success(
+        t("proxy.failoverQueue.resetSuccess", {
+          defaultValue: "Circuit breaker has been reset",
+        }),
+        { closeButton: true },
+      );
+    } catch (error) {
+      toast.error(
+        t("proxy.failoverQueue.resetFailed", {
+          detail: extractErrorMessage(error),
+          defaultValue: "Failed to reset circuit breaker: {{detail}}",
+        }),
+      );
+    }
+  };
+
+  const healthLabel = (() => {
+    if (disabled) {
+      return null;
+    }
+
+    if (healthError) {
+      return t("proxy.failoverQueue.healthUnavailable", {
+        defaultValue: "Unavailable",
+      });
+    }
+
+    if (isHealthLoading) {
+      return t("common.loading", { defaultValue: "Loading" });
+    }
+
+    if (!health) {
+      return t("proxy.failoverQueue.healthUnknown", {
+        defaultValue: "Unknown",
+      });
+    }
+
+    if (!health.is_healthy) {
+      return t("proxy.failoverQueue.healthTripped", {
+        defaultValue: "Tripped",
+      });
+    }
+
+    if (health.consecutive_failures > 0) {
+      return t("proxy.failoverQueue.healthWarning", {
+        defaultValue: "Warning",
+      });
+    }
+
+    return t("proxy.failoverQueue.healthHealthy", {
+      defaultValue: "Healthy",
+    });
+  })();
+
+  const healthToneClass = (() => {
+    if (disabled) {
+      return "bg-muted text-muted-foreground";
+    }
+    if (healthError) {
+      return "bg-muted text-muted-foreground";
+    }
+    if (!health) {
+      return "bg-muted text-muted-foreground";
+    }
+    if (!health.is_healthy) {
+      return "bg-destructive/10 text-destructive";
+    }
+    if (health.consecutive_failures > 0) {
+      return "bg-amber-500/15 text-amber-700 dark:text-amber-400";
+    }
+    return "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400";
+  })();
 
   return (
     <div
@@ -289,23 +414,75 @@ function QueueItem({
             </span>
           )}
         </span>
+        {healthLabel ? (
+          <div className="mt-1 flex flex-wrap items-center gap-2 text-xs">
+            <span
+              className={cn(
+                "inline-flex items-center rounded-full px-2 py-0.5 font-medium",
+                healthToneClass,
+              )}
+            >
+              {healthLabel}
+            </span>
+            {health && health.consecutive_failures > 0 ? (
+              <span className="text-muted-foreground">
+                {t("proxy.failoverQueue.failureCount", {
+                  count: health.consecutive_failures,
+                  defaultValue: "{{count}} failures",
+                })}
+              </span>
+            ) : null}
+          </div>
+        ) : null}
+        {!disabled && health?.last_error ? (
+          <p className="mt-1 text-xs text-muted-foreground truncate">
+            {t("proxy.failoverQueue.lastError", {
+              detail: health.last_error,
+              defaultValue: "Last error: {{detail}}",
+            })}
+          </p>
+        ) : null}
       </div>
 
-      {/* 删除按钮 */}
-      <Button
-        variant="ghost"
-        size="icon"
-        className="h-8 w-8 text-muted-foreground hover:text-destructive"
-        onClick={() => onRemove(item.providerId)}
-        disabled={disabled || isRemoving}
-        aria-label={t("common.delete", "删除")}
-      >
-        {isRemoving ? (
-          <Loader2 className="h-4 w-4 animate-spin" />
-        ) : (
-          <Trash2 className="h-4 w-4" />
-        )}
-      </Button>
+      <div className="flex items-center gap-1">
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-8 px-2 text-xs text-muted-foreground"
+          onClick={handleResetCircuit}
+          disabled={disabled || resetCircuitBreaker.isPending}
+          title={t("proxy.failoverQueue.resetCircuit", {
+            defaultValue: "Reset Circuit",
+          })}
+        >
+          {resetCircuitBreaker.isPending ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <RotateCcw className="h-3.5 w-3.5" />
+          )}
+          <span className="ml-1">
+            {t("proxy.failoverQueue.resetCircuit", {
+              defaultValue: "Reset Circuit",
+            })}
+          </span>
+        </Button>
+
+        {/* 删除按钮 */}
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-8 w-8 text-muted-foreground hover:text-destructive"
+          onClick={() => onRemove(item.providerId)}
+          disabled={disabled || isRemoving}
+          aria-label={t("common.delete", "删除")}
+        >
+          {isRemoving ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <Trash2 className="h-4 w-4" />
+          )}
+        </Button>
+      </div>
     </div>
   );
 }

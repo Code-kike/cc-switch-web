@@ -267,7 +267,7 @@ export function useInstallSkillsFromZip() {
       filePath,
       currentApp,
     }: {
-      filePath: string;
+      filePath: string | File;
       currentApp: AppId;
     }) => skillsApi.installFromZip(filePath, currentApp),
     onSuccess: (installedSkills) => {

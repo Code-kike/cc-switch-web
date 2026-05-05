@@ -14,6 +14,7 @@ import {
 import { cn } from "@/lib/utils";
 import { skillsApi, type MigrationResult } from "@/lib/api/skills";
 import type { SkillStorageLocation } from "@/types";
+import { extractErrorMessage } from "@/utils/errorUtils";
 
 export interface SkillStorageLocationSettingsProps {
   value: SkillStorageLocation;
@@ -61,7 +62,12 @@ export function SkillStorageLocationSettings({
       }
       onMigrated(target);
     } catch (error) {
-      toast.error(String(error));
+      const detail = extractErrorMessage(error) || t("common.unknown");
+      toast.error(
+        t("settings.skillStorage.migrationFailed", {
+          error: detail,
+        }),
+      );
     } finally {
       setIsMigrating(false);
     }

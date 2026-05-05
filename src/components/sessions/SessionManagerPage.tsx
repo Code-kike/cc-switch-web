@@ -42,6 +42,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { extractErrorMessage } from "@/utils/errorUtils";
+import { isWebMode } from "@/lib/api/adapter";
 import { isMac } from "@/lib/platform";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { SessionItem } from "./SessionItem";
@@ -67,6 +68,7 @@ type ProviderFilter =
 
 export function SessionManagerPage({ appId }: { appId: string }) {
   const { t } = useTranslation();
+  const webMode = isWebMode();
   const queryClient = useQueryClient();
   const { data, isLoading, refetch } = useSessionsQuery();
   const sessions = data ?? [];
@@ -215,7 +217,7 @@ export function SessionManagerPage({ appId }: { appId: string }) {
   const handleResume = async () => {
     if (!selectedSession?.resumeCommand) return;
 
-    if (!isMac()) {
+    if (webMode || !isMac()) {
       await handleCopy(
         selectedSession.resumeCommand,
         t("sessionManager.resumeCommandCopied"),
@@ -307,8 +309,6 @@ export function SessionManagerPage({ appId }: { appId: string }) {
         return next;
       });
 
-      await queryClient.invalidateQueries({ queryKey: ["sessions"] });
-
       if (deletedKeys.length > 0) {
         toast.success(
           t("sessionManager.batchDeleteSuccess", {
@@ -329,6 +329,8 @@ export function SessionManagerPage({ appId }: { appId: string }) {
           },
         );
       }
+
+      void queryClient.invalidateQueries({ queryKey: ["sessions"] });
     } catch (error) {
       toast.error(
         extractErrorMessage(error) ||
@@ -667,6 +669,16 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                                 <span>Gemini CLI</span>
                               </div>
                             </SelectItem>
+                            <SelectItem value="hermes">
+                              <div className="flex items-center gap-2">
+                                <ProviderIcon
+                                  icon="hermes"
+                                  name="hermes"
+                                  size={14}
+                                />
+                                <span>Hermes</span>
+                              </div>
+                            </SelectItem>
                           </SelectContent>
                         </Select>
 
@@ -889,7 +901,7 @@ export function SessionManagerPage({ appId }: { appId: string }) {
 
                       {/* 右侧：操作按钮组 */}
                       <div className="flex items-center gap-2 shrink-0">
-                        {isMac() && (
+                        {(webMode || isMac()) && (
                           <Tooltip>
                             <TooltipTrigger asChild>
                               <Button
@@ -908,9 +920,13 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                             </TooltipTrigger>
                             <TooltipContent>
                               {selectedSession.resumeCommand
-                                ? t("sessionManager.resumeTooltip", {
-                                    defaultValue: "在终端中恢复此会话",
-                                  })
+                                ? webMode
+                                  ? t("sessionManager.copyResumeCommand", {
+                                      defaultValue: "复制恢复命令",
+                                    })
+                                  : t("sessionManager.resumeTooltip", {
+                                      defaultValue: "在终端中恢复此会话",
+                                    })
                                 : t("sessionManager.noResumeCommand", {
                                     defaultValue: "此会话无法恢复",
                                   })}

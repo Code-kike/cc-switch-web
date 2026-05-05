@@ -105,6 +105,7 @@
     "noProvidersDescriptionSnippet": "Settings other than API key and endpoint (e.g. plugins) will be saved to a common config snippet for sharing across providers",
     "importCurrent": "Import Current Config",
     "importCurrentDescription": "Import current live config as default provider",
+    "importCurrentNoChanges": "No new providers were found in the current config",
     "currentlyUsing": "Currently Using",
     "enable": "Enable",
     "inUse": "In Use",
@@ -261,7 +262,9 @@
       "description": "Use your other subscriptions in Claude Code — please be mindful of compliance risks.",
       "beta": "Beta",
       "copilotDescription": "Manage GitHub Copilot accounts",
-      "codexOauthDescription": "Manage ChatGPT accounts"
+      "codexOauthDescription": "Manage ChatGPT accounts",
+      "webRemoteHint": "Remote Web mode stores OAuth accounts on the server host",
+      "webRemoteHintDescription": "The authorization page opens in this browser, but successful Copilot / ChatGPT logins are saved on the machine running cc-switch Web. Continue only if you trust that server."
     },
     "advanced": {
       "configDir": {
@@ -309,6 +312,8 @@
       "rectifier": {
         "title": "Rectifier",
         "description": "Automatically fix API request compatibility issues",
+        "loadFailed": "Failed to load rectifier settings: {{error}}",
+        "saveFailed": "Failed to save rectifier settings: {{error}}",
         "enabled": "Enable Rectifier",
         "enabledDescription": "Master switch, all rectification features will be disabled when turned off",
         "requestGroup": "Request Rectification",
@@ -321,6 +326,8 @@
       "optimizer": {
         "title": "Bedrock Request Optimizer",
         "description": "Automatically optimize Thinking and Cache configuration before sending requests (only applies to Bedrock providers)",
+        "loadFailed": "Failed to load Bedrock request optimizer settings: {{error}}",
+        "saveFailed": "Failed to save Bedrock request optimizer settings: {{error}}",
         "enabled": "Enable Optimizer",
         "thinkingOptimizer": "Thinking Optimization",
         "thinkingOptimizerDescription": "Automatically enable Adaptive Thinking for Opus/Sonnet, and inject Extended Thinking for legacy models",
@@ -335,6 +342,8 @@
         "description": "Control log output level",
         "enabled": "Enable Logging",
         "enabledDescription": "Master switch, all logging will be disabled when turned off",
+        "loadFailed": "Failed to load log configuration: {{error}}",
+        "saveFailed": "Failed to save log configuration: {{error}}",
         "level": "Log Level",
         "levelDescription": "Set the minimum log level to output",
         "levels": {
@@ -528,7 +537,8 @@
       "confirmTitle": "Migrate Skill Storage",
       "confirmMessage": "{{count}} skill(s) will be moved to the new location. Continue?",
       "migrationSuccess": "Successfully migrated {{count}} skill(s)",
-      "migrationPartial": "Migrated {{migrated}} skill(s), {{errors}} error(s). Check logs for details."
+      "migrationPartial": "Migrated {{migrated}} skill(s), {{errors}} error(s). Check logs for details.",
+      "migrationFailed": "Failed to migrate skill storage: {{error}}"
     },
     "skillSync": {
       "title": "Skill Sync Method",
@@ -549,8 +559,7 @@
           "kitty": "Kitty",
           "ghostty": "Ghostty",
           "wezterm": "WezTerm",
-          "kaku": "Kaku",
-          "warp": "Warp"
+          "kaku": "Kaku"
         },
         "windows": {
           "cmd": "Command Prompt",
@@ -599,8 +608,10 @@
     "upToDate": "Up to Date",
     "aboutHint": "View version information and update status.",
     "portableMode": "Portable mode: updates require manual download.",
+    "webUpdateHint": "Web mode opens the release/download page in your browser. Installation and restart still need to be completed on the host running cc-switch.",
     "updateAvailable": "New version available: {{version}}",
     "updateBadge": "Update available",
+    "updateDownloadOpened": "Download page opened. Finish the update in your browser.",
     "updateFailed": "Update installation failed, attempted to open download page.",
     "checkUpdateFailed": "Failed to check for updates, please try again later.",
     "openReleaseNotesFailed": "Failed to open release notes",
@@ -609,7 +620,11 @@
     "viewCurrentReleaseNotes": "View current version release notes",
     "oneClickInstall": "One-click Install",
     "oneClickInstallHint": "Install Claude Code / Codex / Gemini CLI / OpenCode",
+    "serverInstallHint": "Run these commands on the machine hosting cc-switch Web, not in this browser.",
     "localEnvCheck": "Local environment check",
+    "serverEnvCheck": "Server environment check",
+    "serverEnvCheckFailed": "Unable to load server environment information",
+    "serverEnvCheckHint": "These versions are detected on the machine running cc-switch Web, not on the device using this browser.",
     "envBadge": {
       "wsl": "WSL",
       "windows": "Win",
@@ -803,7 +818,6 @@
     },
     "presets": {
       "ucloud": "Compshare",
-      "ucloudCoding": "Compshare Coding Plan",
       "shengsuanyun": "Shengsuanyun",
       "openrouter": "OpenRouter",
       "deepseek": "DeepSeek",
@@ -825,11 +839,6 @@
     "fillTemplateValue": "Please fill in {{label}}",
     "endpointRequired": "API endpoint is required for non-official providers",
     "apiKeyRequired": "API Key is required for non-official providers",
-    "softValidation": {
-      "title": "Configuration has the following issues",
-      "hint": "Save anyway? Switching to this provider may fail; you can fill these in later.",
-      "saveAnyway": "Save anyway"
-    },
     "configJsonError": "Config JSON format error, please check syntax",
     "authJsonRequired": "auth.json must be a JSON object",
     "authJsonError": "auth.json format error, please check JSON syntax",
@@ -881,7 +890,6 @@
     "fetchModelsNeedConfig": "Please fill in API endpoint and API Key first",
     "fetchModelsAuthFailed": "API Key is invalid or lacks permission",
     "fetchModelsNotSupported": "This provider does not support fetching model list",
-    "fetchModelsEndpointNotFound": "No reachable models endpoint found. Please check the Base URL or confirm whether the provider exposes this API.",
     "fetchModelsTimeout": "Request timed out, please check network connection"
   },
   "copilot": {
@@ -1213,6 +1221,7 @@
     "timeRangeTooLarge": "Time range is too large, please narrow it down",
     "addPricing": "Add Pricing",
     "editPricing": "Edit Pricing",
+    "pricingSaveFailed": "Failed to save pricing: {{error}}",
     "pricingAdded": "Pricing added",
     "pricingUpdated": "Pricing updated",
     "cacheReadCostPerMillion": "Cache Read Cost (per million tokens, USD)",
@@ -1324,6 +1333,9 @@
       "enabledApps": "Enabled Apps",
       "noImportFound": "No MCP servers to import found. All servers are already managed by CC Switch.",
       "importSuccess": "Successfully imported {{count}} MCP servers",
+      "importFailed": "Failed to import MCP servers",
+      "toggleFailed": "Failed to update MCP app status",
+      "deleteFailed": "Failed to delete MCP server",
       "apps": {
         "claude": "Claude",
         "codex": "Codex",
@@ -1488,6 +1500,7 @@
     "content": "Content",
     "contentPlaceholder": "# {{filename}}\n\nEnter prompt content here...",
     "loadFailed": "Failed to load prompts",
+    "currentFileLoadFailed": "Failed to load the current prompt file",
     "saveSuccess": "Saved successfully",
     "saveFailed": "Failed to save",
     "deleteSuccess": "Deleted successfully",
@@ -1690,6 +1703,8 @@
       "open": "Open Hermes Web UI",
       "offline": "Hermes Web UI is not running. Start it with `hermes dashboard` first.",
       "openFailed": "Failed to open Hermes Web UI",
+      "remoteHint": "Remote Web mode cannot open Hermes Web UI for you directly",
+      "remoteHintDescription": "Hermes Web UI is running on the server host at {{url}}. Open it on the server machine, or access it through port forwarding first.",
       "launchConfirmTitle": "Hermes Dashboard is not running",
       "launchConfirmMessage": "Open a terminal and start it now with `hermes dashboard`?\n\nThe browser will open automatically once startup completes.\n\nIf the terminal reports that `hermes` cannot be found or the web extras are missing, run first:\npip install hermes-agent[web]",
       "launchConfirmAction": "Open terminal & launch",
@@ -1783,8 +1798,10 @@
     "updateFailed": "Failed to update",
     "checkUpdates": "Check Updates",
     "checkingUpdates": "Checking...",
+    "checkUpdatesFailed": "Failed to check for updates",
     "noUpdates": "All skills are up to date",
     "updatesFound": "{{count}} skill(s) have updates available",
+    "toggleFailed": "Failed to update skill status",
     "updateAll": "Update All ({{count}})",
     "updatingAll": "Updating...",
     "updateAllSuccess": "Successfully updated {{count}} skill(s)",
@@ -1833,6 +1850,7 @@
       "list": "Added Repositories",
       "empty": "No repositories",
       "invalidUrl": "Invalid repository URL format",
+      "duplicateWarning": "Repository {{owner}}/{{name}} already exists. Adding it again will replace the saved branch configuration.",
       "addSuccess": "Repository {{owner}}/{{name}} added, detected {{count}} skills",
       "addFailed": "Failed to add",
       "removeSuccess": "Repository {{owner}}/{{name}} removed",
@@ -1869,6 +1887,7 @@
     "import": "Import Existing",
     "importDescription": "Select skills to import into CC Switch unified management",
     "importSuccess": "Successfully imported {{count}} skills",
+    "importFailed": "Failed to import skills",
     "importSelected": "Import Selected ({{count}})",
     "noUnmanagedFound": "No skills to import found. All skills are already managed by CC Switch.",
     "foundIn": "Found in",
@@ -1954,6 +1973,13 @@
     "configDetails": "Config Details",
     "configUrl": "Config File URL",
     "configMergeError": "Failed to merge configuration file",
+    "pasteImport": "Paste Import Link",
+    "pasteImportDescription": "Paste a ccswitch:// deep link to parse and import it in Web mode",
+    "pasteImportPlaceholder": "Paste a ccswitch://v1/import?... link",
+    "pasteImportHint": "Web mode does not rely on OS protocol registration. Paste the full ccswitch:// link to parse it before continuing with the normal confirmation flow.",
+    "parseAction": "Parse Link",
+    "parsing": "Parsing...",
+    "editLinkAction": "Edit Link",
     "primaryEndpoint": "Primary",
     "mcp": {
       "title": "Batch Import MCP Servers",
@@ -2013,7 +2039,9 @@
     "skillsFailedDescription": "Open the Skills page and click \"Import Existing\" to import manually (or restart and try again)."
   },
   "agents": {
-    "title": "Agents"
+    "title": "Agents",
+    "comingSoonTitle": "Coming Soon",
+    "comingSoonDescription": "The Agents management feature is intentionally kept as a placeholder in Web mode for now. This page remains visible so the navigation stays stable, but it does not expose any partial actions yet."
   },
   "modelTest": {
     "testProvider": "Test model"
@@ -2151,7 +2179,9 @@
     "failover": {
       "proxyRequired": "Routing service must be started to configure failover",
       "autoSwitch": "Auto Failover",
-      "autoSwitchDescription": "When enabled, switches to queue P1 immediately and automatically tries the next provider in the queue on failures"
+      "autoSwitchDescription": "When enabled, switches to queue P1 immediately and automatically tries the next provider in the queue on failures",
+      "runtimeStatsUnavailableTitle": "Runtime circuit breaker stats are unavailable in web-server mode",
+      "runtimeStatsUnavailableDescription": "Use the queue health badges and Reset Circuit actions above to inspect and recover failover state. The desktop app is still required for live breaker counters."
     },
     "failoverQueue": {
       "title": "Failover Queue",
@@ -2222,6 +2252,8 @@
   "streamCheck": {
     "configSaved": "Health check config saved",
     "configSaveFailed": "Save failed",
+    "configSaveFailedDetail": "Save failed: {{error}}",
+    "loadFailed": "Failed to load health check config: {{error}}",
     "testModels": "Test Models",
     "claudeModel": "Claude Model",
     "codexModel": "Codex Model",
@@ -2238,8 +2270,6 @@
     "error": "{{providerName}} check error: {{error}}",
     "modelNotFound": "{{providerName}} test model {{model}} does not exist or has been deprecated",
     "modelNotFoundHint": "This model may have been retired by the provider. Update the default test model in \"Model Test Config\".",
-    "quotaExceeded": "{{providerName}} Coding Plan quota has been exceeded",
-    "quotaExceededHint": "Baidu Qianfan returned a Coding Plan quota-limit error. Wait for the 5-hour, weekly, or monthly quota refresh, or adjust the plan in the Qianfan console.",
     "httpHint": {
       "400": "Provider rejected request format. Health check probe may differ from actual usage.",
       "401": "API key may be invalid, or provider uses OAuth auth. Check failure doesn't mean it's unusable.",
@@ -2294,9 +2324,6 @@
     }
   },
   "universalProvider": {
-    "duplicate": "Duplicate",
-    "duplicatedAndSynced": "Universal provider duplicated and synced",
-    "duplicateError": "Failed to duplicate universal provider",
     "title": "Universal Provider",
     "description": "Universal providers manage Claude, Codex, and Gemini configurations simultaneously. Changes are automatically synced to all enabled apps.",
     "add": "Add Universal Provider",

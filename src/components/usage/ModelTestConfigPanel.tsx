@@ -12,6 +12,7 @@ import {
   saveStreamCheckConfig,
   type StreamCheckConfig,
 } from "@/lib/api/model-test";
+import { extractErrorMessage } from "@/utils/errorUtils";
 
 export function ModelTestConfigPanel() {
   const { t } = useTranslation();
@@ -48,7 +49,12 @@ export function ModelTestConfigPanel() {
         testPrompt: data.testPrompt || "Who are you?",
       });
     } catch (e) {
-      setError(String(e));
+      const detail = extractErrorMessage(e) || t("common.unknown");
+      setError(
+        t("streamCheck.loadFailed", {
+          error: detail,
+        }),
+      );
     } finally {
       setIsLoading(false);
     }
@@ -76,7 +82,14 @@ export function ModelTestConfigPanel() {
         closeButton: true,
       });
     } catch (e) {
-      toast.error(t("streamCheck.configSaveFailed") + ": " + String(e));
+      const detail = extractErrorMessage(e);
+      toast.error(
+        detail
+          ? t("streamCheck.configSaveFailedDetail", {
+              error: detail,
+            })
+          : t("streamCheck.configSaveFailed"),
+      );
     } finally {
       setIsSaving(false);
     }

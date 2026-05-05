@@ -19,8 +19,9 @@ import {
 } from "@/components/ui/select";
 import { useRequestLogs } from "@/lib/query/usage";
 import type { LogFilters, UsageRangeSelection } from "@/types/usage";
-import { ChevronLeft, ChevronRight, Search, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, Eye, Search, X } from "lucide-react";
 import { UsageDateRangePicker } from "./UsageDateRangePicker";
+import { RequestDetailPanel } from "./RequestDetailPanel";
 import {
   fmtInt,
   fmtUsd,
@@ -49,6 +50,9 @@ export function RequestLogTable({
   const [draftFilters, setDraftFilters] = useState<LogFilters>({});
   const [page, setPage] = useState(0);
   const [pageInput, setPageInput] = useState("");
+  const [selectedRequestId, setSelectedRequestId] = useState<string | null>(
+    null,
+  );
   const pageSize = 20;
 
   const dashboardAppTypeActive = dashboardAppType && dashboardAppType !== "all";
@@ -273,13 +277,16 @@ export function RequestLogTable({
                   <TableHead className="text-center whitespace-nowrap">
                     {t("usage.source", { defaultValue: "Source" })}
                   </TableHead>
+                  <TableHead className="text-center whitespace-nowrap">
+                    {t("common.actions", { defaultValue: "Actions" })}
+                  </TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {logs.length === 0 ? (
                   <TableRow>
                     <TableCell
-                      colSpan={9}
+                      colSpan={10}
                       className="text-center text-muted-foreground"
                     >
                       {t("usage.noData")}
@@ -379,6 +386,21 @@ export function RequestLogTable({
                       <TableCell className="text-center text-xs text-muted-foreground">
                         {log.dataSource || "proxy"}
                       </TableCell>
+                      <TableCell className="text-center">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="ghost"
+                          className="h-8 px-2 text-xs"
+                          title={t("common.view", { defaultValue: "View" })}
+                          onClick={() => setSelectedRequestId(log.requestId)}
+                        >
+                          <Eye className="h-3.5 w-3.5" />
+                          <span className="ml-1">
+                            {t("common.view", { defaultValue: "View" })}
+                          </span>
+                        </Button>
+                      </TableCell>
                     </TableRow>
                   ))
                 )}
@@ -463,6 +485,13 @@ export function RequestLogTable({
               </div>
             </div>
           </div>
+
+          {selectedRequestId ? (
+            <RequestDetailPanel
+              requestId={selectedRequestId}
+              onClose={() => setSelectedRequestId(null)}
+            />
+          ) : null}
         </>
       )}
     </div>

@@ -4,6 +4,7 @@ import { AppWindow, MonitorUp, Power, EyeOff } from "lucide-react";
 import { ToggleRow } from "@/components/ui/toggle-row";
 import { AnimatePresence, motion } from "framer-motion";
 import { isLinux } from "@/lib/platform";
+import { isWebMode } from "@/lib/api/adapter";
 
 interface WindowSettingsProps {
   settings: SettingsFormState;
@@ -12,6 +13,7 @@ interface WindowSettingsProps {
 
 export function WindowSettings({ settings, onChange }: WindowSettingsProps) {
   const { t } = useTranslation();
+  const webMode = isWebMode();
 
   return (
     <section className="space-y-4">
@@ -21,33 +23,39 @@ export function WindowSettings({ settings, onChange }: WindowSettingsProps) {
       </div>
 
       <div className="space-y-3">
-        <ToggleRow
-          icon={<Power className="h-4 w-4 text-orange-500" />}
-          title={t("settings.launchOnStartup")}
-          description={t("settings.launchOnStartupDescription")}
-          checked={!!settings.launchOnStartup}
-          onCheckedChange={(value) => onChange({ launchOnStartup: value })}
-        />
+        {!webMode ? (
+          <>
+            <ToggleRow
+              icon={<Power className="h-4 w-4 text-orange-500" />}
+              title={t("settings.launchOnStartup")}
+              description={t("settings.launchOnStartupDescription")}
+              checked={!!settings.launchOnStartup}
+              onCheckedChange={(value) => onChange({ launchOnStartup: value })}
+            />
 
-        <AnimatePresence initial={false}>
-          {settings.launchOnStartup && (
-            <motion.div
-              key="silent-startup"
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: 10 }}
-              transition={{ duration: 0.3 }}
-            >
-              <ToggleRow
-                icon={<EyeOff className="h-4 w-4 text-green-500" />}
-                title={t("settings.silentStartup")}
-                description={t("settings.silentStartupDescription")}
-                checked={!!settings.silentStartup}
-                onCheckedChange={(value) => onChange({ silentStartup: value })}
-              />
-            </motion.div>
-          )}
-        </AnimatePresence>
+            <AnimatePresence initial={false}>
+              {settings.launchOnStartup && (
+                <motion.div
+                  key="silent-startup"
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: 10 }}
+                  transition={{ duration: 0.3 }}
+                >
+                  <ToggleRow
+                    icon={<EyeOff className="h-4 w-4 text-green-500" />}
+                    title={t("settings.silentStartup")}
+                    description={t("settings.silentStartupDescription")}
+                    checked={!!settings.silentStartup}
+                    onCheckedChange={(value) =>
+                      onChange({ silentStartup: value })
+                    }
+                  />
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </>
+        ) : null}
 
         <ToggleRow
           icon={<MonitorUp className="h-4 w-4 text-purple-500" />}
@@ -67,27 +75,31 @@ export function WindowSettings({ settings, onChange }: WindowSettingsProps) {
           onCheckedChange={(value) => onChange({ skipClaudeOnboarding: value })}
         />
 
-        <ToggleRow
-          icon={<AppWindow className="h-4 w-4 text-blue-500" />}
-          title={t("settings.minimizeToTray")}
-          description={t("settings.minimizeToTrayDescription")}
-          checked={settings.minimizeToTrayOnClose}
-          onCheckedChange={(value) =>
-            onChange({ minimizeToTrayOnClose: value })
-          }
-        />
+        {!webMode ? (
+          <>
+            <ToggleRow
+              icon={<AppWindow className="h-4 w-4 text-blue-500" />}
+              title={t("settings.minimizeToTray")}
+              description={t("settings.minimizeToTrayDescription")}
+              checked={settings.minimizeToTrayOnClose}
+              onCheckedChange={(value) =>
+                onChange({ minimizeToTrayOnClose: value })
+              }
+            />
 
-        {isLinux() && (
-          <ToggleRow
-            icon={<AppWindow className="h-4 w-4 text-amber-500" />}
-            title={t("settings.useAppWindowControls")}
-            description={t("settings.useAppWindowControlsDescription")}
-            checked={!!settings.useAppWindowControls}
-            onCheckedChange={(value) =>
-              onChange({ useAppWindowControls: value })
-            }
-          />
-        )}
+            {isLinux() && (
+              <ToggleRow
+                icon={<AppWindow className="h-4 w-4 text-amber-500" />}
+                title={t("settings.useAppWindowControls")}
+                description={t("settings.useAppWindowControlsDescription")}
+                checked={!!settings.useAppWindowControls}
+                onCheckedChange={(value) =>
+                  onChange({ useAppWindowControls: value })
+                }
+              />
+            )}
+          </>
+        ) : null}
       </div>
     </section>
   );

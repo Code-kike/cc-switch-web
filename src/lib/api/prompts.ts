@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, isWebMode, pickWebFile, webUpload } from "./adapter";
 import type { AppId } from "./types";
 
 export interface Prompt {
@@ -28,7 +28,17 @@ export const promptsApi = {
     return await invoke("enable_prompt", { app, id });
   },
 
-  async importFromFile(app: AppId): Promise<string> {
+  async importFromFile(app: AppId): Promise<string | null> {
+    if (isWebMode()) {
+      const file = await pickWebFile(".md,text/markdown,text/plain");
+      if (!file) return null;
+      const formData = new FormData();
+      formData.set("file", file);
+      return await webUpload(
+        `/api/prompts/import-prompt-upload?app=${encodeURIComponent(app)}`,
+        formData,
+      );
+    }
     return await invoke("import_prompt_from_file", { app });
   },
 

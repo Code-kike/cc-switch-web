@@ -20,14 +20,15 @@ import {
 } from "@/components/ui/select";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
-import { getVersion } from "@tauri-apps/api/app";
 import { settingsApi } from "@/lib/api";
+import { isWebMode } from "@/lib/api/adapter";
 import { useUpdate } from "@/contexts/UpdateContext";
-import { relaunchApp } from "@/lib/updater";
+import { getCurrentVersion, relaunchApp } from "@/lib/updater";
 import { Badge } from "@/components/ui/badge";
 import { motion } from "framer-motion";
 import appIcon from "@/assets/icons/app-icon.png";
 import { isWindows } from "@/lib/platform";
+import { extractErrorMessage } from "@/utils/errorUtils";
 
 interface AboutSectionProps {
   isPortable: boolean;
@@ -92,11 +93,17 @@ curl -fsSL https://opencode.ai/install | bash`;
 export function AboutSection({ isPortable }: AboutSectionProps) {
   // ... (use hooks as before) ...
   const { t } = useTranslation();
+  const webMode = isWebMode();
+  const isWindowsBrowser = isWindows();
+  const showServerRuntimePanels = webMode || !isWindowsBrowser;
   const [version, setVersion] = useState<string | null>(null);
   const [isLoadingVersion, setIsLoadingVersion] = useState(true);
   const [isDownloading, setIsDownloading] = useState(false);
   const [toolVersions, setToolVersions] = useState<ToolVersion[]>([]);
   const [isLoadingTools, setIsLoadingTools] = useState(true);
+  const [toolVersionsError, setToolVersionsError] = useState<string | null>(
+    null,
+  );
 
   const {
     hasUpdate,
@@ -142,8 +149,10 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
           }
           return merged;
         });
+        setToolVersionsError(null);
       } catch (error) {
         console.error("[AboutSection] Failed to refresh tools", error);
+        setToolVersionsError(extractErrorMessage(error) || t("common.unknown"));
       } finally {
         setLoadingTools((prev) => {
           const next = { ...prev };
@@ -152,7 +161,7 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
         });
       }
     },
-    [],
+    [t],
   );
 
   const loadAllToolVersions = useCallback(async () => {
@@ -164,12 +173,14 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
         wslShellByTool,
       );
       setToolVersions(versions);
+      setToolVersionsError(null);
     } catch (error) {
       console.error("[AboutSection] Failed to load tool versions", error);
+      setToolVersionsError(extractErrorMessage(error) || t("common.unknown"));
     } finally {
       setIsLoadingTools(false);
     }
-  }, [wslShellByTool]);
+  }, [t, wslShellByTool]);
 
   const handleToolShellChange = async (toolName: ToolName, value: string) => {
     const wslShell = value === "auto" ? null : value;
@@ -198,10 +209,7 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
     let active = true;
     const load = async () => {
       try {
-        const [appVersion] = await Promise.all([
-          getVersion(),
-          ...(isWindows() ? [] : [loadAllToolVersions()]),
-        ]);
+        const appVersion = await getCurrentVersion();
 
         if (active) {
           setVersion(appVersion);
@@ -214,6 +222,9 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
       } finally {
         if (active) {
           setIsLoadingVersion(false);
+        }
+        if (active && showServerRuntimePanels) {
+          void loadAllToolVersions();
         }
       }
     };
@@ -232,7 +243,7 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
 
   const handleOpenReleaseNotes = useCallback(async () => {
     try {
-      const targetVersion = updateInfo?.availableVersion ?? version ?? "";
+      const targetVersion = updateInfo?.availableVersion ?? version?.trim() ?? "";
       const displayVersion = targetVersion.startsWith("v")
         ? targetVersion
         : targetVersion
@@ -251,13 +262,15 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
       );
     } catch (error) {
       console.error("[AboutSection] Failed to open release notes", error);
-      toast.error(t("settings.openReleaseNotesFailed"));
+      toast.error(t("settings.openReleaseNotesFailed"), {
+        description: extractErrorMessage(error) || t("common.unknown"),
+      });
     }
   }, [t, updateInfo?.availableVersion, version]);
 
   const handleCheckUpdate = useCallback(async () => {
     if (hasUpdate && updateHandle) {
-      if (isPortable) {
+      if (!webMode && isPortable) {
         try {
           await settingsApi.checkUpdates();
         } catch (error) {
@@ -270,17 +283,30 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
       try {
         resetDismiss();
         await updateHandle.downloadAndInstall();
+
+        if (webMode) {
+          toast.success(t("settings.updateDownloadOpened"), {
+            closeButton: true,
+          });
+          return;
+        }
+
         await relaunchApp();
       } catch (error) {
         console.error("[AboutSection] Update failed", error);
-        toast.error(t("settings.updateFailed"));
-        try {
-          await settingsApi.checkUpdates();
-        } catch (fallbackError) {
-          console.error(
-            "[AboutSection] Failed to open fallback updater",
-            fallbackError,
-          );
+        toast.error(t("settings.updateFailed"), {
+          description: extractErrorMessage(error) || t("common.unknown"),
+        });
+
+        if (!webMode) {
+          try {
+            await settingsApi.checkUpdates();
+          } catch (fallbackError) {
+            console.error(
+              "[AboutSection] Failed to open fallback updater",
+              fallbackError,
+            );
+          }
         }
       } finally {
         setIsDownloading(false);
@@ -295,9 +321,11 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
       }
     } catch (error) {
       console.error("[AboutSection] Check update failed", error);
-      toast.error(t("settings.checkUpdateFailed"));
+      toast.error(t("settings.checkUpdateFailed"), {
+        description: extractErrorMessage(error) || t("common.unknown"),
+      });
     }
-  }, [checkUpdate, hasUpdate, isPortable, resetDismiss, t, updateHandle]);
+  }, [checkUpdate, hasUpdate, isPortable, resetDismiss, t, updateHandle, webMode]);
 
   const handleCopyInstallCommands = useCallback(async () => {
     try {
@@ -305,11 +333,16 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
       toast.success(t("settings.installCommandsCopied"), { closeButton: true });
     } catch (error) {
       console.error("[AboutSection] Failed to copy install commands", error);
-      toast.error(t("settings.installCommandsCopyFailed"));
+      toast.error(t("settings.installCommandsCopyFailed"), {
+        description: extractErrorMessage(error) || t("common.unknown"),
+      });
     }
   }, [t]);
 
-  const displayVersion = version ?? t("common.unknown");
+  const normalizedVersion = version?.trim() || "";
+  const displayVersion = normalizedVersion
+    ? `v${normalizedVersion}`
+    : t("common.unknown");
 
   return (
     <motion.section
@@ -347,7 +380,7 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
                 {isLoadingVersion ? (
                   <Loader2 className="h-3 w-3 animate-spin" />
                 ) : (
-                  <span className="font-medium">{`v${displayVersion}`}</span>
+                  <span className="font-medium">{displayVersion}</span>
                 )}
               </Badge>
               {isPortable && (
@@ -422,14 +455,29 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
             )}
           </motion.div>
         )}
+
+        {webMode && (
+          <div className="rounded-lg border border-border/60 bg-muted/40 px-4 py-3 text-xs text-muted-foreground">
+            {t("settings.webUpdateHint")}
+          </div>
+        )}
       </motion.div>
 
-      {!isWindows() && (
+      {showServerRuntimePanels && (
         <div className="space-y-3">
-          <div className="flex items-center justify-between px-1">
-            <h3 className="text-sm font-medium">
-              {t("settings.localEnvCheck")}
-            </h3>
+          <div className="flex items-start justify-between gap-3 px-1">
+            <div className="space-y-1">
+              <h3 className="text-sm font-medium">
+                {webMode
+                  ? t("settings.serverEnvCheck")
+                  : t("settings.localEnvCheck")}
+              </h3>
+              {webMode && (
+                <p className="text-xs text-muted-foreground">
+                  {t("settings.serverEnvCheckHint")}
+                </p>
+              )}
+            </div>
             <Button
               size="sm"
               variant="outline"
@@ -447,6 +495,22 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
           </div>
 
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 px-1">
+            {toolVersionsError && (
+              <div
+                role="alert"
+                className="sm:col-span-2 lg:col-span-4 flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive"
+              >
+                <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                <div className="space-y-0.5">
+                  <p className="font-medium">
+                    {t("settings.serverEnvCheckFailed")}
+                  </p>
+                  <p className="break-words text-destructive/80">
+                    {toolVersionsError}
+                  </p>
+                </div>
+              </div>
+            )}
             {TOOL_NAMES.map((toolName, index) => {
               const tool = toolVersions.find((item) => item.name === toolName);
               // Special case for OpenCode (capital C), others use capitalize
@@ -560,7 +624,7 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
         </div>
       )}
 
-      {!isWindows() && (
+      {showServerRuntimePanels && (
         <motion.div
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
@@ -572,9 +636,16 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
           </h3>
           <div className="rounded-xl border border-border bg-gradient-to-br from-card/80 to-card/40 p-4 space-y-3 shadow-sm">
             <div className="flex items-center justify-between gap-2">
-              <p className="text-xs text-muted-foreground">
-                {t("settings.oneClickInstallHint")}
-              </p>
+              <div className="space-y-1">
+                <p className="text-xs text-muted-foreground">
+                  {t("settings.oneClickInstallHint")}
+                </p>
+                {webMode && (
+                  <p className="text-xs text-muted-foreground">
+                    {t("settings.serverInstallHint")}
+                  </p>
+                )}
+              </div>
               <Button
                 size="sm"
                 variant="outline"

@@ -1,4 +1,5 @@
-import { getVersion } from "@tauri-apps/api/app";
+import { isWebMode, webJsonFetch } from "@/lib/api/adapter";
+import { checkForUpdates as checkForWebUpdates } from "@/lib/api/updater-adapter";
 
 // 可选导入：在未注册插件或非 Tauri 环境下，调用时会抛错，外层需做兜底
 // 我们按需加载并在运行时捕获错误，避免构建期类型问题
@@ -46,6 +47,10 @@ export interface CheckOptions {
   channel?: UpdateChannel;
 }
 
+interface WebHealthResponse {
+  version?: string;
+}
+
 function mapUpdateHandle(raw: Update): UpdateHandle {
   return {
     version: (raw as any).version ?? "",
@@ -83,7 +88,16 @@ function mapUpdateHandle(raw: Update): UpdateHandle {
 }
 
 export async function getCurrentVersion(): Promise<string> {
+  if (isWebMode()) {
+    try {
+      const health = await webJsonFetch<WebHealthResponse>("/api/health");
+      return health.version?.trim() || "";
+    } catch {
+      return "";
+    }
+  }
   try {
+    const { getVersion } = await import("@tauri-apps/api/app");
     return await getVersion();
   } catch {
     return "";
@@ -96,6 +110,32 @@ export async function checkForUpdate(
   | { status: "up-to-date" }
   | { status: "available"; info: UpdateInfo; update: UpdateHandle }
 > {
+  if (isWebMode()) {
+    const web = await checkForWebUpdates();
+    if (!web.available) {
+      return { status: "up-to-date" };
+    }
+    return {
+      status: "available",
+      info: {
+        currentVersion: "",
+        availableVersion: web.version ?? "",
+        notes: web.notes,
+        pubDate: undefined,
+      },
+      update: {
+        version: web.version ?? "",
+        notes: web.notes,
+        date: undefined,
+        async downloadAndInstall() {
+          if (web.downloadUrl) {
+            window.open(web.downloadUrl, "_blank", "noopener,noreferrer");
+          }
+        },
+      },
+    };
+  }
+
   // 动态引入，避免在未安装插件时导致打包期问题
   const { check } = await import("@tauri-apps/plugin-updater");
 
@@ -118,6 +158,10 @@ export async function checkForUpdate(
 }
 
 export async function relaunchApp(): Promise<void> {
+  if (isWebMode()) {
+    window.location.reload();
+    return;
+  }
   const { relaunch } = await import("@tauri-apps/plugin-process");
   await relaunch();
 }

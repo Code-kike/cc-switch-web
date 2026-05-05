@@ -6,6 +6,7 @@ import { Label } from "@/components/ui/label";
 import MarkdownEditor from "@/components/MarkdownEditor";
 import { FullScreenPanel } from "@/components/common/FullScreenPanel";
 import type { Prompt, AppId } from "@/lib/api";
+import { getPromptFilename } from "./promptFilename";
 
 interface PromptFormPanelProps {
   appId: AppId;
@@ -24,15 +25,7 @@ const PromptFormPanel: React.FC<PromptFormPanelProps> = ({
 }) => {
   const { t } = useTranslation();
   const appName = t(`apps.${appId}`);
-  const filenameMap: Record<AppId, string> = {
-    claude: "CLAUDE.md",
-    codex: "AGENTS.md",
-    gemini: "GEMINI.md",
-    opencode: "AGENTS.md",
-    openclaw: "AGENTS.md",
-    hermes: "AGENTS.md",
-  };
-  const filename = filenameMap[appId];
+  const filename = getPromptFilename(appId);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [content, setContent] = useState("");

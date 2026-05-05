@@ -1,4 +1,12 @@
-import { invoke } from "@tauri-apps/api/core";
+import {
+  downloadBlob,
+  isBrowserFile,
+  invoke,
+  isWebMode,
+  pickWebFile,
+  webDownload,
+  webUpload,
+} from "./adapter";
 import type { Settings, WebDavSyncSettings, RemoteSnapshotInfo } from "@/types";
 import type { AppId } from "./types";
 
@@ -7,6 +15,11 @@ export interface ConfigTransferResult {
   message: string;
   filePath?: string;
   backupId?: string;
+}
+
+export interface SelectedWebFile {
+  name: string;
+  file?: File | null;
 }
 
 export interface WebDavTestResult {
@@ -91,18 +104,50 @@ export const settingsApi = {
   },
 
   async saveFileDialog(defaultName: string): Promise<string | null> {
+    if (isWebMode()) return defaultName;
     return await invoke("save_file_dialog", { defaultName });
   },
 
-  async openFileDialog(): Promise<string | null> {
+  async openFileDialog(): Promise<string | SelectedWebFile | null> {
+    if (isWebMode()) {
+      const file = await pickWebFile(".sql,text/sql,application/sql");
+      return file ? { name: file.name, file } : null;
+    }
     return await invoke("open_file_dialog");
   },
 
   async exportConfigToFile(filePath: string): Promise<ConfigTransferResult> {
+    if (isWebMode()) {
+      const blob = await webDownload("/api/config/export-config-download");
+      downloadBlob(blob, filePath || "cc-switch-export.sql");
+      return {
+        success: true,
+        message: "SQL exported successfully",
+        filePath,
+      };
+    }
     return await invoke("export_config_to_file", { filePath });
   },
 
-  async importConfigFromFile(filePath: string): Promise<ConfigTransferResult> {
+  async importConfigFromFile(
+    filePath: string | SelectedWebFile | File,
+  ): Promise<ConfigTransferResult> {
+    if (isWebMode()) {
+      const file = isBrowserFile(filePath)
+        ? filePath
+        : isBrowserFile((filePath as SelectedWebFile | null | undefined)?.file)
+          ? (filePath as SelectedWebFile).file!
+          : null;
+      if (!file) {
+        return {
+          success: false,
+          message: "No SQL file selected",
+        };
+      }
+      const formData = new FormData();
+      formData.set("file", file);
+      return await webUpload("/api/config/import-config-upload", formData);
+    }
     return await invoke("import_config_from_file", { filePath });
   },
 
@@ -153,14 +198,20 @@ export const settingsApi = {
   },
 
   async openExternal(url: string): Promise<void> {
+    let normalizedUrl: string;
     try {
       const u = new URL(url);
       const scheme = u.protocol.replace(":", "").toLowerCase();
       if (scheme !== "http" && scheme !== "https") {
         throw new Error("Unsupported URL scheme");
       }
+      normalizedUrl = u.toString();
     } catch {
       throw new Error("Invalid URL");
+    }
+    if (isWebMode()) {
+      window.open(normalizedUrl, "_blank", "noopener,noreferrer");
+      return;
     }
     await invoke("open_external", { url });
   },

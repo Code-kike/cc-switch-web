@@ -5,6 +5,7 @@ import { UsageTrendChart } from "./UsageTrendChart";
 import { RequestLogTable } from "./RequestLogTable";
 import { ProviderStatsTable } from "./ProviderStatsTable";
 import { ModelStatsTable } from "./ModelStatsTable";
+import { DataSourceBar } from "./DataSourceBar";
 import type { AppTypeFilter, UsageRangeSelection } from "@/types/usage";
 import { motion } from "framer-motion";
 import {
@@ -37,12 +38,15 @@ const APP_FILTER_OPTIONS: AppTypeFilter[] = [
   "gemini",
 ];
 
+type UsageDashboardTab = "logs" | "providers" | "models";
+
 export function UsageDashboard() {
   const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
   const [range, setRange] = useState<UsageRangeSelection>({ preset: "today" });
   const [appType, setAppType] = useState<AppTypeFilter>("all");
   const [refreshIntervalMs, setRefreshIntervalMs] = useState(30000);
+  const [activeTab, setActiveTab] = useState<UsageDashboardTab>("logs");
 
   const refreshIntervalOptionsMs = [0, 5000, 10000, 30000, 60000] as const;
   const changeRefreshInterval = () => {
@@ -140,8 +144,14 @@ export function UsageDashboard() {
         refreshIntervalMs={refreshIntervalMs}
       />
 
+      <DataSourceBar refreshIntervalMs={refreshIntervalMs} />
+
       <div className="space-y-4">
-        <Tabs defaultValue="logs" className="w-full">
+        <Tabs
+          value={activeTab}
+          onValueChange={(nextValue) => setActiveTab(nextValue as UsageDashboardTab)}
+          className="w-full"
+        >
           <div className="flex items-center justify-between mb-4">
             <TabsList className="bg-muted/50">
               <TabsTrigger value="logs" className="gap-2">

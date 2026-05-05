@@ -109,6 +109,16 @@ describe("useMcpValidation", () => {
       );
     });
 
+    it("extracts structured detail from plain-object toml parser failures", () => {
+      tomlToMcpServerMock.mockImplementation(() => {
+        throw { detail: "toml parser exploded" };
+      });
+      const { validateTomlConfig } = getHookResult();
+      expect(validateTomlConfig("foo")).toBe(
+        "mcp.error.tomlInvalid: toml parser exploded",
+      );
+    });
+
     it("returns empty string when validation passes", () => {
       tomlToMcpServerMock.mockReturnValue({
         type: "stdio",

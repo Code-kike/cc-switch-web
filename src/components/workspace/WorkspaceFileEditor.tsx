@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import MarkdownEditor from "@/components/MarkdownEditor";
 import { FullScreenPanel } from "@/components/common/FullScreenPanel";
 import { workspaceApi } from "@/lib/api/workspace";
+import { extractErrorMessage } from "@/utils/errorUtils";
 
 interface WorkspaceFileEditorProps {
   filename: string;
@@ -46,7 +47,9 @@ const WorkspaceFileEditor: React.FC<WorkspaceFileEditorProps> = ({
       })
       .catch((err) => {
         console.error("Failed to read workspace file:", err);
-        toast.error(t("workspace.loadFailed"));
+        toast.error(t("workspace.loadFailed"), {
+          description: extractErrorMessage(err) || t("common.unknown"),
+        });
       })
       .finally(() => setLoading(false));
   }, [isOpen, filename, t]);
@@ -58,7 +61,9 @@ const WorkspaceFileEditor: React.FC<WorkspaceFileEditorProps> = ({
       toast.success(t("workspace.saveSuccess"));
     } catch (err) {
       console.error("Failed to save workspace file:", err);
-      toast.error(t("workspace.saveFailed"));
+      toast.error(t("workspace.saveFailed"), {
+        description: extractErrorMessage(err) || t("common.unknown"),
+      });
     } finally {
       setSaving(false);
     }

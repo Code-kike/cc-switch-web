@@ -5,7 +5,7 @@
  * 支持多账号管理。
  */
 
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./adapter";
 
 /**
  * GitHub 设备码响应

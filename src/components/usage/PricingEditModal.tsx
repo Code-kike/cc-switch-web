@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useUpdateModelPricing } from "@/lib/query/usage";
 import type { ModelPricing } from "@/types/usage";
+import { extractErrorMessage } from "@/utils/errorUtils";
 
 interface PricingEditModalProps {
   open: boolean;
@@ -78,7 +79,8 @@ export function PricingEditModal({
 
       onClose();
     } catch (error) {
-      toast.error(String(error));
+      const detail = extractErrorMessage(error) || t("common.unknown");
+      toast.error(t("usage.pricingSaveFailed", { error: detail }));
     }
   };
 

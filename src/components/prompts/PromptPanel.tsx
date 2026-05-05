@@ -1,8 +1,10 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { FileText } from "lucide-react";
+import { FileText, Download } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { type AppId } from "@/lib/api";
 import { usePromptActions } from "@/hooks/usePromptActions";
+import { getPromptFilename } from "./promptFilename";
 import PromptListItem from "./PromptListItem";
 import PromptFormPanel from "./PromptFormPanel";
 import { ConfirmDialog } from "../ConfirmDialog";
@@ -15,6 +17,7 @@ interface PromptPanelProps {
 
 export interface PromptPanelHandle {
   openAdd: () => void;
+  openImport: () => Promise<void>;
 }
 
 const PromptPanel = React.forwardRef<PromptPanelHandle, PromptPanelProps>(
@@ -33,10 +36,12 @@ const PromptPanel = React.forwardRef<PromptPanelHandle, PromptPanelProps>(
     const {
       prompts,
       loading,
+      currentFileContent,
       reload,
       savePrompt,
       deletePrompt,
       toggleEnabled,
+      importFromFile,
     } = usePromptActions(appId);
 
     useEffect(() => {
@@ -66,6 +71,9 @@ const PromptPanel = React.forwardRef<PromptPanelHandle, PromptPanelProps>(
 
     React.useImperativeHandle(ref, () => ({
       openAdd: handleAdd,
+      openImport: async () => {
+        await importFromFile();
+      },
     }));
 
     const handleEdit = (id: string) => {
@@ -106,6 +114,19 @@ const PromptPanel = React.forwardRef<PromptPanelHandle, PromptPanelProps>(
           </div>
         </div>
 
+        {currentFileContent ? (
+          <div className="flex-shrink-0 mb-4 rounded-xl border border-border bg-muted/40 p-4">
+            <div className="mb-2 text-sm font-medium text-foreground">
+              {t("prompts.currentFile", {
+                filename: getPromptFilename(appId),
+              })}
+            </div>
+            <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-background/80 p-3 text-xs text-muted-foreground">
+              {currentFileContent}
+            </pre>
+          </div>
+        ) : null}
+
         <div className="flex-1 overflow-y-auto pb-16">
           {loading ? (
             <div className="text-center py-12 text-muted-foreground">
@@ -122,6 +143,16 @@ const PromptPanel = React.forwardRef<PromptPanelHandle, PromptPanelProps>(
               <p className="text-muted-foreground text-sm">
                 {t("prompts.emptyDescription")}
               </p>
+              <div className="mt-6">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => void importFromFile()}
+                >
+                  <Download className="mr-2 h-4 w-4" />
+                  {t("prompts.import")}
+                </Button>
+              </div>
             </div>
           ) : (
             <div className="space-y-3">

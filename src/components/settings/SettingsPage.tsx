@@ -49,6 +49,9 @@ import { useSettings } from "@/hooks/useSettings";
 import { useImportExport } from "@/hooks/useImportExport";
 import { useTranslation } from "react-i18next";
 import type { SettingsFormState } from "@/hooks/useSettings";
+import { isWebMode } from "@/lib/api/adapter";
+import { isDevMode } from "@/lib/runtime";
+import { extractErrorMessage } from "@/utils/errorUtils";
 
 interface SettingsDialogProps {
   open: boolean;
@@ -64,6 +67,7 @@ export function SettingsPage({
   defaultTab = "general",
 }: SettingsDialogProps) {
   const { t } = useTranslation();
+  const webMode = isWebMode();
   const {
     settings,
     isLoading,
@@ -144,7 +148,7 @@ export function SettingsPage({
 
   const handleRestartNow = useCallback(async () => {
     setShowRestartPrompt(false);
-    if (import.meta.env.DEV) {
+    if (isDevMode()) {
       toast.success(t("settings.devModeRestartHint"), { closeButton: true });
       closeAfterSave();
       return;
@@ -154,7 +158,9 @@ export function SettingsPage({
       await settingsApi.restart();
     } catch (error) {
       console.error("[SettingsPage] Failed to restart app", error);
-      toast.error(t("settings.restartFailed"));
+      toast.error(t("settings.restartFailed"), {
+        description: extractErrorMessage(error) || t("common.unknown"),
+      });
     } finally {
       closeAfterSave();
     }
@@ -245,12 +251,14 @@ export function SettingsPage({
                       settings={settings}
                       onChange={handleAutoSave}
                     />
-                    <TerminalSettings
-                      value={settings.preferredTerminal}
-                      onChange={(terminal) =>
-                        handleAutoSave({ preferredTerminal: terminal })
-                      }
-                    />
+                    {!webMode ? (
+                      <TerminalSettings
+                        value={settings.preferredTerminal}
+                        onChange={(terminal) =>
+                          handleAutoSave({ preferredTerminal: terminal })
+                        }
+                      />
+                    ) : null}
                   </motion.div>
                 ) : null}
               </TabsContent>

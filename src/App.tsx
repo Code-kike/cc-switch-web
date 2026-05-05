@@ -2,8 +2,6 @@ import { useEffect, useMemo, useState, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { motion, AnimatePresence } from "framer-motion";
 import { toast } from "sonner";
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   Plus,
@@ -21,16 +19,19 @@ import {
   BarChart2,
   Download,
   FolderArchive,
+  Link2,
   Search,
   FolderOpen,
   KeyRound,
   Shield,
   Cpu,
+  Layers,
   LayoutDashboard,
 } from "lucide-react";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { Provider, VisibleApps } from "@/types";
 import type { EnvConflict } from "@/types/env";
+import { invoke, isWebMode } from "@/lib/api/adapter";
+import { listen } from "@/lib/api/event-adapter";
 import { useProvidersQuery, useSettingsQuery } from "@/lib/query";
 import {
   providersApi,
@@ -71,7 +72,10 @@ import UnifiedMcpPanel from "@/components/mcp/UnifiedMcpPanel";
 import PromptPanel from "@/components/prompts/PromptPanel";
 import { SkillsPage } from "@/components/skills/SkillsPage";
 import UnifiedSkillsPanel from "@/components/skills/UnifiedSkillsPanel";
-import { DeepLinkImportDialog } from "@/components/DeepLinkImportDialog";
+import {
+  DeepLinkImportDialog,
+  type DeepLinkImportDialogHandle,
+} from "@/components/DeepLinkImportDialog";
 import { FirstRunNoticeDialog } from "@/components/FirstRunNoticeDialog";
 import { AgentsPanel } from "@/components/agents/AgentsPanel";
 import { UniversalProviderPanel } from "@/components/universal";
@@ -88,6 +92,7 @@ import ToolsPanel from "@/components/openclaw/ToolsPanel";
 import AgentsDefaultsPanel from "@/components/openclaw/AgentsDefaultsPanel";
 import OpenClawHealthBanner from "@/components/openclaw/OpenClawHealthBanner";
 import HermesMemoryPanel from "@/components/hermes/HermesMemoryPanel";
+import { importCurrentProviderConfig } from "@/lib/providers/import-current-config";
 
 type View =
   | "providers"
@@ -158,9 +163,15 @@ const getInitialView = (): View => {
   return "providers";
 };
 
+const getDesktopCurrentWindow = async () => {
+  const tauriWindow = await import("@tauri-apps/api/window");
+  return tauriWindow.getCurrentWindow();
+};
+
 function App() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  const webMode = isWebMode();
 
   const [activeApp, setActiveApp] = useState<AppId>(getInitialApp);
   const [currentView, setCurrentView] = useState<View>(getInitialView);
@@ -174,9 +185,15 @@ function App() {
 
   const { data: settingsData } = useSettingsQuery();
   const useAppWindowControls =
-    isLinux() && (settingsData?.useAppWindowControls ?? false);
-  const dragBarHeight = useAppWindowControls ? 32 : DEFAULT_DRAG_BAR_HEIGHT;
+    !webMode && isLinux() && (settingsData?.useAppWindowControls ?? false);
+  const dragBarHeight = webMode
+    ? 0
+    : useAppWindowControls
+      ? 32
+      : DEFAULT_DRAG_BAR_HEIGHT;
   const contentTopOffset = dragBarHeight + HEADER_HEIGHT;
+  const showDesktopTitlebar =
+    !webMode && (dragBarHeight > 0 || useAppWindowControls);
   const visibleApps: VisibleApps = settingsData?.visibleApps ?? {
     claude: true,
     codex: true,
@@ -238,6 +255,7 @@ function App() {
   const mcpPanelRef = useRef<any>(null);
   const skillsPageRef = useRef<any>(null);
   const unifiedSkillsPanelRef = useRef<any>(null);
+  const deepLinkImportDialogRef = useRef<DeepLinkImportDialogHandle>(null);
   const addActionButtonClass =
     "bg-orange-500 hover:bg-orange-600 dark:bg-orange-500 dark:hover:bg-orange-600 text-white shadow-lg shadow-orange-500/30 dark:shadow-orange-500/40 rounded-full w-8 h-8";
 
@@ -247,6 +265,30 @@ function App() {
     status: proxyStatus,
   } = useProxyStatus();
   const isCurrentAppTakeoverActive = takeoverStatus?.[activeApp] || false;
+
+  const handleImportCurrentProvider = async () => {
+    try {
+      const result = await importCurrentProviderConfig(activeApp);
+      if (result === "imported") {
+        await queryClient.invalidateQueries({
+          queryKey: ["providers", activeApp],
+        });
+        toast.success(t("provider.importCurrentDescription"));
+      } else {
+        toast.info(t("provider.importCurrentNoChanges"));
+      }
+    } catch (error) {
+      toast.error(extractErrorMessage(error) || t("provider.noProviders"));
+    }
+  };
+
+  const showWebDeepLinkImport =
+    webMode &&
+    (currentView === "providers" ||
+      currentView === "prompts" ||
+      currentView === "mcp" ||
+      currentView === "skills" ||
+      currentView === "skillsDiscovery");
   const activeProviderId = useMemo(() => {
     const target = proxyStatus?.active_targets?.find(
       (t) => t.app_type === activeApp,
@@ -277,6 +319,8 @@ function App() {
     activeApp === "openclaw" ||
     activeApp === "gemini" ||
     activeApp === "hermes";
+  const hasUniversalProviderSupport =
+    activeApp === "claude" || activeApp === "codex" || activeApp === "gemini";
 
   const {
     addProvider,
@@ -353,7 +397,6 @@ function App() {
 
     const setupListener = async () => {
       try {
-        const { listen } = await import("@tauri-apps/api/event");
         unsubscribe = await listen("universal-provider-synced", async () => {
           await queryClient.invalidateQueries({ queryKey: ["providers"] });
           try {
@@ -447,12 +490,17 @@ function App() {
   }, [t]);
 
   useEffect(() => {
+    if (webMode || !useAppWindowControls) {
+      setIsWindowMaximized(false);
+      return;
+    }
+
     let active = true;
     let unlistenResize: (() => void) | undefined;
 
     const setupWindowStateSync = async () => {
       try {
-        const currentWindow = getCurrentWindow();
+        const currentWindow = await getDesktopCurrentWindow();
         const syncWindowMaximizedState = async () => {
           const maximized = await currentWindow.isMaximized();
           if (active) {
@@ -474,22 +522,23 @@ function App() {
       active = false;
       unlistenResize?.();
     };
-  }, []);
+  }, [useAppWindowControls, webMode]);
 
   useEffect(() => {
     // settingsData 未加载时跳过，避免用 fallback false 覆盖 Rust 侧已设好的装饰状态
-    if (!settingsData) return;
+    if (webMode || !settingsData) return;
 
     const syncWindowDecorations = async () => {
       try {
-        await getCurrentWindow().setDecorations(!useAppWindowControls);
+        const currentWindow = await getDesktopCurrentWindow();
+        await currentWindow.setDecorations(!useAppWindowControls);
       } catch (error) {
         console.error("[App] Failed to update window decorations", error);
       }
     };
 
     void syncWindowDecorations();
-  }, [useAppWindowControls, settingsData]);
+  }, [settingsData, useAppWindowControls, webMode]);
 
   useEffect(() => {
     const checkEnvOnStartup = async () => {
@@ -861,8 +910,10 @@ function App() {
   };
 
   const handleWindowMinimize = async () => {
+    if (webMode) return;
     try {
-      await getCurrentWindow().minimize();
+      const currentWindow = await getDesktopCurrentWindow();
+      await currentWindow.minimize();
     } catch (error) {
       console.error("[App] Failed to minimize window", error);
       notifyWindowControlError(error);
@@ -870,8 +921,9 @@ function App() {
   };
 
   const handleWindowToggleMaximize = async () => {
+    if (webMode) return;
     try {
-      const currentWindow = getCurrentWindow();
+      const currentWindow = await getDesktopCurrentWindow();
       await currentWindow.toggleMaximize();
       setIsWindowMaximized(await currentWindow.isMaximized());
     } catch (error) {
@@ -881,8 +933,10 @@ function App() {
   };
 
   const handleWindowClose = async () => {
+    if (webMode) return;
     try {
-      await getCurrentWindow().close();
+      const currentWindow = await getDesktopCurrentWindow();
+      await currentWindow.close();
     } catch (error) {
       console.error("[App] Failed to close window", error);
       notifyWindowControlError(error);
@@ -1045,7 +1099,7 @@ function App() {
       className="flex flex-col h-screen overflow-hidden bg-background text-foreground selection:bg-primary/30 pb-4"
       style={{ overflowX: "hidden", paddingTop: contentTopOffset }}
     >
-      {(dragBarHeight > 0 || useAppWindowControls) && (
+      {showDesktopTitlebar && (
         <div
           className="fixed top-0 left-0 right-0 z-[70] flex items-center justify-end px-2"
           data-tauri-drag-region
@@ -1257,16 +1311,40 @@ function App() {
                 className="flex shrink-0 items-center gap-1.5 ml-auto"
                 style={{ WebkitAppRegion: "no-drag" } as any}
               >
-                {currentView === "prompts" && (
+                {showWebDeepLinkImport && (
                   <Button
                     variant="ghost"
                     size="sm"
-                    onClick={() => promptPanelRef.current?.openAdd()}
+                    onClick={() =>
+                      deepLinkImportDialogRef.current?.openManualImport()
+                    }
                     className="hover:bg-black/5 dark:hover:bg-white/5"
                   >
-                    <Plus className="w-4 h-4 mr-2" />
-                    {t("prompts.add")}
+                    <Link2 className="w-4 h-4 mr-2" />
+                    {t("deeplink.pasteImport")}
                   </Button>
+                )}
+                {currentView === "prompts" && (
+                  <>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => promptPanelRef.current?.openImport()}
+                      className="hover:bg-black/5 dark:hover:bg-white/5"
+                    >
+                      <Download className="w-4 h-4 mr-2" />
+                      {t("prompts.import")}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => promptPanelRef.current?.openAdd()}
+                      className="hover:bg-black/5 dark:hover:bg-white/5"
+                    >
+                      <Plus className="w-4 h-4 mr-2" />
+                      {t("prompts.add")}
+                    </Button>
+                  </>
                 )}
                 {currentView === "mcp" && (
                   <>
@@ -1496,6 +1574,20 @@ function App() {
                               >
                                 <Book className="w-4 h-4" />
                               </Button>
+                              {hasUniversalProviderSupport ? (
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => setCurrentView("universal")}
+                                  className="text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/5 w-8 px-2"
+                                  title={t("universalProvider.title", {
+                                    defaultValue: "统一供应商",
+                                  })}
+                                  data-testid="open-universal-provider-view"
+                                >
+                                  <Layers className="flex-shrink-0 w-4 h-4" />
+                                </Button>
+                              ) : null}
                               <Button
                                 variant="ghost"
                                 size="sm"
@@ -1526,6 +1618,15 @@ function App() {
                       </AnimatePresence>
                     </div>
 
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => void handleImportCurrentProvider()}
+                      className="hover:bg-black/5 dark:hover:bg-white/5"
+                    >
+                      <Download className="w-4 h-4 mr-2" />
+                      {t("provider.importCurrent")}
+                    </Button>
                     <Button
                       onClick={() => setIsAddOpen(true)}
                       size="icon"
@@ -1627,7 +1728,7 @@ function App() {
         onCancel={() => setLaunchDashboardOpen(false)}
       />
 
-      <DeepLinkImportDialog />
+      <DeepLinkImportDialog ref={deepLinkImportDialogRef} />
       <FirstRunNoticeDialog />
     </div>
   );

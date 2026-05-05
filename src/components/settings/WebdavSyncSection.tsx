@@ -36,6 +36,7 @@ import { settingsApi } from "@/lib/api";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import type { SettingsFormState } from "@/hooks/useSettings";
 import type { RemoteSnapshotInfo, WebDavSyncSettings } from "@/types";
+import { extractErrorMessage } from "@/utils/errorUtils";
 
 // ─── WebDAV service presets ─────────────────────────────────
 
@@ -338,6 +339,14 @@ export function WebdavSyncSection({
     };
   }, [form, passwordTouched]);
 
+  const formatError = useCallback(
+    (error: unknown, key: string) =>
+      t(key, {
+        error: extractErrorMessage(error) || t("common.unknown"),
+      }),
+    [t],
+  );
+
   // ─── Handlers ───────────────────────────────────────────
 
   const handleTest = useCallback(async () => {
@@ -351,15 +360,11 @@ export function WebdavSyncSection({
       await settingsApi.webdavTestConnection(settings, !passwordTouched);
       toast.success(t("settings.webdavSync.testSuccess"));
     } catch (error) {
-      toast.error(
-        t("settings.webdavSync.testFailed", {
-          error: (error as Error)?.message ?? String(error),
-        }),
-      );
+      toast.error(formatError(error, "settings.webdavSync.testFailed"));
     } finally {
       setActionState("idle");
     }
-  }, [buildSettings, passwordTouched, t]);
+  }, [buildSettings, formatError, passwordTouched, t]);
 
   const handleSave = useCallback(async () => {
     const settings = buildSettings();
@@ -388,11 +393,7 @@ export function WebdavSyncSection({
       await queryClient.invalidateQueries();
     } catch (error) {
       pendingPasswordPreservationRef.current = null;
-      toast.error(
-        t("settings.webdavSync.saveFailed", {
-          error: (error as Error)?.message ?? String(error),
-        }),
-      );
+      toast.error(formatError(error, "settings.webdavSync.saveFailed"));
       setActionState("idle");
       return;
     }
@@ -404,14 +405,12 @@ export function WebdavSyncSection({
       toast.success(t("settings.webdavSync.saveAndTestSuccess"));
     } catch (error) {
       toast.warning(
-        t("settings.webdavSync.saveAndTestFailed", {
-          error: (error as Error)?.message ?? String(error),
-        }),
+        formatError(error, "settings.webdavSync.saveAndTestFailed"),
       );
     } finally {
       setActionState("idle");
     }
-  }, [buildSettings, form.password, passwordTouched, queryClient, t]);
+  }, [buildSettings, formatError, form.password, passwordTouched, queryClient, t]);
 
   /** Fetch remote info, then open upload confirmation dialog. */
   const handleUploadClick = useCallback(async () => {
@@ -450,15 +449,11 @@ export function WebdavSyncSection({
       toast.success(t("settings.webdavSync.uploadSuccess"));
       await queryClient.invalidateQueries();
     } catch (error) {
-      toast.error(
-        t("settings.webdavSync.uploadFailed", {
-          error: (error as Error)?.message ?? String(error),
-        }),
-      );
+      toast.error(formatError(error, "settings.webdavSync.uploadFailed"));
     } finally {
       setActionState("idle");
     }
-  }, [closeDialog, dirty, queryClient, t]);
+  }, [closeDialog, dirty, formatError, queryClient, t]);
 
   /** Fetch remote info, then open download confirmation dialog. */
   const handleDownloadClick = useCallback(async () => {
@@ -487,15 +482,11 @@ export function WebdavSyncSection({
       setRemoteInfo(info);
       setDialogType("download");
     } catch (error) {
-      toast.error(
-        t("settings.webdavSync.downloadFailed", {
-          error: (error as Error)?.message ?? String(error),
-        }),
-      );
+      toast.error(formatError(error, "settings.webdavSync.downloadFailed"));
     } finally {
       setActionState("idle");
     }
-  }, [dirty, t]);
+  }, [dirty, formatError, t]);
 
   /** Actually perform the download after user confirms. */
   const handleDownloadConfirm = useCallback(async () => {
@@ -510,15 +501,11 @@ export function WebdavSyncSection({
       toast.success(t("settings.webdavSync.downloadSuccess"));
       await queryClient.invalidateQueries();
     } catch (error) {
-      toast.error(
-        t("settings.webdavSync.downloadFailed", {
-          error: (error as Error)?.message ?? String(error),
-        }),
-      );
+      toast.error(formatError(error, "settings.webdavSync.downloadFailed"));
     } finally {
       setActionState("idle");
     }
-  }, [closeDialog, dirty, queryClient, t]);
+  }, [closeDialog, dirty, formatError, queryClient, t]);
 
   // ─── Derived state ──────────────────────────────────────
 

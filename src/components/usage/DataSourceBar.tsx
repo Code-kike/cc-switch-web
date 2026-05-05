@@ -6,6 +6,7 @@ import { Database, FileText, RefreshCw, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useState } from "react";
 import { toast } from "sonner";
+import { extractErrorMessage } from "@/utils/errorUtils";
 
 interface DataSourceBarProps {
   refreshIntervalMs: number;
@@ -24,7 +25,11 @@ export function DataSourceBar({ refreshIntervalMs }: DataSourceBarProps) {
   const queryClient = useQueryClient();
   const [syncing, setSyncing] = useState(false);
 
-  const { data: sources } = useQuery({
+  const {
+    data: sources,
+    isLoading,
+    error,
+  } = useQuery({
     queryKey: [...usageKeys.all, "data-sources"],
     queryFn: usageApi.getDataSourceBreakdown,
     refetchInterval: refreshIntervalMs > 0 ? refreshIntervalMs : false,
@@ -51,22 +56,35 @@ export function DataSourceBar({ refreshIntervalMs }: DataSourceBarProps) {
           }),
         );
       }
-    } catch {
+    } catch (error) {
+      const detail = extractErrorMessage(error) || t("common.unknown");
       toast.error(
         t("usage.sessionSync.failed", {
           defaultValue: "Session sync failed",
         }),
+        { description: detail },
       );
     } finally {
       setSyncing(false);
     }
   };
 
-  if (!sources || sources.length === 0) {
-    return null;
-  }
+  const hasSources = Array.isArray(sources) && sources.length > 0;
+  const hasNonProxy = sources?.some((s) => s.dataSource !== "proxy") ?? false;
 
-  const hasNonProxy = sources.some((s) => s.dataSource !== "proxy");
+  const statusText = (() => {
+    if (error) {
+      return t("usage.dataSourcesLoadFailed", {
+        defaultValue: "Unable to load data sources",
+      });
+    }
+    if (isLoading && !hasSources) {
+      return t("common.loading", { defaultValue: "Loading" });
+    }
+    return t("usage.noDataYet", {
+      defaultValue: "No usage data yet. Import session logs to populate this dashboard.",
+    });
+  })();
 
   return (
     <div className="flex items-center gap-3 text-xs text-muted-foreground bg-muted/30 rounded-lg px-4 py-2">
@@ -74,24 +92,28 @@ export function DataSourceBar({ refreshIntervalMs }: DataSourceBarProps) {
         {t("usage.dataSources", { defaultValue: "Data Sources" })}:
       </span>
       <div className="flex items-center gap-3 flex-wrap">
-        {sources.map((source) => (
-          <div
-            key={source.dataSource}
-            className="flex items-center gap-1.5 bg-background/50 rounded-md px-2 py-1"
-          >
-            {DATA_SOURCE_ICONS[source.dataSource] ?? (
-              <Database className="h-3.5 w-3.5" />
-            )}
-            <span>
-              {t(`usage.dataSource.${source.dataSource}`, {
-                defaultValue: source.dataSource,
-              })}
-            </span>
-            <span className="font-mono font-medium text-foreground/80">
-              {source.requestCount.toLocaleString()}
-            </span>
-          </div>
-        ))}
+        {hasSources ? (
+          sources.map((source) => (
+            <div
+              key={source.dataSource}
+              className="flex items-center gap-1.5 bg-background/50 rounded-md px-2 py-1"
+            >
+              {DATA_SOURCE_ICONS[source.dataSource] ?? (
+                <Database className="h-3.5 w-3.5" />
+              )}
+              <span>
+                {t(`usage.dataSource.${source.dataSource}`, {
+                  defaultValue: source.dataSource,
+                })}
+              </span>
+              <span className="font-mono font-medium text-foreground/80">
+                {source.requestCount.toLocaleString()}
+              </span>
+            </div>
+          ))
+        ) : (
+          <span>{statusText}</span>
+        )}
       </div>
 
       <div className="ml-auto">

@@ -19,8 +19,10 @@ import {
 interface UniversalProviderFormModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onSave: (provider: UniversalProvider) => void;
-  onSaveAndSync?: (provider: UniversalProvider) => void;
+  onSave: (provider: UniversalProvider) => void | boolean | Promise<void | boolean>;
+  onSaveAndSync?: (
+    provider: UniversalProvider,
+  ) => void | boolean | Promise<void | boolean>;
   editingProvider?: UniversalProvider | null;
   initialPreset?: UniversalProviderPreset | null;
 }
@@ -183,7 +185,7 @@ requires_openai_auth = true`;
   }, [geminiEnabled, baseUrl, apiKey, models.gemini]);
 
   // 提交表单
-  const handleSubmit = useCallback(() => {
+  const handleSubmit = useCallback(async () => {
     if (!name.trim() || !baseUrl.trim() || !apiKey.trim()) {
       return;
     }
@@ -223,8 +225,10 @@ requires_openai_auth = true`;
       provider.notes = notes.trim() || undefined;
     }
 
-    onSave(provider);
-    onClose();
+    const result = await onSave(provider);
+    if (result !== false) {
+      onClose();
+    }
   }, [
     editingProvider,
     name,
@@ -307,10 +311,12 @@ requires_openai_auth = true`;
   }, [buildProvider, onSaveAndSync]);
 
   // 确认保存并同步
-  const confirmSaveAndSync = useCallback(() => {
+  const confirmSaveAndSync = useCallback(async () => {
     if (!pendingProvider || !onSaveAndSync) return;
 
-    onSaveAndSync(pendingProvider);
+    const result = await onSaveAndSync(pendingProvider);
+    if (result === false) return;
+
     setSyncConfirmOpen(false);
     setPendingProvider(null);
     onClose();
@@ -321,14 +327,26 @@ requires_openai_auth = true`;
       <Button variant="outline" onClick={onClose}>
         {t("common.cancel", { defaultValue: "取消" })}
       </Button>
-      {isEditMode && onSaveAndSync ? (
-        <Button
-          onClick={handleSaveAndSyncClick}
-          disabled={!name.trim() || !baseUrl.trim() || !apiKey.trim()}
-        >
-          <RefreshCw className="mr-1.5 h-4 w-4" />
-          {t("universalProvider.saveAndSync", { defaultValue: "保存并同步" })}
-        </Button>
+      {isEditMode ? (
+        <>
+          <Button
+            onClick={handleSubmit}
+            disabled={!name.trim() || !baseUrl.trim() || !apiKey.trim()}
+          >
+            {t("common.save", { defaultValue: "保存" })}
+          </Button>
+          {onSaveAndSync ? (
+            <Button
+              onClick={handleSaveAndSyncClick}
+              disabled={!name.trim() || !baseUrl.trim() || !apiKey.trim()}
+            >
+              <RefreshCw className="mr-1.5 h-4 w-4" />
+              {t("universalProvider.saveAndSync", {
+                defaultValue: "保存并同步",
+              })}
+            </Button>
+          ) : null}
+        </>
       ) : (
         <Button
           onClick={handleSubmit}

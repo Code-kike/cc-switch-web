@@ -301,7 +301,7 @@ export const useDeleteSessionMutation = () => {
       await sessionsApi.delete(input);
       return input;
     },
-    onSuccess: async (input) => {
+    onSuccess: (input) => {
       queryClient.setQueryData<SessionMeta[]>(["sessions"], (current) =>
         (current ?? []).filter(
           (session) =>
@@ -316,7 +316,7 @@ export const useDeleteSessionMutation = () => {
         queryKey: ["sessionMessages", input.providerId, input.sourcePath],
       });
 
-      await queryClient.invalidateQueries({ queryKey: ["sessions"] });
+      void queryClient.invalidateQueries({ queryKey: ["sessions"] });
 
       toast.success(
         t("sessionManager.sessionDeleted", {

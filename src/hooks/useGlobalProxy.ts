@@ -7,6 +7,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
+import { extractErrorMessage } from "@/utils/errorUtils";
 import {
   getGlobalProxyUrl,
   setGlobalProxyUrl,
@@ -44,12 +45,7 @@ export function useSetGlobalProxyUrl() {
       queryClient.invalidateQueries({ queryKey: ["upstreamProxyStatus"] });
     },
     onError: (error: unknown) => {
-      const message =
-        error instanceof Error
-          ? error.message
-          : typeof error === "string"
-            ? error
-            : "Unknown error";
+      const message = extractErrorMessage(error) || t("common.unknown");
       toast.error(t("settings.globalProxy.saveFailed", { error: message }));
     },
   });
@@ -74,8 +70,12 @@ export function useTestProxy() {
         );
       }
     },
-    onError: (error: Error) => {
-      toast.error(error.message);
+    onError: (error: unknown) => {
+      toast.error(
+        t("settings.globalProxy.testFailed", {
+          error: extractErrorMessage(error) || t("common.unknown"),
+        }),
+      );
     },
   });
 }
@@ -98,9 +98,11 @@ export function useScanProxies() {
 
   return useMutation({
     mutationFn: scanLocalProxies,
-    onError: (error: Error) => {
+    onError: (error: unknown) => {
       toast.error(
-        t("settings.globalProxy.scanFailed", { error: error.message }),
+        t("settings.globalProxy.scanFailed", {
+          error: extractErrorMessage(error) || t("common.unknown"),
+        }),
       );
     },
   });

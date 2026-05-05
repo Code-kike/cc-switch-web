@@ -40,6 +40,101 @@ const withJson = async <T>(request: Request): Promise<T> => {
 const success = <T>(payload: T) => HttpResponse.json(payload as any);
 
 export const handlers = [
+  http.get("/api/system/csrf-token", () =>
+    HttpResponse.json({ token: "stub-csrf-token" }),
+  ),
+  http.get("/api/system/get_update_info", () =>
+    success({
+      available: false,
+      version: "3.14.1",
+      notes: null,
+      downloadUrl: null,
+    }),
+  ),
+
+  http.get("/api/settings/get-settings", () => success(getSettings())),
+  http.get("/api/proxy/get-proxy-status", () =>
+    success({
+      running: false,
+      address: "127.0.0.1",
+      port: 0,
+      active_connections: 0,
+      total_requests: 0,
+      success_requests: 0,
+      failed_requests: 0,
+      success_rate: 0,
+      uptime_seconds: 0,
+      current_provider: null,
+      current_provider_id: null,
+      last_request_at: null,
+      last_error: null,
+      failover_count: 0,
+      active_targets: [],
+    }),
+  ),
+  http.get("/api/proxy/get-proxy-takeover-status", () =>
+    success({
+      claude: false,
+      codex: false,
+      gemini: false,
+      opencode: false,
+      openclaw: false,
+      hermes: false,
+    }),
+  ),
+  http.get("/api/providers/get-providers", ({ request }) => {
+    const url = new URL(request.url);
+    const app = (url.searchParams.get("app") ?? "claude") as AppId;
+    return success(getProviders(app));
+  }),
+  http.get("/api/providers/get-current-provider", ({ request }) => {
+    const url = new URL(request.url);
+    const app = (url.searchParams.get("app") ?? "claude") as AppId;
+    return success(getCurrentProviderId(app));
+  }),
+  http.post("/api/providers/add-provider", async ({ request }) => {
+    const { provider, app } = await withJson<{
+      provider: Provider & { id?: string };
+      app: AppId;
+    }>(request);
+
+    const newId = provider.id ?? `mock-${Date.now()}`;
+    addProvider(app, { ...provider, id: newId });
+    return success(true);
+  }),
+  http.put("/api/providers/update-provider", async ({ request }) => {
+    const { provider, app } = await withJson<{
+      provider: Provider;
+      app: AppId;
+    }>(request);
+    updateProvider(app, provider);
+    return success(true);
+  }),
+  http.post("/api/providers/switch-provider", async ({ request }) => {
+    const { id, app } = await withJson<{ id: string; app: AppId }>(request);
+    const providers = listProviders(app);
+    if (!providers[id]) {
+      return HttpResponse.json(false, { status: 404 });
+    }
+    setCurrentProviderId(app, id);
+    return success({ warnings: [] });
+  }),
+  http.put("/api/providers/update-providers-sort-order", async ({ request }) => {
+    const { updates = [], app } = await withJson<{
+      updates: { id: string; sortIndex: number }[];
+      app: AppId;
+    }>(request);
+    updateSortOrder(app, updates);
+    return success(true);
+  }),
+  http.get("/api/openclaw/get-openclaw-live-provider-ids", () =>
+    success(getLiveProviderIds("openclaw")),
+  ),
+  http.get("/api/env/check-env-conflicts", () => success([])),
+  http.get("/api/skills/get-skills-migration-result", () => success(null)),
+  http.post("/api/system/get_migration_result", () => success(false)),
+  http.get("/api/config/scan-openclaw-config-health", () => success([])),
+
   http.post(`${TAURI_ENDPOINT}/get_migration_result`, () => success(false)),
   http.post(`${TAURI_ENDPOINT}/get_skills_migration_result`, () =>
     success(null),
@@ -81,6 +176,10 @@ export const handlers = [
   ),
 
   http.post(`${TAURI_ENDPOINT}/scan_openclaw_config_health`, () => success([])),
+  http.post(`${TAURI_ENDPOINT}/get_installed_skills`, () => success([])),
+  http.post(`${TAURI_ENDPOINT}/get_hermes_live_provider_ids`, () => success([])),
+  http.post(`${TAURI_ENDPOINT}/get_hermes_model_config`, () => success(null)),
+  http.get("/api/skills/get-installed-skills", () => success([])),
 
   http.post(`${TAURI_ENDPOINT}/switch_provider`, async ({ request }) => {
     const { id, app } = await withJson<{ id: string; app: AppId }>(request);
@@ -123,15 +222,39 @@ export const handlers = [
     return success(true);
   }),
 
+  http.post("/api/config/import-default-config", async () => {
+    resetProviderState();
+    return success(true);
+  }),
+
+  http.post("/api/providers/import-opencode-providers-from-live", () =>
+    success(1),
+  ),
+
+  http.post("/api/openclaw/import-openclaw-providers-from-live", () =>
+    success(1),
+  ),
+
+  http.post("/api/hermes/import-hermes-providers-from-live", () => success(1)),
+
   http.post(`${TAURI_ENDPOINT}/open_external`, () => success(true)),
 
   http.post(`${TAURI_ENDPOINT}/list_sessions`, () => success(listSessions())),
+
+  http.get("/api/sessions/list-sessions", () => success(listSessions())),
 
   http.post(`${TAURI_ENDPOINT}/get_session_messages`, async ({ request }) => {
     const { providerId, sourcePath } = await withJson<{
       providerId: string;
       sourcePath: string;
     }>(request);
+    return success(getSessionMessages(providerId, sourcePath));
+  }),
+
+  http.get("/api/sessions/get-session-messages", ({ request }) => {
+    const url = new URL(request.url);
+    const providerId = url.searchParams.get("providerId") ?? "";
+    const sourcePath = url.searchParams.get("sourcePath") ?? "";
     return success(getSessionMessages(providerId, sourcePath));
   }),
 
@@ -144,7 +267,38 @@ export const handlers = [
     return success(deleteSession(providerId, sessionId, sourcePath));
   }),
 
+  http.delete("/api/sessions/delete-session", ({ request }) => {
+    const url = new URL(request.url);
+    const providerId = url.searchParams.get("providerId") ?? "";
+    const sessionId = url.searchParams.get("sessionId") ?? "";
+    const sourcePath = url.searchParams.get("sourcePath") ?? "";
+    return success(deleteSession(providerId, sessionId, sourcePath));
+  }),
+
   http.post(`${TAURI_ENDPOINT}/delete_sessions`, async ({ request }) => {
+    const { items = [] } = await withJson<{
+      items?: {
+        providerId: string;
+        sessionId: string;
+        sourcePath: string;
+      }[];
+    }>(request);
+
+    return success(
+      items.map((item) => ({
+        providerId: item.providerId,
+        sessionId: item.sessionId,
+        sourcePath: item.sourcePath,
+        success: deleteSession(
+          item.providerId,
+          item.sessionId,
+          item.sourcePath,
+        ),
+      })),
+    );
+  }),
+
+  http.delete("/api/sessions/delete-sessions", async ({ request }) => {
     const { items = [] } = await withJson<{
       items?: {
         providerId: string;

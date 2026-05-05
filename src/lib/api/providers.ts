@@ -1,11 +1,13 @@
-import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { invoke, isWebMode } from "./adapter";
+import { listen } from "./event-adapter";
 import type {
   Provider,
   UniversalProvider,
   UniversalProvidersMap,
 } from "@/types";
 import type { AppId } from "./types";
+
+type UnlistenFn = () => void;
 
 export interface ProviderSortUpdate {
   id: string;
@@ -75,6 +77,9 @@ export const providersApi = {
   },
 
   async updateTrayMenu(): Promise<boolean> {
+    if (isWebMode()) {
+      return true;
+    }
     return await invoke("update_tray_menu");
   },
 

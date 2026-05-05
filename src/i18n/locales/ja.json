@@ -105,6 +105,7 @@
     "noProvidersDescriptionSnippet": "API キーとリクエスト URL 以外のデータ（プラグインなど）は共通設定スニペットに保存され、プロバイダー間で共有できます",
     "importCurrent": "現在の設定をインポート",
     "importCurrentDescription": "現在使用中の設定をデフォルトプロバイダーとしてインポート",
+    "importCurrentNoChanges": "現在の設定から新しく取り込めるプロバイダーはありません",
     "currentlyUsing": "現在使用中",
     "enable": "有効化",
     "inUse": "使用中",
@@ -261,7 +262,9 @@
       "description": "Claude Code で他のサブスクリプションをご利用いただけます。コンプライアンスリスクにご注意ください。",
       "beta": "Beta",
       "copilotDescription": "GitHub Copilot アカウントを管理します",
-      "codexOauthDescription": "ChatGPT アカウントを管理します"
+      "codexOauthDescription": "ChatGPT アカウントを管理します",
+      "webRemoteHint": "リモート Web モードでは OAuth アカウントがサーバーホストに保存されます",
+      "webRemoteHintDescription": "認証ページはこのブラウザで開きますが、成功した Copilot / ChatGPT ログインは cc-switch Web を実行しているサーバーマシンに保存されます。そのサーバーを信頼できる場合にのみ続行してください。"
     },
     "advanced": {
       "configDir": {
@@ -309,6 +312,8 @@
       "rectifier": {
         "title": "整流器",
         "description": "API リクエストの互換性問題を自動修正",
+        "loadFailed": "整流器設定の読み込みに失敗しました: {{error}}",
+        "saveFailed": "整流器設定の保存に失敗しました: {{error}}",
         "enabled": "整流器を有効化",
         "enabledDescription": "マスタースイッチ、オフにするとすべての整流機能が無効になります",
         "requestGroup": "リクエスト整流",
@@ -321,6 +326,8 @@
       "optimizer": {
         "title": "Bedrock リクエストオプティマイザー",
         "description": "リクエスト送信前に Thinking と Cache の設定を自動最適化（Bedrock プロバイダーのみ有効）",
+        "loadFailed": "Bedrock リクエストオプティマイザー設定の読み込みに失敗しました: {{error}}",
+        "saveFailed": "Bedrock リクエストオプティマイザー設定の保存に失敗しました: {{error}}",
         "enabled": "オプティマイザーを有効化",
         "thinkingOptimizer": "Thinking 最適化",
         "thinkingOptimizerDescription": "Opus/Sonnet に Adaptive Thinking を自動的に有効化し、レガシーモデルに Extended Thinking を注入",
@@ -335,6 +342,8 @@
         "description": "ログ出力レベルを制御",
         "enabled": "ログを有効化",
         "enabledDescription": "マスタースイッチ、オフにするとすべてのログが無効になります",
+        "loadFailed": "ログ設定の読み込みに失敗しました: {{error}}",
+        "saveFailed": "ログ設定の保存に失敗しました: {{error}}",
         "level": "ログレベル",
         "levelDescription": "出力する最小ログレベルを設定",
         "levels": {
@@ -528,7 +537,8 @@
       "confirmTitle": "スキル保存場所の移行",
       "confirmMessage": "{{count}} 個のスキルを新しい場所に移動します。続行しますか？",
       "migrationSuccess": "{{count}} 個のスキルを移行しました",
-      "migrationPartial": "{{migrated}} 個のスキルを移行、{{errors}} 個のエラー。詳細はログを確認してください。"
+      "migrationPartial": "{{migrated}} 個のスキルを移行、{{errors}} 個のエラー。詳細はログを確認してください。",
+      "migrationFailed": "スキル保存場所の移行に失敗しました: {{error}}"
     },
     "skillSync": {
       "title": "スキル同期方式",
@@ -549,8 +559,7 @@
           "kitty": "Kitty",
           "ghostty": "Ghostty",
           "wezterm": "WezTerm",
-          "kaku": "Kaku",
-          "warp": "Warp"
+          "kaku": "Kaku"
         },
         "windows": {
           "cmd": "コマンドプロンプト",
@@ -599,8 +608,10 @@
     "upToDate": "最新バージョンです",
     "aboutHint": "バージョン情報と更新状況を表示します。",
     "portableMode": "ポータブルモード: 更新は手動ダウンロードが必要です。",
+    "webUpdateHint": "Web モードではブラウザでリリース/ダウンロードページを開きます。実際のインストールと再起動は cc-switch を動かしているホスト側で行う必要があります。",
     "updateAvailable": "新しいバージョンがあります: {{version}}",
     "updateBadge": "更新あり",
+    "updateDownloadOpened": "ダウンロードページを開きました。ブラウザで更新を完了してください。",
     "updateFailed": "更新のインストールに失敗しました。ダウンロードページを開こうとしました。",
     "checkUpdateFailed": "更新の確認に失敗しました。時間をおいて再試行してください。",
     "openReleaseNotesFailed": "リリースノートの表示に失敗しました",
@@ -609,7 +620,11 @@
     "viewCurrentReleaseNotes": "現在のバージョンのリリースノートを見る",
     "oneClickInstall": "ワンクリックインストール",
     "oneClickInstallHint": "Claude Code / Codex / Gemini CLI / OpenCode をインストール",
+    "serverInstallHint": "これらのコマンドは、このブラウザを使っている端末ではなく、cc-switch Web を動かしているホストで実行してください。",
     "localEnvCheck": "ローカル環境チェック",
+    "serverEnvCheck": "サーバー環境チェック",
+    "serverEnvCheckFailed": "サーバー環境情報を読み込めません",
+    "serverEnvCheckHint": "ここに表示される内容は、このブラウザ端末ではなく、cc-switch Web を実行しているホスト上で検出したものです。",
     "envBadge": {
       "wsl": "WSL",
       "windows": "Win",
@@ -803,7 +818,6 @@
     },
     "presets": {
       "ucloud": "Compshare",
-      "ucloudCoding": "Compshare Coding Plan",
       "shengsuanyun": "Shengsuanyun",
       "openrouter": "OpenRouter",
       "deepseek": "DeepSeek",
@@ -825,11 +839,6 @@
     "fillTemplateValue": "{{label}} を入力してください",
     "endpointRequired": "公式以外は API エンドポイントが必須です",
     "apiKeyRequired": "公式以外は API Key が必須です",
-    "softValidation": {
-      "title": "設定に以下の問題があります",
-      "hint": "それでも保存しますか？保存後、このプロバイダーへの切り替えが失敗する可能性がありますが、後から補完できます。",
-      "saveAnyway": "それでも保存"
-    },
     "configJsonError": "Config JSON の形式が正しくありません。構文を確認してください",
     "authJsonRequired": "auth.json は JSON オブジェクトで入力してください",
     "authJsonError": "auth.json の形式が正しくありません。JSON を確認してください",
@@ -881,7 +890,6 @@
     "fetchModelsNeedConfig": "先に API エンドポイントと API Key を入力してください",
     "fetchModelsAuthFailed": "API Key が無効か、権限がありません",
     "fetchModelsNotSupported": "このプロバイダーはモデル一覧の取得に対応していません",
-    "fetchModelsEndpointNotFound": "利用可能なモデル一覧エンドポイントが見つかりません。Base URL を確認するか、プロバイダーが該当 API を公開しているかご確認ください",
     "fetchModelsTimeout": "リクエストがタイムアウトしました。ネットワーク接続を確認してください"
   },
   "copilot": {
@@ -1213,6 +1221,7 @@
     "timeRangeTooLarge": "時間範囲が大きすぎます。範囲を縮小してください",
     "addPricing": "価格設定を追加",
     "editPricing": "価格設定を編集",
+    "pricingSaveFailed": "価格設定の保存に失敗しました: {{error}}",
     "pricingAdded": "価格設定が追加されました",
     "pricingUpdated": "価格設定が更新されました",
     "cacheReadCostPerMillion": "キャッシュ読み取りコスト（100万トークンあたり、USD）",
@@ -1324,6 +1333,9 @@
       "enabledApps": "有効なアプリ",
       "noImportFound": "インポートする MCP サーバーが見つかりませんでした。すべてのサーバーは CC Switch で管理されています。",
       "importSuccess": "{{count}} 個の MCP サーバーをインポートしました",
+      "importFailed": "MCP サーバーのインポートに失敗しました",
+      "toggleFailed": "MCP の有効状態更新に失敗しました",
+      "deleteFailed": "MCP サーバーの削除に失敗しました",
       "apps": {
         "claude": "Claude",
         "codex": "Codex",
@@ -1488,6 +1500,7 @@
     "content": "内容",
     "contentPlaceholder": "# {{filename}}\n\nここにプロンプト内容を入力...",
     "loadFailed": "プロンプトの読み込みに失敗しました",
+    "currentFileLoadFailed": "現在のプロンプトファイルの読み込みに失敗しました",
     "saveSuccess": "保存しました",
     "saveFailed": "保存に失敗しました",
     "deleteSuccess": "削除しました",
@@ -1690,6 +1703,8 @@
       "open": "Hermes Web UI を開く",
       "offline": "Hermes Web UI が起動していません。まず `hermes dashboard` を実行してください。",
       "openFailed": "Hermes Web UI を開けませんでした",
+      "remoteHint": "リモート Web モードでは Hermes Web UI を直接開けません",
+      "remoteHintDescription": "Hermes Web UI はサーバーホスト上の {{url}} で動作しています。サーバー側で直接開くか、先にポートフォワードしてからアクセスしてください。",
       "launchConfirmTitle": "Hermes Dashboard が起動していません",
       "launchConfirmMessage": "ターミナルを開いて `hermes dashboard` を実行しますか？\n\n起動完了後、ブラウザが自動的に開きます。\n\nターミナルに `hermes` が見つからない、または web 依存が不足するというエラーが表示される場合は、まず次を実行してください：\npip install hermes-agent[web]",
       "launchConfirmAction": "ターミナルを開いて起動",
@@ -1783,8 +1798,10 @@
     "updateFailed": "更新に失敗しました",
     "checkUpdates": "更新を確認",
     "checkingUpdates": "確認中...",
+    "checkUpdatesFailed": "スキル更新の確認に失敗しました",
     "noUpdates": "すべてのスキルは最新です",
     "updatesFound": "{{count}} 個のスキルに更新があります",
+    "toggleFailed": "スキルの有効状態更新に失敗しました",
     "updateAll": "すべて更新 ({{count}})",
     "updatingAll": "更新中...",
     "updateAllSuccess": "{{count}} 個のスキルを更新しました",
@@ -1833,6 +1850,7 @@
       "list": "追加済みリポジトリ",
       "empty": "リポジトリがありません",
       "invalidUrl": "リポジトリ URL の形式が無効です",
+      "duplicateWarning": "リポジトリ {{owner}}/{{name}} は既に存在します。再度追加すると保存済みのブランチ設定を上書きします。",
       "addSuccess": "リポジトリ {{owner}}/{{name}} を追加しました。検出スキル: {{count}} 件",
       "addFailed": "追加に失敗しました",
       "removeSuccess": "リポジトリ {{owner}}/{{name}} を削除しました",
@@ -1869,6 +1887,7 @@
     "import": "既存をインポート",
     "importDescription": "CC Switch 統合管理にインポートするスキルを選択してください",
     "importSuccess": "{{count}} 件のスキルをインポートしました",
+    "importFailed": "スキルのインポートに失敗しました",
     "importSelected": "選択をインポート ({{count}})",
     "noUnmanagedFound": "インポートするスキルが見つかりませんでした。すべてのスキルは CC Switch で管理されています。",
     "foundIn": "発見場所",
@@ -1954,6 +1973,13 @@
     "configDetails": "設定の詳細",
     "configUrl": "設定ファイル URL",
     "configMergeError": "設定ファイルのマージに失敗しました",
+    "pasteImport": "インポートリンクを貼り付け",
+    "pasteImportDescription": "ccswitch:// ディープリンクを貼り付けて、Web モードで解析してからインポートします",
+    "pasteImportPlaceholder": "ccswitch://v1/import?... リンクを貼り付け",
+    "pasteImportHint": "Web 版は OS のプロトコル登録に依存しません。完全な ccswitch:// リンクを貼り付けると、解析後に同じ確認フローへ進みます。",
+    "parseAction": "リンクを解析",
+    "parsing": "解析中...",
+    "editLinkAction": "リンクを編集",
     "primaryEndpoint": "メイン",
     "mcp": {
       "title": "MCP サーバーを一括インポート",
@@ -2013,7 +2039,9 @@
     "skillsFailedDescription": "Skills 画面で「既存をインポート」をクリックして手動でインポートしてください（または再起動して再試行）。"
   },
   "agents": {
-    "title": "エージェント"
+    "title": "エージェント",
+    "comingSoonTitle": "準備中",
+    "comingSoonDescription": "Agents 管理ページは、Web モードでは意図的に安定したプレースホルダーとして残しています。ナビゲーション構造は維持しますが、機能が収束するまで中途半端な操作は表示しません。"
   },
   "modelTest": {
     "testProvider": "モデルテスト"
@@ -2151,7 +2179,9 @@
     "failover": {
       "proxyRequired": "フェイルオーバーを設定するには、ルーティングサービスを先に起動する必要があります",
       "autoSwitch": "自動フェイルオーバー",
-      "autoSwitchDescription": "有効にするとキューの P1 に即時切り替え、リクエスト失敗時はキュー内の次のプロバイダーを自動で試行します"
+      "autoSwitchDescription": "有効にするとキューの P1 に即時切り替え、リクエスト失敗時はキュー内の次のプロバイダーを自動で試行します",
+      "runtimeStatsUnavailableTitle": "Web サーバーモードではサーキットブレーカーの実行時統計は利用できません",
+      "runtimeStatsUnavailableDescription": "上のキューに表示されるヘルスバッジと Reset Circuit 操作でフェイルオーバー状態の確認と回復は行えますが、リアルタイムのブレーカー統計はデスクトップ版が必要です。"
     },
     "failoverQueue": {
       "title": "フェイルオーバーキュー",
@@ -2222,6 +2252,8 @@
   "streamCheck": {
     "configSaved": "ヘルスチェック設定を保存しました",
     "configSaveFailed": "保存に失敗しました",
+    "configSaveFailedDetail": "保存に失敗しました: {{error}}",
+    "loadFailed": "ヘルスチェック設定の読み込みに失敗しました: {{error}}",
     "testModels": "テストモデル",
     "claudeModel": "Claude モデル",
     "codexModel": "Codex モデル",
@@ -2238,8 +2270,6 @@
     "error": "{{providerName}} のチェックでエラーが発生しました: {{error}}",
     "modelNotFound": "{{providerName}} のテストモデル {{model}} は存在しないか廃止されています",
     "modelNotFoundHint": "このモデルはプロバイダーにより廃止された可能性があります。「モデルテスト設定」でデフォルトのテストモデルを更新してください。",
-    "quotaExceeded": "{{providerName}} の Coding Plan 利用枠を超過しました",
-    "quotaExceededHint": "Baidu Qianfan が Coding Plan の利用枠超過エラーを返しました。5時間・週次・月次の利用枠更新を待つか、Qianfan コンソールでプランを確認してください。",
     "httpHint": {
       "400": "リクエスト形式が拒否されました。ヘルスチェックの形式は実際の使用と異なる場合があります。",
       "401": "APIキーが無効か、OAuthなどの認証方式を使用しています。チェック失敗は実際に使えないことを意味しません。",
@@ -2294,9 +2324,6 @@
     }
   },
   "universalProvider": {
-    "duplicate": "複製",
-    "duplicatedAndSynced": "統合プロバイダーを複製して同期しました",
-    "duplicateError": "統合プロバイダーの複製に失敗しました",
     "title": "統合プロバイダー",
     "description": "統合プロバイダーは Claude、Codex、Gemini の設定を同時に管理します。変更は有効なすべてのアプリに自動的に同期されます。",
     "add": "統合プロバイダーを追加",

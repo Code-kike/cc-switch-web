@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect } from "react";
+import { useMemo, useState } from "react";
 import { GripVertical, ChevronDown, ChevronUp } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type {
@@ -16,11 +16,13 @@ import CopilotQuotaFooter from "@/components/CopilotQuotaFooter";
 import CodexOauthQuotaFooter from "@/components/CodexOauthQuotaFooter";
 import { PROVIDER_TYPES } from "@/config/constants";
 import { isHermesReadOnlyProvider } from "@/config/hermesProviderPresets";
-import { ProviderHealthBadge } from "@/components/providers/ProviderHealthBadge";
 import { FailoverPriorityBadge } from "@/components/providers/FailoverPriorityBadge";
+import { HealthStatusIndicator } from "@/components/providers/HealthStatusIndicator";
 import { extractCodexBaseUrl } from "@/utils/providerConfigUtils";
 import { useProviderHealth } from "@/lib/query/failover";
 import { useUsageQuery } from "@/lib/query/queries";
+import { useProviderLimits, useProviderStats } from "@/lib/query/usage";
+import { extractErrorMessage } from "@/utils/errorUtils";
 
 interface DragHandleProps {
   attributes: DraggableAttributes;
@@ -116,6 +118,46 @@ const extractApiUrl = (provider: Provider, fallbackText: string) => {
   return fallbackText;
 };
 
+type ProviderHealthIndicatorStatus = "operational" | "degraded" | "failed";
+const CARD_USAGE_RANGE = { preset: "30d" } as const;
+
+function parseUsdNumber(value: unknown): number | null {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : null;
+  }
+
+  if (typeof value === "string") {
+    const parsed = Number.parseFloat(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  return null;
+}
+
+function formatUsdAmount(
+  value: unknown,
+  digits: number,
+  fallback: string = "--",
+): string {
+  const parsed = parseUsdNumber(value);
+  if (parsed == null) {
+    return fallback;
+  }
+  return `$${parsed.toFixed(digits)}`;
+}
+
+function getHealthIndicatorStatus(
+  consecutiveFailures: number,
+): ProviderHealthIndicatorStatus {
+  if (consecutiveFailures === 0) {
+    return "operational";
+  }
+  if (consecutiveFailures < 5) {
+    return "degraded";
+  }
+  return "failed";
+}
+
 export function ProviderCard({
   provider,
   isCurrent,
@@ -153,8 +195,32 @@ export function ProviderCard({
   const isAnyOmo = isOmo || isOmoSlim;
   const handleDisableAnyOmo = isOmoSlim ? onDisableOmoSlim : onDisableOmo;
   const isAdditiveMode = appId === "opencode" && !isAnyOmo;
+  const supportsLiveConfigStatus =
+    (appId === "opencode" || appId === "openclaw" || appId === "hermes") &&
+    !isAnyOmo;
+  const healthEnabled = isProxyRunning && isInFailoverQueue;
+  const configuredDailyLimit = parseUsdNumber(provider.meta?.limitDailyUsd);
+  const configuredMonthlyLimit = parseUsdNumber(provider.meta?.limitMonthlyUsd);
+  const hasConfiguredLimits =
+    configuredDailyLimit != null || configuredMonthlyLimit != null;
 
-  const { data: health } = useProviderHealth(provider.id, appId);
+  const { data: health, error: healthError } = useProviderHealth(
+    provider.id,
+    appId,
+    healthEnabled,
+  );
+  const { data: providerLimits, error: providerLimitsError } = useProviderLimits(
+    provider.id,
+    appId,
+    hasConfiguredLimits,
+  );
+  const { data: providerStats, error: providerStatsError } = useProviderStats(
+    CARD_USAGE_RANGE,
+    appId,
+    {
+      refetchInterval: false,
+    },
+  );
 
   const fallbackUrlText = t("provider.notConfigured", {
     defaultValue: "未配置接口地址",
@@ -187,6 +253,34 @@ export function ProviderCard({
     appId === "hermes" && isHermesReadOnlyProvider(provider.settingsConfig);
   const isCodexOauth =
     provider.meta?.providerType === PROVIDER_TYPES.CODEX_OAUTH;
+  const usageStats = providerStats?.find((item) => item.providerId === provider.id);
+  const healthStatus = health
+    ? getHealthIndicatorStatus(health.consecutive_failures)
+    : null;
+  const dailyLimitText =
+    configuredDailyLimit != null
+      ? formatUsdAmount(providerLimits?.dailyLimit ?? configuredDailyLimit, 2)
+      : null;
+  const monthlyLimitText =
+    configuredMonthlyLimit != null
+      ? formatUsdAmount(
+          providerLimits?.monthlyLimit ?? configuredMonthlyLimit,
+          2,
+        )
+      : null;
+  const dailyUsageText = formatUsdAmount(providerLimits?.dailyUsage, 4);
+  const monthlyUsageText = formatUsdAmount(providerLimits?.monthlyUsage, 4);
+  const usageStatsText =
+    usageStats && usageStats.requestCount > 0
+      ? `${t("provider.usage30dSummary", {
+          defaultValue: "30天",
+        })} ${usageStats.requestCount.toLocaleString()} ${t(
+          "provider.usage30dRequests",
+          {
+            defaultValue: "次",
+          },
+        )} / ${formatUsdAmount(usageStats.totalCost, 4)}`
+      : null;
 
   // 获取用量数据以判断是否有多套餐
   // 累加模式应用（OpenCode/OpenClaw/Hermes）：使用 isInConfig 代替 isCurrent
@@ -208,13 +302,10 @@ export function ProviderCard({
   const hasMultiplePlans =
     usage?.success && usage.data && usage.data.length > 1 && !isTokenPlan;
 
-  const [isExpanded, setIsExpanded] = useState(false);
-
-  useEffect(() => {
-    if (hasMultiplePlans) {
-      setIsExpanded(true);
-    }
-  }, [hasMultiplePlans]);
+  const [expandedPreference, setExpandedPreference] = useState<boolean | null>(
+    null,
+  );
+  const isExpanded = expandedPreference ?? hasMultiplePlans;
 
   const handleOpenWebsite = () => {
     if (!isClickableUrl) {
@@ -318,10 +409,13 @@ export function ProviderCard({
                 </span>
               )}
 
-              {isProxyRunning && isInFailoverQueue && health && (
-                <ProviderHealthBadge
-                  consecutiveFailures={health.consecutive_failures}
-                />
+              {healthEnabled && health && healthStatus && (
+                <div title={health.last_error ?? undefined}>
+                  <HealthStatusIndicator
+                    status={healthStatus}
+                    className="rounded-full bg-muted/60 px-2 py-0.5"
+                  />
+                </div>
               )}
 
               {isAutoFailoverEnabled &&
@@ -354,6 +448,28 @@ export function ProviderCard({
                   })}
                 </span>
               )}
+
+              {supportsLiveConfigStatus && (
+                <span
+                  className={cn(
+                    "inline-flex items-center rounded-md px-1.5 py-0.5 text-[10px] font-semibold",
+                    isInConfig
+                      ? "bg-blue-500/10 text-blue-700 dark:text-blue-300"
+                      : "bg-slate-200 text-slate-700 dark:bg-slate-700/60 dark:text-slate-200",
+                  )}
+                  title={t("provider.liveConfigStatusHint", {
+                    defaultValue: "反映当前 live 配置中是否包含该供应商",
+                  })}
+                >
+                  {isInConfig
+                    ? t("provider.liveConfigPresent", {
+                        defaultValue: "Live Config",
+                      })
+                    : t("provider.liveConfigMissing", {
+                        defaultValue: "DB Only",
+                      })}
+                </span>
+              )}
             </div>
 
             {displayUrl && (
@@ -371,6 +487,109 @@ export function ProviderCard({
               >
                 <span className="truncate">{displayUrl}</span>
               </button>
+            )}
+
+            {(providerStatsError ||
+              providerLimitsError ||
+              healthError ||
+              usageStatsText ||
+              dailyLimitText ||
+              monthlyLimitText) && (
+              <div className="flex flex-wrap items-center gap-2 pt-1">
+                {providerStatsError && !usageStatsText && (
+                  <span
+                    className="inline-flex items-center rounded-full bg-amber-500/10 px-2 py-1 text-xs font-medium text-amber-700 dark:text-amber-300"
+                    title={extractErrorMessage(providerStatsError) || undefined}
+                  >
+                    {t("provider.usageStatsUnavailable", {
+                      defaultValue: "用量摘要不可用",
+                    })}
+                  </span>
+                )}
+
+                {providerLimitsError && !providerLimits && hasConfiguredLimits && (
+                  <span
+                    className="inline-flex items-center rounded-full bg-amber-500/10 px-2 py-1 text-xs font-medium text-amber-700 dark:text-amber-300"
+                    title={extractErrorMessage(providerLimitsError) || undefined}
+                  >
+                    {t("provider.limitsUnavailable", {
+                      defaultValue: "限额状态不可用",
+                    })}
+                  </span>
+                )}
+
+                {healthError && !health && healthEnabled && (
+                  <span
+                    className="inline-flex items-center rounded-full bg-amber-500/10 px-2 py-1 text-xs font-medium text-amber-700 dark:text-amber-300"
+                    title={extractErrorMessage(healthError) || undefined}
+                  >
+                    {t("provider.healthUnavailable", {
+                      defaultValue: "健康状态不可用",
+                    })}
+                  </span>
+                )}
+
+                {usageStatsText && (
+                  <span
+                    className="inline-flex items-center rounded-full bg-muted/60 px-2 py-1 text-xs font-medium text-muted-foreground"
+                    title={
+                      usageStats
+                        ? t("provider.usage30dStatsHint", {
+                            defaultValue: `成功率 ${usageStats.successRate.toFixed(1)}% · 平均延迟 ${Math.round(usageStats.avgLatencyMs)}ms`,
+                          })
+                        : undefined
+                    }
+                  >
+                    {usageStatsText}
+                  </span>
+                )}
+
+                {dailyLimitText && (
+                  <span
+                    className={cn(
+                      "inline-flex items-center rounded-full px-2 py-1 text-xs font-medium",
+                      providerLimits?.dailyExceeded
+                        ? "bg-red-500/10 text-red-600 dark:text-red-400"
+                        : "bg-muted/60 text-muted-foreground",
+                    )}
+                    title={
+                      providerLimits?.dailyExceeded
+                        ? t("provider.dailyLimitExceeded", {
+                            defaultValue: "已超出每日限额",
+                          })
+                        : undefined
+                    }
+                  >
+                    {t("provider.dailyLimitSummary", {
+                      defaultValue: "日限额",
+                    })}{" "}
+                    {dailyUsageText} / {dailyLimitText}
+                  </span>
+                )}
+
+                {monthlyLimitText && (
+                  <span
+                    className={cn(
+                      "inline-flex items-center rounded-full px-2 py-1 text-xs font-medium",
+                      providerLimits?.monthlyExceeded
+                        ? "bg-red-500/10 text-red-600 dark:text-red-400"
+                        : "bg-muted/60 text-muted-foreground",
+                    )}
+                    title={
+                      providerLimits?.monthlyExceeded
+                        ? t("provider.monthlyLimitExceeded", {
+                            defaultValue: "已超出每月限额",
+                          })
+                        : undefined
+                    }
+                  >
+                    {t("provider.monthlyLimitSummary", {
+                      defaultValue: "月限额",
+                    })}{" "}
+                    {monthlyUsageText} / {monthlyLimitText}
+                  </span>
+                )}
+              </div>
             )}
           </div>
         </div>
@@ -420,7 +639,7 @@ export function ProviderCard({
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
-                    setIsExpanded(!isExpanded);
+                    setExpandedPreference((prev) => !(prev ?? hasMultiplePlans));
                   }}
                   className="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors text-gray-500 dark:text-gray-400 flex-shrink-0"
                   title={

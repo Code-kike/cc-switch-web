@@ -5,7 +5,7 @@ import React, {
   useMemo,
   useState,
 } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, isWebMode } from "@/lib/api/adapter";
 
 type Theme = "light" | "dark" | "system";
 
@@ -17,7 +17,7 @@ interface ThemeProviderProps {
 
 interface ThemeContextValue {
   theme: Theme;
-  setTheme: (theme: Theme) => void;
+  setTheme: (theme: Theme, event?: React.MouseEvent) => void;
 }
 
 const ThemeProviderContext = createContext<ThemeContextValue | undefined>(
@@ -105,6 +105,7 @@ export function ThemeProvider({
 
     const updateNativeTheme = async (nativeTheme: string) => {
       if (isCancelled) return;
+      if (isWebMode()) return;
       try {
         await invoke("set_window_theme", { theme: nativeTheme });
       } catch (e) {
@@ -130,9 +131,30 @@ export function ThemeProvider({
   const value = useMemo<ThemeContextValue>(
     () => ({
       theme,
-      setTheme: (nextTheme: Theme) => {
+      setTheme: (nextTheme: Theme, event?: React.MouseEvent) => {
+        // Skip if same theme
         if (nextTheme === theme) return;
-        setThemeState(nextTheme);
+
+        // Set transition origin coordinates from click event
+        const x = event?.clientX ?? window.innerWidth / 2;
+        const y = event?.clientY ?? window.innerHeight / 2;
+        document.documentElement.style.setProperty(
+          "--theme-transition-x",
+          `${x}px`,
+        );
+        document.documentElement.style.setProperty(
+          "--theme-transition-y",
+          `${y}px`,
+        );
+
+        // Use View Transitions API if available, otherwise fall back to instant change
+        if (document.startViewTransition) {
+          document.startViewTransition(() => {
+            setThemeState(nextTheme);
+          });
+        } else {
+          setThemeState(nextTheme);
+        }
       },
     }),
     [theme],

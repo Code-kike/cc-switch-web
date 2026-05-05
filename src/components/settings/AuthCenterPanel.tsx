@@ -1,12 +1,14 @@
-import { Github, ShieldCheck } from "lucide-react";
+import { Github, Info, ShieldCheck } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Badge } from "@/components/ui/badge";
 import { CodexIcon } from "@/components/BrandIcons";
 import { CopilotAuthSection } from "@/components/providers/forms/CopilotAuthSection";
 import { CodexOAuthSection } from "@/components/providers/forms/CodexOAuthSection";
+import { isWebMode } from "@/lib/api/adapter";
 
 export function AuthCenterPanel() {
   const { t } = useTranslation();
+  const webMode = isWebMode();
 
   return (
     <div className="space-y-6">
@@ -33,6 +35,27 @@ export function AuthCenterPanel() {
           </Badge>
         </div>
       </section>
+
+      {webMode && (
+        <section className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4">
+          <div className="flex items-start gap-3">
+            <Info className="mt-0.5 h-4 w-4 shrink-0 text-amber-700 dark:text-amber-400" />
+            <div className="space-y-1 text-sm">
+              <p className="font-medium text-amber-900 dark:text-amber-200">
+                {t("settings.authCenter.webRemoteHint", {
+                  defaultValue: "远程 Web 模式会把 OAuth 账号保存到服务端机器",
+                })}
+              </p>
+              <p className="text-amber-800/90 dark:text-amber-300/90">
+                {t("settings.authCenter.webRemoteHintDescription", {
+                  defaultValue:
+                    "授权页面会在当前浏览器打开，但登录成功后的 Copilot / ChatGPT 账号会绑定到运行 cc-switch Web 的那台机器。仅在您信任该服务端时继续。",
+                })}
+              </p>
+            </div>
+          </div>
+        </section>
+      )}
 
       <section className="rounded-xl border border-border/60 bg-card/60 p-6">
         <div className="mb-4 flex items-center gap-3">

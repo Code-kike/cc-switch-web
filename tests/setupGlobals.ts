@@ -1,7 +1,33 @@
 // Polyfill ResizeObserver for jsdom/happy-dom
 if (typeof globalThis.ResizeObserver === "undefined") {
   globalThis.ResizeObserver = class ResizeObserver {
-    observe() {}
+    private readonly callback: ResizeObserverCallback;
+
+    constructor(callback: ResizeObserverCallback) {
+      this.callback = callback;
+    }
+
+    observe(target: Element) {
+      this.callback(
+        [
+          {
+            target,
+            contentRect: {
+              width: 960,
+              height: 350,
+              x: 0,
+              y: 0,
+              top: 0,
+              left: 0,
+              bottom: 350,
+              right: 960,
+              toJSON: () => ({}),
+            } as DOMRectReadOnly,
+          } as ResizeObserverEntry,
+        ],
+        this,
+      );
+    }
     unobserve() {}
     disconnect() {}
   } as unknown as typeof globalThis.ResizeObserver;

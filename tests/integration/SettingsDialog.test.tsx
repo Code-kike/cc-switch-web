@@ -4,6 +4,7 @@ import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { http, HttpResponse } from "msw";
 import { SettingsPage } from "@/components/settings/SettingsPage";
+import { settingsApi } from "@/lib/api/settings";
 import {
   resetProviderState,
   getSettings,
@@ -13,12 +14,17 @@ import { server } from "../msw/server";
 
 const toastSuccessMock = vi.fn();
 const toastErrorMock = vi.fn();
+const isDevModeMock = vi.fn(() => true);
 
 vi.mock("sonner", () => ({
   toast: {
     success: (...args: unknown[]) => toastSuccessMock(...args),
     error: (...args: unknown[]) => toastErrorMock(...args),
   },
+}));
+
+vi.mock("@/lib/runtime", () => ({
+  isDevMode: () => isDevModeMock(),
 }));
 
 vi.mock("@/components/ui/dialog", () => ({
@@ -137,6 +143,20 @@ beforeEach(() => {
   resetProviderState();
   toastSuccessMock.mockReset();
   toastErrorMock.mockReset();
+  isDevModeMock.mockReset();
+  isDevModeMock.mockReturnValue(true);
+  Object.defineProperty(window, "__TAURI_INTERNALS__", {
+    configurable: true,
+    value: {},
+  });
+  Object.defineProperty(window, "__TAURI__", {
+    configurable: true,
+    value: {},
+  });
+  Object.defineProperty(window, "__CC_SWITCH_API_BASE__", {
+    configurable: true,
+    value: undefined,
+  });
 });
 
 afterEach(() => {
@@ -210,6 +230,39 @@ describe("SettingsPage integration", () => {
     expect(getAppConfigDirOverride()).toBe("/custom/app");
   });
 
+  it("shows structured detail when restart fails after a restart-required save", async () => {
+    const restartSpy = vi
+      .spyOn(settingsApi, "restart")
+      .mockRejectedValueOnce({ detail: "restart denied" });
+    isDevModeMock.mockReturnValue(false);
+
+    renderDialog();
+
+    await waitFor(() =>
+      expect(screen.getByText("language:zh")).toBeInTheDocument(),
+    );
+
+    fireEvent.click(screen.getByText("settings.tabAdvanced"));
+    fireEvent.click(screen.getByText("settings.advanced.configDir.title"));
+    const appInput = await screen.findByPlaceholderText(
+      "settings.browsePlaceholderApp",
+    );
+    fireEvent.change(appInput, { target: { value: "/custom/restart-app" } });
+    fireEvent.click(screen.getByText("common.save"));
+
+    await screen.findByText("settings.restartRequired");
+    fireEvent.click(screen.getByText("settings.restartNow"));
+
+    await waitFor(() =>
+      expect(toastErrorMock).toHaveBeenCalledWith("settings.restartFailed", {
+        description: "restart denied",
+      }),
+    );
+    expect(getAppConfigDirOverride()).toBe("/custom/restart-app");
+
+    restartSpy.mockRestore();
+  });
+
   it("allows browsing and resetting directories", async () => {
     renderDialog();
 
@@ -267,11 +320,7 @@ describe("SettingsPage integration", () => {
     );
     fireEvent.click(screen.getByText("settings.exportConfig"));
 
-    await waitFor(() => expect(toastErrorMock).toHaveBeenCalled());
-    const cancelMessage = toastErrorMock.mock.calls.at(-1)?.[0] as string;
-    expect(cancelMessage).toMatch(
-      /settings\.selectFileFailed|请选择.*保存路径/,
-    );
+    await waitFor(() => expect(toastErrorMock).not.toHaveBeenCalled());
 
     toastErrorMock.mockClear();
 

@@ -29,3 +29,6 @@ copilot-api
 .history
 CODEBUDDY.md
 .github
+.serena/
+dist-web/
+commands.manifest.json

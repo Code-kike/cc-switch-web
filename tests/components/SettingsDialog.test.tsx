@@ -7,12 +7,17 @@ import { SettingsPage } from "@/components/settings/SettingsPage";
 
 const toastSuccessMock = vi.fn();
 const toastErrorMock = vi.fn();
+const isDevModeMock = vi.fn(() => true);
 
 vi.mock("sonner", () => ({
   toast: {
     success: (...args: unknown[]) => toastSuccessMock(...args),
     error: (...args: unknown[]) => toastErrorMock(...args),
   },
+}));
+
+vi.mock("@/lib/runtime", () => ({
+  isDevMode: () => isDevModeMock(),
 }));
 
 const tMock = vi.fn((key: string) => key);
@@ -237,6 +242,24 @@ vi.mock("@/components/settings/AboutSection", () => ({
   AboutSection: ({ isPortable }: any) => <div>about:{String(isPortable)}</div>,
 }));
 
+vi.mock("@/components/settings/ProxyTabContent", () => ({
+  ProxyTabContent: () => <div>proxy-tab-content</div>,
+}));
+
+vi.mock("@/components/settings/AuthCenterPanel", () => ({
+  AuthCenterPanel: () => <div>auth-center-panel</div>,
+}));
+
+vi.mock("@/components/usage/UsageDashboard", () => ({
+  UsageDashboard: () => <div>usage-dashboard</div>,
+}));
+
+vi.mock("@/components/settings/TerminalSettings", () => ({
+  TerminalSettings: () => (
+    <div data-testid="terminal-settings">terminal-settings</div>
+  ),
+}));
+
 vi.mock("@/components/settings/WebdavSyncSection", () => ({
   WebdavSyncSection: ({ config }: any) => (
     <div>webdav-sync-section:{config?.baseUrl ?? "none"}</div>
@@ -263,6 +286,8 @@ const renderSettingsPage = (
 describe("SettingsPage Component", () => {
   beforeEach(async () => {
     tMock.mockImplementation((key: string) => key);
+    isDevModeMock.mockReset();
+    isDevModeMock.mockReturnValue(true);
     settingsMock = createSettingsMock();
     importExportMock = createImportExportMock();
     useImportExportSpy.mockReset();
@@ -318,6 +343,10 @@ describe("SettingsPage Component", () => {
 
   it("should render general and advanced tabs and trigger child callbacks", () => {
     const onOpenChange = vi.fn();
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: {},
+    });
     // 设置 selectedFile 后，按钮显示 settings.import（可执行导入）
     importExportMock = createImportExportMock({
       selectedFile: "/tmp/config.json",
@@ -357,6 +386,33 @@ describe("SettingsPage Component", () => {
     // 清除选择按钮
     fireEvent.click(screen.getByRole("button", { name: "common.clear" }));
     expect(importExportMock.clearSelection).toHaveBeenCalled();
+  });
+
+  it("should mount proxy, auth, usage, and about panels when switching tabs", () => {
+    renderSettingsPage();
+
+    fireEvent.click(screen.getByText("settings.tabProxy"));
+    expect(screen.getByText("proxy-tab-content")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("settings.tabAuth"));
+    expect(screen.getByText("auth-center-panel")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("usage.title"));
+    expect(screen.getByText("usage-dashboard")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("common.about"));
+    expect(screen.getByText("about:false")).toBeInTheDocument();
+  });
+
+  it("should hide terminal settings in web mode", () => {
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: undefined,
+    });
+
+    renderSettingsPage();
+
+    expect(screen.queryByTestId("terminal-settings")).not.toBeInTheDocument();
   });
 
   it("should pass onImportSuccess callback to useImportExport hook", async () => {
@@ -413,6 +469,26 @@ describe("SettingsPage Component", () => {
         "settings.devModeRestartHint",
         expect.objectContaining({ closeButton: true }),
       );
+    });
+  });
+
+  it("shows structured detail when restart fails", async () => {
+    settingsMock = createSettingsMock({ requiresRestart: true });
+    settingsApi.restart.mockRejectedValueOnce({ detail: "restart denied" });
+    isDevModeMock.mockReturnValue(false);
+
+    renderSettingsPage();
+
+    expect(
+      await screen.findByText("settings.restartRequired"),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("settings.restartNow"));
+
+    await waitFor(() => {
+      expect(toastErrorMock).toHaveBeenCalledWith("settings.restartFailed", {
+        description: "restart denied",
+      });
     });
   });
 
