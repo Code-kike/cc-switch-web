@@ -5,6 +5,73 @@ use url::{Host, Url};
 
 use crate::error::AppError;
 
+/// Best-effort extraction of `request.url` from a usage script's JS body, used
+/// at save-time to reject placeholder scripts that would always fail at
+/// execute-time (`Url::parse("")` -> "relative URL without a base").
+///
+/// Substitutes the standard placeholders with sentinel values so a templated
+/// URL like `{{baseUrl}}/balance` survives extraction. Returns:
+///   - `Ok(Some(url))`  when the script parses and exposes a string URL
+///   - `Ok(None)`       when the script does not declare `request.url` (caller
+///                      decides whether that's a save-blocking issue)
+///   - `Err(_)`         only on JS runtime/eval failures the caller should log
+///
+/// Built-in templates (`balance` / `token_plan` / `github_copilot`) ignore the
+/// JS body entirely, so callers should skip this check for those.
+pub fn try_extract_request_url(script_code: &str) -> Result<Option<String>, AppError> {
+    let prepared = script_code
+        .replace("{{baseUrl}}", "https://placeholder.invalid")
+        .replace("{{apiKey}}", "placeholder-key")
+        .replace("{{accessToken}}", "placeholder-token")
+        .replace("{{userId}}", "placeholder-user");
+
+    let runtime = Runtime::new().map_err(|e| {
+        AppError::localized(
+            "usage_script.runtime_create_failed",
+            format!("创建 JS 运行时失败: {e}"),
+            format!("Failed to create JS runtime: {e}"),
+        )
+    })?;
+    let context = Context::full(&runtime).map_err(|e| {
+        AppError::localized(
+            "usage_script.context_create_failed",
+            format!("创建 JS 上下文失败: {e}"),
+            format!("Failed to create JS context: {e}"),
+        )
+    })?;
+
+    let url_result: Result<Option<String>, AppError> = context.with(|ctx| {
+        let config: rquickjs::Object = ctx.eval(prepared).map_err(|e| {
+            AppError::localized(
+                "usage_script.config_parse_failed",
+                format!("解析配置失败: {e}"),
+                format!("Failed to parse config: {e}"),
+            )
+        })?;
+
+        let request: rquickjs::Object = match config.get("request") {
+            Ok(req) => req,
+            Err(_) => return Ok(None),
+        };
+        let url_value: rquickjs::Value = match request.get("url") {
+            Ok(v) => v,
+            Err(_) => return Ok(None),
+        };
+        let Some(js_string) = url_value.as_string() else {
+            return Ok(None);
+        };
+        let url = js_string.to_string().map_err(|e| {
+            AppError::localized(
+                "usage_script.get_string_failed",
+                format!("获取字符串失败: {e}"),
+                format!("Failed to get string: {e}"),
+            )
+        })?;
+        Ok(Some(url))
+    });
+    url_result
+}
+
 /// 执行用量查询脚本
 pub async fn execute_usage_script(
     script_code: &str,
