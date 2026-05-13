@@ -11,12 +11,6 @@ use crate::services::{
 use crate::store::AppState;
 use std::str::FromStr;
 
-// 常量定义
-const TEMPLATE_TYPE_GITHUB_COPILOT: &str = "github_copilot";
-const TEMPLATE_TYPE_TOKEN_PLAN: &str = "token_plan";
-const TEMPLATE_TYPE_BALANCE: &str = "balance";
-const COPILOT_UNIT_PREMIUM: &str = "requests";
-
 /// 获取所有供应商
 #[tauri::command]
 pub fn get_providers(
@@ -166,8 +160,14 @@ pub async fn queryProviderUsage(
     // 两种都要把"失败"写进 UsageCache 并刷新托盘，让 format_script_summary 的
     // success 守卫生效、suffix 自然消失，避免旧 success 快照长期滞留。
     // 同时保持原始 Err 返回给前端 React Query 的 onError 回调，不吞错误。
-    let inner =
-        query_provider_usage_inner(&state, &copilot_state, app_type.clone(), &providerId).await;
+    let inner = ProviderService::query_usage_with_templates(
+        &state,
+        app_type.clone(),
+        &providerId,
+        Some(copilot_state.0.as_ref()),
+    )
+    .await
+    .map_err(|e| e.to_string());
     let snapshot = match &inner {
         Ok(r) => r.clone(),
         Err(err_msg) => crate::provider::UsageResult {
@@ -190,156 +190,12 @@ pub async fn queryProviderUsage(
     inner
 }
 
-async fn query_provider_usage_inner(
-    state: &AppState,
-    copilot_state: &CopilotAuthState,
-    app_type: AppType,
-    provider_id: &str,
-) -> Result<crate::provider::UsageResult, String> {
-    // 从数据库读取供应商信息，检查特殊模板类型
-    let providers = state
-        .db
-        .get_all_providers(app_type.as_str())
-        .map_err(|e| format!("Failed to get providers: {e}"))?;
-    let provider = providers.get(provider_id);
-    let usage_script = provider
-        .and_then(|p| p.meta.as_ref())
-        .and_then(|m| m.usage_script.as_ref());
-    let template_type = usage_script
-        .and_then(|s| s.template_type.as_deref())
-        .unwrap_or("");
-
-    // ── GitHub Copilot 专用路径 ──
-    if template_type == TEMPLATE_TYPE_GITHUB_COPILOT {
-        let copilot_account_id = provider
-            .and_then(|p| p.meta.as_ref())
-            .and_then(|m| m.managed_account_id_for(TEMPLATE_TYPE_GITHUB_COPILOT));
-
-        let auth_manager = copilot_state.0.read().await;
-        let usage = match copilot_account_id.as_deref() {
-            Some(account_id) => auth_manager
-                .fetch_usage_for_account(account_id)
-                .await
-                .map_err(|e| format!("Failed to fetch Copilot usage: {e}"))?,
-            None => auth_manager
-                .fetch_usage()
-                .await
-                .map_err(|e| format!("Failed to fetch Copilot usage: {e}"))?,
-        };
-        let premium = &usage.quota_snapshots.premium_interactions;
-        let used = premium.entitlement - premium.remaining;
-
-        return Ok(crate::provider::UsageResult {
-            success: true,
-            data: Some(vec![crate::provider::UsageData {
-                plan_name: Some(usage.copilot_plan),
-                remaining: Some(premium.remaining as f64),
-                total: Some(premium.entitlement as f64),
-                used: Some(used as f64),
-                unit: Some(COPILOT_UNIT_PREMIUM.to_string()),
-                is_valid: Some(true),
-                invalid_message: None,
-                extra: Some(format!("Reset: {}", usage.quota_reset_date)),
-            }]),
-            error: None,
-        });
-    }
-
-    // ── Coding Plan 专用路径 ──
-    if template_type == TEMPLATE_TYPE_TOKEN_PLAN {
-        // 从供应商配置中提取 API Key 和 Base URL
-        let settings_config = provider
-            .map(|p| &p.settings_config)
-            .cloned()
-            .unwrap_or_default();
-        let env = settings_config.get("env");
-        let base_url = env
-            .and_then(|e| e.get("ANTHROPIC_BASE_URL"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        let api_key = env
-            .and_then(|e| {
-                e.get("ANTHROPIC_AUTH_TOKEN")
-                    .or_else(|| e.get("ANTHROPIC_API_KEY"))
-            })
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-
-        let quota = crate::services::coding_plan::get_coding_plan_quota(base_url, api_key)
-            .await
-            .map_err(|e| format!("Failed to query coding plan: {e}"))?;
-
-        // 将 SubscriptionQuota 转换为 UsageResult
-        if !quota.success {
-            return Ok(crate::provider::UsageResult {
-                success: false,
-                data: None,
-                error: quota.error,
-            });
-        }
-
-        let data: Vec<crate::provider::UsageData> = quota
-            .tiers
-            .iter()
-            .map(|tier| {
-                let total = 100.0;
-                let used = tier.utilization;
-                let remaining = total - used;
-                crate::provider::UsageData {
-                    plan_name: Some(tier.name.clone()),
-                    remaining: Some(remaining),
-                    total: Some(total),
-                    used: Some(used),
-                    unit: Some("%".to_string()),
-                    is_valid: Some(true),
-                    invalid_message: None,
-                    extra: tier.resets_at.clone(),
-                }
-            })
-            .collect();
-
-        return Ok(crate::provider::UsageResult {
-            success: true,
-            data: if data.is_empty() { None } else { Some(data) },
-            error: None,
-        });
-    }
-
-    // ── 官方余额查询路径 ──
-    if template_type == TEMPLATE_TYPE_BALANCE {
-        let settings_config = provider
-            .map(|p| &p.settings_config)
-            .cloned()
-            .unwrap_or_default();
-        let env = settings_config.get("env");
-        let base_url = env
-            .and_then(|e| e.get("ANTHROPIC_BASE_URL"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        let api_key = env
-            .and_then(|e| {
-                e.get("ANTHROPIC_AUTH_TOKEN")
-                    .or_else(|| e.get("ANTHROPIC_API_KEY"))
-            })
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-
-        return crate::services::balance::get_balance(base_url, api_key)
-            .await
-            .map_err(|e| format!("Failed to query balance: {e}"));
-    }
-
-    // ── 通用 JS 脚本路径 ──
-    ProviderService::query_usage(state, app_type, provider_id)
-        .await
-        .map_err(|e| e.to_string())
-}
-
 #[allow(non_snake_case)]
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn testUsageScript(
     state: State<'_, AppState>,
+    copilot_state: State<'_, CopilotAuthState>,
     #[allow(non_snake_case)] providerId: String,
     app: String,
     #[allow(non_snake_case)] scriptCode: String,
@@ -362,6 +218,7 @@ pub async fn testUsageScript(
         accessToken.as_deref(),
         userId.as_deref(),
         templateType.as_deref(),
+        Some(copilot_state.0.as_ref()),
     )
     .await
     .map_err(|e| e.to_string())

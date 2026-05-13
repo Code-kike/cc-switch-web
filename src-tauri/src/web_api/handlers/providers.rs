@@ -517,13 +517,34 @@ async fn query_provider_usage(
     Json(request): Json<QueryProviderUsageRequest>,
 ) -> ApiResult<crate::provider::UsageResult> {
     let app_type = parse_app_type(&request.app)?;
-    let result = crate::services::ProviderService::query_usage(
+    let provider_id = request.provider_id;
+    let inner = crate::services::ProviderService::query_usage_with_templates(
         state.app_state.as_ref(),
-        app_type,
-        &request.provider_id,
+        app_type.clone(),
+        &provider_id,
+        Some(state.copilot_auth.as_ref()),
     )
-    .await
-    .map_err(ApiError::from_anyhow)?;
+    .await;
+    let snapshot = match &inner {
+        Ok(result) => result.clone(),
+        Err(error) => crate::provider::UsageResult {
+            success: false,
+            data: None,
+            error: Some(error.to_string()),
+        },
+    };
+    let payload = serde_json::json!({
+        "kind": "script",
+        "appType": app_type.as_str(),
+        "providerId": &provider_id,
+        "data": &snapshot,
+    });
+    state.sink.emit_json("usage-cache-updated", payload);
+    state
+        .app_state
+        .usage_cache
+        .put_script(app_type, provider_id, snapshot);
+    let result = inner.map_err(ApiError::from_anyhow)?;
     Ok(json_ok(result))
 }
 

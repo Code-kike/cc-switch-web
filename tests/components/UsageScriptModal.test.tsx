@@ -49,6 +49,13 @@ vi.mock("@/lib/api/copilot", () => ({
   copilotGetUsageForAccount: vi.fn(),
 }));
 
+vi.mock("@/lib/api/subscription", () => ({
+  subscriptionApi: {
+    getBalance: vi.fn(),
+    getCodingPlanQuota: vi.fn(),
+  },
+}));
+
 vi.mock("@/components/common/FullScreenPanel", () => ({
   FullScreenPanel: ({
     isOpen,
@@ -72,7 +79,9 @@ vi.mock("@/components/ConfirmDialog", () => ({
 }));
 
 vi.mock("@/components/ui/button", () => ({
-  Button: ({ children, ...props }: any) => <button {...props}>{children}</button>,
+  Button: ({ children, ...props }: any) => (
+    <button {...props}>{children}</button>
+  ),
 }));
 
 vi.mock("@/components/ui/input", () => ({
@@ -97,11 +106,17 @@ vi.mock("@/components/ui/switch", () => ({
 
 vi.mock("@/components/JsonEditor", () => ({
   default: ({ value, onChange }: any) => (
-    <textarea value={value} onChange={(event) => onChange(event.target.value)} />
+    <textarea
+      value={value}
+      onChange={(event) => onChange(event.target.value)}
+    />
   ),
 }));
 
-function renderModal(providerOverrides: Partial<Provider> = {}) {
+function renderModal(
+  providerOverrides: Partial<Provider> = {},
+  appId: "claude" | "hermes" = "claude",
+) {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
@@ -130,7 +145,7 @@ function renderModal(providerOverrides: Partial<Provider> = {}) {
     <QueryClientProvider client={queryClient}>
       <UsageScriptModal
         provider={provider}
-        appId="claude"
+        appId={appId}
         isOpen={true}
         onClose={vi.fn()}
         onSave={vi.fn()}
@@ -148,10 +163,14 @@ describe("UsageScriptModal", () => {
   });
 
   it("shows structured detail when usage-script testing throws", async () => {
-    usageApiTestScriptMock.mockRejectedValueOnce({ detail: "usage test exploded" });
+    usageApiTestScriptMock.mockRejectedValueOnce({
+      detail: "usage test exploded",
+    });
     renderModal();
 
-    fireEvent.click(screen.getByRole("button", { name: "usageScript.testScript" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "usageScript.testScript" }),
+    );
 
     await waitFor(() => {
       expect(toastErrorMock).toHaveBeenCalledWith(
@@ -173,5 +192,166 @@ describe("UsageScriptModal", () => {
         { duration: 3000 },
       );
     });
+  });
+
+  it("tests the balance template through the unified usage API", async () => {
+    usageApiTestScriptMock.mockResolvedValueOnce({
+      success: true,
+      data: [{ planName: "Hermes", remaining: 12.34, unit: "USD" }],
+    });
+
+    renderModal(
+      {
+        settingsConfig: {
+          api_key: "hermes-key",
+          base_url: "https://api.deepseek.com",
+        },
+        meta: {
+          usage_script: {
+            enabled: true,
+            language: "javascript",
+            code: "",
+            timeout: 10,
+            templateType: "balance",
+          },
+        },
+      },
+      "hermes",
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "usageScript.testScript" }),
+    );
+
+    await waitFor(() => {
+      expect(usageApiTestScriptMock).toHaveBeenCalledWith(
+        "provider-1",
+        "hermes",
+        "",
+        10,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        "balance",
+      );
+    });
+  });
+
+  it("tests the token-plan template through the unified usage API", async () => {
+    usageApiTestScriptMock.mockResolvedValueOnce({
+      success: true,
+      data: [
+        {
+          planName: "weekly",
+          remaining: 25,
+          total: 100,
+          used: 75,
+          unit: "%",
+        },
+      ],
+    });
+
+    renderModal({
+      settingsConfig: {
+        env: {
+          ANTHROPIC_AUTH_TOKEN: "coding-key",
+          ANTHROPIC_BASE_URL: "https://api.kimi.com/coding",
+        },
+      },
+      meta: {
+        usage_script: {
+          enabled: true,
+          language: "javascript",
+          code: "",
+          timeout: 10,
+          templateType: "token_plan",
+        },
+      },
+    });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "usageScript.testScript" }),
+    );
+
+    await waitFor(() => {
+      expect(usageApiTestScriptMock).toHaveBeenCalledWith(
+        "provider-1",
+        "claude",
+        "",
+        10,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        "token_plan",
+      );
+    });
+    expect(toastSuccessMock).toHaveBeenCalledWith(
+      "usageScript.testSuccessweekly: 75%",
+      {
+        duration: 3000,
+        closeButton: true,
+      },
+    );
+  });
+
+  it("tests the GitHub Copilot template through the unified usage API", async () => {
+    usageApiTestScriptMock.mockResolvedValueOnce({
+      success: true,
+      data: [
+        {
+          planName: "Copilot Pro",
+          remaining: 42,
+          total: 50,
+          used: 8,
+          unit: "requests",
+          extra: "Reset: 2026-05-31",
+        },
+      ],
+    });
+
+    renderModal({
+      meta: {
+        providerType: "github_copilot",
+        authBinding: {
+          source: "managed_account",
+          authProvider: "github_copilot",
+          accountId: "github-account-1",
+        },
+        usage_script: {
+          enabled: true,
+          language: "javascript",
+          code: "",
+          timeout: 10,
+          templateType: "github_copilot",
+        },
+      },
+    });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "usageScript.testScript" }),
+    );
+
+    await waitFor(() => {
+      expect(usageApiTestScriptMock).toHaveBeenCalledWith(
+        "provider-1",
+        "claude",
+        "",
+        10,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        "github_copilot",
+      );
+    });
+    expect(toastSuccessMock).toHaveBeenCalledWith(
+      "usageScript.testSuccess[Copilot Pro] usage.remaining 42/50 (Reset: 2026-05-31)",
+      {
+        duration: 3000,
+        closeButton: true,
+      },
+    );
   });
 });

@@ -1,4 +1,5 @@
 import { invoke } from "./adapter";
+import { extractErrorMessage } from "@/utils/errorUtils";
 import type {
   UsageSummary,
   DailyStats,
@@ -19,7 +20,15 @@ import type { TemplateType } from "@/config/constants";
 export const usageApi = {
   // Provider usage script methods
   query: async (providerId: string, appId: AppId): Promise<UsageResult> => {
-    return invoke("queryProviderUsage", { providerId, app: appId });
+    try {
+      return await invoke("queryProviderUsage", { providerId, app: appId });
+    } catch (error) {
+      return {
+        success: false,
+        data: undefined,
+        error: extractErrorMessage(error) || "Usage query failed",
+      };
+    }
   },
 
   testScript: async (
@@ -33,17 +42,25 @@ export const usageApi = {
     userId?: string,
     templateType?: TemplateType,
   ): Promise<UsageResult> => {
-    return invoke("testUsageScript", {
-      providerId,
-      app: appId,
-      scriptCode,
-      timeout,
-      apiKey,
-      baseUrl,
-      accessToken,
-      userId,
-      templateType,
-    });
+    try {
+      return await invoke("testUsageScript", {
+        providerId,
+        app: appId,
+        scriptCode,
+        timeout,
+        apiKey,
+        baseUrl,
+        accessToken,
+        userId,
+        templateType,
+      });
+    } catch (error) {
+      return {
+        success: false,
+        data: undefined,
+        error: extractErrorMessage(error) || "Usage query failed",
+      };
+    }
   },
 
   // Proxy usage statistics methods

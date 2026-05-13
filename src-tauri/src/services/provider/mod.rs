@@ -2004,6 +2004,18 @@ impl ProviderService {
         usage::query_usage(state, app_type, provider_id).await
     }
 
+    /// Query provider usage with native template dispatch (re-export)
+    pub async fn query_usage_with_templates(
+        state: &AppState,
+        app_type: AppType,
+        provider_id: &str,
+        copilot_auth: Option<
+            &tokio::sync::RwLock<crate::proxy::providers::copilot_auth::CopilotAuthManager>,
+        >,
+    ) -> Result<UsageResult, AppError> {
+        usage::query_usage_with_templates(state, app_type, provider_id, copilot_auth).await
+    }
+
     /// Test usage script (re-export)
     #[allow(clippy::too_many_arguments)]
     pub async fn test_usage_script(
@@ -2017,6 +2029,9 @@ impl ProviderService {
         access_token: Option<&str>,
         user_id: Option<&str>,
         template_type: Option<&str>,
+        copilot_auth: Option<
+            &tokio::sync::RwLock<crate::proxy::providers::copilot_auth::CopilotAuthManager>,
+        >,
     ) -> Result<UsageResult, AppError> {
         usage::test_usage_script(
             state,
@@ -2029,6 +2044,7 @@ impl ProviderService {
             access_token,
             user_id,
             template_type,
+            copilot_auth,
         )
         .await
     }

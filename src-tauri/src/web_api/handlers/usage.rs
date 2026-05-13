@@ -308,6 +308,7 @@ async fn test_usage_script(
         request.access_token.as_deref(),
         request.user_id.as_deref(),
         request.template_type.as_deref(),
+        Some(state.copilot_auth.as_ref()),
     )
     .await
     .map_err(ApiError::from_anyhow)?;

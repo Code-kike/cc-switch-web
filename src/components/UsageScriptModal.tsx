@@ -5,9 +5,7 @@ import { useTranslation } from "react-i18next";
 import { useQueryClient } from "@tanstack/react-query";
 import { Provider, UsageScript, UsageData, createUsageScript } from "@/types";
 import { usageApi, settingsApi, type AppId } from "@/lib/api";
-import { copilotGetUsage, copilotGetUsageForAccount } from "@/lib/api/copilot";
 import { useSettingsQuery } from "@/lib/query";
-import { resolveManagedAccountId } from "@/lib/authBinding";
 import { extractCodexBaseUrl } from "@/utils/providerConfigUtils";
 import { extractErrorMessage } from "@/utils/errorUtils";
 import JsonEditor from "./JsonEditor";
@@ -380,12 +378,22 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
   const handleTest = async () => {
     setTesting(true);
     try {
-      // 官方余额查询模板使用专用 API
+      // Built-in balance and coding-plan templates should use the same backend
+      // test command as saved provider-card queries. That keeps Web and desktop
+      // behavior aligned and avoids calling lower-level endpoints with a
+      // different response shape.
       if (selectedTemplate === TEMPLATE_TYPES.BALANCE) {
-        const baseUrl = providerCredentials.baseUrl ?? "";
-        const apiKey = providerCredentials.apiKey ?? "";
-        const { subscriptionApi } = await import("@/lib/api/subscription");
-        const result = await subscriptionApi.getBalance(baseUrl, apiKey);
+        const result = await usageApi.testScript(
+          provider.id,
+          appId,
+          "",
+          script.timeout,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          TEMPLATE_TYPES.BALANCE,
+        );
         if (result.success && result.data && result.data.length > 0) {
           const summary = result.data
             .map((d) => {
@@ -409,68 +417,79 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
 
       // Coding Plan 模板使用专用 API
       if (selectedTemplate === TEMPLATE_TYPES.TOKEN_PLAN) {
-        const baseUrl = providerCredentials.baseUrl ?? "";
-        const apiKey = providerCredentials.apiKey ?? "";
-        const { subscriptionApi } = await import("@/lib/api/subscription");
-        const quota = await subscriptionApi.getCodingPlanQuota(baseUrl, apiKey);
-        if (quota.success && quota.tiers.length > 0) {
-          const summary = quota.tiers
-            .map((tier) => `${tier.name}: ${Math.round(tier.utilization)}%`)
+        const result = await usageApi.testScript(
+          provider.id,
+          appId,
+          "",
+          script.timeout,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          TEMPLATE_TYPES.TOKEN_PLAN,
+        );
+        const data = result.data ?? [];
+        if (result.success && data.length > 0) {
+          const summary = data
+            .map((tier) => {
+              const used =
+                tier.used ??
+                (tier.remaining != null ? 100 - tier.remaining : 0);
+              return `${tier.planName || t("usageScript.defaultPlan")}: ${Math.round(used)}%`;
+            })
             .join(", ");
           toast.success(`${t("usageScript.testSuccess")}${summary}`, {
             duration: 3000,
             closeButton: true,
           });
-          // 将结果转换为 UsageResult 格式更新缓存
-          const usageData = quota.tiers.map((tier) => ({
-            planName: tier.name,
-            remaining: 100 - tier.utilization,
-            total: 100,
-            used: tier.utilization,
-            unit: "%",
-          }));
-          queryClient.setQueryData(["usage", provider.id, appId], {
-            success: true,
-            data: usageData,
-          });
+          queryClient.setQueryData(["usage", provider.id, appId], result);
         } else {
           toast.error(
-            `${t("usageScript.testFailed")}: ${quota.error || t("endpointTest.noResult")}`,
+            `${t("usageScript.testFailed")}: ${result.error || t("endpointTest.noResult")}`,
             { duration: 5000 },
           );
         }
         return;
       }
 
-      // Copilot 模板使用专用 API
+      // Copilot also goes through the unified usage API because low-level
+      // Copilot commands are not available in Web mode.
       if (selectedTemplate === TEMPLATE_TYPES.GITHUB_COPILOT) {
-        const accountId = resolveManagedAccountId(
-          provider.meta,
-          PROVIDER_TYPES.GITHUB_COPILOT,
+        const result = await usageApi.testScript(
+          provider.id,
+          appId,
+          "",
+          script.timeout,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          TEMPLATE_TYPES.GITHUB_COPILOT,
         );
-        const usage = accountId
-          ? await copilotGetUsageForAccount(accountId)
-          : await copilotGetUsage();
-        const premium = usage.quota_snapshots.premium_interactions;
-        const used = premium.entitlement - premium.remaining;
-        const summary = `[${usage.copilot_plan}] ${t("usage.remaining")} ${premium.remaining}/${premium.entitlement} (${t("usageScript.resetDate")}: ${usage.quota_reset_date})`;
-        toast.success(`${t("usageScript.testSuccess")}${summary}`, {
-          duration: 3000,
-          closeButton: true,
-        });
-        // 更新缓存
-        queryClient.setQueryData(["usage", provider.id, appId], {
-          success: true,
-          data: [
-            {
-              planName: usage.copilot_plan,
-              remaining: premium.remaining,
-              total: premium.entitlement,
-              used: used,
-              unit: t("usageScript.premiumRequests"),
-            },
-          ],
-        });
+        const data = result.data ?? [];
+        if (result.success && data.length > 0) {
+          const summary = data
+            .map((plan) => {
+              const name = plan.planName ? `[${plan.planName}] ` : "";
+              const limit =
+                plan.total != null
+                  ? `${plan.remaining}/${plan.total}`
+                  : `${plan.remaining ?? 0}`;
+              const reset = plan.extra ? ` (${plan.extra})` : "";
+              return `${name}${t("usage.remaining")} ${limit}${reset}`;
+            })
+            .join(", ");
+          toast.success(`${t("usageScript.testSuccess")}${summary}`, {
+            duration: 3000,
+            closeButton: true,
+          });
+          queryClient.setQueryData(["usage", provider.id, appId], result);
+        } else {
+          toast.error(
+            `${t("usageScript.testFailed")}: ${result.error || t("endpointTest.noResult")}`,
+            { duration: 5000 },
+          );
+        }
         return;
       }
 
