@@ -1577,25 +1577,41 @@ impl RequestForwarder {
     }
 
     fn categorize_proxy_error(&self, error: &ProxyError) -> ErrorCategory {
-        match error {
-            // 网络和上游错误：都应该尝试下一个供应商
-            ProxyError::Timeout(_) => ErrorCategory::Retryable,
-            ProxyError::ForwardFailed(_) => ErrorCategory::Retryable,
-            ProxyError::ProviderUnhealthy(_) => ErrorCategory::Retryable,
-            // 上游 HTTP 错误：无论状态码如何，都尝试下一个供应商
-            // 原因：不同供应商有不同的限制和认证，一个供应商的 4xx 错误
-            // 不代表其他供应商也会失败
-            ProxyError::UpstreamError { .. } => ErrorCategory::Retryable,
-            // Provider 级配置/转换问题：换一个 Provider 可能就能成功
-            ProxyError::ConfigError(_) => ErrorCategory::Retryable,
-            ProxyError::TransformError(_) => ErrorCategory::Retryable,
-            ProxyError::AuthError(_) => ErrorCategory::Retryable,
-            ProxyError::StreamIdleTimeout(_) => ErrorCategory::Retryable,
-            // 无可用供应商：所有供应商都试过了，无法重试
-            ProxyError::NoAvailableProvider => ErrorCategory::NonRetryable,
-            // 其他错误（数据库/内部错误等）：不是换供应商能解决的问题
-            _ => ErrorCategory::NonRetryable,
-        }
+        categorize_proxy_error(error)
+    }
+}
+
+fn categorize_proxy_error(error: &ProxyError) -> ErrorCategory {
+    match error {
+        // 网络和上游错误：都应该尝试下一个供应商
+        ProxyError::Timeout(_) => ErrorCategory::Retryable,
+        ProxyError::ForwardFailed(_) => ErrorCategory::Retryable,
+        ProxyError::ProviderUnhealthy(_) => ErrorCategory::Retryable,
+        // 上游 HTTP 错误：按状态码分桶。
+        //
+        // 客户端请求自身有问题的状态码无论换哪个 provider 都会被拒绝，
+        // 继续轮询只会放大错误率、污染熔断器健康度、浪费配额：
+        //   400 Bad Request / 422 Unprocessable Entity   ← 请求体格式或语义错误
+        //   405 Method Not Allowed / 406 Not Acceptable  ← 方法或 Accept 错误
+        //   413 Payload Too Large / 414 URI Too Long     ← 客户端构造超限
+        //   415 Unsupported Media Type                    ← Content-Type 错误
+        //   501 Not Implemented                           ← 上游协议确实不支持
+        //
+        // 其他 4xx（401/403/404/408/409/429/451 等）和全部 5xx 都保留
+        // Retryable —— 换一家 provider 可能持有不同的 key、配额、地域或模型映射。
+        ProxyError::UpstreamError { status, .. } => match *status {
+            400 | 405 | 406 | 413 | 414 | 415 | 422 | 501 => ErrorCategory::NonRetryable,
+            _ => ErrorCategory::Retryable,
+        },
+        // Provider 级配置/转换问题：换一个 Provider 可能就能成功
+        ProxyError::ConfigError(_) => ErrorCategory::Retryable,
+        ProxyError::TransformError(_) => ErrorCategory::Retryable,
+        ProxyError::AuthError(_) => ErrorCategory::Retryable,
+        ProxyError::StreamIdleTimeout(_) => ErrorCategory::Retryable,
+        // 无可用供应商：所有供应商都试过了，无法重试
+        ProxyError::NoAvailableProvider => ErrorCategory::NonRetryable,
+        // 其他错误（数据库/内部错误等）：不是换供应商能解决的问题
+        _ => ErrorCategory::NonRetryable,
     }
 }
 
@@ -1936,6 +1952,24 @@ mod tests {
         assert_eq!(code, log_fwd::PROVIDER_FAILED_RETRY);
         assert!(message.contains("继续尝试下一个 (1/3)"));
         assert!(message.contains("请求超时"));
+    }
+
+    #[test]
+    fn client_request_upstream_errors_are_non_retryable() {
+        for status in [400, 405, 406, 413, 414, 415, 422, 501] {
+            let error = ProxyError::UpstreamError { status, body: None };
+
+            assert_eq!(categorize_proxy_error(&error), ErrorCategory::NonRetryable);
+        }
+    }
+
+    #[test]
+    fn provider_specific_upstream_errors_remain_retryable() {
+        for status in [401, 403, 404, 408, 409, 429, 451, 500, 502, 503] {
+            let error = ProxyError::UpstreamError { status, body: None };
+
+            assert_eq!(categorize_proxy_error(&error), ErrorCategory::Retryable);
+        }
     }
 
     #[test]
