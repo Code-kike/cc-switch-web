@@ -1,7 +1,6 @@
 // Auto-generated icon index
 // Do not edit manually
 
-import _dds from "./dds.svg?url";
 import _claudeapi from "./ClaudeApi.png";
 import _byteplus from "./byteplus.png";
 import _claudecn from "./claudecn.png";
@@ -88,7 +87,6 @@ export const icons: Record<string, string> = {
 };
 
 export const iconUrls: Record<string, string> = {
-  dds: _dds,
   byteplus: _byteplus,
   claudeapi: _claudeapi,
   claudecn: _claudecn,

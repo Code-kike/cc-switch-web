@@ -57,4 +57,10 @@ describe("provider preset order", () => {
       "DouBaoSeed",
     ]);
   });
+
+  it("does not expose the removed DDSHub partner preset", () => {
+    expect(namesOf(providerPresets)).not.toContain("DDSHub");
+    expect(namesOf(codexProviderPresets)).not.toContain("DDSHub");
+    expect(namesOf(hermesProviderPresets)).not.toContain("DDSHub");
+  });
 });
