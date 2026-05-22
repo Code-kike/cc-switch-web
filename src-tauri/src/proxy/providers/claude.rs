@@ -82,6 +82,40 @@ pub fn claude_api_format_needs_transform(api_format: &str) -> bool {
     )
 }
 
+fn is_reasoning_content_compatible_identifier(value: &str) -> bool {
+    let value = value.to_ascii_lowercase();
+    value.contains("moonshot") || value.contains("kimi") || value.contains("deepseek")
+}
+
+fn should_preserve_reasoning_content_for_openai_chat(
+    provider: &Provider,
+    body: &serde_json::Value,
+) -> bool {
+    if body
+        .get("model")
+        .and_then(|m| m.as_str())
+        .is_some_and(is_reasoning_content_compatible_identifier)
+    {
+        return true;
+    }
+
+    let settings = &provider.settings_config;
+    let base_urls = [
+        settings
+            .get("env")
+            .and_then(|env| env.get("ANTHROPIC_BASE_URL"))
+            .and_then(|v| v.as_str()),
+        settings.get("base_url").and_then(|v| v.as_str()),
+        settings.get("baseURL").and_then(|v| v.as_str()),
+        settings.get("apiEndpoint").and_then(|v| v.as_str()),
+    ];
+
+    base_urls
+        .into_iter()
+        .flatten()
+        .any(is_reasoning_content_compatible_identifier)
+}
+
 pub fn transform_claude_request_for_api_format(
     body: serde_json::Value,
     provider: &Provider,
@@ -156,7 +190,12 @@ pub fn transform_claude_request_for_api_format(
             )
         }
         "openai_chat" => {
-            let mut result = super::transform::anthropic_to_openai(body)?;
+            let preserve_reasoning_content =
+                should_preserve_reasoning_content_for_openai_chat(provider, &body);
+            let mut result = super::transform::anthropic_to_openai_with_reasoning_content(
+                body,
+                preserve_reasoning_content,
+            )?;
             // Inject prompt_cache_key only if explicitly configured in meta
             if let Some(key) = provider
                 .meta
@@ -339,6 +378,16 @@ impl ClaudeAdapter {
                 .filter(|s| !s.is_empty())
             {
                 log::debug!("[Claude] 使用 OPENAI_API_KEY");
+                return Some(key.to_string());
+            }
+            // Gemini Native key
+            if let Some(key) = env
+                .get("GEMINI_API_KEY")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                log::debug!("[Claude] 使用 GEMINI_API_KEY");
                 return Some(key.to_string());
             }
         }
@@ -863,6 +912,27 @@ mod tests {
         let auth = adapter.extract_auth(&provider).unwrap();
         assert_eq!(auth.api_key, "sk-or-test-key");
         assert_eq!(auth.strategy, AuthStrategy::Bearer);
+    }
+
+    #[test]
+    fn test_extract_auth_gemini_api_key() {
+        let adapter = ClaudeAdapter::new();
+        let provider = create_provider_with_meta(
+            json!({
+                "env": {
+                    "ANTHROPIC_BASE_URL": "https://generativelanguage.googleapis.com/v1beta",
+                    "GEMINI_API_KEY": "gemini-test-key"
+                }
+            }),
+            ProviderMeta {
+                api_format: Some("gemini_native".to_string()),
+                ..Default::default()
+            },
+        );
+
+        let auth = adapter.extract_auth(&provider).unwrap();
+        assert_eq!(auth.api_key, "gemini-test-key");
+        assert_eq!(auth.strategy, AuthStrategy::Google);
     }
 
     #[test]
@@ -1563,5 +1633,110 @@ mod tests {
                 .unwrap();
 
         assert_eq!(transformed["prompt_cache_key"], "claude-cache-route");
+    }
+
+    #[test]
+    fn test_transform_openai_chat_skips_reasoning_content_for_generic_provider() {
+        let provider = create_provider_with_meta(
+            json!({
+                "env": {
+                    "ANTHROPIC_BASE_URL": "https://api.example.com",
+                    "ANTHROPIC_API_KEY": "test-key"
+                }
+            }),
+            ProviderMeta {
+                api_format: Some("openai_chat".to_string()),
+                ..Default::default()
+            },
+        );
+        let body = json!({
+            "model": "gpt-5.4",
+            "max_tokens": 64,
+            "messages": [{
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": "I should call the tool."},
+                    {"type": "tool_use", "id": "call_123", "name": "get_weather", "input": {"location": "Tokyo"}}
+                ]
+            }]
+        });
+
+        let transformed =
+            transform_claude_request_for_api_format(body, &provider, "openai_chat", None, None)
+                .unwrap();
+
+        let msg = &transformed["messages"][0];
+        assert!(msg.get("tool_calls").is_some());
+        assert!(msg.get("reasoning_content").is_none());
+    }
+
+    #[test]
+    fn test_transform_openai_chat_preserves_reasoning_content_for_kimi_provider() {
+        let provider = create_provider_with_meta(
+            json!({
+                "env": {
+                    "ANTHROPIC_BASE_URL": "https://api.moonshot.cn/v1",
+                    "ANTHROPIC_API_KEY": "test-key"
+                }
+            }),
+            ProviderMeta {
+                api_format: Some("openai_chat".to_string()),
+                ..Default::default()
+            },
+        );
+        let body = json!({
+            "model": "kimi-k2.6",
+            "max_tokens": 64,
+            "messages": [{
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": "I should call the tool."},
+                    {"type": "tool_use", "id": "call_123", "name": "get_weather", "input": {"location": "Tokyo"}}
+                ]
+            }]
+        });
+
+        let transformed =
+            transform_claude_request_for_api_format(body, &provider, "openai_chat", None, None)
+                .unwrap();
+
+        let msg = &transformed["messages"][0];
+        assert_eq!(msg["reasoning_content"], "I should call the tool.");
+        assert!(msg.get("tool_calls").is_some());
+    }
+
+    #[test]
+    fn test_transform_openai_chat_preserves_reasoning_content_for_deepseek_provider() {
+        let provider = create_provider_with_meta(
+            json!({
+                "env": {
+                    "ANTHROPIC_BASE_URL": "https://api.deepseek.com/v1",
+                    "ANTHROPIC_API_KEY": "test-key"
+                }
+            }),
+            ProviderMeta {
+                api_format: Some("openai_chat".to_string()),
+                ..Default::default()
+            },
+        );
+        let body = json!({
+            "model": "deepseek-v4-flash",
+            "max_tokens": 64,
+            "messages": [{
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": "I should call the tool."},
+                    {"type": "tool_use", "id": "call_123", "name": "get_weather", "input": {"location": "Tokyo"}}
+                ]
+            }]
+        });
+
+        let transformed =
+            transform_claude_request_for_api_format(body, &provider, "openai_chat", None, None)
+                .unwrap();
+
+        let msg = &transformed["messages"][0];
+        assert_eq!(msg["reasoning_content"], "I should call the tool.");
+        assert!(msg.get("tool_calls").is_some());
     }
 }
