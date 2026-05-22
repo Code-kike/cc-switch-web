@@ -205,10 +205,17 @@ fn try_get_version(tool: &str) -> (Option<String>, Option<String>) {
         .output();
 
     #[cfg(not(target_os = "windows"))]
-    let output = Command::new("sh")
-        .arg("-c")
-        .arg(format!("{tool} --version"))
-        .output();
+    let output = {
+        let shell = std::env::var("SHELL")
+            .ok()
+            .filter(|s| is_valid_shell(s))
+            .unwrap_or_else(|| "sh".to_string());
+        let flag = default_flag_for_shell(&shell);
+        Command::new(shell)
+            .arg(flag)
+            .arg(format!("{tool} --version"))
+            .output()
+    };
 
     match output {
         Ok(out) => {
@@ -246,7 +253,6 @@ fn is_valid_wsl_distro_name(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
 }
 
-#[cfg(target_os = "windows")]
 fn is_valid_shell(shell: &str) -> bool {
     matches!(
         shell.rsplit('/').next().unwrap_or(shell),
@@ -259,7 +265,6 @@ fn is_valid_shell_flag(flag: &str) -> bool {
     matches!(flag, "-c" | "-lc" | "-lic")
 }
 
-#[cfg(target_os = "windows")]
 fn default_flag_for_shell(shell: &str) -> &'static str {
     match shell.rsplit('/').next().unwrap_or(shell) {
         "dash" | "sh" => "-c",
