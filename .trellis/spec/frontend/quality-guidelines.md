@@ -178,6 +178,70 @@ const sourceFile = ts.createSourceFile(
 
 ---
 
+### Scenario: Web Server Proxy Module Wiring
+
+#### 1. Scope / Trigger
+
+- Trigger: adding a new Rust helper module under `src-tauri/src/proxy/**` that is imported by proxy provider modules.
+- Applies when changing `src-tauri/src/proxy/mod.rs`, `src-tauri/src/proxy/providers/mod.rs`, `src-tauri/src/proxy/providers/*.rs`, or `src-tauri/examples/web_proxy.rs`.
+
+#### 2. Signatures
+
+- Desktop/module root:
+  - `src-tauri/src/proxy/mod.rs`
+- Standalone Web server proxy root:
+  - `src-tauri/examples/web_proxy.rs`
+- Web compile check:
+  - `cargo check --manifest-path src-tauri/Cargo.toml --no-default-features --features web-server --example server`
+
+#### 3. Contracts
+
+- `examples/server.rs` mounts proxy code through `#[path = "web_proxy.rs"] mod proxy;`.
+- `examples/web_proxy.rs` manually re-exports only the proxy modules needed in Web-server mode.
+- If a provider module imports `crate::proxy::<module_name>`, the module must be available in both:
+  - `src-tauri/src/proxy/mod.rs`
+  - `src-tauri/examples/web_proxy.rs`
+
+#### 4. Validation & Error Matrix
+
+- Missing desktop module declaration -> normal Rust builds fail with unresolved import.
+- Missing `examples/web_proxy.rs` path module -> Web server compile fails even when desktop module wiring is correct.
+- Helper module added but no Web compile run -> risk of shipping a Web-only compile break.
+
+#### 5. Good/Base/Bad Cases
+
+- Good: add `src-tauri/src/proxy/json_canonical.rs`, add `pub(crate) mod json_canonical;` in `src-tauri/src/proxy/mod.rs`, add the matching `#[path = "../src/proxy/json_canonical.rs"] pub(crate) mod json_canonical;` in `examples/web_proxy.rs`, then run Web server cargo check.
+- Base: modules used only by desktop-only proxy code do not need to be exposed through Web if no Web-compiled module imports them.
+- Bad: only updating `src-tauri/src/proxy/mod.rs` and assuming `examples/server.rs` sees the same module tree.
+
+#### 6. Tests Required
+
+- Run targeted rustfmt on every touched Rust file.
+- Run:
+  - `cargo check --manifest-path src-tauri/Cargo.toml --no-default-features --features web-server --example server`
+
+#### 7. Wrong vs Correct
+
+##### Wrong
+
+```rust
+// src-tauri/src/proxy/mod.rs only
+pub(crate) mod json_canonical;
+```
+
+##### Correct
+
+```rust
+// src-tauri/src/proxy/mod.rs
+pub(crate) mod json_canonical;
+
+// src-tauri/examples/web_proxy.rs
+#[path = "../src/proxy/json_canonical.rs"]
+pub(crate) mod json_canonical;
+```
+
+---
+
 ## Testing Requirements
 
 <!-- What level of testing is expected -->
