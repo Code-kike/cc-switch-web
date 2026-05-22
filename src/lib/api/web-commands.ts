@@ -79,6 +79,7 @@ const cmds = defineCommands({
   get_claude_mcp_status: { method: "GET", path: "/api/mcp/get-claude-mcp-status" },
   get_claude_plugin_status: { method: "GET", path: "/api/vscode/get-claude-plugin-status", unsupported: true as const },
   get_codex_oauth_quota: { method: "GET", path: "/api/auth/get-codex-oauth-quota", unsupported: true as const },
+  get_codex_oauth_models: { method: "GET", path: "/api/auth/get-codex-oauth-models" },
   get_coding_plan_quota: { method: "GET", path: "/api/usage/get-coding-plan-quota" },
   get_common_config_snippet: { method: "GET", path: "/api/config/get-common-config-snippet" },
   get_config_dir: { method: "GET", path: "/api/config/get-config-dir" },

@@ -1097,6 +1097,7 @@ pub fn run() {
             // subscription quota
             commands::get_subscription_quota,
             commands::get_codex_oauth_quota,
+            commands::get_codex_oauth_models,
             commands::get_coding_plan_quota,
             commands::get_balance,
             // New MCP via config.json (SSOT)
@@ -1634,6 +1635,16 @@ fn initialize_common_config_snippets(state: &store::AppState) {
         if let Err(e) = state.db.set_legacy_common_config_migrated(true) {
             log::warn!("✗ Failed to persist legacy common-config migration flag: {e}");
         }
+    }
+
+    // One-shot Hermes runtime-marker cleanup; idempotent and gated by its own
+    // settings flag so it stays a no-op after the first successful run.
+    if let Err(e) =
+        crate::services::provider::ProviderService::cleanup_hermes_legacy_runtime_markers_if_needed(
+            state,
+        )
+    {
+        log::warn!("✗ Failed to clean Hermes legacy runtime markers: {e}");
     }
 }
 

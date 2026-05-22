@@ -364,6 +364,14 @@ fn build_owner_map() -> OwnerMap {
 }
 
 fn classify_handler(fn_name: &str, owner_map: &OwnerMap) -> (String, String, String) {
+    if fn_name == "get_codex_oauth_models" {
+        return (
+            "auth".to_string(),
+            "GET".to_string(),
+            "/api/auth/get-codex-oauth-models".to_string(),
+        );
+    }
+
     let lower = fn_name.to_lowercase();
     for (key, (handler, _owner)) in owner_map.iter() {
         if lower.contains(key) {
@@ -430,6 +438,11 @@ fn guess_path(handler: &str, fn_name: &str) -> String {
 
 fn status_for(fn_name: &str, handler: &str) -> String {
     let lower = fn_name.to_lowercase();
+    let supported_fn_names = ["get_codex_oauth_models"];
+    if supported_fn_names.contains(&lower.as_str()) {
+        return "pending".into();
+    }
+
     let web_replacement_fn_names = [
         "export_config_to_file",
         "import_config_from_file",

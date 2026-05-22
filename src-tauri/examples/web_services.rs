@@ -8,6 +8,9 @@ pub mod balance;
 #[path = "../src/services/coding_plan.rs"]
 pub mod coding_plan;
 
+#[path = "../src/services/codex_oauth_models.rs"]
+pub mod codex_oauth_models;
+
 #[path = "../src/services/env_checker.rs"]
 pub mod env_checker;
 

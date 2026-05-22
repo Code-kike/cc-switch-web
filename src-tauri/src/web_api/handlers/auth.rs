@@ -1,4 +1,8 @@
-use axum::{extract::State, routing::post, Json, Router};
+use axum::{
+    extract::{Query, State},
+    routing::{get, post},
+    Json, Router,
+};
 use serde::{Deserialize, Serialize};
 
 use super::super::ApiState;
@@ -65,6 +69,12 @@ struct AuthAccountRequest {
     account_id: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CodexOauthModelsQuery {
+    account_id: Option<String>,
+}
+
 pub fn router(state: ApiState) -> Router {
     Router::new()
         .route("/auth/auth-start-login", post(auth_start_login))
@@ -77,6 +87,7 @@ pub fn router(state: ApiState) -> Router {
             post(auth_set_default_account),
         )
         .route("/auth/auth-logout", post(auth_logout))
+        .route("/auth/get-codex-oauth-models", get(get_codex_oauth_models))
         .with_state(state)
 }
 
@@ -333,4 +344,33 @@ async fn auth_logout(
         _ => unreachable!(),
     }
     Ok(json_ok(()))
+}
+
+async fn get_codex_oauth_models(
+    State(state): State<ApiState>,
+    Query(query): Query<CodexOauthModelsQuery>,
+) -> ApiResult<Vec<crate::services::model_fetch::FetchedModel>> {
+    let manager = state.codex_oauth.read().await;
+    let resolved = match query
+        .account_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    {
+        Some(id) => Some(id.to_string()),
+        None => manager.default_account_id().await,
+    };
+    let Some(id) = resolved else {
+        return Err(ApiError::bad_request("No ChatGPT account available"));
+    };
+
+    let token = manager
+        .get_valid_token_for_account(&id)
+        .await
+        .map_err(|e| ApiError::bad_request(format!("Codex OAuth token unavailable: {e}")))?;
+
+    let models = crate::services::codex_oauth_models::fetch_models_with_token(&token, &id)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(json_ok(models))
 }

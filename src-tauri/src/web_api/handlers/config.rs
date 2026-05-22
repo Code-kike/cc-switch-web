@@ -84,6 +84,7 @@ struct FetchModelsForConfigQuery {
     base_url: String,
     api_key: String,
     is_full_url: Option<bool>,
+    models_url: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -457,6 +458,7 @@ async fn fetch_models_for_config(
         &query.base_url,
         &query.api_key,
         query.is_full_url.unwrap_or(false),
+        query.models_url.as_deref(),
     )
     .await
     .map_err(ApiError::bad_request)?;
