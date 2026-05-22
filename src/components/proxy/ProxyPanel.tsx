@@ -38,6 +38,33 @@ interface ProxyPanelProps {
   disableRuntimeControls?: boolean;
 }
 
+export function isValidListenAddress(address: string): boolean {
+  const addressTrimmed = address.trim();
+  const ipv4Regex = /^(\d{1,3}\.){3}\d{1,3}$/;
+  const isValidIpv4 =
+    ipv4Regex.test(addressTrimmed) &&
+    addressTrimmed.split(".").every((n) => {
+      const num = parseInt(n, 10);
+      return num >= 0 && num <= 255;
+    });
+  const isValidIpv6 = (() => {
+    if (!addressTrimmed.includes(":")) return false;
+    try {
+      new URL(`http://[${addressTrimmed}]/`);
+      return true;
+    } catch {
+      return false;
+    }
+  })();
+
+  return (
+    addressTrimmed === "localhost" ||
+    addressTrimmed === "0.0.0.0" ||
+    isValidIpv4 ||
+    isValidIpv6
+  );
+}
+
 export function ProxyPanel({
   enableLocalProxy,
   onEnableLocalProxyChange,
@@ -121,22 +148,13 @@ export function ProxyPanel({
   const handleSaveBasicConfig = async () => {
     if (!globalConfig) return;
 
-    // 校验地址格式（简单的 IP 地址或 localhost 校验）
+    // 校验地址格式（IPv4 / IPv6 字面量 / localhost）
     const addressTrimmed = listenAddress.trim();
-    const ipv4Regex = /^(\d{1,3}\.){3}\d{1,3}$/;
-    const isValidAddress =
-      addressTrimmed === "localhost" ||
-      addressTrimmed === "0.0.0.0" ||
-      (ipv4Regex.test(addressTrimmed) &&
-        addressTrimmed.split(".").every((n) => {
-          const num = parseInt(n);
-          return num >= 0 && num <= 255;
-        }));
-    if (!isValidAddress) {
+    if (!isValidListenAddress(addressTrimmed)) {
       toast.error(
         t("proxy.settings.invalidAddress", {
           defaultValue:
-            "地址无效，请输入有效的 IP 地址（如 127.0.0.1）或 localhost",
+            "地址无效，请输入 IPv4（如 127.0.0.1）、IPv6（如 ::1）或 localhost",
         }),
       );
       return;
