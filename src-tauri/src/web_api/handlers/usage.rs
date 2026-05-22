@@ -77,6 +77,10 @@ struct ModelPricingInfo {
 pub fn router(state: ApiState) -> Router {
     Router::new()
         .route("/usage/get-usage-summary", get(get_usage_summary))
+        .route(
+            "/usage/get-usage-summary-by-app",
+            get(get_usage_summary_by_app),
+        )
         .route("/usage/get-usage-trends", get(get_usage_trends))
         .route("/usage/get-usage-data-sources", get(get_usage_data_sources))
         .route("/system/get_model_stats", post(get_model_stats))
@@ -100,6 +104,18 @@ async fn get_usage_summary(
         .get_usage_summary(query.start_date, query.end_date, query.app_type.as_deref())
         .map_err(ApiError::from_anyhow)?;
     Ok(json_ok(summary))
+}
+
+async fn get_usage_summary_by_app(
+    State(state): State<ApiState>,
+    Query(query): Query<UsageQuery>,
+) -> ApiResult<Vec<crate::services::usage_stats::UsageSummaryByApp>> {
+    let summaries = state
+        .app_state
+        .db
+        .get_usage_summary_by_app(query.start_date, query.end_date)
+        .map_err(ApiError::from_anyhow)?;
+    Ok(json_ok(summaries))
 }
 
 async fn get_usage_trends(

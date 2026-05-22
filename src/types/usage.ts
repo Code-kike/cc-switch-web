@@ -71,6 +71,13 @@ export interface UsageSummary {
   totalCacheCreationTokens: number;
   totalCacheReadTokens: number;
   successRate: number;
+  realTotalTokens: number;
+  cacheHitRate: number;
+}
+
+export interface UsageSummaryByApp {
+  appType: string;
+  summary: UsageSummary;
 }
 
 export interface DailyStats {
@@ -129,7 +136,20 @@ export interface UsageRangeSelection {
   customEndDate?: number;
 }
 
-export type AppTypeFilter = "all" | "claude" | "codex" | "gemini";
+export type AppType = "claude" | "codex" | "gemini";
+
+export type AppTypeFilter = "all" | AppType;
+
+export const KNOWN_APP_TYPES: ReadonlyArray<AppType> = [
+  "claude",
+  "codex",
+  "gemini",
+];
+
+export const CACHE_INCLUSIVE_APP_TYPES: ReadonlySet<string> = new Set([
+  "codex",
+  "gemini",
+]);
 
 export interface StatsFilters {
   timeRange: UsageRangePreset;

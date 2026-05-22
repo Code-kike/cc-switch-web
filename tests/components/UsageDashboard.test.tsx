@@ -7,7 +7,7 @@ import { UsageDashboard } from "@/components/usage/UsageDashboard";
 import { usageKeys } from "@/lib/query/usage";
 import type { UsageRangeSelection } from "@/types/usage";
 
-const summaryPropsSpy = vi.fn();
+const heroPropsSpy = vi.fn();
 const trendPropsSpy = vi.fn();
 const logsPropsSpy = vi.fn();
 const providerStatsPropsSpy = vi.fn();
@@ -54,7 +54,9 @@ vi.mock("@/components/ui/button", () => ({
 
 vi.mock("@/components/ui/accordion", () => ({
   Accordion: ({ children }: { children: ReactNode }) => <div>{children}</div>,
-  AccordionItem: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  AccordionItem: ({ children }: { children: ReactNode }) => (
+    <div>{children}</div>
+  ),
   AccordionTrigger: ({ children }: { children: ReactNode }) => (
     <div>{children}</div>
   ),
@@ -65,7 +67,9 @@ vi.mock("@/components/ui/accordion", () => ({
 
 vi.mock("@/components/ui/tabs", async () => {
   const React = await import("react");
-  const TabsContext = React.createContext<((value: string) => void) | null>(null);
+  const TabsContext = React.createContext<((value: string) => void) | null>(
+    null,
+  );
 
   return {
     Tabs: ({
@@ -95,14 +99,16 @@ vi.mock("@/components/ui/tabs", async () => {
       const onValueChange = React.useContext(TabsContext);
       return <button onClick={() => onValueChange?.(value)}>{children}</button>;
     },
-    TabsContent: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+    TabsContent: ({ children }: { children: ReactNode }) => (
+      <div>{children}</div>
+    ),
   };
 });
 
-vi.mock("@/components/usage/UsageSummaryCards", () => ({
-  UsageSummaryCards: (props: any) => {
-    summaryPropsSpy(props);
-    return <div data-testid="usage-summary-cards">{props.appType}</div>;
+vi.mock("@/components/usage/UsageHero", () => ({
+  UsageHero: (props: any) => {
+    heroPropsSpy(props);
+    return <div data-testid="usage-hero">{props.appType}</div>;
   },
 }));
 
@@ -178,7 +184,7 @@ function renderDashboard() {
 
 describe("UsageDashboard", () => {
   beforeEach(() => {
-    summaryPropsSpy.mockReset();
+    heroPropsSpy.mockReset();
     trendPropsSpy.mockReset();
     logsPropsSpy.mockReset();
     providerStatsPropsSpy.mockReset();
@@ -193,7 +199,7 @@ describe("UsageDashboard", () => {
     expect(screen.getByText("usage.title")).toBeInTheDocument();
     expect(screen.getByTestId("pricing-config-panel")).toBeInTheDocument();
 
-    expect(summaryPropsSpy).toHaveBeenLastCalledWith(
+    expect(heroPropsSpy).toHaveBeenLastCalledWith(
       expect.objectContaining({
         appType: "all",
         range: { preset: "today" },
@@ -213,10 +219,12 @@ describe("UsageDashboard", () => {
       }),
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "usage.appFilter.claude" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "usage.appFilter.claude" }),
+    );
 
     await waitFor(() =>
-      expect(summaryPropsSpy).toHaveBeenLastCalledWith(
+      expect(heroPropsSpy).toHaveBeenLastCalledWith(
         expect.objectContaining({
           appType: "claude",
         }),
@@ -236,7 +244,7 @@ describe("UsageDashboard", () => {
     fireEvent.click(screen.getByRole("button", { name: "30s" }));
 
     await waitFor(() =>
-      expect(summaryPropsSpy).toHaveBeenLastCalledWith(
+      expect(heroPropsSpy).toHaveBeenLastCalledWith(
         expect.objectContaining({
           refreshIntervalMs: 60000,
         }),
@@ -259,7 +267,7 @@ describe("UsageDashboard", () => {
     fireEvent.click(screen.getByRole("button", { name: "当天" }));
 
     await waitFor(() =>
-      expect(summaryPropsSpy).toHaveBeenLastCalledWith(
+      expect(heroPropsSpy).toHaveBeenLastCalledWith(
         expect.objectContaining({
           range: customRange,
         }),
@@ -282,15 +290,25 @@ describe("UsageDashboard", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "usage.modelStats" }));
 
-    await waitFor(() => expect(tabsValueSpy).toHaveBeenLastCalledWith("models"));
+    await waitFor(() =>
+      expect(tabsValueSpy).toHaveBeenLastCalledWith("models"),
+    );
 
-    fireEvent.click(screen.getByRole("button", { name: "usage.appFilter.claude" }));
-    await waitFor(() => expect(tabsValueSpy).toHaveBeenLastCalledWith("models"));
+    fireEvent.click(
+      screen.getByRole("button", { name: "usage.appFilter.claude" }),
+    );
+    await waitFor(() =>
+      expect(tabsValueSpy).toHaveBeenLastCalledWith("models"),
+    );
 
     fireEvent.click(screen.getByRole("button", { name: "30s" }));
-    await waitFor(() => expect(tabsValueSpy).toHaveBeenLastCalledWith("models"));
+    await waitFor(() =>
+      expect(tabsValueSpy).toHaveBeenLastCalledWith("models"),
+    );
 
     fireEvent.click(screen.getByRole("button", { name: "当天" }));
-    await waitFor(() => expect(tabsValueSpy).toHaveBeenLastCalledWith("models"));
+    await waitFor(() =>
+      expect(tabsValueSpy).toHaveBeenLastCalledWith("models"),
+    );
   });
 });

@@ -143,6 +143,7 @@ const cmds = defineCommands({
   get_upstream_proxy_status: { method: "GET", path: "/api/proxy/get-upstream-proxy-status" },
   get_usage_data_sources: { method: "GET", path: "/api/usage/get-usage-data-sources" },
   get_usage_summary: { method: "GET", path: "/api/usage/get-usage-summary" },
+  get_usage_summary_by_app: { method: "GET", path: "/api/usage/get-usage-summary-by-app" },
   get_usage_trends: { method: "GET", path: "/api/usage/get-usage-trends" },
   import_config_from_file: { method: "POST", path: "/api/config/import-config-from-file", webReplacement: true as const },
   import_default_config: { method: "POST", path: "/api/config/import-default-config" },
