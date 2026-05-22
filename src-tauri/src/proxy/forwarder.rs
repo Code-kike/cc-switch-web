@@ -453,23 +453,13 @@ impl RequestForwarder {
                                         });
                                     }
                                     Err(retry_err) => {
-                                        // 整流重试仍失败：区分错误类型决定是否记录熔断器
+                                        // 整流重试仍失败：区分错误类型
                                         log::warn!(
                                             "[{app_type_str}] [RECT-003] 整流重试仍失败: {retry_err}"
                                         );
 
-                                        // 区分错误类型：Provider 问题记录失败，客户端问题仅释放 permit
-                                        let is_provider_error = match &retry_err {
-                                            ProxyError::Timeout(_)
-                                            | ProxyError::ForwardFailed(_) => true,
-                                            ProxyError::UpstreamError { status, .. } => {
-                                                *status >= 500
-                                            }
-                                            _ => false,
-                                        };
-
-                                        if is_provider_error {
-                                            // Provider 问题：记录失败到熔断器
+                                        if is_rectifier_retry_provider_error(&retry_err) {
+                                            // Provider 问题：记录熔断器后继续轮询下一家
                                             let _ = self
                                                 .router
                                                 .record_result(
@@ -480,16 +470,26 @@ impl RequestForwarder {
                                                     Some(retry_err.to_string()),
                                                 )
                                                 .await;
-                                        } else {
-                                            // 客户端问题：仅释放 permit，不记录熔断器
-                                            self.router
-                                                .release_permit_neutral(
-                                                    &provider.id,
-                                                    app_type_str,
-                                                    used_half_open_permit,
-                                                )
-                                                .await;
+                                            {
+                                                let mut status = self.status.write().await;
+                                                status.last_error = Some(format!(
+                                                    "Provider {} 整流重试失败: {}",
+                                                    provider.name, retry_err
+                                                ));
+                                            }
+                                            last_error = Some(retry_err);
+                                            last_provider = Some(provider.clone());
+                                            continue;
                                         }
+
+                                        // 客户端问题：仅释放 permit，不记录熔断器，也不继续尝试其它 provider
+                                        self.router
+                                            .release_permit_neutral(
+                                                &provider.id,
+                                                app_type_str,
+                                                used_half_open_permit,
+                                            )
+                                            .await;
 
                                         let mut status = self.status.write().await;
                                         status.failed_requests += 1;
@@ -650,15 +650,7 @@ impl RequestForwarder {
                                         "[{app_type_str}] [RECT-012] budget 整流重试仍失败: {retry_err}"
                                     );
 
-                                    let is_provider_error = match &retry_err {
-                                        ProxyError::Timeout(_) | ProxyError::ForwardFailed(_) => {
-                                            true
-                                        }
-                                        ProxyError::UpstreamError { status, .. } => *status >= 500,
-                                        _ => false,
-                                    };
-
-                                    if is_provider_error {
+                                    if is_rectifier_retry_provider_error(&retry_err) {
                                         let _ = self
                                             .router
                                             .record_result(
@@ -669,15 +661,25 @@ impl RequestForwarder {
                                                 Some(retry_err.to_string()),
                                             )
                                             .await;
-                                    } else {
-                                        self.router
-                                            .release_permit_neutral(
-                                                &provider.id,
-                                                app_type_str,
-                                                used_half_open_permit,
-                                            )
-                                            .await;
+                                        {
+                                            let mut status = self.status.write().await;
+                                            status.last_error = Some(format!(
+                                                "Provider {} budget 整流重试失败: {}",
+                                                provider.name, retry_err
+                                            ));
+                                        }
+                                        last_error = Some(retry_err);
+                                        last_provider = Some(provider.clone());
+                                        continue;
                                     }
+
+                                    self.router
+                                        .release_permit_neutral(
+                                            &provider.id,
+                                            app_type_str,
+                                            used_half_open_permit,
+                                        )
+                                        .await;
 
                                     let mut status = self.status.write().await;
                                     status.failed_requests += 1;
@@ -1691,6 +1693,14 @@ fn max_attempts_from_retries(max_retries: u32) -> usize {
     (max_retries as usize).saturating_add(1)
 }
 
+fn is_rectifier_retry_provider_error(error: &ProxyError) -> bool {
+    match error {
+        ProxyError::Timeout(_) | ProxyError::ForwardFailed(_) => true,
+        ProxyError::UpstreamError { status, .. } => *status >= 500,
+        _ => false,
+    }
+}
+
 /// 从 ProxyError 中提取错误消息
 fn extract_error_message(error: &ProxyError) -> Option<String> {
     match error {
@@ -2060,6 +2070,28 @@ mod tests {
     fn max_retries_maps_to_attempt_limit() {
         assert_eq!(max_attempts_from_retries(0), 1);
         assert_eq!(max_attempts_from_retries(3), 4);
+    }
+
+    #[test]
+    fn rectifier_retry_provider_error_matches_provider_failures() {
+        assert!(is_rectifier_retry_provider_error(&ProxyError::Timeout(
+            "timeout".to_string()
+        )));
+        assert!(is_rectifier_retry_provider_error(
+            &ProxyError::ForwardFailed("connection reset".to_string())
+        ));
+        assert!(is_rectifier_retry_provider_error(
+            &ProxyError::UpstreamError {
+                status: 500,
+                body: None
+            }
+        ));
+        assert!(!is_rectifier_retry_provider_error(
+            &ProxyError::UpstreamError {
+                status: 400,
+                body: None
+            }
+        ));
     }
 
     #[test]
