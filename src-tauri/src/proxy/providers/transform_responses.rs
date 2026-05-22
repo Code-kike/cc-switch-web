@@ -8,7 +8,7 @@
 //! - system prompt 使用 `instructions` 字段而非 system role message
 //! - usage 字段命名与 Anthropic 一致 (input_tokens/output_tokens)
 
-use crate::proxy::error::ProxyError;
+use crate::proxy::{error::ProxyError, json_canonical::canonical_json_string};
 use serde_json::{json, Value};
 
 pub(crate) fn sanitize_anthropic_tool_use_input(name: &str, input: Value) -> Value {
@@ -249,12 +249,14 @@ pub(crate) fn map_responses_stop_reason(
 
 /// Build Anthropic-style usage JSON from Responses API usage, including cache tokens.
 ///
-/// Priority order:
-/// 1. OpenAI nested details (`input_tokens_details.cached_tokens`, `prompt_tokens_details.cached_tokens`) as initial value
-/// 2. Direct Anthropic-style fields (`cache_read_input_tokens`, `cache_creation_input_tokens`) override if present
+/// Field resolution:
+/// - input tokens: `input_tokens` → `prompt_tokens` → 0
+/// - output tokens: `output_tokens` → `completion_tokens` → 0
+/// - cache read tokens: direct field or nested OpenAI cached token details
+/// - cache creation tokens: direct field only
 pub(crate) fn build_anthropic_usage_from_responses(usage: Option<&Value>) -> Value {
     let u = match usage {
-        Some(v) if !v.is_null() => v,
+        Some(v) if !v.is_null() && v.is_object() => v,
         _ => {
             return json!({
                 "input_tokens": 0,
@@ -263,8 +265,45 @@ pub(crate) fn build_anthropic_usage_from_responses(usage: Option<&Value>) -> Val
         }
     };
 
-    let input = u.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-    let output = u.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+    if u.as_object().map(|obj| obj.is_empty()).unwrap_or(false) {
+        log::warn!("[Responses] Empty usage object received, using defaults");
+        return json!({
+            "input_tokens": 0,
+            "output_tokens": 0
+        });
+    }
+
+    let input = u
+        .get("input_tokens")
+        .and_then(|v| v.as_u64())
+        .or_else(|| {
+            let prompt_tokens = u.get("prompt_tokens").and_then(|v| v.as_u64());
+            if prompt_tokens.is_some() {
+                log::debug!(
+                    "[Responses] Using OpenAI field name fallback 'prompt_tokens' for input_tokens"
+                );
+            }
+            prompt_tokens
+        })
+        .unwrap_or(0);
+
+    let output = u
+        .get("output_tokens")
+        .and_then(|v| v.as_u64())
+        .or_else(|| {
+            let completion_tokens = u.get("completion_tokens").and_then(|v| v.as_u64());
+            if completion_tokens.is_some() {
+                log::debug!(
+                    "[Responses] Using OpenAI field name fallback 'completion_tokens' for output_tokens"
+                );
+            }
+            completion_tokens
+        })
+        .unwrap_or(0);
+
+    if (input == 0 && output > 0) || (input > 0 && output == 0) {
+        log::debug!("[Responses] Partial usage object: {:?}", u);
+    }
 
     let mut result = json!({
         "input_tokens": input,
@@ -383,7 +422,7 @@ fn convert_messages_to_input(messages: &[Value]) -> Result<Vec<Value>, ProxyErro
                                 "type": "function_call",
                                 "call_id": id,
                                 "name": name,
-                                "arguments": serde_json::to_string(&arguments).unwrap_or_default()
+                                "arguments": canonical_json_string(&arguments)
                             }));
                         }
 
@@ -404,7 +443,7 @@ fn convert_messages_to_input(messages: &[Value]) -> Result<Vec<Value>, ProxyErro
                                 .unwrap_or("");
                             let output = match block.get("content") {
                                 Some(Value::String(s)) => s.clone(),
-                                Some(v) => serde_json::to_string(v).unwrap_or_default(),
+                                Some(v) => canonical_json_string(v),
                                 None => String::new(),
                             };
 
@@ -1510,5 +1549,49 @@ mod tests {
             result.get("tools").is_none(),
             "非 Codex OAuth 路径下 tools 在客户端未送时不应被注入"
         );
+    }
+
+    #[test]
+    fn test_build_usage_with_openai_field_names() {
+        let result = build_anthropic_usage_from_responses(Some(&json!({
+            "prompt_tokens": 120,
+            "completion_tokens": 45
+        })));
+
+        assert_eq!(result["input_tokens"], json!(120));
+        assert_eq!(result["output_tokens"], json!(45));
+    }
+
+    #[test]
+    fn test_build_usage_cache_tokens_without_input_output() {
+        let result = build_anthropic_usage_from_responses(Some(&json!({
+            "cache_read_input_tokens": 60,
+            "cache_creation_input_tokens": 20
+        })));
+
+        assert_eq!(result["input_tokens"], json!(0));
+        assert_eq!(result["output_tokens"], json!(0));
+        assert_eq!(result["cache_read_input_tokens"], json!(60));
+        assert_eq!(result["cache_creation_input_tokens"], json!(20));
+    }
+
+    #[test]
+    fn test_anthropic_to_responses_canonicalizes_tool_arguments() {
+        let input = json!({
+            "model": "gpt-4o",
+            "messages": [{
+                "role": "assistant",
+                "content": [{
+                    "type": "tool_use",
+                    "id": "call_1",
+                    "name": "demo",
+                    "input": {"b": 2, "a": 1}
+                }]
+            }]
+        });
+
+        let result = anthropic_to_responses(input, None, false, false).unwrap();
+
+        assert_eq!(result["input"][0]["arguments"], "{\"a\":1,\"b\":2}");
     }
 }

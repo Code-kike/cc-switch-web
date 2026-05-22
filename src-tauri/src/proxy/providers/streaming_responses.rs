@@ -175,10 +175,10 @@ pub fn create_anthropic_sse_stream_from_responses<E: std::error::Error + Send + 
                                 }
 
                                 has_sent_message_start = true;
-                                // Build usage with cache tokens if available
-                                let start_usage = build_anthropic_usage_from_responses(
-                                    response_obj.get("usage"),
-                                );
+                                // Build usage defensively; some Responses streams omit usage on start.
+                                let start_usage = build_anthropic_usage_from_responses(Some(
+                                    response_obj.get("usage").unwrap_or(&json!({})),
+                                ));
 
                                 let event = json!({
                                     "type": "message_start",
@@ -714,9 +714,9 @@ pub fn create_anthropic_sse_stream_from_responses<E: std::error::Error + Send + 
                                 }
                                 fallback_open_index = None;
 
-                                let usage_json = response_obj.get("usage").map(|u| {
-                                    build_anthropic_usage_from_responses(Some(u))
-                                });
+                                let usage_json = build_anthropic_usage_from_responses(Some(
+                                    response_obj.get("usage").unwrap_or(&json!({})),
+                                ));
 
                                 // Emit message_delta (with usage + stop_reason)
                                 let delta_event = json!({
