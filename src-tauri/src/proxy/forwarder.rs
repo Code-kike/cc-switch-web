@@ -114,6 +114,42 @@ impl RequestForwarder {
 
     /// 转发请求（带故障转移）
     ///
+    /// 这是客户端请求维度的 thin wrapper：只在入口记一次 total_requests /
+    /// active_connections / last_request_at，并在任意出口回收 active_connections。
+    #[allow(clippy::too_many_arguments)]
+    pub async fn forward_with_retry(
+        &self,
+        app_type: &AppType,
+        method: http::Method,
+        endpoint: &str,
+        body: Value,
+        headers: axum::http::HeaderMap,
+        extensions: Extensions,
+        providers: Vec<Provider>,
+    ) -> Result<ForwardResult, ForwardError> {
+        {
+            let mut status = self.status.write().await;
+            status.total_requests = status.total_requests.saturating_add(1);
+            status.active_connections = status.active_connections.saturating_add(1);
+            status.last_request_at = Some(chrono::Utc::now().to_rfc3339());
+        }
+
+        let result = self
+            .forward_with_retry_inner(
+                app_type, method, endpoint, body, headers, extensions, providers,
+            )
+            .await;
+
+        {
+            let mut status = self.status.write().await;
+            status.active_connections = status.active_connections.saturating_sub(1);
+        }
+
+        result
+    }
+
+    /// 实际转发逻辑（不包含客户端请求维度的入口/出口计数）
+    ///
     /// # Arguments
     /// * `app_type` - 应用类型
     /// * `method` - 客户端请求的 HTTP 方法（透传给上游，支持 GET/POST 等）
@@ -121,7 +157,8 @@ impl RequestForwarder {
     /// * `body` - 请求体
     /// * `headers` - 请求头
     /// * `providers` - 已选择的 Provider 列表（由 RequestContext 提供，避免重复调用 select_providers）
-    pub async fn forward_with_retry(
+    #[allow(clippy::too_many_arguments)]
+    async fn forward_with_retry_inner(
         &self,
         app_type: &AppType,
         method: http::Method,
@@ -200,13 +237,13 @@ impl RequestForwarder {
 
             attempted_providers += 1;
 
-            // 更新状态中的当前Provider信息
+            // 更新状态中的当前 Provider 信息（per-attempt 展示字段）。
+            // total_requests / last_request_at / active_connections 已由
+            // forward_with_retry wrapper 在客户端请求维度统一处理。
             {
                 let mut status = self.status.write().await;
                 status.current_provider = Some(provider.name.clone());
                 status.current_provider_id = Some(provider.id.clone());
-                status.total_requests += 1;
-                status.last_request_at = Some(chrono::Utc::now().to_rfc3339());
             }
 
             // 转发请求（每个 Provider 只尝试一次，重试由客户端控制）
