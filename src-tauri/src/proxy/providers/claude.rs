@@ -504,27 +504,31 @@ impl ProviderAdapter for ClaudeAdapter {
         base
     }
 
-    fn get_auth_headers(&self, auth: &AuthInfo) -> Vec<(http::HeaderName, http::HeaderValue)> {
+    fn get_auth_headers(
+        &self,
+        auth: &AuthInfo,
+    ) -> Result<Vec<(http::HeaderName, http::HeaderValue)>, ProxyError> {
+        use super::adapter::auth_header_value as hv;
         use http::{HeaderName, HeaderValue};
         // 注意：anthropic-version 由 forwarder.rs 统一处理（透传客户端值或设置默认值）
         let bearer = format!("Bearer {}", auth.api_key);
-        match auth.strategy {
-            AuthStrategy::Anthropic | AuthStrategy::ClaudeAuth | AuthStrategy::Bearer => {
-                vec![(
-                    HeaderName::from_static("authorization"),
-                    HeaderValue::from_str(&bearer).unwrap(),
-                )]
+        Ok(match auth.strategy {
+            AuthStrategy::Anthropic => {
+                vec![(HeaderName::from_static("x-api-key"), hv(&auth.api_key)?)]
+            }
+            AuthStrategy::ClaudeAuth | AuthStrategy::Bearer => {
+                vec![(HeaderName::from_static("authorization"), hv(&bearer)?)]
             }
             AuthStrategy::Google => vec![(
                 HeaderName::from_static("x-goog-api-key"),
-                HeaderValue::from_str(&auth.api_key).unwrap(),
+                hv(&auth.api_key)?,
             )],
             AuthStrategy::GoogleOAuth => {
                 let token = auth.access_token.as_ref().unwrap_or(&auth.api_key);
                 vec![
                     (
                         HeaderName::from_static("authorization"),
-                        HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
+                        hv(&format!("Bearer {token}"))?,
                     ),
                     (
                         HeaderName::from_static("x-goog-api-client"),
@@ -536,10 +540,7 @@ impl ProviderAdapter for ClaudeAdapter {
                 // 注意：bearer token 由 forwarder 动态注入到 auth.api_key
                 // ChatGPT-Account-Id 由 forwarder 注入额外 header
                 vec![
-                    (
-                        HeaderName::from_static("authorization"),
-                        HeaderValue::from_str(&bearer).unwrap(),
-                    ),
+                    (HeaderName::from_static("authorization"), hv(&bearer)?),
                     (
                         HeaderName::from_static("originator"),
                         HeaderValue::from_static("cc-switch"),
@@ -550,10 +551,7 @@ impl ProviderAdapter for ClaudeAdapter {
                 // 生成请求追踪 ID
                 let request_id = uuid::Uuid::new_v4().to_string();
                 vec![
-                    (
-                        HeaderName::from_static("authorization"),
-                        HeaderValue::from_str(&bearer).unwrap(),
-                    ),
+                    (HeaderName::from_static("authorization"), hv(&bearer)?),
                     (
                         HeaderName::from_static("editor-version"),
                         HeaderValue::from_static(super::copilot_auth::COPILOT_EDITOR_VERSION),
@@ -592,17 +590,11 @@ impl ProviderAdapter for ClaudeAdapter {
                         HeaderName::from_static("x-vscode-user-agent-library-version"),
                         HeaderValue::from_static("electron-fetch"),
                     ),
-                    (
-                        HeaderName::from_static("x-request-id"),
-                        HeaderValue::from_str(&request_id).unwrap(),
-                    ),
-                    (
-                        HeaderName::from_static("x-agent-task-id"),
-                        HeaderValue::from_str(&request_id).unwrap(),
-                    ),
+                    (HeaderName::from_static("x-request-id"), hv(&request_id)?),
+                    (HeaderName::from_static("x-agent-task-id"), hv(&request_id)?),
                 ]
             }
-        }
+        })
     }
 
     fn needs_transform(&self, provider: &Provider) -> bool {

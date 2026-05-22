@@ -1107,7 +1107,7 @@ impl RequestForwarder {
                 }
             }
 
-            adapter.get_auth_headers(&auth)
+            adapter.get_auth_headers(&auth)?
         } else {
             Vec::new()
         };
