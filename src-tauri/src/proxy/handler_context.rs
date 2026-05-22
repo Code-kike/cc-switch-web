@@ -175,10 +175,7 @@ impl RequestContext {
     /// Gemini API 的模型名称在 URI 中，格式如：
     /// `/v1beta/models/gemini-pro:generateContent`
     pub fn with_model_from_uri(mut self, uri: &axum::http::Uri) -> Self {
-        let endpoint = uri
-            .path_and_query()
-            .map(|pq| pq.as_str())
-            .unwrap_or(uri.path());
+        let endpoint = uri.path();
 
         self.request_model =
             extract_gemini_model_from_path(endpoint).unwrap_or_else(|| "unknown".to_string());
