@@ -215,6 +215,11 @@ impl RequestContext {
                 );
                 (0, 0, 0)
             };
+        let max_retries = if self.app_config.auto_failover_enabled {
+            self.app_config.max_retries
+        } else {
+            0
+        };
 
         RequestForwarder::new(
             state.provider_router.clone(),
@@ -232,6 +237,7 @@ impl RequestContext {
             self.rectifier_config.clone(),
             self.optimizer_config.clone(),
             self.copilot_optimizer_config.clone(),
+            max_retries,
         )
     }
 

@@ -65,6 +65,11 @@ pub struct RequestForwarder {
     copilot_optimizer_config: CopilotOptimizerConfig,
     /// 非流式请求超时（秒）
     non_streaming_timeout: std::time::Duration,
+    /// 单个客户端请求最多尝试的 provider 数。
+    ///
+    /// 由 AppProxyConfig.max_retries 派生：max_attempts = max_retries + 1。
+    /// max_retries=0 表示只尝试当前 provider；max_retries=3 表示最多尝试 4 家。
+    max_attempts: usize,
 }
 
 impl RequestForwarder {
@@ -85,7 +90,10 @@ impl RequestForwarder {
         rectifier_config: RectifierConfig,
         optimizer_config: OptimizerConfig,
         copilot_optimizer_config: CopilotOptimizerConfig,
+        max_retries: u32,
     ) -> Self {
+        let max_attempts = max_attempts_from_retries(max_retries);
+
         Self {
             router,
             status,
@@ -100,6 +108,7 @@ impl RequestForwarder {
             optimizer_config,
             copilot_optimizer_config,
             non_streaming_timeout: std::time::Duration::from_secs(non_streaming_timeout),
+            max_attempts,
         }
     }
 
@@ -146,6 +155,17 @@ impl RequestForwarder {
 
         // 依次尝试每个供应商
         for provider in providers.iter() {
+            // 尊重 AppProxyConfig.max_retries。检查放在熔断器 allow 之前，
+            // 避免超限后仍占用 HalfOpen 探测名额。
+            if attempted_providers >= self.max_attempts {
+                log::warn!(
+                    "[{app_type_str}] 已达最大尝试次数上限 ({}/{}), 停止故障转移",
+                    attempted_providers,
+                    self.max_attempts
+                );
+                break;
+            }
+
             // 发起请求前先获取熔断器放行许可（HalfOpen 会占用探测名额）
             // 单 Provider 场景下跳过此检查，避免熔断器阻塞所有请求
             let (allowed, used_half_open_permit) = if bypass_circuit_breaker {
@@ -1630,6 +1650,10 @@ fn should_omit_upstream_request_body(method: &http::Method) -> bool {
     matches!(method, &http::Method::GET | &http::Method::HEAD)
 }
 
+fn max_attempts_from_retries(max_retries: u32) -> usize {
+    (max_retries as usize).saturating_add(1)
+}
+
 /// 从 ProxyError 中提取错误消息
 fn extract_error_message(error: &ProxyError) -> Option<String> {
     match error {
@@ -1993,6 +2017,12 @@ mod tests {
         assert!(should_omit_upstream_request_body(&http::Method::HEAD));
         assert!(!should_omit_upstream_request_body(&http::Method::POST));
         assert!(!should_omit_upstream_request_body(&http::Method::PUT));
+    }
+
+    #[test]
+    fn max_retries_maps_to_attempt_limit() {
+        assert_eq!(max_attempts_from_retries(0), 1);
+        assert_eq!(max_attempts_from_retries(3), 4);
     }
 
     #[test]
