@@ -790,6 +790,13 @@ impl RequestForwarder {
             == Some("github_copilot")
             || base_url.contains("githubcopilot.com");
 
+        if is_copilot {
+            mapped_body =
+                super::providers::copilot_model_map::apply_copilot_model_normalization(mapped_body);
+            self.apply_copilot_live_model_resolution(provider, &mut mapped_body)
+                .await;
+        }
+
         // --- Copilot 优化器：分类 + 请求体优化（在格式转换之前执行） ---
         // 注意：确定性 ID 也在此处计算，因为 mapped_body 在格式转换时会被 move
         //
@@ -1483,6 +1490,48 @@ impl RequestForwarder {
         }
 
         "openai_chat".to_string()
+    }
+
+    async fn apply_copilot_live_model_resolution(&self, provider: &Provider, body: &mut Value) {
+        let Some(model_id) = body
+            .get("model")
+            .and_then(|value| value.as_str())
+            .map(ToString::to_string)
+        else {
+            return;
+        };
+
+        let Some(app_handle) = &self.app_handle else {
+            log::debug!("[Copilot] AppHandle unavailable, skip live model resolution");
+            return;
+        };
+
+        let copilot_state = app_handle.state::<CopilotAuthState>();
+        let copilot_auth = copilot_state.0.read().await;
+        let account_id = provider
+            .meta
+            .as_ref()
+            .and_then(|m| m.managed_account_id_for("github_copilot"));
+
+        let models_result = match account_id.as_deref() {
+            Some(id) => copilot_auth.fetch_models_for_account(id).await,
+            None => copilot_auth.fetch_models().await,
+        };
+
+        let models = match models_result {
+            Ok(models) => models,
+            Err(err) => {
+                log::debug!("[Copilot] live model list unavailable, skip resolution: {err}");
+                return;
+            }
+        };
+
+        if let Some(resolved) =
+            super::providers::copilot_model_map::resolve_against_models(&model_id, &models)
+        {
+            log::info!("[Copilot] live-model resolve: {model_id} → {resolved}");
+            body["model"] = serde_json::Value::String(resolved);
+        }
     }
 
     async fn is_copilot_openai_vendor_model(&self, provider: &Provider, model_id: &str) -> bool {
