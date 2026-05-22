@@ -795,6 +795,18 @@ impl StreamCheckService {
             return None;
         }
         let lower = body.to_lowercase();
+        let qianfan_quota_indicators = [
+            "coding_plan_hour_quota_exceeded",
+            "coding_plan_week_quota_exceeded",
+            "coding_plan_month_quota_exceeded",
+        ];
+        if qianfan_quota_indicators
+            .iter()
+            .any(|indicator| lower.contains(indicator))
+        {
+            return Some("quotaExceeded");
+        }
+
         // 必须提到 "model"，避免通用 404 / 400 被误判
         if !lower.contains("model") {
             return None;
@@ -1737,6 +1749,22 @@ mod tests {
             StreamCheckService::detect_error_category(401, auth_err),
             None
         );
+    }
+
+    #[test]
+    fn test_detect_qianfan_coding_plan_quota_errors() {
+        let cases = [
+            r#"{"error":{"code":"coding_plan_hour_quota_exceeded","message":"hour quota exceeded"}}"#,
+            r#"{"error":{"code":"coding_plan_week_quota_exceeded","message":"week quota exceeded"}}"#,
+            r#"{"error":{"code":"coding_plan_month_quota_exceeded","message":"month quota exceeded"}}"#,
+        ];
+
+        for body in cases {
+            assert_eq!(
+                StreamCheckService::detect_error_category(429, body),
+                Some("quotaExceeded")
+            );
+        }
     }
 
     #[test]
