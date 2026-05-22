@@ -173,6 +173,13 @@
       }
     }
   },
+  "claudeCode": {
+    "needsRouting": "Needs Routing",
+    "noRoutingSupport": "No Routing Support"
+  },
+  "codex": {
+    "noRoutingSupport": "No Routing Support"
+  },
   "notifications": {
     "providerAdded": "Provider added",
     "providerSaved": "Provider configuration saved",

@@ -173,6 +173,13 @@
       }
     }
   },
+  "claudeCode": {
+    "needsRouting": "需要路由",
+    "noRoutingSupport": "不支持路由"
+  },
+  "codex": {
+    "noRoutingSupport": "不支持路由"
+  },
   "notifications": {
     "providerAdded": "供应商已添加",
     "providerSaved": "供应商配置已保存",

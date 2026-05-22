@@ -185,6 +185,45 @@ describe("ProviderCard", () => {
     expect(providerActionsPropsSpy.mock.calls[0]?.[0].onTest).toBeUndefined();
   });
 
+  it("shows routing capability badges for Claude Code and Codex providers", () => {
+    const { rerender } = render(
+      <ProviderCard
+        {...baseProps}
+        provider={createProvider({
+          name: "OpenAI Compatible Claude",
+          meta: { apiFormat: "openai_chat" },
+        })}
+      />,
+    );
+
+    expect(screen.getByText("需要路由")).toBeInTheDocument();
+
+    rerender(
+      <ProviderCard
+        {...baseProps}
+        provider={createProvider({
+          name: "Official Claude",
+          category: "official",
+        })}
+      />,
+    );
+
+    expect(screen.getByText("不支持路由")).toBeInTheDocument();
+
+    rerender(
+      <ProviderCard
+        {...baseProps}
+        appId="codex"
+        provider={createProvider({
+          name: "Official Codex",
+          category: "official",
+        })}
+      />,
+    );
+
+    expect(screen.getByText("不支持路由")).toBeInTheDocument();
+  });
+
   it("disables live diagnostics queries when no health or usage limits are relevant", () => {
     const provider = createProvider({ name: "Plain Provider" });
 

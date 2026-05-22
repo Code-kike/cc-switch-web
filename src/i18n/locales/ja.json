@@ -173,6 +173,13 @@
       }
     }
   },
+  "claudeCode": {
+    "needsRouting": "ルーティングが必要",
+    "noRoutingSupport": "ルーティング非対応"
+  },
+  "codex": {
+    "noRoutingSupport": "ルーティング非対応"
+  },
   "notifications": {
     "providerAdded": "プロバイダーを追加しました",
     "providerSaved": "プロバイダー設定を保存しました",
