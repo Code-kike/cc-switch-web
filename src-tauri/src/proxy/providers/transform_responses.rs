@@ -11,6 +11,35 @@
 use crate::proxy::error::ProxyError;
 use serde_json::{json, Value};
 
+pub(crate) fn sanitize_anthropic_tool_use_input(name: &str, input: Value) -> Value {
+    if name != "Read" {
+        return input;
+    }
+
+    match input {
+        Value::Object(mut object) => {
+            if matches!(object.get("pages"), Some(Value::String(value)) if value.is_empty()) {
+                object.remove("pages");
+            }
+            Value::Object(object)
+        }
+        other => other,
+    }
+}
+
+pub(crate) fn sanitize_anthropic_tool_use_input_json(name: &str, raw: &str) -> String {
+    if name != "Read" || raw.is_empty() {
+        return raw.to_string();
+    }
+
+    let Ok(input) = serde_json::from_str::<Value>(raw) else {
+        return raw.to_string();
+    };
+
+    serde_json::to_string(&sanitize_anthropic_tool_use_input(name, input))
+        .unwrap_or_else(|_| raw.to_string())
+}
+
 /// Anthropic 请求 → OpenAI Responses 请求
 ///
 /// `cache_key`: optional prompt_cache_key to inject for improved cache routing
@@ -35,10 +64,12 @@ pub fn anthropic_to_responses(
     // system → instructions (Responses API 使用 instructions 字段)
     if let Some(system) = body.get("system") {
         let instructions = if let Some(text) = system.as_str() {
-            text.to_string()
+            super::transform::strip_leading_anthropic_billing_header(text).to_string()
         } else if let Some(arr) = system.as_array() {
             arr.iter()
                 .filter_map(|msg| msg.get("text").and_then(|t| t.as_str()))
+                .map(super::transform::strip_leading_anthropic_billing_header)
+                .filter(|text| !text.is_empty())
                 .collect::<Vec<_>>()
                 .join("\n\n")
         } else {
@@ -454,6 +485,7 @@ pub fn responses_to_anthropic(body: Value) -> Result<Value, ProxyError> {
                     .and_then(|a| a.as_str())
                     .unwrap_or("{}");
                 let input: Value = serde_json::from_str(args_str).unwrap_or(json!({}));
+                let input = sanitize_anthropic_tool_use_input(name, input);
 
                 content.push(json!({
                     "type": "tool_use",
@@ -554,6 +586,48 @@ mod tests {
     }
 
     #[test]
+    fn test_anthropic_to_responses_strips_leading_billing_header_from_system_string() {
+        let input = json!({
+            "model": "gpt-4o",
+            "max_tokens": 1024,
+            "system": "x-anthropic-billing-header: cc_version=2.1.119.47e; cc_entrypoint=sdk-cli; cch=a7754;\n\nYou are a helpful assistant.",
+            "messages": [{"role": "user", "content": "Hello"}]
+        });
+
+        let result = anthropic_to_responses(input, None, false, false).unwrap();
+        assert_eq!(result["instructions"], "You are a helpful assistant.");
+    }
+
+    #[test]
+    fn test_anthropic_to_responses_strips_billing_header_with_crlf() {
+        let input = json!({
+            "model": "gpt-4o",
+            "max_tokens": 1024,
+            "system": "x-anthropic-billing-header: cc_version=2.1.119.47e; cc_entrypoint=sdk-cli; cch=a7754;\r\n\r\nYou are a helpful assistant.",
+            "messages": [{"role": "user", "content": "Hello"}]
+        });
+
+        let result = anthropic_to_responses(input, None, false, false).unwrap();
+        assert_eq!(result["instructions"], "You are a helpful assistant.");
+    }
+
+    #[test]
+    fn test_anthropic_to_responses_keeps_non_leading_billing_header_text() {
+        let input = json!({
+            "model": "gpt-4o",
+            "max_tokens": 1024,
+            "system": "Keep this literal:\nx-anthropic-billing-header: example",
+            "messages": [{"role": "user", "content": "Hello"}]
+        });
+
+        let result = anthropic_to_responses(input, None, false, false).unwrap();
+        assert_eq!(
+            result["instructions"],
+            "Keep this literal:\nx-anthropic-billing-header: example"
+        );
+    }
+
+    #[test]
     fn test_anthropic_to_responses_with_system_array() {
         let input = json!({
             "model": "gpt-4o",
@@ -567,6 +641,41 @@ mod tests {
 
         let result = anthropic_to_responses(input, None, false, false).unwrap();
         assert_eq!(result["instructions"], "Part 1\n\nPart 2");
+    }
+
+    #[test]
+    fn test_anthropic_to_responses_strips_billing_header_from_system_array_parts() {
+        let input = json!({
+            "model": "gpt-4o",
+            "max_tokens": 1024,
+            "system": [
+                {"type": "text", "text": "x-anthropic-billing-header: cc_version=2.1.119.47e; cc_entrypoint=sdk-cli; cch=a7754;\n"},
+                {"type": "text", "text": "Stable prompt"}
+            ],
+            "messages": [{"role": "user", "content": "Hello"}]
+        });
+
+        let result = anthropic_to_responses(input, None, false, false).unwrap();
+        assert_eq!(result["instructions"], "Stable prompt");
+    }
+
+    #[test]
+    fn test_anthropic_to_responses_preserves_prompt_after_billing_header_in_same_part() {
+        let input = json!({
+            "model": "gpt-4o",
+            "max_tokens": 1024,
+            "system": [
+                {"type": "text", "text": "x-anthropic-billing-header: cc_version=2.1.119.47e; cc_entrypoint=sdk-cli; cch=a7754;\n\nStable prompt part 1"},
+                {"type": "text", "text": "Stable prompt part 2"}
+            ],
+            "messages": [{"role": "user", "content": "Hello"}]
+        });
+
+        let result = anthropic_to_responses(input, None, false, false).unwrap();
+        assert_eq!(
+            result["instructions"],
+            "Stable prompt part 1\n\nStable prompt part 2"
+        );
     }
 
     #[test]
@@ -766,6 +875,56 @@ mod tests {
         assert_eq!(result["content"][0]["name"], "get_weather");
         assert_eq!(result["content"][0]["input"]["location"], "Tokyo");
         assert_eq!(result["stop_reason"], "tool_use");
+    }
+
+    #[test]
+    fn test_responses_to_anthropic_read_drops_empty_pages() {
+        let input = json!({
+            "id": "resp_read",
+            "object": "response",
+            "status": "completed",
+            "model": "gpt-5.5",
+            "output": [{
+                "type": "function_call",
+                "id": "fc_read",
+                "call_id": "call_read",
+                "name": "Read",
+                "arguments": "{\"file_path\":\"/tmp/demo.py\",\"limit\":2000,\"offset\":0,\"pages\":\"\"}",
+                "status": "completed"
+            }]
+        });
+
+        let result = responses_to_anthropic(input).unwrap();
+        let tool_input = &result["content"][0]["input"];
+
+        assert_eq!(result["content"][0]["type"], "tool_use");
+        assert_eq!(result["content"][0]["name"], "Read");
+        assert_eq!(tool_input["file_path"], "/tmp/demo.py");
+        assert_eq!(tool_input["limit"], 2000);
+        assert_eq!(tool_input["offset"], 0);
+        assert!(tool_input.get("pages").is_none());
+    }
+
+    #[test]
+    fn test_responses_to_anthropic_preserves_empty_strings_for_other_tools() {
+        let input = json!({
+            "id": "resp_other",
+            "object": "response",
+            "status": "completed",
+            "model": "gpt-5.5",
+            "output": [{
+                "type": "function_call",
+                "id": "fc_other",
+                "call_id": "call_other",
+                "name": "search",
+                "arguments": "{\"query\":\"\"}",
+                "status": "completed"
+            }]
+        });
+
+        let result = responses_to_anthropic(input).unwrap();
+
+        assert_eq!(result["content"][0]["input"]["query"], "");
     }
 
     #[test]
