@@ -10,6 +10,9 @@ pub mod gemini_url;
 #[path = "../src/proxy/http_client.rs"]
 pub mod http_client;
 
+#[path = "../src/proxy/json_canonical.rs"]
+pub(crate) mod json_canonical;
+
 #[path = "../src/proxy/providers/mod.rs"]
 pub mod providers;
 
