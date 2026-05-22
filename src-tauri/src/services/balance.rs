@@ -232,15 +232,16 @@ async fn query_siliconflow(api_key: &str, is_cn: bool) -> UsageResult {
     };
 
     let total_balance = parse_f64_field(data, "totalBalance").unwrap_or(0.0);
+    let (plan_name, unit) = siliconflow_balance_labels(is_cn);
 
     UsageResult {
         success: true,
         data: Some(vec![UsageData {
-            plan_name: Some("SiliconFlow".to_string()),
+            plan_name: Some(plan_name.to_string()),
             remaining: Some(total_balance),
             total: None,
             used: None,
-            unit: Some("CNY".to_string()),
+            unit: Some(unit.to_string()),
             is_valid: Some(true),
             invalid_message: None,
             extra: None,
@@ -376,6 +377,14 @@ fn parse_f64_field(obj: &serde_json::Value, field: &str) -> Option<f64> {
     })
 }
 
+fn siliconflow_balance_labels(is_cn: bool) -> (&'static str, &'static str) {
+    if is_cn {
+        ("SiliconFlow", "CNY")
+    } else {
+        ("SiliconFlow (EN)", "USD")
+    }
+}
+
 // ── 公开入口 ────────────────────────────────────────────────
 
 pub async fn get_balance(base_url: &str, api_key: &str) -> Result<UsageResult, String> {
@@ -408,4 +417,22 @@ pub async fn get_balance(base_url: &str, api_key: &str) -> Result<UsageResult, S
     };
 
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn siliconflow_cn_balance_labels_use_cny() {
+        assert_eq!(siliconflow_balance_labels(true), ("SiliconFlow", "CNY"));
+    }
+
+    #[test]
+    fn siliconflow_international_balance_labels_use_usd() {
+        assert_eq!(
+            siliconflow_balance_labels(false),
+            ("SiliconFlow (EN)", "USD")
+        );
+    }
 }
