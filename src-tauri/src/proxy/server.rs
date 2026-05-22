@@ -16,7 +16,7 @@ use super::{
 use crate::database::Database;
 use axum::{
     extract::DefaultBodyLimit,
-    routing::{get, post},
+    routing::{any, get, post},
     Router,
 };
 use hyper_util::rt::TokioIo;
@@ -322,8 +322,13 @@ impl ProxyServer {
                 post(handlers::handle_responses_compact),
             )
             // Gemini API (支持带前缀和不带前缀)
-            .route("/v1beta/*path", post(handlers::handle_gemini))
-            .route("/gemini/v1beta/*path", post(handlers::handle_gemini))
+            //
+            // 用 any(..) 覆盖所有 HTTP 方法：除了 POST generateContent /
+            // streamGenerateContent / countTokens，Gemini SDK 也会发 GET /models
+            // 和 GET /models/<id> 等只读端点。
+            .route("/v1beta/*path", any(handlers::handle_gemini))
+            .route("/gemini/v1beta/*path", any(handlers::handle_gemini))
+            .route("/gemini/v1/*path", any(handlers::handle_gemini))
             // 提高默认请求体大小限制（避免 413 Payload Too Large）
             .layer(DefaultBodyLimit::max(200 * 1024 * 1024))
             .with_state(self.state.clone())

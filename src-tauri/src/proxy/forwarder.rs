@@ -107,6 +107,7 @@ impl RequestForwarder {
     ///
     /// # Arguments
     /// * `app_type` - 应用类型
+    /// * `method` - 客户端请求的 HTTP 方法（透传给上游，支持 GET/POST 等）
     /// * `endpoint` - API 端点
     /// * `body` - 请求体
     /// * `headers` - 请求头
@@ -114,6 +115,7 @@ impl RequestForwarder {
     pub async fn forward_with_retry(
         &self,
         app_type: &AppType,
+        method: http::Method,
         endpoint: &str,
         body: Value,
         headers: axum::http::HeaderMap,
@@ -190,6 +192,7 @@ impl RequestForwarder {
             // 转发请求（每个 Provider 只尝试一次，重试由客户端控制）
             match self
                 .forward(
+                    &method,
                     provider,
                     endpoint,
                     &provider_body,
@@ -320,6 +323,7 @@ impl RequestForwarder {
                                 // 使用同一供应商重试（不计入熔断器）
                                 match self
                                     .forward(
+                                        &method,
                                         provider,
                                         endpoint,
                                         &provider_body,
@@ -519,6 +523,7 @@ impl RequestForwarder {
                             // 使用同一供应商重试（不计入熔断器）
                             match self
                                 .forward(
+                                    &method,
                                     provider,
                                     endpoint,
                                     &provider_body,
@@ -758,6 +763,7 @@ impl RequestForwarder {
     /// 转发单个请求（使用适配器）
     async fn forward(
         &self,
+        method: &http::Method,
         provider: &Provider,
         endpoint: &str,
         body: &Value,
@@ -1372,9 +1378,14 @@ impl RequestForwarder {
             ordered_headers.insert(name, value);
         }
 
-        // 序列化请求体
-        let body_bytes = serde_json::to_vec(&filtered_body)
-            .map_err(|e| ProxyError::Internal(format!("Failed to serialize request body: {e}")))?;
+        // GET/HEAD 按 HTTP 语义不应携带 body；附带 JSON 会让 Gemini models.list 等只读端点被拒绝。
+        let body_bytes = if should_omit_upstream_request_body(method) {
+            Vec::new()
+        } else {
+            serde_json::to_vec(&filtered_body).map_err(|e| {
+                ProxyError::Internal(format!("Failed to serialize request body: {e}"))
+            })?
+        };
 
         // 确保 content-type 存在
         if !ordered_headers.contains_key(http::header::CONTENT_TYPE) {
@@ -1424,7 +1435,7 @@ impl RequestForwarder {
             // SOCKS5 代理：只能走 reqwest（不支持 header case 保留）
             log::debug!("[Forwarder] Using reqwest for SOCKS5 proxy");
             let client = super::http_client::get();
-            let mut request = client.post(&url);
+            let mut request = client.request(method.clone(), &url);
             if !self.non_streaming_timeout.is_zero() {
                 request = request.timeout(self.non_streaming_timeout);
             }
@@ -1446,7 +1457,7 @@ impl RequestForwarder {
             // 如果有 HTTP 代理，hyper_client 会用 CONNECT 隧道穿过代理
             super::hyper_client::send_request(
                 uri,
-                http::Method::POST,
+                method.clone(),
                 ordered_headers,
                 extensions.clone(),
                 body_bytes,
@@ -1613,6 +1624,10 @@ fn categorize_proxy_error(error: &ProxyError) -> ErrorCategory {
         // 其他错误（数据库/内部错误等）：不是换供应商能解决的问题
         _ => ErrorCategory::NonRetryable,
     }
+}
+
+fn should_omit_upstream_request_body(method: &http::Method) -> bool {
+    matches!(method, &http::Method::GET | &http::Method::HEAD)
 }
 
 /// 从 ProxyError 中提取错误消息
@@ -1970,6 +1985,14 @@ mod tests {
 
             assert_eq!(categorize_proxy_error(&error), ErrorCategory::Retryable);
         }
+    }
+
+    #[test]
+    fn get_and_head_requests_omit_upstream_body() {
+        assert!(should_omit_upstream_request_body(&http::Method::GET));
+        assert!(should_omit_upstream_request_body(&http::Method::HEAD));
+        assert!(!should_omit_upstream_request_body(&http::Method::POST));
+        assert!(!should_omit_upstream_request_body(&http::Method::PUT));
     }
 
     #[test]
