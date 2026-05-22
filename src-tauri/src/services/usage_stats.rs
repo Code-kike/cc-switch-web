@@ -1186,12 +1186,17 @@ impl Database {
 
         let million = rust_decimal::Decimal::from(1_000_000u64);
 
-        // 与 CostCalculator::calculate 保持一致的计算逻辑：
-        // 1. input_cost 需要扣除 cache_read_tokens（避免缓存部分被重复计费）
-        // 2. 各项成本是基础成本（不含倍率）
-        // 3. 倍率只作用于最终总价
-        let billable_input_tokens =
-            (log.input_tokens as u64).saturating_sub(log.cache_read_tokens as u64);
+        // 与 CostCalculator 保持一致：
+        // - Codex/Gemini 的 input_tokens 包含 cache read，需要扣除缓存命中部分
+        // - Claude/Anthropic 的 input_tokens 已经是 fresh input，不能再次扣减
+        // - 各项成本是基础成本（不含倍率），倍率只作用于最终总价
+        let input_tokens = log.input_tokens as u64;
+        let cache_read_tokens = log.cache_read_tokens as u64;
+        let billable_input_tokens = if matches!(log.app_type.as_str(), "codex" | "gemini") {
+            input_tokens.saturating_sub(cache_read_tokens)
+        } else {
+            input_tokens
+        };
         let input_cost =
             rust_decimal::Decimal::from(billable_input_tokens) * pricing.input / million;
         let output_cost =
