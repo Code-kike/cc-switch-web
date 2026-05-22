@@ -660,6 +660,47 @@ fn schema_model_pricing_is_seeded_on_init() {
         "应该包含 Gemini 模型定价，实际数量: {}",
         gemini_count
     );
+
+    for (model_id, display_name, input, output, cache_read, cache_creation) in [
+        (
+            "deepseek-v4-flash",
+            "DeepSeek V4 Flash",
+            "0.14",
+            "0.28",
+            "0.028",
+            "0",
+        ),
+        (
+            "deepseek-v4-pro",
+            "DeepSeek V4 Pro",
+            "1.68",
+            "3.36",
+            "0.14",
+            "0",
+        ),
+    ] {
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM model_pricing
+                 WHERE model_id = ?1
+                   AND display_name = ?2
+                   AND input_cost_per_million = ?3
+                   AND output_cost_per_million = ?4
+                   AND cache_read_cost_per_million = ?5
+                   AND cache_creation_cost_per_million = ?6",
+                params![
+                    model_id,
+                    display_name,
+                    input,
+                    output,
+                    cache_read,
+                    cache_creation
+                ],
+                |row| row.get(0),
+            )
+            .expect("check DeepSeek V4 pricing");
+        assert_eq!(count, 1, "DeepSeek V4 pricing row mismatch: {model_id}");
+    }
 }
 
 #[test]
