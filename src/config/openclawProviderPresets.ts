@@ -104,6 +104,80 @@ export const openclawProviderPresets: OpenClawProviderPreset[] = [
       },
     },
   },
+  {
+    name: "火山Agentplan",
+    websiteUrl:
+      "https://www.volcengine.com/activity/agentplan?utm_campaign=hw&utm_content=ccswitch&utm_medium=devrel_tool_web&utm_source=OWO&utm_term=ccswitch",
+    apiKeyUrl:
+      "https://www.volcengine.com/activity/agentplan?utm_campaign=hw&utm_content=ccswitch&utm_medium=devrel_tool_web&utm_source=OWO&utm_term=ccswitch",
+    settingsConfig: {
+      baseUrl: "https://ark.cn-beijing.volces.com/api/coding/v3",
+      apiKey: "",
+      api: "openai-completions",
+      models: [
+        {
+          id: "ark-code-latest",
+          name: "Ark Code Latest",
+          contextWindow: 256000,
+        },
+      ],
+    },
+    category: "cn_official",
+    isPartner: true,
+    partnerPromotionKey: "volcengine_agentplan",
+    icon: "huoshan",
+    iconColor: "#3370FF",
+    templateValues: {
+      apiKey: {
+        label: "API Key",
+        placeholder: "",
+        editorValue: "",
+      },
+    },
+    suggestedDefaults: {
+      model: { primary: "ark_agentplan/ark-code-latest" },
+      modelCatalog: {
+        "ark_agentplan/ark-code-latest": { alias: "Ark Code" },
+      },
+    },
+  },
+  {
+    name: "BytePlus",
+    websiteUrl:
+      "https://www.byteplus.com/en/product/modelark?utm_campaign=hw&utm_content=ccswitch&utm_medium=devrel_tool_web&utm_source=OWO&utm_term=ccswitch",
+    apiKeyUrl:
+      "https://www.byteplus.com/en/product/modelark?utm_campaign=hw&utm_content=ccswitch&utm_medium=devrel_tool_web&utm_source=OWO&utm_term=ccswitch",
+    settingsConfig: {
+      baseUrl: "https://ark.ap-southeast.bytepluses.com/api/coding/v3",
+      apiKey: "",
+      api: "openai-completions",
+      models: [
+        {
+          id: "ark-code-latest",
+          name: "Ark Code Latest",
+          contextWindow: 256000,
+        },
+      ],
+    },
+    category: "cn_official",
+    isPartner: true,
+    partnerPromotionKey: "byteplus",
+    icon: "byteplus",
+    iconColor: "#3370FF",
+    templateValues: {
+      apiKey: {
+        label: "API Key",
+        placeholder: "",
+        editorValue: "",
+      },
+    },
+    suggestedDefaults: {
+      model: { primary: "byteplus/ark-code-latest" },
+      modelCatalog: {
+        "byteplus/ark-code-latest": { alias: "Ark Code" },
+      },
+    },
+  },
   // ========== Chinese Officials ==========
   {
     name: "DeepSeek",
@@ -115,16 +189,16 @@ export const openclawProviderPresets: OpenClawProviderPreset[] = [
       api: "openai-completions",
       models: [
         {
-          id: "deepseek-chat",
-          name: "DeepSeek V3.2",
-          contextWindow: 128000,
-          cost: { input: 0.0005, output: 0.002 },
+          id: "deepseek-v4-pro",
+          name: "DeepSeek V4 Pro",
+          contextWindow: 1000000,
+          cost: { input: 1.68, output: 3.36 },
         },
         {
-          id: "deepseek-reasoner",
-          name: "DeepSeek R1",
-          contextWindow: 128000,
-          cost: { input: 0.0005, output: 0.002 },
+          id: "deepseek-v4-flash",
+          name: "DeepSeek V4 Flash",
+          contextWindow: 1000000,
+          cost: { input: 0.14, output: 0.28 },
         },
       ],
     },
@@ -140,12 +214,12 @@ export const openclawProviderPresets: OpenClawProviderPreset[] = [
     },
     suggestedDefaults: {
       model: {
-        primary: "deepseek/deepseek-chat",
-        fallbacks: ["deepseek/deepseek-reasoner"],
+        primary: "deepseek/deepseek-v4-flash",
+        fallbacks: ["deepseek/deepseek-v4-pro"],
       },
       modelCatalog: {
-        "deepseek/deepseek-chat": { alias: "DeepSeek" },
-        "deepseek/deepseek-reasoner": { alias: "R1" },
+        "deepseek/deepseek-v4-flash": { alias: "Flash" },
+        "deepseek/deepseek-v4-pro": { alias: "Pro" },
       },
     },
   },
@@ -303,7 +377,7 @@ export const openclawProviderPresets: OpenClawProviderPreset[] = [
   },
   {
     name: "Kimi For Coding",
-    websiteUrl: "https://www.kimi.com/coding/docs/",
+    websiteUrl: "https://www.kimi.com/code/docs/",
     apiKeyUrl: "https://platform.moonshot.cn/console/api-keys",
     settingsConfig: {
       baseUrl: "https://api.kimi.com/v1",
@@ -591,8 +665,10 @@ export const openclawProviderPresets: OpenClawProviderPreset[] = [
   },
   {
     name: "DouBaoSeed",
-    websiteUrl: "https://www.volcengine.com/product/doubao",
-    apiKeyUrl: "https://www.volcengine.com/product/doubao",
+    websiteUrl:
+      "https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey?apikey=%7B%7D&utm_campaign=hw&utm_content=ccswitch&utm_medium=devrel_tool_web&utm_source=OWO&utm_term=ccswitch",
+    apiKeyUrl:
+      "https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey?apikey=%7B%7D&utm_campaign=hw&utm_content=ccswitch&utm_medium=devrel_tool_web&utm_source=OWO&utm_term=ccswitch",
     settingsConfig: {
       baseUrl: "https://ark.cn-beijing.volces.com/api/v3",
       apiKey: "",
@@ -607,6 +683,8 @@ export const openclawProviderPresets: OpenClawProviderPreset[] = [
       ],
     },
     category: "cn_official",
+    isPartner: true,
+    partnerPromotionKey: "doubaoseed",
     icon: "doubao",
     iconColor: "#3370FF",
     templateValues: {
@@ -1392,7 +1470,7 @@ export const openclawProviderPresets: OpenClawProviderPreset[] = [
     websiteUrl: "https://www.crazyrouter.com",
     apiKeyUrl: "https://www.crazyrouter.com/register?aff=OZcm&ref=cc-switch",
     settingsConfig: {
-      baseUrl: "https://crazyrouter.com/v1",
+      baseUrl: "https://cn.crazyrouter.com/v1",
       apiKey: "",
       api: "anthropic-messages",
       models: [
@@ -1480,6 +1558,102 @@ export const openclawProviderPresets: OpenClawProviderPreset[] = [
     },
   },
   {
+    name: "ClaudeCN",
+    websiteUrl: "https://claudecn.top",
+    apiKeyUrl: "https://claudecn.top/register?aff=ccswitch",
+    settingsConfig: {
+      baseUrl: "https://claudecn.top",
+      apiKey: "",
+      api: "anthropic-messages",
+      models: [
+        {
+          id: "claude-opus-4-7",
+          name: "Claude Opus 4.7",
+          contextWindow: 1000000,
+        },
+        {
+          id: "claude-sonnet-4-6",
+          name: "Claude Sonnet 4.6",
+          contextWindow: 1000000,
+        },
+        {
+          id: "claude-haiku-4-5",
+          name: "Claude Haiku 4.5",
+          contextWindow: 200000,
+        },
+      ],
+    },
+    category: "third_party",
+    isPartner: true,
+    partnerPromotionKey: "claudecn",
+    icon: "claudecn",
+    templateValues: {
+      apiKey: {
+        label: "API Key",
+        placeholder: "",
+        editorValue: "",
+      },
+    },
+    suggestedDefaults: {
+      model: {
+        primary: "claudecn/claude-sonnet-4-6",
+      },
+      modelCatalog: {
+        "claudecn/claude-opus-4-7": { alias: "Opus" },
+        "claudecn/claude-sonnet-4-6": { alias: "Sonnet" },
+        "claudecn/claude-haiku-4-5": { alias: "Haiku" },
+      },
+    },
+  },
+  {
+    name: "RunAPI",
+    websiteUrl: "https://runapi.co",
+    apiKeyUrl: "https://runapi.co",
+    settingsConfig: {
+      baseUrl: "https://runapi.co",
+      apiKey: "",
+      api: "anthropic-messages",
+      models: [
+        {
+          id: "claude-opus-4-7",
+          name: "Claude Opus 4.7",
+          contextWindow: 1000000,
+        },
+        {
+          id: "claude-sonnet-4-6",
+          name: "Claude Sonnet 4.6",
+          contextWindow: 1000000,
+        },
+        {
+          id: "claude-haiku-4-5",
+          name: "Claude Haiku 4.5",
+          contextWindow: 200000,
+        },
+      ],
+    },
+    category: "aggregator",
+    isPartner: true,
+    partnerPromotionKey: "runapi",
+    icon: "runapi",
+    templateValues: {
+      apiKey: {
+        label: "API Key",
+        placeholder: "",
+        editorValue: "",
+      },
+    },
+    suggestedDefaults: {
+      model: {
+        primary: "runapi/claude-sonnet-4-6",
+      },
+      modelCatalog: {
+        "runapi/claude-opus-4-7": { alias: "Opus" },
+        "runapi/claude-sonnet-4-6": { alias: "Sonnet" },
+        "runapi/claude-haiku-4-5": { alias: "Haiku" },
+      },
+    },
+  },
+  {
     name: "Compshare",
     nameKey: "providerForm.presets.ucloud",
     websiteUrl: "https://www.compshare.cn",
@@ -1520,11 +1694,51 @@ export const openclawProviderPresets: OpenClawProviderPreset[] = [
     },
   },
   {
-    name: "Micu",
-    websiteUrl: "https://www.openclaudecode.cn",
-    apiKeyUrl: "https://www.openclaudecode.cn/register?aff=aOYQ",
+    name: "Compshare Coding Plan",
+    nameKey: "providerForm.presets.ucloudCoding",
+    websiteUrl: "https://www.compshare.cn",
+    apiKeyUrl:
+      "https://www.compshare.cn/coding-plan?ytag=GPU_YY_YX_git_cc-switch",
     settingsConfig: {
-      baseUrl: "https://www.openclaudecode.cn",
+      baseUrl: "https://cp.compshare.cn/v1",
+      apiKey: "",
+      api: "anthropic-messages",
+      models: [
+        {
+          id: "claude-opus-4-7",
+          name: "Claude Opus 4.7",
+          contextWindow: 1000000,
+          cost: { input: 5, output: 25 },
+        },
+      ],
+    },
+    category: "aggregator",
+    isPartner: true, // 合作伙伴
+    partnerPromotionKey: "ucloud", // 促销信息 i18n key（复用）
+    icon: "ucloud",
+    iconColor: "#000000",
+    templateValues: {
+      apiKey: {
+        label: "API Key",
+        placeholder: "",
+        editorValue: "",
+      },
+    },
+    suggestedDefaults: {
+      model: {
+        primary: "compshare-coding/claude-opus-4-7",
+      },
+      modelCatalog: {
+        "compshare-coding/claude-opus-4-7": { alias: "Opus" },
+      },
+    },
+  },
+  {
+    name: "Micu",
+    websiteUrl: "https://www.micuapi.ai",
+    apiKeyUrl: "https://www.micuapi.ai/register?aff=aOYQ",
+    settingsConfig: {
+      baseUrl: "https://www.micuapi.ai",
       apiKey: "",
       api: "anthropic-messages",
       models: [
