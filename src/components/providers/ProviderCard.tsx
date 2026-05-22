@@ -209,11 +209,8 @@ export function ProviderCard({
     appId,
     healthEnabled,
   );
-  const { data: providerLimits, error: providerLimitsError } = useProviderLimits(
-    provider.id,
-    appId,
-    hasConfiguredLimits,
-  );
+  const { data: providerLimits, error: providerLimitsError } =
+    useProviderLimits(provider.id, appId, hasConfiguredLimits);
   const { data: providerStats, error: providerStatsError } = useProviderStats(
     CARD_USAGE_RANGE,
     appId,
@@ -253,7 +250,11 @@ export function ProviderCard({
     appId === "hermes" && isHermesReadOnlyProvider(provider.settingsConfig);
   const isCodexOauth =
     provider.meta?.providerType === PROVIDER_TYPES.CODEX_OAUTH;
-  const usageStats = providerStats?.find((item) => item.providerId === provider.id);
+  const isClaudeThirdParty =
+    appId === "claude" && provider.category === "third_party";
+  const usageStats = providerStats?.find(
+    (item) => item.providerId === provider.id,
+  );
   const healthStatus = health
     ? getHealthIndicatorStatus(health.consecutive_failures)
     : null;
@@ -507,16 +508,20 @@ export function ProviderCard({
                   </span>
                 )}
 
-                {providerLimitsError && !providerLimits && hasConfiguredLimits && (
-                  <span
-                    className="inline-flex items-center rounded-full bg-amber-500/10 px-2 py-1 text-xs font-medium text-amber-700 dark:text-amber-300"
-                    title={extractErrorMessage(providerLimitsError) || undefined}
-                  >
-                    {t("provider.limitsUnavailable", {
-                      defaultValue: "限额状态不可用",
-                    })}
-                  </span>
-                )}
+                {providerLimitsError &&
+                  !providerLimits &&
+                  hasConfiguredLimits && (
+                    <span
+                      className="inline-flex items-center rounded-full bg-amber-500/10 px-2 py-1 text-xs font-medium text-amber-700 dark:text-amber-300"
+                      title={
+                        extractErrorMessage(providerLimitsError) || undefined
+                      }
+                    >
+                      {t("provider.limitsUnavailable", {
+                        defaultValue: "限额状态不可用",
+                      })}
+                    </span>
+                  )}
 
                 {healthError && !health && healthEnabled && (
                   <span
@@ -639,7 +644,9 @@ export function ProviderCard({
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
-                    setExpandedPreference((prev) => !(prev ?? hasMultiplePlans));
+                    setExpandedPreference(
+                      (prev) => !(prev ?? hasMultiplePlans),
+                    );
                   }}
                   className="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors text-gray-500 dark:text-gray-400 flex-shrink-0"
                   title={
@@ -672,7 +679,11 @@ export function ProviderCard({
               onEdit={() => onEdit(provider)}
               onDuplicate={() => onDuplicate(provider)}
               onTest={
-                onTest && !isOfficial && !isCopilot && !isCodexOauth
+                onTest &&
+                !isOfficial &&
+                !isCopilot &&
+                !isCodexOauth &&
+                !isClaudeThirdParty
                   ? () => onTest(provider)
                   : undefined
               }

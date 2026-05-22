@@ -7,9 +7,13 @@ const useProviderHealthMock = vi.fn();
 const useUsageQueryMock = vi.fn();
 const useProviderLimitsMock = vi.fn();
 const useProviderStatsMock = vi.fn();
+const providerActionsPropsSpy = vi.fn();
 
 vi.mock("@/components/providers/ProviderActions", () => ({
-  ProviderActions: () => <div data-testid="provider-actions" />,
+  ProviderActions: (props: any) => {
+    providerActionsPropsSpy(props);
+    return <div data-testid="provider-actions" />;
+  },
 }));
 
 vi.mock("@/components/ProviderIcon", () => ({
@@ -83,6 +87,7 @@ describe("ProviderCard", () => {
     useUsageQueryMock.mockReset();
     useProviderLimitsMock.mockReset();
     useProviderStatsMock.mockReset();
+    providerActionsPropsSpy.mockReset();
 
     useProviderHealthMock.mockReturnValue({ data: undefined });
     useUsageQueryMock.mockReturnValue({ data: undefined });
@@ -147,12 +152,8 @@ describe("ProviderCard", () => {
 
     expect(screen.getByText("降级")).toBeInTheDocument();
     expect(screen.getByText(/30天 2 次 \/ \$0\.0300/)).toBeInTheDocument();
-    expect(
-      screen.getByText(/日限额 \$0\.1250 \/ \$1\.25/),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText(/月限额 \$0\.5000 \/ \$9\.50/),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/日限额 \$0\.1250 \/ \$1\.25/)).toBeInTheDocument();
+    expect(screen.getByText(/月限额 \$0\.5000 \/ \$9\.50/)).toBeInTheDocument();
     expect(useProviderHealthMock).toHaveBeenCalledWith(
       provider.id,
       "claude",
@@ -168,6 +169,20 @@ describe("ProviderCard", () => {
       "claude",
       { refetchInterval: false },
     );
+  });
+
+  it("disables the model test action for third-party Claude providers", () => {
+    const provider = createProvider({
+      category: "third_party",
+      name: "Third-party Claude",
+    });
+
+    render(
+      <ProviderCard {...baseProps} provider={provider} onTest={vi.fn()} />,
+    );
+
+    expect(providerActionsPropsSpy).toHaveBeenCalled();
+    expect(providerActionsPropsSpy.mock.calls[0]?.[0].onTest).toBeUndefined();
   });
 
   it("disables live diagnostics queries when no health or usage limits are relevant", () => {
