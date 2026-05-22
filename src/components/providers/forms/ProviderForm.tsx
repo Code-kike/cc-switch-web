@@ -1782,6 +1782,7 @@ export function ProviderForm({
               onApiKeyFieldChange={handleApiKeyFieldChange}
               isFullUrl={localIsFullUrl}
               onFullUrlChange={setLocalIsFullUrl}
+              modelsUrl={templatePreset?.modelsUrl}
             />
           )}
 

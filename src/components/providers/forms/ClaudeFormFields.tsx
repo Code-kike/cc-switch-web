@@ -130,6 +130,9 @@ interface ClaudeFormFieldsProps {
   // Full URL mode
   isFullUrl: boolean;
   onFullUrlChange: (value: boolean) => void;
+
+  // Optional explicit models endpoint from the selected preset.
+  modelsUrl?: string;
 }
 
 export function ClaudeFormFields({
@@ -177,6 +180,7 @@ export function ClaudeFormFields({
   onApiKeyFieldChange,
   isFullUrl,
   onFullUrlChange,
+  modelsUrl,
 }: ClaudeFormFieldsProps) {
   const { t } = useTranslation();
   const hasAnyAdvancedValue = !!(
@@ -213,7 +217,7 @@ export function ClaudeFormFields({
       return;
     }
     setIsFetchingModels(true);
-    fetchModelsForConfig(baseUrl, apiKey, isFullUrl)
+    fetchModelsForConfig(baseUrl, apiKey, isFullUrl, modelsUrl)
       .then((models) => {
         setFetchedModels(models);
         if (models.length === 0) {
@@ -229,7 +233,7 @@ export function ClaudeFormFields({
         showFetchModelsError(err, t);
       })
       .finally(() => setIsFetchingModels(false));
-  }, [baseUrl, apiKey, isFullUrl, t]);
+  }, [baseUrl, apiKey, isFullUrl, modelsUrl, t]);
 
   // 当 Copilot 预设且已认证时，加载可用模型
   useEffect(() => {
