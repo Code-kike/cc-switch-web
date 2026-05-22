@@ -5,6 +5,9 @@ import { Zap, Star, Layers, Settings2 } from "lucide-react";
 import type { ProviderPreset } from "@/config/claudeProviderPresets";
 import type { CodexProviderPreset } from "@/config/codexProviderPresets";
 import type { GeminiProviderPreset } from "@/config/geminiProviderPresets";
+import type { OpenCodeProviderPreset } from "@/config/opencodeProviderPresets";
+import type { OpenClawProviderPreset } from "@/config/openclawProviderPresets";
+import type { HermesProviderPreset } from "@/config/hermesProviderPresets";
 import type { ProviderCategory } from "@/types";
 import {
   universalProviderPresets,
@@ -12,9 +15,17 @@ import {
 } from "@/config/universalProviderPresets";
 import { ProviderIcon } from "@/components/ProviderIcon";
 
+type AnyPreset =
+  | ProviderPreset
+  | CodexProviderPreset
+  | GeminiProviderPreset
+  | OpenCodeProviderPreset
+  | OpenClawProviderPreset
+  | HermesProviderPreset;
+
 type PresetEntry = {
   id: string;
-  preset: ProviderPreset | CodexProviderPreset | GeminiProviderPreset;
+  preset: AnyPreset;
 };
 
 interface ProviderPresetSelectorProps {
@@ -74,9 +85,7 @@ export function ProviderPresetSelector({
     }
   };
 
-  const renderPresetIcon = (
-    preset: ProviderPreset | CodexProviderPreset | GeminiProviderPreset,
-  ) => {
+  const renderPresetIcon = (preset: AnyPreset) => {
     const iconType = preset.theme?.icon;
     if (!iconType) return null;
 
@@ -94,10 +103,7 @@ export function ProviderPresetSelector({
     }
   };
 
-  const getPresetButtonClass = (
-    isSelected: boolean,
-    preset: ProviderPreset | CodexProviderPreset | GeminiProviderPreset,
-  ) => {
+  const getPresetButtonClass = (isSelected: boolean, preset: AnyPreset) => {
     const baseClass =
       "inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors";
 
@@ -111,10 +117,7 @@ export function ProviderPresetSelector({
     return `${baseClass} bg-accent text-muted-foreground hover:bg-accent/80`;
   };
 
-  const getPresetButtonStyle = (
-    isSelected: boolean,
-    preset: ProviderPreset | CodexProviderPreset | GeminiProviderPreset,
-  ) => {
+  const getPresetButtonStyle = (isSelected: boolean, preset: AnyPreset) => {
     if (!isSelected || !preset.theme?.backgroundColor) {
       return undefined;
     }
