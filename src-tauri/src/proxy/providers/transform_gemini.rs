@@ -343,6 +343,38 @@ fn convert_messages_to_contents(
         shadow_turns
     };
     let mut tool_name_by_id = build_tool_name_map_from_shadow_turns(shadow_turns);
+    let mut thought_signature_by_id = build_thought_signature_map_from_shadow_turns(shadow_turns);
+
+    // Pre-scan assistant messages so tool_result blocks can still resolve
+    // functionResponse.name if the matching shadow turn has aged out or the
+    // client reorders history.
+    for message in messages {
+        if message.get("role").and_then(|value| value.as_str()) != Some("assistant") {
+            continue;
+        }
+        let Some(blocks) = message.get("content").and_then(|value| value.as_array()) else {
+            continue;
+        };
+        for block in blocks {
+            if block.get("type").and_then(|value| value.as_str()) != Some("tool_use") {
+                continue;
+            }
+            let id = block
+                .get("id")
+                .and_then(|value| value.as_str())
+                .unwrap_or("");
+            let name = block
+                .get("name")
+                .and_then(|value| value.as_str())
+                .unwrap_or("");
+            if !id.is_empty() && !name.is_empty() {
+                tool_name_by_id
+                    .entry(id.to_string())
+                    .or_insert_with(|| name.to_string());
+            }
+        }
+    }
+
     let shadow_start_index = total_assistant_messages.saturating_sub(effective_shadow_turns.len());
     let mut assistant_seen_index = 0usize;
 
@@ -371,6 +403,7 @@ fn convert_messages_to_contents(
                 used_shadow_indices.insert(index);
                 let shadow_turn = &effective_shadow_turns[index];
                 merge_tool_names_from_shadow(shadow_turn, &mut tool_name_by_id);
+                merge_thought_signatures_from_shadow(shadow_turn, &mut thought_signature_by_id);
                 if let Some(parts) = shadow_parts(&shadow_turn.assistant_content) {
                     parts
                 } else {
@@ -378,6 +411,7 @@ fn convert_messages_to_contents(
                         message.get("content"),
                         role,
                         &mut tool_name_by_id,
+                        &thought_signature_by_id,
                     )?
                 }
             } else {
@@ -385,10 +419,16 @@ fn convert_messages_to_contents(
                     message.get("content"),
                     role,
                     &mut tool_name_by_id,
+                    &thought_signature_by_id,
                 )?
             }
         } else {
-            convert_message_content_to_parts(message.get("content"), role, &mut tool_name_by_id)?
+            convert_message_content_to_parts(
+                message.get("content"),
+                role,
+                &mut tool_name_by_id,
+                &thought_signature_by_id,
+            )?
         };
 
         if role == "assistant" {
@@ -484,7 +524,8 @@ fn normalize_tool_name(name: &str) -> &str {
 fn convert_message_content_to_parts(
     content: Option<&Value>,
     role: &str,
-    tool_name_by_id: &mut std::collections::HashMap<String, String>,
+    tool_name_by_id: &mut HashMap<String, String>,
+    thought_signature_by_id: &HashMap<String, String>,
 ) -> Result<Vec<Value>, ProxyError> {
     let Some(content) = content else {
         return Ok(Vec::new());
@@ -589,6 +630,9 @@ fn convert_message_content_to_parts(
                 if !id.is_empty() && !is_synthesized_tool_call_id(id) {
                     function_call["id"] = json!(id);
                 }
+                if let Some(signature) = thought_signature_by_id.get(id) {
+                    function_call["thoughtSignature"] = json!(signature);
+                }
 
                 parts.push(json!({ "functionCall": function_call }));
             }
@@ -600,6 +644,23 @@ fn convert_message_content_to_parts(
                 let name = tool_name_by_id
                     .get(tool_use_id)
                     .cloned()
+                    .or_else(|| {
+                        blocks.iter().find_map(|candidate| {
+                            if candidate.get("type").and_then(|value| value.as_str())
+                                != Some("tool_use")
+                            {
+                                return None;
+                            }
+                            let id = candidate.get("id").and_then(|value| value.as_str())?;
+                            if id != tool_use_id {
+                                return None;
+                            }
+                            candidate
+                                .get("name")
+                                .and_then(|value| value.as_str())
+                                .map(str::to_string)
+                        })
+                    })
                     .ok_or_else(|| {
                         ProxyError::TransformError(format!(
                             "Unable to resolve Gemini functionResponse.name for tool_use_id `{tool_use_id}`"
@@ -872,6 +933,27 @@ fn build_tool_name_map_from_shadow_turns(
         merge_tool_names_from_shadow(turn, &mut tool_name_by_id);
     }
     tool_name_by_id
+}
+
+fn build_thought_signature_map_from_shadow_turns(
+    shadow_turns: &[GeminiAssistantTurn],
+) -> HashMap<String, String> {
+    let mut thought_signature_by_id = HashMap::new();
+    for turn in shadow_turns {
+        merge_thought_signatures_from_shadow(turn, &mut thought_signature_by_id);
+    }
+    thought_signature_by_id
+}
+
+fn merge_thought_signatures_from_shadow(
+    turn: &GeminiAssistantTurn,
+    thought_signature_by_id: &mut HashMap<String, String>,
+) {
+    for tool_call in &turn.tool_calls {
+        if let (Some(id), Some(signature)) = (&tool_call.id, &tool_call.thought_signature) {
+            thought_signature_by_id.insert(id.clone(), signature.clone());
+        }
+    }
 }
 
 fn merge_tool_names_from_parts(parts: &[Value], tool_name_by_id: &mut HashMap<String, String>) {
@@ -1152,6 +1234,71 @@ mod tests {
         assert_eq!(
             result["contents"][0]["parts"][0]["functionResponse"]["name"],
             "get_weather"
+        );
+    }
+
+    #[test]
+    fn anthropic_to_gemini_prescans_assistant_tool_names_for_reordered_tool_result() {
+        let input = json!({
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        { "type": "tool_result", "tool_use_id": "call_late", "content": "Sunny" }
+                    ]
+                },
+                {
+                    "role": "assistant",
+                    "content": [
+                        { "type": "tool_use", "id": "call_late", "name": "get_weather", "input": { "city": "Tokyo" } }
+                    ]
+                }
+            ]
+        });
+
+        let result = anthropic_to_gemini(input).unwrap();
+
+        assert_eq!(
+            result["contents"][0]["parts"][0]["functionResponse"]["name"],
+            "get_weather"
+        );
+    }
+
+    #[test]
+    fn anthropic_to_gemini_replays_thought_signature_from_shadow_tool_meta() {
+        let store = GeminiShadowStore::with_limits(8, 4);
+        store.record_assistant_turn(
+            "provider-a",
+            "session-1",
+            json!({ "notParts": true }),
+            vec![GeminiToolCallMeta::new(
+                Some("call_1"),
+                "get_weather",
+                json!({ "city": "Tokyo" }),
+                Some("sig-1"),
+            )],
+        );
+
+        let input = json!({
+            "messages": [{
+                "role": "assistant",
+                "content": [
+                    { "type": "tool_use", "id": "call_1", "name": "get_weather", "input": { "city": "Tokyo" } }
+                ]
+            }]
+        });
+
+        let result = anthropic_to_gemini_with_shadow(
+            input,
+            Some(&store),
+            Some("provider-a"),
+            Some("session-1"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            result["contents"][0]["parts"][0]["functionCall"]["thoughtSignature"],
+            "sig-1"
         );
     }
 
