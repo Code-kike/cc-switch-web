@@ -7,6 +7,22 @@ import { PricingEditModal } from "@/components/usage/PricingEditModal";
 const toastErrorMock = vi.fn();
 const mutateAsyncMock = vi.fn();
 
+const preciseModel = {
+  modelId: "deepseek-v4",
+  displayName: "DeepSeek V4",
+  inputCostPerMillion: "1",
+  outputCostPerMillion: "3",
+  cacheReadCostPerMillion: "0.0028",
+  cacheCreationCostPerMillion: "0",
+};
+
+const PRICE_FIELD_IDS = [
+  "inputCost",
+  "outputCost",
+  "cacheReadCost",
+  "cacheCreationCost",
+] as const;
+
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
     t: (
@@ -73,6 +89,28 @@ vi.mock("@/lib/query/usage", () => ({
 }));
 
 describe("PricingEditModal", () => {
+  it("allows sub-cent precision on all price inputs", () => {
+    render(
+      <PricingEditModal open={true} onClose={() => {}} model={preciseModel} />,
+    );
+
+    for (const id of PRICE_FIELD_IDS) {
+      expect(document.getElementById(id)).toHaveAttribute("step", "0.0001");
+    }
+  });
+
+  it("accepts precise cache read costs", () => {
+    render(
+      <PricingEditModal open={true} onClose={() => {}} model={preciseModel} />,
+    );
+
+    const cacheReadInput = document.getElementById(
+      "cacheReadCost",
+    ) as HTMLInputElement;
+    expect(cacheReadInput.value).toBe("0.0028");
+    expect(cacheReadInput.checkValidity()).toBe(true);
+  });
+
   it("shows structured details when save fails", async () => {
     const onClose = vi.fn();
     mutateAsyncMock.mockRejectedValueOnce({ message: "pricing save failed" });
