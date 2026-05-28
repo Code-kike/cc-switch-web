@@ -134,6 +134,98 @@ The same pattern applies to `token_plan` and `github_copilot`.
 
 ---
 
+### Scenario: Codex Provider OAuth Preservation
+
+#### 1. Scope / Trigger
+
+- Trigger: changing Codex provider switching, provider import/export, proxy
+  takeover, or frontend Codex API-key editing.
+- Applies when modifying `src-tauri/src/codex_config.rs`,
+  `src-tauri/src/services/provider/live.rs`,
+  `src-tauri/src/services/proxy.rs`, `src/utils/providerConfigUtils.ts`,
+  `ProviderCard`, or Codex config editor hooks.
+
+#### 2. Signatures
+
+- Backend Codex helpers:
+  - `extract_codex_api_key(auth: Option<&Value>, config_text: Option<&str>)`
+  - `extract_codex_experimental_bearer_token(config_text: &str)`
+  - `prepare_codex_provider_live_config(auth: &Value, config_text: &str)`
+  - `restore_codex_provider_token_for_backfill(settings, template_settings)`
+  - `write_codex_provider_live_with_catalog(settings, category, auth, config_text)`
+- Frontend TOML helpers:
+  - `extractCodexExperimentalBearerToken(configText?: string | null)`
+  - `updateCodexExperimentalBearerToken(configText: string, token: string)`
+
+#### 3. Contracts
+
+- Stored third-party Codex providers keep their canonical token in
+  `settings_config.auth.OPENAI_API_KEY`.
+- Live third-party Codex switches write that token into `config.toml` as
+  `experimental_bearer_token`, preferably under the active
+  `[model_providers.<id>]` table. They must not overwrite a user's OAuth
+  `auth.json` login cache.
+- Official/OAuth-only providers may keep real login material in `auth.json`;
+  backfill must not convert OAuth-only live credentials into a stored
+  third-party API key.
+- Config-only live installs are valid import sources: the UI and backend must
+  read `experimental_bearer_token` as the Codex API key fallback.
+- Proxy takeover and cleanup must check both `auth.OPENAI_API_KEY` and
+  `experimental_bearer_token` for the proxy placeholder token.
+
+#### 4. Validation & Error Matrix
+
+- Third-party switch rewrites OAuth `auth.json` -> reject; user is logged out
+  of ChatGPT-backed Codex.
+- API key exists only in `experimental_bearer_token` but UI shows blank ->
+  reject; config-only installs become uneditable.
+- Backfill copies an OAuth-only access/refresh/id token into
+  `auth.OPENAI_API_KEY` -> reject; provider category/auth shape is corrupted.
+- Proxy cleanup only removes `auth.OPENAI_API_KEY` placeholder -> reject;
+  takeover state can remain stuck in `config.toml`.
+
+#### 5. Good/Base/Bad Cases
+
+- Good: a third-party provider with `auth.OPENAI_API_KEY = "sk-live"` and an
+  existing OAuth `auth.json` switches live by preserving `auth.json` and adding
+  `experimental_bearer_token = "sk-live"` to `config.toml`.
+- Base: a config-only Codex install imports with empty `auth` and
+  `experimental_bearer_token = "sk-live"`, then stores the provider token back
+  as `auth.OPENAI_API_KEY`.
+- Bad: using provider switching to write `OPENAI_API_KEY` into live `auth.json`
+  whenever the provider has a third-party token.
+
+#### 6. Tests Required
+
+- Rust regression tests for third-party switch preserving OAuth `auth.json` and
+  writing the token to `config.toml`.
+- Rust import/export or sync tests for config-only Codex providers and
+  OAuth-only providers that must not be backfilled.
+- Rust proxy tests for takeover detection and cleanup when the placeholder
+  lives in `experimental_bearer_token`.
+- Vitest coverage for extracting, displaying, and updating Codex API keys from
+  `experimental_bearer_token`.
+- Run `pnpm typecheck`, focused Codex Vitest suites, focused Rust Codex tests,
+  Web-server cargo check, and `git diff --check`.
+
+#### 7. Wrong vs Correct
+
+##### Wrong
+
+```rust
+write_json_file(auth_path, json!({ "OPENAI_API_KEY": provider_key }))?;
+```
+
+##### Correct
+
+```rust
+let config = prepare_codex_provider_live_config(&provider_auth, config_text)?;
+// Preserve the existing OAuth auth.json login cache.
+std::fs::write(get_codex_config_path(), config)?;
+```
+
+---
+
 ### Scenario: Codex Provider Goal Mode
 
 #### 1. Scope / Trigger
