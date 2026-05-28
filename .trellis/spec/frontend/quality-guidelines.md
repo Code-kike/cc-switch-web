@@ -134,6 +134,77 @@ The same pattern applies to `token_plan` and `github_copilot`.
 
 ---
 
+### Scenario: Codex Provider Goal Mode
+
+#### 1. Scope / Trigger
+
+- Trigger: changes to Codex provider templates, `config.toml` editing helpers,
+  or `CodexConfigSection` provider-editor controls.
+- Applies when modifying `src/config/codexTemplates.ts`,
+  `src/config/codexProviderPresets.ts`, `src/utils/providerConfigUtils.ts`, or
+  `src/components/providers/forms/CodexConfigSections.tsx`.
+
+#### 2. Signatures
+
+- Frontend TOML helpers:
+  - `isCodexGoalModeEnabled(configText?: string | null): boolean`
+  - `setCodexGoalMode(configText: string, enabled: boolean): string`
+- Codex config field:
+  - `[features]`
+  - `goals = true`
+
+#### 3. Contracts
+
+- Codex provider presets and the custom Codex template must not force Goal mode
+  by default.
+- Goal mode is opt-in from the provider editor and is represented only as
+  `[features].goals = true` in `config.toml`.
+- Disabling Goal mode removes the `goals` line. If `[features]` becomes empty,
+  remove that section; if other feature flags or comments remain, keep the
+  section intact.
+- Goal mode parsing must tolerate temporarily invalid TOML while the user edits
+  the textarea by falling back to line scanning.
+
+#### 4. Validation & Error Matrix
+
+- Template contains `goals = true` by default -> reject; users must opt in.
+- Disabling Goal mode deletes unrelated `[features]` keys or comments -> reject.
+- Invalid TOML in the editor crashes the checkbox render path -> reject; return
+  disabled state until parseable or line-scannable.
+
+#### 5. Good/Base/Bad Cases
+
+- Good: user checks Goal mode, `setCodexGoalMode` inserts top-level
+  `[features]\ngoals = true` before provider tables.
+- Base: existing `[features]` with `experimental_resume = true` keeps that flag
+  when Goal mode is disabled.
+- Bad: hardcoding `goals = true` in `generateThirdPartyConfig` or
+  `getCodexCustomTemplate`.
+
+#### 6. Tests Required
+
+- Unit test `setCodexGoalMode` add/remove behavior, including preserving other
+  feature flags/comments.
+- Component test that `CodexConfigEditor` toggles Goal mode through the checkbox.
+- Preset/template tests asserting Codex templates do not contain forced
+  `goals = true`.
+
+#### 7. Wrong vs Correct
+
+##### Wrong
+
+```typescript
+const config = `[features]\ngoals = true\n...`;
+```
+
+##### Correct
+
+```typescript
+const nextConfig = setCodexGoalMode(currentConfig, checked);
+```
+
+---
+
 ### Scenario: Cache-Normalized Usage API Totals
 
 #### 1. Scope / Trigger
