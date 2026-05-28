@@ -185,6 +185,21 @@ describe("ProviderCard", () => {
     expect(providerActionsPropsSpy.mock.calls[0]?.[0].onTest).toBeUndefined();
   });
 
+  it("keeps the model test action enabled for Claude aggregators", () => {
+    const onTest = vi.fn();
+    const provider = createProvider({
+      category: "aggregator",
+      name: "ClaudeAPI",
+    });
+
+    render(<ProviderCard {...baseProps} provider={provider} onTest={onTest} />);
+
+    expect(providerActionsPropsSpy).toHaveBeenCalled();
+    expect(providerActionsPropsSpy.mock.calls[0]?.[0].onTest).toEqual(
+      expect.any(Function),
+    );
+  });
+
   it("shows routing capability badges for Claude Code and Codex providers", () => {
     const { rerender } = render(
       <ProviderCard

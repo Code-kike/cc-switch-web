@@ -76,3 +76,16 @@ describe("AWS Bedrock Provider Presets", () => {
     expect(bedrockApiKey!.category).toBe("cloud_provider");
   });
 });
+
+describe("ClaudeAPI Provider Preset", () => {
+  const claudeApi = providerPresets.find((p) => p.name === "ClaudeAPI");
+
+  it("should include ClaudeAPI preset", () => {
+    expect(claudeApi).toBeDefined();
+  });
+
+  it("should use aggregator category so model tests stay enabled", () => {
+    expect(claudeApi!.category).toBe("aggregator");
+    expect(claudeApi!.isPartner).toBe(true);
+  });
+});
