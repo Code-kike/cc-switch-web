@@ -201,6 +201,11 @@ const smokeUsage = {
   outputTokens: 450,
   pricingModelId: "smoke-web-model-pricing",
 };
+smokeUsage.freshInputTokens = smokeUsage.inputTokens - smokeUsage.cachedInputTokens;
+smokeUsage.realTotalTokens =
+  smokeUsage.freshInputTokens + smokeUsage.cachedInputTokens + smokeUsage.outputTokens;
+smokeUsage.cacheHitRate =
+  smokeUsage.cachedInputTokens / (smokeUsage.freshInputTokens + smokeUsage.cachedInputTokens);
 
 async function ensureDistWeb() {
   const indexPath = path.join(distWebDir, "index.html");
@@ -1478,10 +1483,12 @@ const probes = [
       if (
         !response.ok ||
         payload?.totalRequests !== 1 ||
-        payload?.totalInputTokens !== smokeUsage.inputTokens ||
+        payload?.totalInputTokens !== smokeUsage.freshInputTokens ||
         payload?.totalOutputTokens !== smokeUsage.outputTokens ||
         payload?.totalCacheReadTokens !== smokeUsage.cachedInputTokens ||
         payload?.totalCacheCreationTokens !== 0 ||
+        payload?.realTotalTokens !== smokeUsage.realTotalTokens ||
+        Math.abs(Number(payload?.cacheHitRate) - smokeUsage.cacheHitRate) > 0.001 ||
         Math.abs(Number(payload?.successRate) - 100) > 0.001 ||
         Number(payload?.totalCost) <= 0
       ) {
@@ -1513,7 +1520,7 @@ const probes = [
         !payload.some(
           (bucket) =>
             bucket?.requestCount === 1 &&
-            bucket?.totalInputTokens === smokeUsage.inputTokens &&
+            bucket?.totalInputTokens === smokeUsage.freshInputTokens &&
             bucket?.totalOutputTokens === smokeUsage.outputTokens &&
             bucket?.totalCacheReadTokens === smokeUsage.cachedInputTokens &&
             Number(bucket?.totalCost) > 0,
