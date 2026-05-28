@@ -107,7 +107,11 @@ pub fn sync_claude_session_logs(db: &Database) -> Result<SessionSyncResult, AppE
     Ok(result)
 }
 
-/// 收集目录下所有 .jsonl 文件
+/// 收集目录下所有 .jsonl 文件（含子 agent 文件）
+///
+/// 扫描三层固定深度，不使用递归，避免死循环：
+///   projects_dir/项目目录/*.jsonl                          (主会话)
+///   projects_dir/项目目录/SESSION_ID/subagents/*.jsonl      (子 agent)
 fn collect_jsonl_files(projects_dir: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
 
@@ -126,7 +130,22 @@ fn collect_jsonl_files(projects_dir: &Path) -> Vec<PathBuf> {
             for sub_entry in sub_entries.flatten() {
                 let sub_path = sub_entry.path();
                 if sub_path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+                    // 主会话 JSONL 文件
                     files.push(sub_path);
+                } else if sub_path.is_dir() {
+                    // 子 agent 文件位于 项目/SESSION_ID/subagents/*.jsonl
+                    let subagents_dir = sub_path.join("subagents");
+                    if subagents_dir.is_dir() {
+                        if let Ok(agent_entries) = fs::read_dir(&subagents_dir) {
+                            for agent_entry in agent_entries.flatten() {
+                                let agent_path = agent_entry.path();
+                                if agent_path.extension().and_then(|e| e.to_str()) == Some("jsonl")
+                                {
+                                    files.push(agent_path);
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -694,5 +713,27 @@ mod tests {
         assert_eq!(count, 1);
 
         Ok(())
+    }
+
+    #[test]
+    fn test_collect_jsonl_files_includes_subagents() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project = tmp.path().join("project");
+        let session_dir = project.join("test-session");
+        let subagents_dir = session_dir.join("subagents");
+        fs::create_dir_all(&subagents_dir).expect("create subagents dir");
+
+        fs::write(project.join("main.jsonl"), "{}").expect("write main session");
+        fs::write(subagents_dir.join("agent-abc.jsonl"), "{}").expect("write subagent session");
+
+        let files = collect_jsonl_files(tmp.path());
+        assert_eq!(files.len(), 2);
+        let paths = files
+            .iter()
+            .map(|path| path.to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+
+        assert!(paths.iter().any(|path| path.contains("main.jsonl")));
+        assert!(paths.iter().any(|path| path.contains("agent-abc.jsonl")));
     }
 }
