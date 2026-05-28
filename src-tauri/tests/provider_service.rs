@@ -181,8 +181,8 @@ command = "say"
         read_json_file(&cc_switch_lib::get_codex_auth_path()).expect("read auth.json");
     assert_eq!(
         auth_value.get("OPENAI_API_KEY").and_then(|v| v.as_str()),
-        Some("fresh-key"),
-        "live auth.json should reflect new provider"
+        Some("legacy-key"),
+        "Codex provider switching should preserve the existing live auth.json"
     );
 
     let config_text =
@@ -190,6 +190,10 @@ command = "say"
     assert!(
         config_text.contains("mcp_servers.echo-server"),
         "config.toml should contain synced MCP servers"
+    );
+    assert!(
+        config_text.contains("experimental_bearer_token"),
+        "config.toml should carry the selected provider API key"
     );
 
     let current_id = state

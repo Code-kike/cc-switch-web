@@ -1,9 +1,11 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import {
   extractCodexBaseUrl,
+  extractCodexExperimentalBearerToken,
   setCodexBaseUrl as setCodexBaseUrlInConfig,
   extractCodexModelName,
   setCodexModelName as setCodexModelNameInConfig,
+  updateCodexExperimentalBearerToken,
 } from "@/utils/providerConfigUtils";
 import { normalizeTomlText } from "@/utils/textNormalization";
 
@@ -11,6 +13,17 @@ interface UseCodexConfigStateProps {
   initialData?: {
     settingsConfig?: Record<string, unknown>;
   };
+}
+
+function pickCodexApiKey(
+  authObj: { OPENAI_API_KEY?: unknown } | null | undefined,
+  configText: string,
+): string {
+  if (authObj && typeof authObj.OPENAI_API_KEY === "string") {
+    const key = authObj.OPENAI_API_KEY;
+    if (key) return key;
+  }
+  return extractCodexExperimentalBearerToken(configText) || "";
 }
 
 /**
@@ -57,14 +70,7 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps) {
         setCodexModelName(initialModelName);
       }
 
-      // 提取 API Key
-      try {
-        if (auth && typeof auth.OPENAI_API_KEY === "string") {
-          setCodexApiKey(auth.OPENAI_API_KEY);
-        }
-      } catch {
-        // ignore
-      }
+      setCodexApiKey(pickCodexApiKey(auth, configStr));
     }
   }, [initialData]);
 
@@ -96,13 +102,17 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps) {
     }
   }, []);
 
-  // 从 codexAuth 中提取并同步 API Key
+  // 从 codexAuth / config.toml 中提取并同步 API Key
   useEffect(() => {
-    const extractedKey = getCodexAuthApiKey(codexAuth);
-    if (extractedKey !== codexApiKey) {
-      setCodexApiKey(extractedKey);
+    let parsed: { OPENAI_API_KEY?: unknown } | null = null;
+    try {
+      parsed = JSON.parse(codexAuth || "{}");
+    } catch {
+      parsed = null;
     }
-  }, [codexAuth, codexApiKey]);
+    const extractedKey = pickCodexApiKey(parsed, codexConfig);
+    setCodexApiKey((prev) => (prev === extractedKey ? prev : extractedKey));
+  }, [codexAuth, codexConfig]);
 
   // 验证 Codex Auth JSON
   const validateCodexAuth = useCallback((value: string): string => {
@@ -151,8 +161,11 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps) {
       } catch {
         // ignore
       }
+      setCodexConfig((prev) =>
+        updateCodexExperimentalBearerToken(prev, trimmed),
+      );
     },
-    [codexAuth, setCodexAuth],
+    [codexAuth, setCodexAuth, setCodexConfig],
   );
 
   // 处理 Codex Base URL 变化
@@ -228,16 +241,7 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps) {
         setCodexModelName("");
       }
 
-      // 提取 API Key
-      try {
-        if (auth && typeof auth.OPENAI_API_KEY === "string") {
-          setCodexApiKey(auth.OPENAI_API_KEY);
-        } else {
-          setCodexApiKey("");
-        }
-      } catch {
-        setCodexApiKey("");
-      }
+      setCodexApiKey(pickCodexApiKey(auth, config));
     },
     [setCodexAuth, setCodexConfig],
   );

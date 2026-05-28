@@ -96,14 +96,18 @@ command = "say"
             .get("OPENAI_API_KEY")
             .and_then(|v| v.as_str())
             .unwrap_or(""),
-        "fresh-key",
-        "live auth.json should reflect new provider"
+        "legacy-key",
+        "Codex provider switching should preserve the existing live auth.json"
     );
 
     let config_text = std::fs::read_to_string(get_codex_config_path()).expect("read config.toml");
     assert!(
         config_text.contains("mcp_servers.echo-server"),
         "config.toml should contain synced MCP servers"
+    );
+    assert!(
+        config_text.contains("experimental_bearer_token"),
+        "config.toml should carry the selected provider API key as bearer token"
     );
 
     let current_id = app_state

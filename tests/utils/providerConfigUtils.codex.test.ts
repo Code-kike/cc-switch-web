@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   extractCodexBaseUrl,
+  extractCodexExperimentalBearerToken,
   extractCodexModelName,
   isCodexGoalModeEnabled,
   setCodexBaseUrl,
   setCodexGoalMode,
   setCodexModelName,
+  updateCodexExperimentalBearerToken,
 } from "@/utils/providerConfigUtils";
 
 describe("Codex TOML utils", () => {
@@ -226,5 +228,92 @@ describe("Codex TOML utils", () => {
     expect(isCodexGoalModeEnabled(output)).toBe(false);
     expect(output).toContain("[features]\n# Keep this note");
     expect(output).not.toMatch(/^\s*goals\s*=/m);
+  });
+
+  it("extracts experimental_bearer_token from the active custom provider section", () => {
+    const input = [
+      'model_provider = "thirdparty"',
+      "",
+      "[model_providers.thirdparty]",
+      'experimental_bearer_token = "sk-provider"',
+      "",
+    ].join("\n");
+
+    expect(extractCodexExperimentalBearerToken(input)).toBe("sk-provider");
+  });
+
+  it("extractCodexExperimentalBearerToken ignores reserved provider tables", () => {
+    const input = [
+      'model_provider = "openai"',
+      'experimental_bearer_token = "top-level-key"',
+      "",
+      "[model_providers.openai]",
+      'experimental_bearer_token = "stale-table-key"',
+      "",
+    ].join("\n");
+
+    expect(extractCodexExperimentalBearerToken(input)).toBe("top-level-key");
+  });
+
+  it("extractCodexExperimentalBearerToken reads only top-level model_provider", () => {
+    const input = [
+      'experimental_bearer_token = "top-level-key"',
+      "",
+      "[profiles.work]",
+      'model_provider = "fake"',
+      "",
+      "[model_providers.fake]",
+      'experimental_bearer_token = "wrong-key"',
+      "",
+    ].join("\n");
+
+    expect(extractCodexExperimentalBearerToken(input)).toBe("top-level-key");
+  });
+
+  it("updateCodexExperimentalBearerToken leaves config without the token alone", () => {
+    const input = [
+      'model_provider = "openai"',
+      'base_url = "https://api.example.com/v1"',
+      "",
+    ].join("\n");
+
+    expect(updateCodexExperimentalBearerToken(input, "new-key")).toBe(input);
+    expect(updateCodexExperimentalBearerToken(input, "")).toBe(input);
+  });
+
+  it("updateCodexExperimentalBearerToken removes the token line when set to empty", () => {
+    const input = [
+      'model_provider = "thirdparty"',
+      "",
+      "[model_providers.thirdparty]",
+      'name = "Thirdparty"',
+      'base_url = "https://thirdparty.example/v1"',
+      'experimental_bearer_token = "old-key"',
+      "requires_openai_auth = true",
+      "",
+    ].join("\n");
+
+    const cleared = updateCodexExperimentalBearerToken(input, "");
+
+    expect(extractCodexExperimentalBearerToken(cleared)).toBeUndefined();
+    expect(cleared).toMatch(/requires_openai_auth = true/);
+    expect(cleared).toMatch(/base_url = "https:\/\/thirdparty\.example\/v1"/);
+  });
+
+  it("updateCodexExperimentalBearerToken replaces the active provider token and keeps comments", () => {
+    const input = [
+      'model_provider = "thirdparty"',
+      "",
+      "[model_providers.thirdparty]",
+      'experimental_bearer_token = "old-key" # vendor token',
+      "",
+    ].join("\n");
+
+    const updated = updateCodexExperimentalBearerToken(input, 'abc"def\\ghi');
+
+    expect(updated).toContain(
+      'experimental_bearer_token = "abc\\"def\\\\ghi" # vendor token',
+    );
+    expect(extractCodexExperimentalBearerToken(updated)).toBe('abc"def\\ghi');
   });
 });

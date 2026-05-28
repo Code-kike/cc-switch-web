@@ -779,19 +779,31 @@ impl ProxyService {
                     if let Ok(Some(mut provider)) =
                         self.db.get_provider_by_id(&provider_id, "codex")
                     {
-                        if let Some(token) = live_config
-                            .get("auth")
-                            .and_then(|v| v.get("OPENAI_API_KEY"))
+                        let config_token = live_config
+                            .get("config")
                             .and_then(|v| v.as_str())
-                            .map(|s| s.trim())
-                            .filter(|s| !s.is_empty() && *s != PROXY_TOKEN_PLACEHOLDER)
-                        {
+                            .and_then(crate::codex_config::extract_codex_experimental_bearer_token)
+                            .filter(|token| token != PROXY_TOKEN_PLACEHOLDER);
+                        let auth_token = live_config
+                            .get("auth")
+                            .and_then(crate::codex_config::extract_codex_auth_api_key)
+                            .filter(|token| token != PROXY_TOKEN_PLACEHOLDER);
+                        let should_import_config_token =
+                            crate::codex_config::should_restore_codex_provider_token_for_backfill(
+                                provider.category.as_deref(),
+                                &provider.settings_config,
+                            );
+                        let token = auth_token.or_else(|| {
+                            should_import_config_token.then_some(config_token).flatten()
+                        });
+
+                        if let Some(token) = token {
                             if let Some(auth_obj) = provider
                                 .settings_config
                                 .get_mut("auth")
                                 .and_then(|v| v.as_object_mut())
                             {
-                                auth_obj.insert("OPENAI_API_KEY".to_string(), json!(token));
+                                auth_obj.insert("OPENAI_API_KEY".to_string(), json!(&token));
                             } else {
                                 if provider.settings_config.is_null() {
                                     provider.settings_config = json!({});
@@ -800,7 +812,7 @@ impl ProxyService {
                                 if let Some(root) = provider.settings_config.as_object_mut() {
                                     root.insert(
                                         "auth".to_string(),
-                                        json!({ "OPENAI_API_KEY": token }),
+                                        json!({ "OPENAI_API_KEY": &token }),
                                     );
                                 } else {
                                     log::warn!(
@@ -1126,6 +1138,7 @@ impl ProxyService {
         }
 
         // Codex: 修改 config.toml 的 base_url，auth.json 的 OPENAI_API_KEY（代理会注入真实 Token）
+        let codex_provider = self.require_current_provider_for_app(&AppType::Codex)?;
         if let Ok(mut live_config) = self.read_codex_live() {
             // 1. 修改 auth.json 中的 OPENAI_API_KEY（使用占位符）
             if let Some(auth) = live_config.get_mut("auth").and_then(|v| v.as_object_mut()) {
@@ -1140,7 +1153,7 @@ impl ProxyService {
             let updated_config = Self::update_toml_base_url(config_str, &proxy_codex_base_url);
             live_config["config"] = json!(updated_config);
 
-            self.write_codex_live(&live_config)?;
+            self.write_codex_live_for_provider(&live_config, Some(&codex_provider))?;
             log::info!("Codex Live 配置已接管，代理地址: {proxy_codex_base_url}");
         }
 
@@ -1182,6 +1195,7 @@ impl ProxyService {
                 log::info!("Claude Live 配置已接管，代理地址: {proxy_url}");
             }
             AppType::Codex => {
+                let codex_provider = self.require_current_provider_for_app(&AppType::Codex)?;
                 let mut live_config = self.read_codex_live()?;
 
                 if let Some(auth) = live_config.get_mut("auth").and_then(|v| v.as_object_mut()) {
@@ -1195,7 +1209,7 @@ impl ProxyService {
                 let updated_config = Self::update_toml_base_url(config_str, &proxy_codex_base_url);
                 live_config["config"] = json!(updated_config);
 
-                self.write_codex_live(&live_config)?;
+                self.write_codex_live_for_provider(&live_config, Some(&codex_provider))?;
                 log::info!("Codex Live 配置已接管，代理地址: {proxy_codex_base_url}");
             }
             AppType::Gemini => {
@@ -1248,6 +1262,10 @@ impl ProxyService {
                 }
             }
             AppType::Codex => {
+                let codex_provider = self
+                    .get_current_provider_for_app(&AppType::Codex)
+                    .ok()
+                    .flatten();
                 if let Ok(mut live_config) = self.read_codex_live() {
                     if let Some(auth) = live_config.get_mut("auth").and_then(|v| v.as_object_mut())
                     {
@@ -1262,7 +1280,8 @@ impl ProxyService {
                         Self::update_toml_base_url(config_str, &proxy_codex_base_url);
                     live_config["config"] = json!(updated_config);
 
-                    let _ = self.write_codex_live(&live_config);
+                    let _ =
+                        self.write_codex_live_for_provider(&live_config, codex_provider.as_ref());
                 }
             }
             AppType::Gemini => {
@@ -1557,7 +1576,13 @@ impl ProxyService {
         }
 
         if let Some(cfg_str) = config.get("config").and_then(|v| v.as_str()) {
-            let updated = Self::remove_local_toml_base_url(cfg_str);
+            let mut updated = Self::remove_local_toml_base_url(cfg_str);
+            if crate::codex_config::extract_codex_experimental_bearer_token(&updated).as_deref()
+                == Some(PROXY_TOKEN_PLACEHOLDER)
+            {
+                updated = crate::codex_config::remove_codex_experimental_bearer_token(&updated)
+                    .map_err(|e| format!("清理 Codex bearer token 失败: {e}"))?;
+            }
             config["config"] = json!(updated);
         }
 
@@ -1671,11 +1696,22 @@ impl ProxyService {
     }
 
     fn is_codex_live_taken_over(config: &Value) -> bool {
-        let auth = match config.get("auth").and_then(|v| v.as_object()) {
-            Some(auth) => auth,
-            None => return false,
-        };
-        auth.get("OPENAI_API_KEY").and_then(|v| v.as_str()) == Some(PROXY_TOKEN_PLACEHOLDER)
+        let auth_taken_over = config
+            .get("auth")
+            .and_then(|v| v.as_object())
+            .and_then(|auth| auth.get("OPENAI_API_KEY"))
+            .and_then(|v| v.as_str())
+            == Some(PROXY_TOKEN_PLACEHOLDER);
+        if auth_taken_over {
+            return true;
+        }
+
+        config
+            .get("config")
+            .and_then(|v| v.as_str())
+            .and_then(crate::codex_config::extract_codex_experimental_bearer_token)
+            .as_deref()
+            == Some(PROXY_TOKEN_PLACEHOLDER)
     }
 
     fn is_gemini_live_taken_over(config: &Value) -> bool {
@@ -1954,41 +1990,56 @@ impl ProxyService {
     }
 
     fn read_codex_live(&self) -> Result<Value, String> {
-        use crate::codex_config::{get_codex_auth_path, get_codex_config_path};
-
-        let auth_path = get_codex_auth_path();
-        if !auth_path.exists() {
-            return Err("Codex auth.json 不存在".to_string());
-        }
-
-        let auth: Value =
-            read_json_file(&auth_path).map_err(|e| format!("读取 Codex auth 失败: {e}"))?;
-
-        let config_path = get_codex_config_path();
-        let config_str = if config_path.exists() {
-            std::fs::read_to_string(&config_path)
-                .map_err(|e| format!("读取 Codex config 失败: {e}"))?
-        } else {
-            String::new()
-        };
-
-        Ok(json!({
-            "auth": auth,
-            "config": config_str
-        }))
+        crate::codex_config::read_codex_live_settings()
+            .map_err(|e| format!("读取 Codex Live 配置失败: {e}"))
     }
 
     fn write_codex_live(&self, config: &Value) -> Result<(), String> {
-        use crate::codex_config::{
-            get_codex_auth_path, get_codex_config_path, write_codex_live_atomic,
+        self.write_codex_live_verbatim(config)
+    }
+
+    fn write_codex_live_for_provider(
+        &self,
+        config: &Value,
+        provider: Option<&Provider>,
+    ) -> Result<(), String> {
+        let Some(provider) = provider else {
+            return self.write_codex_live_verbatim(config);
         };
+
+        let auth = config
+            .get("auth")
+            .ok_or_else(|| "Codex 配置缺少 auth 字段".to_string())?;
+        let config_str = config.get("config").and_then(|v| v.as_str());
+
+        crate::codex_config::write_codex_provider_live_with_catalog(
+            config,
+            provider.category.as_deref(),
+            auth,
+            config_str,
+        )
+        .map_err(|e| format!("写入 Codex 配置失败: {e}"))
+    }
+
+    fn write_codex_live_verbatim(&self, config: &Value) -> Result<(), String> {
+        use crate::codex_config::{get_codex_auth_path, get_codex_config_path};
 
         let auth = config.get("auth");
         let config_str = config.get("config").and_then(|v| v.as_str());
 
         match (auth, config_str) {
-            (Some(auth), Some(cfg)) => write_codex_live_atomic(auth, Some(cfg))
-                .map_err(|e| format!("写入 Codex 配置失败: {e}"))?,
+            (Some(auth), Some(cfg)) => {
+                if auth.as_object().is_some_and(|obj| obj.is_empty()) {
+                    let auth_path = get_codex_auth_path();
+                    let _ = crate::config::delete_file(&auth_path);
+                    let config_path = get_codex_config_path();
+                    crate::config::write_text_file(&config_path, cfg)
+                        .map_err(|e| format!("写入 Codex config 失败: {e}"))?;
+                } else {
+                    crate::codex_config::write_codex_live_atomic(auth, Some(cfg))
+                        .map_err(|e| format!("写入 Codex 配置失败: {e}"))?;
+                }
+            }
             (Some(auth), None) => {
                 let auth_path = get_codex_auth_path();
                 write_json_file(&auth_path, auth)
@@ -2400,6 +2451,151 @@ mod tests {
         assert_env_str(env, "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME", Some("gpt-5.4"));
         assert_env_str(env, "ANTHROPIC_API_KEY", Some(PROXY_TOKEN_PLACEHOLDER));
         assert_env_str(env, "ANTHROPIC_AUTH_TOKEN", None);
+    }
+
+    #[test]
+    #[serial]
+    fn codex_custom_provider_live_write_preserves_oauth_auth_json() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let service = ProxyService::new(db);
+        let oauth_auth = json!({
+            "auth_mode": "chatgpt",
+            "tokens": {
+                "id_token": "oauth-id",
+                "access_token": "oauth-access"
+            }
+        });
+        crate::codex_config::write_codex_live_atomic(
+            &oauth_auth,
+            Some(
+                r#"model_provider = "openai"
+model = "gpt-5-codex"
+"#,
+            ),
+        )
+        .expect("seed live OAuth auth");
+
+        let mut provider = Provider::with_id(
+            "rightcode".to_string(),
+            "RightCode".to_string(),
+            json!({
+                "auth": {
+                    "OPENAI_API_KEY": "rightcode-key"
+                },
+                "config": r#"model_provider = "rightcode"
+model = "gpt-5-codex"
+
+[model_providers.rightcode]
+name = "RightCode"
+base_url = "https://rightcode.example/v1"
+wire_api = "responses"
+"#
+            }),
+            None,
+        );
+        provider.category = Some("custom".to_string());
+        let takeover_settings = json!({
+            "auth": {
+                "OPENAI_API_KEY": PROXY_TOKEN_PLACEHOLDER
+            },
+            "config": r#"model_provider = "rightcode"
+model = "gpt-5-codex"
+
+[model_providers.rightcode]
+name = "RightCode"
+base_url = "http://127.0.0.1:15721/v1"
+wire_api = "responses"
+"#
+        });
+
+        service
+            .write_codex_live_for_provider(&takeover_settings, Some(&provider))
+            .expect("write provider-driven Codex live config");
+
+        let live_auth: Value =
+            crate::config::read_json_file(&crate::codex_config::get_codex_auth_path())
+                .expect("read live auth");
+        assert_eq!(
+            live_auth, oauth_auth,
+            "third-party Codex proxy writes must not overwrite ChatGPT OAuth login state"
+        );
+
+        let live_config = std::fs::read_to_string(crate::codex_config::get_codex_config_path())
+            .expect("read live config");
+        assert!(
+            live_config.contains("experimental_bearer_token"),
+            "proxy placeholder should move into config.toml instead of auth.json"
+        );
+        assert!(
+            live_config.contains(PROXY_TOKEN_PLACEHOLDER),
+            "live config should carry the proxy placeholder token"
+        );
+        assert!(ProxyService::is_codex_live_taken_over(&json!({
+            "auth": oauth_auth,
+            "config": live_config,
+        })));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn sync_live_config_to_provider_uses_codex_config_bearer_token() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let service = ProxyService::new(db.clone());
+
+        let mut provider = Provider::with_id(
+            "rightcode".to_string(),
+            "RightCode".to_string(),
+            json!({
+                "auth": {},
+                "config": r#"model_provider = "rightcode"
+
+[model_providers.rightcode]
+base_url = "https://rightcode.example/v1"
+"#
+            }),
+            None,
+        );
+        provider.category = Some("custom".to_string());
+        db.save_provider("codex", &provider)
+            .expect("save codex provider");
+        db.set_current_provider("codex", "rightcode")
+            .expect("set current provider");
+        crate::settings::set_current_provider(&AppType::Codex, Some("rightcode"))
+            .expect("set local current provider");
+
+        let live_config = json!({
+            "auth": {},
+            "config": r#"model_provider = "rightcode"
+
+[model_providers.rightcode]
+base_url = "https://rightcode.example/v1"
+experimental_bearer_token = "sk-live"
+"#
+        });
+
+        service
+            .sync_live_config_to_provider(&AppType::Codex, &live_config)
+            .await
+            .expect("sync live config");
+
+        let stored = db
+            .get_provider_by_id("rightcode", "codex")
+            .expect("read provider")
+            .expect("provider exists");
+        assert_eq!(
+            stored
+                .settings_config
+                .get("auth")
+                .and_then(|auth| auth.get("OPENAI_API_KEY"))
+                .and_then(Value::as_str),
+            Some("sk-live")
+        );
     }
 
     #[test]
