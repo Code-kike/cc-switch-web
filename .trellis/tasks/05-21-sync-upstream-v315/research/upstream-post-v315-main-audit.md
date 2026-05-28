@@ -20,6 +20,13 @@ Latest fetched upstream main:
 3c3d4174 Enable Codex goals in provider templates (#3089)
 ```
 
+Refetch check on 2026-05-28 after syncing `3c3d4174`:
+
+```text
+refs/remotes/upstream/main = 3c3d4174
+latest upstream tag = v3.15.0
+```
+
 Local upstream release tags still only include:
 
 ```text
@@ -45,7 +52,7 @@ These are Web/shared-backend relevant and have low-to-medium implementation scop
 | `8e21b061` | `Fix custom usage script summaries (#3129)` | `src-tauri/src/usage_script.rs`, `src/components/UsageScriptModal.tsx`, `src/utils/usageDisplay.ts`, `tests/utils/usageDisplay.test.ts` | Directly overlaps Web usage-query/custom script behavior and current usage summary contracts. |
 | `9c2add9a` | `fix(proxy): Claude-compatible streaming empty tool_calls resets block state (#2915)` | `src-tauri/src/proxy/providers/streaming.rs` | Shared proxy streaming correctness fix; likely relevant for server mode. |
 | `3c3d4174` | `Enable Codex goals in provider templates (#3089)` | `src/components/providers/forms/CodexConfigSections.tsx`, `src/utils/providerConfigUtils.ts`, i18n, Codex template tests | Existing Web provider UI consumes these templates; portable if reconciled with current forms/tests. |
-| `707a5593` | `feat: add MiMo reasoning_content support for Claude Code proxy (#2990)` | `src-tauri/src/claude_desktop_config.rs`, `src-tauri/src/proxy/providers/claude.rs`, `src-tauri/src/proxy/providers/transform.rs` | Shared proxy transform behavior; useful if Web-managed Claude-compatible providers use MiMo reasoning payloads. |
+| `707a5593` | `feat: add MiMo reasoning_content support for Claude Code proxy (#2990)` | `src-tauri/src/claude_desktop_config.rs`, `src-tauri/src/proxy/providers/claude.rs`, `src-tauri/src/proxy/providers/transform.rs` | Shared proxy transform behavior; useful if Web-managed Claude-compatible providers use MiMo reasoning payloads. Ported only the existing shared proxy subset; upstream Claude Desktop config code has no matching Web-fork file. |
 | `95f2dd41` | `feat(codex): preserve OAuth login state during third-party provider switching` | `src-tauri/src/codex_config.rs`, config/provider/proxy services, `ProviderCard`, Codex config hooks, `providerConfigUtils` | Relevant if Web supports Codex OAuth/provider switching. Scope is broader than a one-file bugfix, so port after small backend fixes. |
 | `177eef66` | `fix(quota): sort ZhiPu tiers so missing nextResetTime maps to five_hour bucket` | `src-tauri/src/services/coding_plan.rs` | Small service fix; include if the Web fork exposes quota/coding-plan state. |
 | `62928c62` | `fix(ui): remove fixed width constraint on AppSwitcher text to prevent clipping (#3161)` | `src/components/AppSwitcher.tsx` | Small frontend UX fix; safe if current Web AppSwitcher still has the clipping constraint. |
@@ -85,4 +92,3 @@ These appear relevant but are broad enough to deserve a separate design/port bat
 ## Suggested next decision
 
 Start with the "Must consider now" group, but port only the smallest isolated backend/UI fixes first. Keep Codex Chat bridge, tool management, history migration, Traditional Chinese localization, and docs-only updates as separate batches.
-

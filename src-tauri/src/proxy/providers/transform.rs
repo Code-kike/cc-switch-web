@@ -438,6 +438,12 @@ fn convert_message_to_openai(
                         }
                     }
                 }
+                "redacted_thinking" if preserve_reasoning_content => {
+                    // Claude Code encrypts historical thinking into redacted_thinking blocks.
+                    // MiMo/DeepSeek-compatible routes need non-empty reasoning_content when
+                    // replaying assistant tool-call turns, so provide a minimal placeholder.
+                    reasoning_parts.push("[redacted thinking]".to_string());
+                }
                 _ => {}
             }
         }
@@ -947,6 +953,26 @@ mod tests {
         assert_eq!(msg["role"], "assistant");
         assert_eq!(msg["reasoning_content"], "tool call");
         assert!(msg.get("tool_calls").is_some());
+        assert_eq!(msg["tool_calls"][0]["id"], "call_123");
+    }
+
+    #[test]
+    fn test_anthropic_to_openai_tool_use_uses_redacted_thinking_placeholder() {
+        let input = json!({
+            "model": "mimo-v2.5-pro",
+            "max_tokens": 1024,
+            "messages": [{
+                "role": "assistant",
+                "content": [
+                    {"type": "redacted_thinking", "data": "opaque"},
+                    {"type": "tool_use", "id": "call_123", "name": "get_weather", "input": {"location": "Tokyo"}}
+                ]
+            }]
+        });
+
+        let result = anthropic_to_openai_with_reasoning_content(input, true).unwrap();
+        let msg = &result["messages"][0];
+        assert_eq!(msg["reasoning_content"], "[redacted thinking]");
         assert_eq!(msg["tool_calls"][0]["id"], "call_123");
     }
 
