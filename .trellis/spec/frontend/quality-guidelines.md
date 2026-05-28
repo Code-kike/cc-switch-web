@@ -55,10 +55,16 @@ Questions to answer:
   - `success: boolean`
   - `data?: UsageData[]`
   - `error?: string`
+- `UsageData` fields are optional. Display code must handle rows that include
+  only `used`/`total`, only `remaining`, only `extra`, or invalid-state fields
+  without rendering `undefined`/`NaN`.
 - Built-in templates are `github_copilot`, `token_plan`, and `balance`.
 - Built-in template tests must go through `usageApi.testScript`, not lower-level subscription or Copilot APIs.
 - Saved provider-card refresh must go through `usageApi.query`, which reaches `query_usage_with_templates`.
 - Frontend API wrappers should normalize transport/API errors into `UsageResult { success: false, error }` so the provider UI can show actionable failures.
+- `UsageScriptModal` success toasts should format rows through
+  `formatUsageDataSummary` so saved-query and test-query displays stay
+  consistent across sparse custom-script payloads.
 
 #### 4. Validation & Error Matrix
 
@@ -66,6 +72,10 @@ Questions to answer:
 - Disabled usage script -> failed `UsageResult` with "usage disabled" detail.
 - Unsupported or malformed JS template -> failed `UsageResult`; do not leave stale success data visible.
 - Built-in templates ignore the JS body; save-time JS `request.url` validation must not block them.
+- Custom scripts may use a full explicit quota URL that does not match the
+  provider `baseUrl`. Runtime request validation may validate that request URL,
+  but must not reject the unused provider `baseUrl` fallback for custom
+  templates.
 - Web mode must not call commands marked `unsupported` in `src/lib/api/web-commands.ts` from usage-template testing.
 
 #### 5. Good/Base/Bad Cases
@@ -73,11 +83,17 @@ Questions to answer:
 - Good: Balance, Token Plan, and GitHub Copilot template test buttons call `usageApi.testScript(..., templateType)`, then write the returned `UsageResult` into `["usage", provider.id, appId]`.
 - Base: custom/general/newapi scripts call `usageApi.testScript` with script code and explicit credential overrides.
 - Bad: testing Balance via `subscriptionApi.getBalance`, Token Plan via `subscriptionApi.getCodingPlanQuota`, or Copilot via `copilot_get_usage*` from `UsageScriptModal`.
+- Bad: formatting custom-script test output by directly interpolating
+  `plan.remaining` and `plan.unit`; sparse rows can omit both fields.
 
 #### 6. Tests Required
 
 - Unit test `usageApi.query` and `usageApi.testScript` error normalization for Web API failures.
+- Unit test `formatUsageDataSummary` for sparse rows where `remaining` or
+  `unit` is absent.
 - Component tests asserting each built-in template calls `usageApi.testScript` with the expected template type.
+- Rust test custom-script URL validation when an explicit HTTP/LAN quota URL is
+  used with a different provider `baseUrl`.
 - Backend compile check for Web server mode after changing provider usage signatures:
   - `cargo check --manifest-path src-tauri/Cargo.toml --no-default-features --features web-server --example server`
 
@@ -88,6 +104,10 @@ Questions to answer:
 ```typescript
 await subscriptionApi.getBalance(baseUrl, apiKey);
 await copilotGetUsage();
+```
+
+```typescript
+`${plan.remaining} ${plan.unit}`;
 ```
 
 ##### Correct
@@ -104,6 +124,10 @@ await usageApi.testScript(
   undefined,
   "balance",
 );
+```
+
+```typescript
+formatUsageDataSummary(plan, labels);
 ```
 
 The same pattern applies to `token_plan` and `github_copilot`.
