@@ -13,6 +13,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::app_config::AppType;
+use crate::database::{validate_cost_multiplier, validate_pricing_source};
 use crate::error::AppError;
 use crate::provider::{Provider, UsageResult};
 use crate::services::mcp::McpService;
@@ -22,7 +23,8 @@ use crate::store::AppState;
 // Re-export sub-module functions for external access
 pub use live::{
     import_default_config, import_hermes_providers_from_live, import_openclaw_providers_from_live,
-    import_opencode_providers_from_live, read_live_settings, sync_current_to_live,
+    import_opencode_providers_from_live, read_live_settings,
+    should_import_default_config_on_startup, sync_current_to_live,
 };
 
 // Internal re-exports (pub(crate))
@@ -261,6 +263,64 @@ mod tests {
     }
 
     #[test]
+    fn validate_provider_settings_rejects_negative_cost_multiplier() {
+        let mut provider = Provider::with_id(
+            "claude".into(),
+            "Claude".into(),
+            json!({
+                "env": {
+                    "ANTHROPIC_AUTH_TOKEN": "token",
+                    "ANTHROPIC_BASE_URL": "https://claude.example"
+                }
+            }),
+            None,
+        );
+        provider.meta = Some(ProviderMeta {
+            cost_multiplier: Some("-1".to_string()),
+            ..ProviderMeta::default()
+        });
+
+        let err = ProviderService::validate_provider_settings(&AppType::Claude, &provider)
+            .expect_err("negative multiplier should be rejected");
+        assert!(matches!(
+            err,
+            AppError::Localized {
+                key: "error.invalidMultiplier",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn validate_provider_settings_rejects_invalid_pricing_source() {
+        let mut provider = Provider::with_id(
+            "claude".into(),
+            "Claude".into(),
+            json!({
+                "env": {
+                    "ANTHROPIC_AUTH_TOKEN": "token",
+                    "ANTHROPIC_BASE_URL": "https://claude.example"
+                }
+            }),
+            None,
+        );
+        provider.meta = Some(ProviderMeta {
+            pricing_model_source: Some("invalid".to_string()),
+            ..ProviderMeta::default()
+        });
+
+        let err = ProviderService::validate_provider_settings(&AppType::Claude, &provider)
+            .expect_err("invalid pricing source should be rejected");
+        assert!(matches!(
+            err,
+            AppError::Localized {
+                key: "error.invalidPricingMode",
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn extract_credentials_returns_expected_values() {
         let provider = Provider::with_id(
             "claude".into(),
@@ -277,6 +337,52 @@ mod tests {
             ProviderService::extract_credentials(&provider, &AppType::Claude).unwrap();
         assert_eq!(api_key, "token");
         assert_eq!(base_url, "https://claude.example");
+    }
+
+    #[test]
+    fn extract_claude_common_config_excludes_model_display_names() {
+        let settings = json!({
+            "env": {
+                "ANTHROPIC_AUTH_TOKEN": "token",
+                "ANTHROPIC_BASE_URL": "https://claude.example",
+                "ANTHROPIC_MODEL": "claude-sonnet-4-5",
+                "ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-haiku-4-5",
+                "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME": "Haiku",
+                "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-4-5",
+                "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME": "Opus",
+                "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-sonnet-4-5",
+                "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME": "Sonnet",
+                "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"
+            },
+            "includeCoAuthoredBy": false
+        });
+
+        let extracted = ProviderService::extract_claude_common_config(&settings)
+            .expect("extract_claude_common_config should succeed");
+        let parsed: Value = serde_json::from_str(&extracted).expect("valid JSON");
+
+        assert_eq!(
+            parsed["env"]["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"],
+            json!("1")
+        );
+        assert_eq!(parsed["includeCoAuthoredBy"], json!(false));
+        let env = parsed["env"].as_object().expect("env should remain");
+        for provider_specific in [
+            "ANTHROPIC_AUTH_TOKEN",
+            "ANTHROPIC_BASE_URL",
+            "ANTHROPIC_MODEL",
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME",
+            "ANTHROPIC_DEFAULT_OPUS_MODEL",
+            "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME",
+        ] {
+            assert!(
+                !env.contains_key(provider_specific),
+                "{provider_specific} should not be extracted as common config"
+            );
+        }
     }
 
     #[test]
@@ -928,6 +1034,244 @@ base_url = "http://localhost:8080"
             );
         });
     }
+
+    fn hermes_provider(id: &str, settings: Value) -> Provider {
+        Provider {
+            id: id.to_string(),
+            name: id.to_string(),
+            settings_config: settings,
+            website_url: None,
+            category: None,
+            created_at: Some(1),
+            sort_index: Some(0),
+            notes: None,
+            meta: None,
+            icon: None,
+            icon_color: None,
+            in_failover_queue: false,
+        }
+    }
+
+    /// Regression: after `import_hermes_providers_from_live` previously
+    /// persisted `_cc_source: providers_dict` onto every imported record,
+    /// duplicating one of those providers locked the duplicate read-only too.
+    /// `list` must strip stale markers and re-inject `providers_dict` only
+    /// for entries that are dict-only in the current YAML.
+    #[test]
+    #[serial]
+    fn list_for_hermes_strips_stale_markers_and_reinjects_dict_only() {
+        with_test_home(|state, home| {
+            // Seed two DB records — both stale, persisted before the fix.
+            let stale_dict_only = hermes_provider(
+                "anthropic",
+                json!({
+                    "_cc_source": "providers_dict",
+                    "provider_key": "anthropic",
+                    "base_url": "https://api.anthropic.com",
+                }),
+            );
+            let stale_duplicate = hermes_provider(
+                "custom-copy",
+                json!({
+                    "_cc_source": "providers_dict",
+                    "provider_key": "custom",
+                    "request_timeout_seconds": 30,
+                }),
+            );
+            state
+                .db
+                .save_provider("hermes", &stale_dict_only)
+                .expect("seed dict-only provider");
+            state
+                .db
+                .save_provider("hermes", &stale_duplicate)
+                .expect("seed db-only duplicate");
+
+            // Live YAML: anthropic is in providers dict, custom-copy is in
+            // custom_providers list — the duplicate the user added.
+            let yaml = "\
+custom_providers:
+  - name: custom-copy
+    request_timeout_seconds: 30
+providers:
+  anthropic:
+    base_url: https://api.anthropic.com
+";
+            let config_path = home.join(".hermes").join("config.yaml");
+            fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+            fs::write(&config_path, yaml).unwrap();
+
+            let providers =
+                ProviderService::list(state, AppType::Hermes).expect("list hermes providers");
+
+            // Dict-only entry keeps the marker (re-derived from live YAML).
+            let anthropic = providers.get("anthropic").expect("anthropic present");
+            assert_eq!(
+                anthropic.settings_config["_cc_source"],
+                Value::String("providers_dict".to_string()),
+                "dict-only entry must surface as read-only via re-injected marker"
+            );
+            assert!(
+                anthropic.settings_config.get("provider_key").is_none(),
+                "provider_key is a runtime marker; must not leak through DB read"
+            );
+
+            // Duplicate that lives only in custom_providers list must NOT
+            // carry the dict marker — that was the bug.
+            let copy = providers.get("custom-copy").expect("custom-copy present");
+            assert!(
+                copy.settings_config.get("_cc_source").is_none(),
+                "list-only entry must not be marked read-only"
+            );
+            assert!(
+                copy.settings_config.get("provider_key").is_none(),
+                "stale provider_key must be stripped from list-only entries"
+            );
+            assert_eq!(
+                copy.settings_config["request_timeout_seconds"],
+                json!(30),
+                "non-marker fields must survive sanitization"
+            );
+        });
+    }
+
+    /// `add` and `update` for Hermes must not persist runtime markers.
+    /// Without this, the frontend's "duplicate" flow (which copies
+    /// settings_config verbatim) would re-introduce the readonly leak.
+    #[test]
+    #[serial]
+    fn add_and_update_for_hermes_strip_runtime_markers_before_persist() {
+        with_test_home(|state, home| {
+            // Live YAML present so add()'s additive-mode write doesn't fail.
+            let yaml = "providers:\n  donor:\n    base_url: https://donor.example\n";
+            let config_path = home.join(".hermes").join("config.yaml");
+            fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+            fs::write(&config_path, yaml).unwrap();
+
+            // Provider arriving from a duplicate flow — carries stale markers.
+            let incoming = hermes_provider(
+                "fresh",
+                json!({
+                    "_cc_source": "providers_dict",
+                    "provider_key": "donor",
+                    "name": "fresh",
+                    "base_url": "https://fresh.example.com",
+                    "api_key": "sk-fresh",
+                }),
+            );
+
+            ProviderService::add(state, AppType::Hermes, incoming.clone(), false)
+                .expect("add hermes provider");
+
+            let stored = state
+                .db
+                .get_provider_by_id("fresh", "hermes")
+                .expect("query stored")
+                .expect("stored exists");
+            assert!(
+                stored.settings_config.get("_cc_source").is_none(),
+                "_cc_source must not be persisted on add"
+            );
+            assert!(
+                stored.settings_config.get("provider_key").is_none(),
+                "provider_key must not be persisted on add"
+            );
+            assert_eq!(
+                stored.settings_config["base_url"],
+                "https://fresh.example.com"
+            );
+
+            // Update path must also strip — defensive against future callers.
+            let mut updated = stored.clone();
+            updated.settings_config["_cc_source"] = json!("providers_dict");
+            updated.settings_config["provider_key"] = json!("donor");
+            updated.settings_config["api_key"] = json!("sk-rotated");
+
+            ProviderService::update(state, AppType::Hermes, None, updated)
+                .expect("update hermes provider");
+
+            let after = state
+                .db
+                .get_provider_by_id("fresh", "hermes")
+                .expect("query after update")
+                .expect("provider exists");
+            assert!(after.settings_config.get("_cc_source").is_none());
+            assert!(after.settings_config.get("provider_key").is_none());
+            assert_eq!(after.settings_config["api_key"], "sk-rotated");
+        });
+    }
+
+    /// `cleanup_hermes_legacy_runtime_markers_if_needed` must scrub stale
+    /// `_cc_source` / `provider_key` baked into the DB by older imports, then
+    /// flip the settings flag so the next startup is a no-op. Resetting the
+    /// flag must let it run again — that's the recovery path for a partial
+    /// failure.
+    #[test]
+    #[serial]
+    fn cleanup_hermes_runtime_markers_is_idempotent_and_gated_by_settings_flag() {
+        with_test_home(|state, _| {
+            let dirty = hermes_provider(
+                "imported",
+                json!({
+                    "_cc_source": "providers_dict",
+                    "provider_key": "imported",
+                    "name": "imported",
+                    "base_url": "https://api.imported.example",
+                }),
+            );
+            let clean = hermes_provider(
+                "fresh",
+                json!({
+                    "name": "fresh",
+                    "base_url": "https://api.fresh.example",
+                }),
+            );
+            state
+                .db
+                .save_provider("hermes", &dirty)
+                .expect("seed dirty");
+            state
+                .db
+                .save_provider("hermes", &clean)
+                .expect("seed clean");
+
+            assert!(
+                !state.db.is_hermes_runtime_markers_cleaned().unwrap(),
+                "fresh DB must not have the cleanup flag set"
+            );
+
+            let cleaned = ProviderService::cleanup_hermes_legacy_runtime_markers_if_needed(state)
+                .expect("first cleanup");
+            assert_eq!(cleaned, 1, "only the dirty record needed rewriting");
+            assert!(
+                state.db.is_hermes_runtime_markers_cleaned().unwrap(),
+                "cleanup must persist its completion flag"
+            );
+
+            let stored_dirty = state
+                .db
+                .get_provider_by_id("imported", "hermes")
+                .expect("query")
+                .expect("imported provider exists");
+            assert!(stored_dirty.settings_config.get("_cc_source").is_none());
+            assert!(stored_dirty.settings_config.get("provider_key").is_none());
+            assert_eq!(
+                stored_dirty.settings_config["base_url"], "https://api.imported.example",
+                "non-marker fields must survive cleanup"
+            );
+
+            // Second invocation is a no-op — flag is set, no work to do.
+            let again = ProviderService::cleanup_hermes_legacy_runtime_markers_if_needed(state)
+                .expect("second cleanup");
+            assert_eq!(again, 0, "flag must short-circuit subsequent runs");
+
+            // Resetting the flag re-runs cleanup; non-dirty records stay no-op.
+            state.db.set_hermes_runtime_markers_cleaned(false).unwrap();
+            let rerun = ProviderService::cleanup_hermes_legacy_runtime_markers_if_needed(state)
+                .expect("rerun after flag reset");
+            assert_eq!(rerun, 0, "no records still need cleaning");
+        });
+    }
 }
 
 impl ProviderService {
@@ -968,12 +1312,100 @@ impl ProviderService {
             .live_config_managed = Some(managed);
     }
 
+    /// One-shot cleanup of legacy `_cc_source` / `provider_key` markers
+    /// persisted on Hermes provider records.
+    ///
+    /// `list()` already strips and re-injects on every read, but persisted
+    /// markers still leak through:
+    ///   - backup / restore round-trips
+    ///   - direct DB queries from external tooling
+    ///   - any future code path that reads `Provider` without going through
+    ///     the service layer
+    ///
+    /// This rewrite runs once per database (gated by
+    /// `is_hermes_runtime_markers_cleaned`) and is safe to retry if it
+    /// crashes mid-way: stripping is idempotent and the marker is only
+    /// recorded after success.
+    pub fn cleanup_hermes_legacy_runtime_markers_if_needed(
+        state: &AppState,
+    ) -> Result<usize, AppError> {
+        if state.db.is_hermes_runtime_markers_cleaned()? {
+            return Ok(0);
+        }
+
+        let providers = state.db.get_all_providers(AppType::Hermes.as_str())?;
+        let mut cleaned = 0usize;
+
+        for (id, mut provider) in providers {
+            let before = provider.settings_config.clone();
+            crate::hermes_config::strip_runtime_markers(&mut provider.settings_config);
+            if provider.settings_config == before {
+                continue;
+            }
+            if let Err(err) = state.db.save_provider(AppType::Hermes.as_str(), &provider) {
+                log::warn!("Failed to clean Hermes runtime markers from provider '{id}': {err}");
+                continue;
+            }
+            cleaned += 1;
+        }
+
+        state.db.set_hermes_runtime_markers_cleaned(true)?;
+
+        if cleaned > 0 {
+            log::info!("Cleaned legacy Hermes runtime markers from {cleaned} provider(s)");
+        }
+        Ok(cleaned)
+    }
+
     /// List all providers for an app type
     pub fn list(
         state: &AppState,
         app_type: AppType,
     ) -> Result<IndexMap<String, Provider>, AppError> {
-        state.db.get_all_providers(app_type.as_str())
+        let mut providers = state.db.get_all_providers(app_type.as_str())?;
+        if matches!(app_type, AppType::Hermes) {
+            Self::reconcile_hermes_runtime_markers(&mut providers);
+        }
+        Ok(providers)
+    }
+
+    /// Strip stale `_cc_source` / `provider_key` markers from persisted Hermes
+    /// records and re-inject `_cc_source: providers_dict` for entries that
+    /// currently live under the v12+ `providers:` dict overlay.
+    ///
+    /// Older imports persisted these markers into the database, which made
+    /// duplicates and config-shape changes leak the read-only flag onto every
+    /// derived provider. Re-deriving them on read keeps the overlay semantics
+    /// in lockstep with the live YAML state.
+    fn reconcile_hermes_runtime_markers(providers: &mut IndexMap<String, Provider>) {
+        for provider in providers.values_mut() {
+            crate::hermes_config::strip_runtime_markers(&mut provider.settings_config);
+        }
+
+        let dict_only = match crate::hermes_config::get_dict_only_provider_names() {
+            Ok(names) => names,
+            Err(err) => {
+                log::warn!(
+                    "Failed to read Hermes dict-only providers; readonly markers may be stale: {err}"
+                );
+                return;
+            }
+        };
+
+        for name in dict_only {
+            let Some(provider) = providers.get_mut(&name) else {
+                continue;
+            };
+            if !provider.settings_config.is_object() {
+                provider.settings_config = Value::Object(serde_json::Map::new());
+            }
+            if let Some(obj) = provider.settings_config.as_object_mut() {
+                obj.insert(
+                    crate::hermes_config::PROVIDER_SOURCE_FIELD.to_string(),
+                    serde_json::json!(crate::hermes_config::PROVIDER_SOURCE_DICT),
+                );
+            }
+        }
     }
 
     /// Get current provider ID
@@ -1002,6 +1434,11 @@ impl ProviderService {
         let mut provider = provider;
         // Normalize Claude model keys
         Self::normalize_provider_if_claude(&app_type, &mut provider);
+        // Hermes: drop runtime-only markers (`_cc_source`, `provider_key`).
+        // The marker is re-injected on read from the live YAML overlay state.
+        if matches!(app_type, AppType::Hermes) {
+            crate::hermes_config::strip_runtime_markers(&mut provider.settings_config);
+        }
         Self::validate_provider_settings(&app_type, &provider)?;
         normalize_provider_common_config_for_storage(state.db.as_ref(), &app_type, &mut provider)?;
         if app_type.is_additive_mode() {
@@ -1025,6 +1462,12 @@ impl ProviderService {
                 return Ok(true);
             }
             write_live_with_common_config(state.db.as_ref(), &app_type, &provider)?;
+            if matches!(app_type, AppType::Hermes) {
+                crate::hermes_config::apply_switch_defaults(
+                    &provider.id,
+                    &provider.settings_config,
+                )?;
+            }
             return Ok(true);
         }
 
@@ -1056,6 +1499,10 @@ impl ProviderService {
             .get_provider_by_id(&original_id, app_type.as_str())?;
         // Normalize Claude model keys
         Self::normalize_provider_if_claude(&app_type, &mut provider);
+        // Hermes: drop runtime-only markers before persistence (see add()).
+        if matches!(app_type, AppType::Hermes) {
+            crate::hermes_config::strip_runtime_markers(&mut provider.settings_config);
+        }
         Self::validate_provider_settings(&app_type, &provider)?;
         normalize_provider_common_config_for_storage(state.db.as_ref(), &app_type, &mut provider)?;
 
@@ -1761,12 +2208,15 @@ impl ProviderService {
             // Auth
             "ANTHROPIC_API_KEY",
             "ANTHROPIC_AUTH_TOKEN",
-            // Models (4 fields + 1 legacy)
+            // Models and Claude Code model-menu display names
             "ANTHROPIC_MODEL",
             "ANTHROPIC_REASONING_MODEL", // legacy: 已废弃，但旧配置可能残留
             "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME",
             "ANTHROPIC_DEFAULT_OPUS_MODEL",
+            "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME",
             "ANTHROPIC_DEFAULT_SONNET_MODEL",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME",
             // Endpoint
             "ANTHROPIC_BASE_URL",
         ];
@@ -2144,6 +2594,12 @@ impl ProviderService {
 
         // Validate and clean UsageScript configuration (common for all app types)
         if let Some(meta) = &provider.meta {
+            if let Some(multiplier) = meta.cost_multiplier.as_deref() {
+                validate_cost_multiplier(multiplier)?;
+            }
+            if let Some(source) = meta.pricing_model_source.as_deref() {
+                validate_pricing_source(source)?;
+            }
             if let Some(usage_script) = &meta.usage_script {
                 validate_usage_script(usage_script)?;
             }

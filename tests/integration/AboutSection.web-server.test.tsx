@@ -67,15 +67,15 @@ type FakeToolBin = {
 };
 
 const currentRelease: LatestReleaseFixture = {
-  tag_name: "v3.14.1",
+  tag_name: "v3.15.0",
   body: "Current release notes",
-  html_url: "https://github.com/farion1231/cc-switch/releases/tag/v3.14.1",
+  html_url: "https://github.com/farion1231/cc-switch/releases/tag/v3.15.0",
 };
 
 const newerRelease: LatestReleaseFixture = {
-  tag_name: "v3.15.0",
+  tag_name: "v3.15.1",
   body: "Newer release notes from test server",
-  html_url: "https://github.com/farion1231/cc-switch/releases/tag/v3.15.0",
+  html_url: "https://github.com/farion1231/cc-switch/releases/tag/v3.15.1",
 };
 
 const latestToolVersions: Record<ToolName, string> = {
@@ -289,6 +289,7 @@ describe.sequential("AboutSection against real web server", () => {
         CC_SWITCH_RELEASES_API_BASE_URL: releaseServer.baseUrl,
         CC_SWITCH_NPM_REGISTRY_BASE_URL: toolMetadataServer.baseUrl,
         CC_SWITCH_GITHUB_API_BASE_URL: toolMetadataServer.baseUrl,
+        SHELL: "sh",
         PATH: `${fakeToolBin.binDir}:${process.env.PATH ?? ""}`,
       },
     });
@@ -340,7 +341,7 @@ describe.sequential("AboutSection against real web server", () => {
     async () => {
       renderAboutSection();
 
-      await expectVersionBadge("v3.14.1");
+      await expectVersionBadge("v3.15.0");
       await waitFor(
         () => {
           expect(screen.getByText("1.0.0")).toBeInTheDocument();
@@ -377,7 +378,7 @@ describe.sequential("AboutSection against real web server", () => {
       renderAboutSection();
 
       expect(await screen.findByText("CC Switch")).toBeInTheDocument();
-      await expectVersionBadge("v3.14.1");
+      await expectVersionBadge("v3.15.0");
       expect(
         await screen.findByText(
           /^(settings\.serverEnvCheck|服务端环境检查|Server Environment Check)$/,
@@ -432,7 +433,7 @@ describe.sequential("AboutSection against real web server", () => {
 
     renderAboutSection();
 
-    await expectVersionBadge("v3.14.1");
+    await expectVersionBadge("v3.15.0");
 
     const updateButton = await screen.findByRole("button", {
       name: /^(settings\.updateTo|Update to|更新到)/,

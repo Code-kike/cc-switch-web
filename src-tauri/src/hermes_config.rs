@@ -478,6 +478,54 @@ pub const PROVIDER_SOURCE_FIELD: &str = "_cc_source";
 pub const PROVIDER_SOURCE_CUSTOM_LIST: &str = "custom_providers";
 pub const PROVIDER_SOURCE_DICT: &str = "providers_dict";
 
+/// Strip runtime-only markers from a Hermes provider settings value before
+/// persistence.
+///
+/// `_cc_source` and `provider_key` are injected by `get_providers()` to help
+/// the UI render read-only overlay state — they must never be written back to
+/// YAML, the database, or surfaced through duplicate/import flows. Without
+/// this, a duplicated dict-only provider would inherit `providers_dict` and
+/// stay locked from edits forever (see import_hermes_providers_from_live).
+pub fn strip_runtime_markers(config: &mut serde_json::Value) {
+    let Some(obj) = config.as_object_mut() else {
+        return;
+    };
+    obj.remove(PROVIDER_SOURCE_FIELD);
+    obj.remove("provider_key");
+}
+
+/// Names of providers that exist only under the v12+ `providers:` dict — i.e.
+/// the read-only overlay CC Switch must not edit. Used by the provider list
+/// service to re-inject the `_cc_source` marker on reads, since the marker is
+/// not persisted in the database.
+pub fn get_dict_only_provider_names() -> Result<Vec<String>, AppError> {
+    let config = read_hermes_config()?;
+    let mut out = Vec::new();
+    let Some(mapping) = config.get("providers").and_then(|v| v.as_mapping()) else {
+        return Ok(out);
+    };
+    for (k, v) in mapping {
+        let Some(key_str) = k.as_str().map(str::trim).filter(|s| !s.is_empty()) else {
+            continue;
+        };
+        if !v.is_mapping() {
+            continue;
+        }
+        let entry_name = v
+            .get("name")
+            .and_then(|n| n.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(key_str)
+            .to_string();
+        if !is_dict_only_provider(&config, &entry_name) {
+            continue;
+        }
+        out.push(entry_name);
+    }
+    Ok(out)
+}
+
 /// Normalize a single entry from the v12+ `providers:` dict into the same
 /// JSON shape that `custom_providers:` list entries take, mirroring upstream
 /// `_normalize_custom_provider_entry` (hermes_cli/config.py).
@@ -1943,5 +1991,77 @@ user_profile_enabled: false
         assert_eq!(memory, MemoryKind::Memory);
         assert_eq!(user, MemoryKind::User);
         assert!(serde_json::from_str::<MemoryKind>("\"bogus\"").is_err());
+    }
+
+    // ---- strip_runtime_markers / get_dict_only_provider_names tests ----
+
+    #[test]
+    fn strip_runtime_markers_removes_cc_source_and_provider_key() {
+        let mut v = serde_json::json!({
+            "name": "acme",
+            "_cc_source": "providers_dict",
+            "provider_key": "acme",
+            "base_url": "https://api.example.com",
+        });
+        strip_runtime_markers(&mut v);
+        let obj = v.as_object().unwrap();
+        assert!(obj.get(PROVIDER_SOURCE_FIELD).is_none());
+        assert!(obj.get("provider_key").is_none());
+        assert_eq!(obj.get("name").unwrap(), "acme");
+        assert_eq!(obj.get("base_url").unwrap(), "https://api.example.com");
+    }
+
+    #[test]
+    fn strip_runtime_markers_is_noop_for_non_object() {
+        let mut v = serde_json::json!("string-value");
+        strip_runtime_markers(&mut v);
+        assert_eq!(v, serde_json::json!("string-value"));
+    }
+
+    #[test]
+    #[serial]
+    fn get_dict_only_provider_names_returns_dict_entries_not_in_custom_list() {
+        with_test_home(|| {
+            let yaml = "\
+custom_providers:
+  - name: shared
+    base_url: https://shared.example.com
+providers:
+  shared:
+    base_url: https://overlay-shared.example.com
+  anthropic:
+    base_url: https://api.anthropic.com
+  ollama-local:
+    base_url: http://localhost:11434/v1
+";
+            let config_path = get_hermes_config_path();
+            fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+            fs::write(&config_path, yaml).unwrap();
+
+            let mut names = get_dict_only_provider_names().unwrap();
+            names.sort();
+            assert_eq!(
+                names,
+                vec!["anthropic".to_string(), "ollama-local".to_string()]
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn get_dict_only_provider_names_empty_when_no_dict_section() {
+        with_test_home(|| {
+            let yaml = "\
+custom_providers:
+  - name: only-list
+    base_url: https://only-list.example.com
+";
+            let config_path = get_hermes_config_path();
+            fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+            fs::write(&config_path, yaml).unwrap();
+
+            let names = get_dict_only_provider_names().unwrap();
+            assert!(names.is_empty());
+        });
     }
 }

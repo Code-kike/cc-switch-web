@@ -52,7 +52,7 @@ export const useAddProviderMutation = (appId: AppId) => {
       await providersApi.add(newProvider, appId, addToLive);
       return newProvider;
     },
-    onSuccess: async () => {
+    onSuccess: async (provider) => {
       await queryClient.invalidateQueries({ queryKey: ["providers", appId] });
 
       if (appId === "opencode") {
@@ -77,7 +77,7 @@ export const useAddProviderMutation = (appId: AppId) => {
       }
 
       if (appId === "hermes") {
-        await invalidateHermesProviderCaches(queryClient);
+        await invalidateHermesProviderCaches(queryClient, provider.id);
       }
 
       try {
@@ -125,7 +125,7 @@ export const useUpdateProviderMutation = (appId: AppId) => {
       await providersApi.update(provider, appId, originalId);
       return provider;
     },
-    onSuccess: async () => {
+    onSuccess: async (provider, variables) => {
       await queryClient.invalidateQueries({ queryKey: ["providers", appId] });
       if (appId === "openclaw") {
         await queryClient.invalidateQueries({
@@ -133,7 +133,12 @@ export const useUpdateProviderMutation = (appId: AppId) => {
         });
       }
       if (appId === "hermes") {
-        await invalidateHermesProviderCaches(queryClient);
+        await invalidateHermesProviderCaches(
+          queryClient,
+          variables.originalId && variables.originalId !== provider.id
+            ? [variables.originalId, provider.id]
+            : provider.id,
+        );
       }
       toast.success(
         t("notifications.updateSuccess", {
@@ -164,7 +169,7 @@ export const useDeleteProviderMutation = (appId: AppId) => {
     mutationFn: async (providerId: string) => {
       await providersApi.delete(providerId, appId);
     },
-    onSuccess: async () => {
+    onSuccess: async (_data, providerId) => {
       await queryClient.invalidateQueries({ queryKey: ["providers", appId] });
 
       if (appId === "opencode") {
@@ -189,7 +194,7 @@ export const useDeleteProviderMutation = (appId: AppId) => {
       }
 
       if (appId === "hermes") {
-        await invalidateHermesProviderCaches(queryClient);
+        await invalidateHermesProviderCaches(queryClient, providerId);
       }
 
       try {
@@ -230,7 +235,7 @@ export const useSwitchProviderMutation = (appId: AppId) => {
     mutationFn: async (providerId: string): Promise<SwitchResult> => {
       return await providersApi.switch(providerId, appId);
     },
-    onSuccess: async () => {
+    onSuccess: async (_data, providerId) => {
       await queryClient.invalidateQueries({ queryKey: ["providers", appId] });
 
       // OpenCode/OpenClaw: also invalidate live provider IDs cache to update button state
@@ -257,7 +262,7 @@ export const useSwitchProviderMutation = (appId: AppId) => {
         });
       }
       if (appId === "hermes") {
-        await invalidateHermesProviderCaches(queryClient);
+        await invalidateHermesProviderCaches(queryClient, providerId);
       }
 
       try {

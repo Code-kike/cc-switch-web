@@ -178,14 +178,25 @@ fn derive_real_total_and_hit_rate(
     (real_total, hit_rate)
 }
 
+/// SQL 片段：把指定别名的 `data_source` 包成 COALESCE，NULL 视作 'proxy'。
+///
+/// 防御 schema v9 之前可能写入的 NULL data_source 行（见
+/// `tests::create_legacy_nullable_logs_table`）。所有用到 data_source 的查询
+/// 都应通过此 helper 生成片段，避免遗漏。
+fn data_source_expr(log_alias: &str) -> String {
+    format!("COALESCE({log_alias}.data_source, 'proxy')")
+}
+
 pub(crate) fn effective_usage_log_filter(log_alias: &str) -> String {
+    let data_source = data_source_expr(log_alias);
+    let proxy_data_source = data_source_expr("proxy_dedup");
     format!(
         "NOT (
-            {log_alias}.data_source IN ('session_log', 'codex_session', 'gemini_session')
+            {data_source} IN ('session_log', 'codex_session', 'gemini_session')
             AND EXISTS (
                 SELECT 1
                 FROM proxy_request_logs proxy_dedup
-                WHERE proxy_dedup.data_source = 'proxy'
+                WHERE {proxy_data_source} = 'proxy'
                   AND proxy_dedup.app_type = {log_alias}.app_type
                   AND proxy_dedup.status_code >= 200
                   AND proxy_dedup.status_code < 300
@@ -196,7 +207,7 @@ pub(crate) fn effective_usage_log_filter(log_alias: &str) -> String {
                       proxy_dedup.cache_creation_tokens = {log_alias}.cache_creation_tokens
                       OR (
                           {log_alias}.cache_creation_tokens = 0
-                          AND {log_alias}.data_source IN ('codex_session', 'gemini_session')
+                          AND {data_source} IN ('codex_session', 'gemini_session')
                       )
                   )
                   AND proxy_dedup.created_at BETWEEN
@@ -250,11 +261,12 @@ pub(crate) fn has_matching_proxy_usage_log(
     let allow_missing_cache_creation =
         matches!(key.app_type, "codex" | "gemini") && key.cache_creation_tokens == 0;
 
-    conn.query_row(
+    let l_data_source = data_source_expr("l");
+    let sql = format!(
         "SELECT EXISTS (
             SELECT 1
             FROM proxy_request_logs l
-            WHERE l.data_source = 'proxy'
+            WHERE {l_data_source} = 'proxy'
               AND l.app_type = ?1
               AND l.status_code >= 200
               AND l.status_code < 300
@@ -268,7 +280,11 @@ pub(crate) fn has_matching_proxy_usage_log(
                   OR LOWER(l.model) = 'unknown'
                   OR LOWER(?2) = 'unknown'
               )
-        )",
+        )"
+    );
+
+    conn.query_row(
+        &sql,
         params![
             key.app_type,
             key.model,
@@ -1703,6 +1719,71 @@ mod tests {
                 data_source
             ],
         )?;
+        Ok(())
+    }
+
+    fn create_legacy_nullable_logs_table(conn: &Connection) -> Result<(), AppError> {
+        conn.execute(
+            "CREATE TABLE proxy_request_logs (
+                request_id TEXT PRIMARY KEY,
+                app_type TEXT NOT NULL,
+                model TEXT NOT NULL,
+                input_tokens INTEGER NOT NULL,
+                output_tokens INTEGER NOT NULL,
+                cache_read_tokens INTEGER NOT NULL,
+                cache_creation_tokens INTEGER NOT NULL,
+                status_code INTEGER NOT NULL,
+                created_at INTEGER NOT NULL,
+                data_source TEXT
+            )",
+            [],
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_effective_filter_keeps_legacy_null_data_source_proxy_rows() -> Result<(), AppError> {
+        let conn = Connection::open_in_memory()?;
+        create_legacy_nullable_logs_table(&conn)?;
+        conn.execute(
+            "INSERT INTO proxy_request_logs (
+                request_id, app_type, model, input_tokens, output_tokens,
+                cache_read_tokens, cache_creation_tokens, status_code, created_at, data_source
+            ) VALUES ('legacy-proxy', 'codex', 'gpt-5.5', 10, 2, 1, 0, 200, 1000, NULL)",
+            [],
+        )?;
+
+        let filter = effective_usage_log_filter("l");
+        let sql = format!("SELECT COUNT(*) FROM proxy_request_logs l WHERE {filter}");
+        let count: i64 = conn.query_row(&sql, [], |row| row.get(0))?;
+        assert_eq!(count, 1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_matching_proxy_log_treats_legacy_null_data_source_as_proxy() -> Result<(), AppError> {
+        let conn = Connection::open_in_memory()?;
+        create_legacy_nullable_logs_table(&conn)?;
+        conn.execute(
+            "INSERT INTO proxy_request_logs (
+                request_id, app_type, model, input_tokens, output_tokens,
+                cache_read_tokens, cache_creation_tokens, status_code, created_at, data_source
+            ) VALUES ('legacy-proxy', 'codex', 'gpt-5.5', 10, 2, 1, 0, 200, 1000, NULL)",
+            [],
+        )?;
+
+        let key = DedupKey {
+            app_type: "codex",
+            model: "gpt-5.5",
+            input_tokens: 10,
+            output_tokens: 2,
+            cache_read_tokens: 1,
+            cache_creation_tokens: 0,
+            created_at: 1000,
+        };
+        assert!(has_matching_proxy_usage_log(&conn, &key)?);
+
         Ok(())
     }
 

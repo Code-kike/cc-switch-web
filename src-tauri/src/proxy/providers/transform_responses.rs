@@ -1551,6 +1551,47 @@ mod tests {
         );
     }
 
+    // ==================== Usage Field Robustness Tests ====================
+
+    #[test]
+    fn test_build_usage_from_null_parameter() {
+        let result = build_anthropic_usage_from_responses(None);
+        assert_eq!(result["input_tokens"], json!(0));
+        assert_eq!(result["output_tokens"], json!(0));
+    }
+
+    #[test]
+    fn test_build_usage_from_null_json_value() {
+        let result = build_anthropic_usage_from_responses(Some(&json!(null)));
+        assert_eq!(result["input_tokens"], json!(0));
+        assert_eq!(result["output_tokens"], json!(0));
+    }
+
+    #[test]
+    fn test_build_usage_from_empty_object() {
+        let result = build_anthropic_usage_from_responses(Some(&json!({})));
+        assert_eq!(result["input_tokens"], json!(0));
+        assert_eq!(result["output_tokens"], json!(0));
+    }
+
+    #[test]
+    fn test_build_usage_from_partial_input_only() {
+        let result = build_anthropic_usage_from_responses(Some(&json!({
+            "input_tokens": 100
+        })));
+        assert_eq!(result["input_tokens"], json!(100));
+        assert_eq!(result["output_tokens"], json!(0));
+    }
+
+    #[test]
+    fn test_build_usage_from_partial_output_only() {
+        let result = build_anthropic_usage_from_responses(Some(&json!({
+            "output_tokens": 50
+        })));
+        assert_eq!(result["input_tokens"], json!(0));
+        assert_eq!(result["output_tokens"], json!(50));
+    }
+
     #[test]
     fn test_build_usage_with_openai_field_names() {
         let result = build_anthropic_usage_from_responses(Some(&json!({
@@ -1560,6 +1601,45 @@ mod tests {
 
         assert_eq!(result["input_tokens"], json!(120));
         assert_eq!(result["output_tokens"], json!(45));
+    }
+
+    #[test]
+    fn test_build_usage_anthropic_names_precedence() {
+        let result = build_anthropic_usage_from_responses(Some(&json!({
+            "input_tokens": 100,
+            "prompt_tokens": 120,
+            "output_tokens": 50,
+            "completion_tokens": 45
+        })));
+        assert_eq!(result["input_tokens"], json!(100));
+        assert_eq!(result["output_tokens"], json!(50));
+    }
+
+    #[test]
+    fn test_build_usage_cache_tokens_from_nested_details() {
+        let result = build_anthropic_usage_from_responses(Some(&json!({
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "input_tokens_details": {
+                "cached_tokens": 80
+            }
+        })));
+        assert_eq!(result["input_tokens"], json!(100));
+        assert_eq!(result["output_tokens"], json!(50));
+        assert_eq!(result["cache_read_input_tokens"], json!(80));
+    }
+
+    #[test]
+    fn test_build_usage_cache_tokens_direct_override() {
+        let result = build_anthropic_usage_from_responses(Some(&json!({
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "input_tokens_details": {
+                "cached_tokens": 80
+            },
+            "cache_read_input_tokens": 100
+        })));
+        assert_eq!(result["cache_read_input_tokens"], json!(100));
     }
 
     #[test]

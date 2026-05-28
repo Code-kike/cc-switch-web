@@ -20,8 +20,10 @@ import { EditProviderDialog } from "@/components/providers/EditProviderDialog";
 import { setCsrfToken } from "@/lib/api/adapter";
 import { configApi } from "@/lib/api";
 import { failoverApi } from "@/lib/api/failover";
+import { hermesApi } from "@/lib/api/hermes";
 import { providersApi } from "@/lib/api/providers";
 import { settingsApi } from "@/lib/api/settings";
+import { usageApi } from "@/lib/api/usage";
 import { useProviderActions } from "@/hooks/useProviderActions";
 import { useProvidersQuery } from "@/lib/query";
 import type { AppId } from "@/lib/api";
@@ -665,6 +667,60 @@ describe.sequential("ProviderList against real web server", () => {
         const providers = await providersApi.getAll("hermes");
         expect(providers["page-hermes-live"]).toBeDefined();
         expect(providers["page-hermes-live"]?.name).toBe("page-hermes-live");
+      });
+    },
+    20_000,
+  );
+
+  it(
+    "adds, marks current, removes, and queries Hermes balance usage through the real web API",
+    async () => {
+      const provider: Provider = {
+        id: "page-hermes-balance",
+        name: "Hermes Balance",
+        category: "custom",
+        sortIndex: 210,
+        settingsConfig: {
+          name: "page-hermes-balance",
+          base_url: "https://unsupported-balance.example.com/v1",
+          api_key: "hermes-balance-key",
+          api_mode: "chat_completions",
+        },
+        meta: {
+          usage_script: {
+            enabled: true,
+            language: "javascript",
+            code: "",
+            timeout: 10,
+            templateType: "balance",
+          },
+        },
+      };
+
+      await providersApi.add(provider, "hermes", true);
+
+      await waitFor(async () => {
+        await expect(providersApi.getHermesLiveProviderIds()).resolves.toContain(
+          "page-hermes-balance",
+        );
+        await expect(hermesApi.getModelConfig()).resolves.toMatchObject({
+          provider: "page-hermes-balance",
+        });
+      });
+
+      const result = await usageApi.query("page-hermes-balance", "hermes");
+      expect(result.success).toBe(false);
+      expect(result.error).toBe("Unknown balance provider");
+
+      await providersApi.removeFromLiveConfig("page-hermes-balance", "hermes");
+
+      await waitFor(async () => {
+        await expect(
+          providersApi.getHermesLiveProviderIds(),
+        ).resolves.not.toContain("page-hermes-balance");
+        await expect(hermesApi.getModelConfig()).resolves.not.toMatchObject({
+          provider: "page-hermes-balance",
+        });
       });
     },
     20_000,

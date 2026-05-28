@@ -62,6 +62,18 @@ describe("useDirectorySettings", () => {
     joinMock.mockImplementation(async (...segments: string[]) =>
       segments.join("/"),
     );
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: {},
+    });
+    Object.defineProperty(window, "__TAURI__", {
+      configurable: true,
+      value: {},
+    });
+    Object.defineProperty(window, "__CC_SWITCH_API_BASE__", {
+      configurable: true,
+      value: undefined,
+    });
 
     getAppConfigDirOverrideMock.mockResolvedValue(null);
     getConfigDirMock.mockImplementation(async (app: string) => {

@@ -129,15 +129,17 @@ export function ProviderActions({
       };
     }
 
-    // 累加模式（OpenCode 非 OMO / OpenClaw）
+    // 累加模式（OpenCode 非 OMO / OpenClaw / Hermes）
     if (isAdditiveMode) {
       if (isInConfig) {
+        const disableRemoveFromConfig =
+          appId === "openclaw" && isDefaultModel === true;
         return {
-          disabled: isDefaultModel === true,
+          disabled: disableRemoveFromConfig,
           variant: "secondary" as const,
           className: cn(
             "bg-orange-100 text-orange-600 hover:bg-orange-200 dark:bg-orange-900/50 dark:text-orange-400 dark:hover:bg-orange-900/70",
-            isDefaultModel && "opacity-40 cursor-not-allowed",
+            disableRemoveFromConfig && "opacity-40 cursor-not-allowed",
           ),
           icon: <Minus className="h-4 w-4" />,
           text: t("provider.removeFromConfig", { defaultValue: "移除" }),

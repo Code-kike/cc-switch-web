@@ -20,9 +20,18 @@ vi.mock("sonner", () => ({
 const useDragSortMock = vi.fn();
 const useSortableMock = vi.fn();
 const providerCardRenderSpy = vi.fn();
+const useHermesLiveProviderIdsMock = vi.fn();
+const useHermesModelConfigMock = vi.fn();
 
 vi.mock("@/hooks/useDragSort", () => ({
   useDragSort: (...args: unknown[]) => useDragSortMock(...args),
+}));
+
+vi.mock("@/hooks/useHermes", () => ({
+  useHermesLiveProviderIds: (...args: unknown[]) =>
+    useHermesLiveProviderIdsMock(...args),
+  useHermesModelConfig: (...args: unknown[]) =>
+    useHermesModelConfigMock(...args),
 }));
 
 vi.mock("@/components/providers/ProviderCard", () => ({
@@ -142,6 +151,8 @@ beforeEach(() => {
   useSortableMock.mockReset();
   providerCardRenderSpy.mockClear();
   toastErrorMock.mockReset();
+  useHermesLiveProviderIdsMock.mockReset();
+  useHermesModelConfigMock.mockReset();
 
   useSortableMock.mockImplementation(({ id }: { id: string }) => ({
     setNodeRef: vi.fn(),
@@ -157,6 +168,8 @@ beforeEach(() => {
     sensors: [],
     handleDragEnd: vi.fn(),
   });
+  useHermesLiveProviderIdsMock.mockReturnValue({ data: undefined });
+  useHermesModelConfigMock.mockReturnValue({ data: null });
 });
 
 describe("ProviderList Component", () => {
@@ -426,12 +439,12 @@ describe("ProviderList Component", () => {
     // Drag attributes from useSortable
     expect(
       providerCardRenderSpy.mock.calls[0][0].dragHandleProps?.attributes[
-      "data-dnd-id"
+        "data-dnd-id"
       ],
     ).toBe("b");
     expect(
       providerCardRenderSpy.mock.calls[1][0].dragHandleProps?.attributes[
-      "data-dnd-id"
+        "data-dnd-id"
       ],
     ).toBe("a");
 
@@ -453,6 +466,77 @@ describe("ProviderList Component", () => {
       { a: providerA, b: providerB },
       "claude",
     );
+  });
+
+  it("does not mark a Hermes provider as current when model.provider is stale outside live ids", () => {
+    const provider = createProvider({ id: "hermes-a", name: "Hermes A" });
+    useDragSortMock.mockReturnValue({
+      sortedProviders: [provider],
+      sensors: [],
+      handleDragEnd: vi.fn(),
+    });
+    useHermesLiveProviderIdsMock.mockReturnValue({ data: [] });
+    useHermesModelConfigMock.mockReturnValue({
+      data: { provider: "hermes-a", default: "anthropic/claude-sonnet-4" },
+    });
+
+    renderWithQueryClient(
+      <ProviderList
+        providers={{ "hermes-a": provider }}
+        currentProviderId="hermes-a"
+        appId="hermes"
+        onSwitch={vi.fn()}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onDuplicate={vi.fn()}
+        onOpenWebsite={vi.fn()}
+        onSetAsDefault={vi.fn()}
+      />,
+    );
+
+    const cardProps = providerCardRenderSpy.mock.calls[0][0];
+    expect(cardProps.isInConfig).toBe(false);
+    expect(cardProps.isCurrent).toBe(false);
+    expect(cardProps.isDefaultModel).toBe(false);
+  });
+
+  it("marks only the live Hermes model.provider as current and default", () => {
+    const providerA = createProvider({ id: "hermes-a", name: "Hermes A" });
+    const providerB = createProvider({ id: "hermes-b", name: "Hermes B" });
+    useDragSortMock.mockReturnValue({
+      sortedProviders: [providerA, providerB],
+      sensors: [],
+      handleDragEnd: vi.fn(),
+    });
+    useHermesLiveProviderIdsMock.mockReturnValue({
+      data: ["hermes-a", "hermes-b"],
+    });
+    useHermesModelConfigMock.mockReturnValue({
+      data: { provider: "hermes-a", default: "anthropic/claude-sonnet-4" },
+    });
+
+    renderWithQueryClient(
+      <ProviderList
+        providers={{ "hermes-a": providerA, "hermes-b": providerB }}
+        currentProviderId="hermes-b"
+        appId="hermes"
+        onSwitch={vi.fn()}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onDuplicate={vi.fn()}
+        onOpenWebsite={vi.fn()}
+        onSetAsDefault={vi.fn()}
+      />,
+    );
+
+    const cardAProps = providerCardRenderSpy.mock.calls[0][0];
+    const cardBProps = providerCardRenderSpy.mock.calls[1][0];
+    expect(cardAProps.isInConfig).toBe(true);
+    expect(cardAProps.isCurrent).toBe(true);
+    expect(cardAProps.isDefaultModel).toBe(true);
+    expect(cardBProps.isInConfig).toBe(true);
+    expect(cardBProps.isCurrent).toBe(false);
+    expect(cardBProps.isDefaultModel).toBe(false);
   });
 
   it("filters providers with the search input", () => {
@@ -526,6 +610,8 @@ describe("ProviderList Component", () => {
     );
 
     expect(providerCardRenderSpy).toHaveBeenCalled();
-    expect(providerCardRenderSpy.mock.calls[0][0].onOpenTerminal).toBeUndefined();
+    expect(
+      providerCardRenderSpy.mock.calls[0][0].onOpenTerminal,
+    ).toBeUndefined();
   });
 });

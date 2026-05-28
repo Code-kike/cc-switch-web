@@ -1,6 +1,11 @@
 import { act, renderHook } from "@testing-library/react";
+import { QueryClient } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { useOpenHermesWebUI } from "@/hooks/useHermes";
+import {
+  hermesKeys,
+  invalidateHermesProviderCaches,
+  useOpenHermesWebUI,
+} from "@/hooks/useHermes";
 
 const toastErrorMock = vi.fn();
 const openWebUIMock = vi.fn();
@@ -68,5 +73,32 @@ describe("useOpenHermesWebUI", () => {
 
     expect(openWebUIMock).toHaveBeenCalledWith("/config");
     expect(toastErrorMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("invalidateHermesProviderCaches", () => {
+  it("invalidates providers, live ids, model config, and related usage caches", async () => {
+    const queryClient = new QueryClient();
+    const invalidateSpy = vi
+      .spyOn(queryClient, "invalidateQueries")
+      .mockResolvedValue(undefined);
+
+    await invalidateHermesProviderCaches(queryClient, ["hermes-a", "hermes-b"]);
+
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: ["providers", "hermes"],
+    });
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: hermesKeys.liveProviderIds,
+    });
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: hermesKeys.modelConfig,
+    });
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: ["usage", "hermes-a", "hermes"],
+    });
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: ["usage", "hermes-b", "hermes"],
+    });
   });
 });

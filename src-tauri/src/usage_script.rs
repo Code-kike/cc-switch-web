@@ -7,7 +7,7 @@ use crate::error::AppError;
 
 /// Best-effort extraction of `request.url` from a usage script's JS body, used
 /// at save-time to reject placeholder scripts that would always fail at
-/// execute-time (`Url::parse("")` -> "relative URL without a base").
+/// execute-time (`Url::parse("")` → "relative URL without a base").
 ///
 /// Substitutes the standard placeholders with sentinel values so a templated
 /// URL like `{{baseUrl}}/balance` survives extraction. Returns:
@@ -543,6 +543,13 @@ fn validate_request_url(
     base_url: &str,
     is_custom_template: bool,
 ) -> Result<(), AppError> {
+    if request_url.trim().is_empty() {
+        return Err(AppError::localized(
+            "usage_script.request_url_empty",
+            "脚本 request.url 是空的：请在用量查询脚本里填写完整 URL，或选择 Balance / Token Plan / GitHub Copilot 内置模板",
+            "Script's request.url is empty: fill in a complete URL in the usage script, or pick a built-in template like Balance / Token Plan / GitHub Copilot",
+        ));
+    }
     // 解析请求 URL
     let parsed_request = Url::parse(request_url).map_err(|e| {
         AppError::localized(

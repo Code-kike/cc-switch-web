@@ -2,7 +2,7 @@
 
 use super::calculator::{CostBreakdown, CostCalculator, ModelPricing};
 use super::parser::TokenUsage;
-use crate::database::Database;
+use crate::database::{Database, PRICING_SOURCE_REQUEST, PRICING_SOURCE_RESPONSE};
 use crate::error::AppError;
 use crate::services::usage_stats::find_model_pricing_row;
 use rust_decimal::Decimal;
@@ -227,18 +227,20 @@ impl<'a> UsageLogger<'a> {
             Ok(value) => value,
             Err(e) => {
                 log::warn!("[USG-003] 获取默认计费模式失败 (app_type={app_type}): {e}");
-                "response".to_string()
+                PRICING_SOURCE_RESPONSE.to_string()
             }
         };
-        let default_pricing_source =
-            if matches!(default_pricing_source_raw.as_str(), "response" | "request") {
-                default_pricing_source_raw
-            } else {
-                log::warn!(
+        let default_pricing_source = if matches!(
+            default_pricing_source_raw.as_str(),
+            PRICING_SOURCE_RESPONSE | PRICING_SOURCE_REQUEST
+        ) {
+            default_pricing_source_raw
+        } else {
+            log::warn!(
                 "[USG-003] 默认计费模式无效 (app_type={app_type}): {default_pricing_source_raw}"
             );
-                "response".to_string()
-            };
+            PRICING_SOURCE_RESPONSE.to_string()
+        };
 
         let provider = self
             .db
@@ -271,7 +273,9 @@ impl<'a> UsageLogger<'a> {
         };
 
         let pricing_model_source = match provider_pricing_source {
-            Some(value) if matches!(value, "response" | "request") => value.to_string(),
+            Some(value) if matches!(value, PRICING_SOURCE_RESPONSE | PRICING_SOURCE_REQUEST) => {
+                value.to_string()
+            }
             Some(value) => {
                 log::warn!("[USG-003] 供应商计费模式无效 (provider_id={provider_id}): {value}");
                 default_pricing_source.clone()

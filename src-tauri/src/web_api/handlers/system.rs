@@ -176,7 +176,9 @@ async fn check_for_updates() -> ApiResult<bool> {
 }
 
 async fn get_update_info() -> ApiResult<crate::services::WebUpdateInfo> {
-    Ok(json_ok(crate::services::web_update::get_web_update_info().await))
+    Ok(json_ok(
+        crate::services::web_update::get_web_update_info().await,
+    ))
 }
 
 async fn get_tool_versions(

@@ -420,6 +420,7 @@ describe.sequential("UnifiedMcpPanel against real web server", () => {
         const servers = await getMcpServers(webServer.baseUrl);
         expect(servers["page-cancel-delete"]?.name).toBe("Page Cancel Delete");
       });
+      await screen.findByText("Page Cancel Delete");
 
       const successCallsAfterAdd = toastSuccessMock.mock.calls.length;
       const row = getRowForId("Page Cancel Delete");

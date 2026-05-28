@@ -243,6 +243,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let sink: Arc<dyn UiEventSink> = Arc::new(channel_sink);
     let state = ApiState::new(app_state, copilot_auth, codex_oauth, sink, events);
 
+    // One-shot DB cleanup: strip legacy `_cc_source` / `provider_key` markers
+    // that older `import_hermes_providers_from_live` baked into provider
+    // records. Idempotent and gated by a settings flag, so a successful run
+    // never repeats. See `ProviderService::cleanup_hermes_legacy_runtime_markers_if_needed`.
+    if let Err(err) =
+        crate::services::ProviderService::cleanup_hermes_legacy_runtime_markers_if_needed(
+            state.app_state.as_ref(),
+        )
+    {
+        log::warn!("Failed to clean Hermes legacy runtime markers: {err}");
+    }
+
     // Build router and bind.
     let app = build_router(state);
     let listener = TcpListener::bind(addr).await?;

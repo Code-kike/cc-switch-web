@@ -331,8 +331,11 @@ export function ProviderList({
             const isOmoCurrent = isOmo && provider.id === (currentOmoId || "");
             const isOmoSlimCurrent =
               isOmoSlim && provider.id === (currentOmoSlimId || "");
+            const providerInConfig = isProviderInConfig(provider.id);
             const isHermesCurrent =
-              appId === "hermes" && hermesCurrentProviderId === provider.id;
+              appId === "hermes" &&
+              providerInConfig &&
+              hermesCurrentProviderId === provider.id;
             return (
               <SortableProviderCard
                 key={provider.id}
@@ -347,7 +350,7 @@ export function ProviderList({
                         : provider.id === currentProviderId
                 }
                 appId={appId}
-                isInConfig={isProviderInConfig(provider.id)}
+                isInConfig={providerInConfig}
                 isOmo={isOmo}
                 isOmoSlim={isOmoSlim}
                 onSwitch={onSwitch}

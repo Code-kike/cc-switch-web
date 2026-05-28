@@ -156,7 +156,8 @@ struct SemverishVersion {
 
 impl Ord for SemverishVersion {
     fn cmp(&self, other: &Self) -> Ordering {
-        let core_cmp = (self.major, self.minor, self.patch).cmp(&(other.major, other.minor, other.patch));
+        let core_cmp =
+            (self.major, self.minor, self.patch).cmp(&(other.major, other.minor, other.patch));
         if core_cmp != Ordering::Equal {
             return core_cmp;
         }
@@ -186,9 +187,15 @@ mod tests {
     #[test]
     fn normalizes_versions_and_optional_text() {
         assert_eq!(normalize_version("v3.15.0"), Some("3.15.0".to_string()));
-        assert_eq!(normalize_version(" 3.15.0-beta.1 "), Some("3.15.0-beta.1".to_string()));
+        assert_eq!(
+            normalize_version(" 3.15.0-beta.1 "),
+            Some("3.15.0-beta.1".to_string())
+        );
         assert_eq!(normalize_version(""), None);
-        assert_eq!(normalize_optional_text(Some("  notes  ".to_string())), Some("notes".to_string()));
+        assert_eq!(
+            normalize_optional_text(Some("  notes  ".to_string())),
+            Some("notes".to_string())
+        );
         assert_eq!(normalize_optional_text(Some("   ".to_string())), None);
     }
 

@@ -8,6 +8,7 @@ use rusqlite::params;
 
 impl Database {
     const LEGACY_COMMON_CONFIG_MIGRATED_KEY: &'static str = "common_config_legacy_migrated_v1";
+    const HERMES_RUNTIME_MARKERS_CLEANED_KEY: &'static str = "hermes_runtime_markers_cleaned_v1";
 
     fn config_snippet_cleared_key(app_type: &str) -> String {
         format!("common_config_{app_type}_cleared")
@@ -111,6 +112,35 @@ impl Database {
             conn.execute(
                 "DELETE FROM settings WHERE key = ?1",
                 params![Self::LEGACY_COMMON_CONFIG_MIGRATED_KEY],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+            Ok(())
+        }
+    }
+
+    /// 检查 Hermes provider 历史 `_cc_source` / `provider_key` 标记是否已被一次性清理。
+    ///
+    /// 这些字段本是 read-time 注入给前端识别 v12+ providers dict 只读 overlay 用的，
+    /// 但旧版 `import_hermes_providers_from_live` 直接 dump JSON value，把它们落进了
+    /// 数据库；duplicate 之后所有派生 provider 都会被前端误判为只读。新代码会在
+    /// list 时 lazy strip + 重新注入，但 backup / 直读 DB 等旁路仍可能拿到脏数据，
+    /// 所以再做一次 startup-level 一次性清理。
+    pub fn is_hermes_runtime_markers_cleaned(&self) -> Result<bool, AppError> {
+        Ok(self
+            .get_setting(Self::HERMES_RUNTIME_MARKERS_CLEANED_KEY)?
+            .as_deref()
+            == Some("true"))
+    }
+
+    /// 标记 Hermes runtime markers 一次性清理完成
+    pub fn set_hermes_runtime_markers_cleaned(&self, done: bool) -> Result<(), AppError> {
+        if done {
+            self.set_setting(Self::HERMES_RUNTIME_MARKERS_CLEANED_KEY, "true")
+        } else {
+            let conn = lock_conn!(self.conn);
+            conn.execute(
+                "DELETE FROM settings WHERE key = ?1",
+                params![Self::HERMES_RUNTIME_MARKERS_CLEANED_KEY],
             )
             .map_err(|e| AppError::Database(e.to_string()))?;
             Ok(())

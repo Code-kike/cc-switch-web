@@ -47,10 +47,20 @@ export const hermesKeys = {
  * added/updated/deleted/switched. Runs invalidations in parallel so the
  * caller doesn't await three sequential refetches.
  */
-export function invalidateHermesProviderCaches(queryClient: QueryClient) {
+export function invalidateHermesProviderCaches(
+  queryClient: QueryClient,
+  providerIds?: string | string[],
+) {
+  const ids = (Array.isArray(providerIds) ? providerIds : [providerIds]).filter(
+    (id): id is string => Boolean(id),
+  );
   return Promise.all([
+    queryClient.invalidateQueries({ queryKey: ["providers", "hermes"] }),
     queryClient.invalidateQueries({ queryKey: hermesKeys.liveProviderIds }),
     queryClient.invalidateQueries({ queryKey: hermesKeys.modelConfig }),
+    ...ids.map((id) =>
+      queryClient.invalidateQueries({ queryKey: ["usage", id, "hermes"] }),
+    ),
   ]);
 }
 

@@ -55,6 +55,18 @@ describe("useProxyStatus", () => {
     invokeMock.mockReset();
     toastSuccessMock.mockReset();
     toastErrorMock.mockReset();
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: {},
+    });
+    Object.defineProperty(window, "__TAURI__", {
+      configurable: true,
+      value: {},
+    });
+    Object.defineProperty(window, "__CC_SWITCH_API_BASE__", {
+      configurable: true,
+      value: undefined,
+    });
 
     invokeMock.mockImplementation((command: string) => {
       if (command === "get_proxy_status") {
