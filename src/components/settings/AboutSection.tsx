@@ -28,6 +28,7 @@ import { Badge } from "@/components/ui/badge";
 import { motion } from "framer-motion";
 import appIcon from "@/assets/icons/app-icon.png";
 import { isWindows } from "@/lib/platform";
+import { isUpdateAvailable } from "@/lib/version";
 import { extractErrorMessage } from "@/utils/errorUtils";
 
 interface AboutSectionProps {
@@ -243,7 +244,8 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
 
   const handleOpenReleaseNotes = useCallback(async () => {
     try {
-      const targetVersion = updateInfo?.availableVersion ?? version?.trim() ?? "";
+      const targetVersion =
+        updateInfo?.availableVersion ?? version?.trim() ?? "";
       const displayVersion = targetVersion.startsWith("v")
         ? targetVersion
         : targetVersion
@@ -325,7 +327,15 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
         description: extractErrorMessage(error) || t("common.unknown"),
       });
     }
-  }, [checkUpdate, hasUpdate, isPortable, resetDismiss, t, updateHandle, webMode]);
+  }, [
+    checkUpdate,
+    hasUpdate,
+    isPortable,
+    resetDismiss,
+    t,
+    updateHandle,
+    webMode,
+  ]);
 
   const handleCopyInstallCommands = useCallback(async () => {
     try {
@@ -595,8 +605,7 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
                     {isLoadingTools || loadingTools[toolName] ? (
                       <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
                     ) : tool?.version ? (
-                      tool.latest_version &&
-                      tool.version !== tool.latest_version ? (
+                      isUpdateAvailable(tool.version, tool.latest_version) ? (
                         <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-yellow-500/10 text-yellow-600 dark:text-yellow-400 border border-yellow-500/20">
                           {tool.latest_version}
                         </span>
