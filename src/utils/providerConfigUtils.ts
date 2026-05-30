@@ -424,6 +424,10 @@ const TOML_EXPERIMENTAL_BEARER_TOKEN_REPLACE_PATTERN =
 const TOML_MODEL_PATTERN = /^\s*model\s*=\s*(["'])([^"'\r\n]+)\1\s*(?:#.*)?$/;
 const TOML_MODEL_PROVIDER_LINE_PATTERN =
   /^\s*model_provider\s*=\s*(["'])([^"'\r\n]+)\1\s*(?:#.*)?$/;
+const TOML_PROVIDER_NAME_PATTERN =
+  /^\s*name\s*=\s*(["'])([^"'\r\n]+)\1\s*(?:#.*)?$/;
+const TOML_PROVIDER_NAME_REPLACE_PATTERN =
+  /^(\s*name\s*=\s*)(?:"(?:\\.|[^"\\\r\n])*"|'[^'\r\n]*')(\s*(?:#.*)?)$/;
 const CODEX_RESERVED_MODEL_PROVIDER_IDS = new Set([
   "amazon-bedrock",
   "openai",
@@ -658,6 +662,9 @@ const escapeTomlBasicString = (value: string): string =>
     if (escaped) return escaped;
     return `\\u${ch.charCodeAt(0).toString(16).padStart(4, "0")}`;
   });
+
+const tomlBasicString = (value: string): string =>
+  `"${escapeTomlBasicString(value)}"`;
 
 const findTomlLineInRange = (
   lines: string[],
@@ -1148,6 +1155,106 @@ export const setCodexGoalMode = (
 
   lines.splice(topLevelEndIndex, 0, ...sectionLines);
   return finalizeTomlText(lines);
+};
+
+export const isCodexRemoteCompactionEnabled = (
+  configText: string | undefined | null,
+): boolean => {
+  try {
+    const raw = typeof configText === "string" ? configText : "";
+    const text = normalizeTomlText(raw);
+    if (!text) return false;
+
+    try {
+      const parsed = parseToml(text) as Record<string, any>;
+      const providerId =
+        typeof parsed.model_provider === "string"
+          ? parsed.model_provider.trim()
+          : "";
+      if (!providerId || !isCustomCodexModelProviderId(providerId)) {
+        return false;
+      }
+
+      return parsed.model_providers?.[providerId]?.name === "OpenAI";
+    } catch {
+      // Fall back to line scanning while the user is editing invalid TOML.
+    }
+
+    const lines = text.split("\n");
+    const targetSectionName = getCodexCustomProviderSectionName(text);
+    if (!targetSectionName) return false;
+
+    const sectionRange = getTomlSectionRange(lines, targetSectionName);
+    if (!sectionRange) return false;
+
+    const nameAssignment = findTomlAssignmentInRange(
+      lines,
+      TOML_PROVIDER_NAME_PATTERN,
+      sectionRange.bodyStartIndex,
+      sectionRange.bodyEndIndex,
+      targetSectionName,
+    );
+
+    return nameAssignment?.value === "OpenAI";
+  } catch {
+    return false;
+  }
+};
+
+export const setCodexRemoteCompaction = (
+  configText: string,
+  enabled: boolean,
+  fallbackProviderName?: string,
+): string => {
+  const normalizedText = normalizeTomlText(configText);
+  const lines = normalizedText ? normalizedText.split("\n") : [];
+  const targetSectionName = getCodexCustomProviderSectionName(normalizedText);
+
+  if (!targetSectionName) {
+    return normalizedText;
+  }
+
+  let targetSectionRange = getTomlSectionRange(lines, targetSectionName);
+  const replacementName = enabled
+    ? "OpenAI"
+    : fallbackProviderName?.trim() ||
+      getCodexModelProviderName(normalizedText) ||
+      "custom";
+  const replacementLine = `name = ${tomlBasicString(replacementName)}`;
+
+  if (targetSectionRange) {
+    const nameLine = findTomlLineInRange(
+      lines,
+      TOML_PROVIDER_NAME_REPLACE_PATTERN,
+      targetSectionRange.bodyStartIndex,
+      targetSectionRange.bodyEndIndex,
+    );
+
+    if (nameLine !== -1) {
+      lines[nameLine] = lines[nameLine].replace(
+        TOML_PROVIDER_NAME_REPLACE_PATTERN,
+        `$1${tomlBasicString(replacementName)}$2`,
+      );
+      return finalizeTomlText(lines);
+    }
+
+    lines.splice(
+      getTomlSectionInsertIndex(lines, targetSectionRange),
+      0,
+      replacementLine,
+    );
+    return finalizeTomlText(lines);
+  }
+
+  if (!enabled) return normalizedText;
+
+  if (lines.length > 0 && lines[lines.length - 1].trim() !== "") {
+    lines.push("");
+  }
+
+  lines.push(`[${targetSectionName}]`, replacementLine);
+  targetSectionRange = getTomlSectionRange(lines, targetSectionName);
+  return targetSectionRange ? finalizeTomlText(lines) : normalizedText;
 };
 
 // ========== Codex top-level integer field utils ==========
