@@ -173,6 +173,9 @@ mod store;
 #[path = "../src/usage_script.rs"]
 mod usage_script;
 
+#[path = "../src/usage_events.rs"]
+mod usage_events;
+
 #[path = "../src/web_api/mod.rs"]
 mod web_api;
 
@@ -241,6 +244,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (channel_sink, _rx) = ChannelEventSink::new(64);
     let events = channel_sink.sender();
     let sink: Arc<dyn UiEventSink> = Arc::new(channel_sink);
+    // Register the same sink with `usage_events` so background write paths
+    // (UsageLogger, session sync, startup rollup) that don't hold a sink can
+    // emit `usage-log-recorded`. In web-server mode this fans out over
+    // broadcast -> `GET /api/events` SSE.
+    usage_events::init(Arc::clone(&sink));
     let state = ApiState::new(app_state, copilot_auth, codex_oauth, sink, events);
 
     // One-shot DB cleanup: strip legacy `_cc_source` / `provider_key` markers

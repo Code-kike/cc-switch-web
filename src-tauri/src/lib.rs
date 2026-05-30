@@ -40,6 +40,7 @@ mod settings;
 mod store;
 
 mod tray;
+mod usage_events;
 mod usage_script;
 
 pub use app_config::{AppType, InstalledSkill, McpApps, McpServer, MultiAppConfig, SkillApps};
@@ -337,6 +338,15 @@ pub fn run() {
                         .build(),
                 )?;
             }
+
+            // 注入运行时事件 sink 给 usage_events，让无 sink/AppHandle 持有的写
+            // 日志路径（UsageLogger、会话同步、启动归档）也能向前端推送
+            // `usage-log-recorded`。桌面端使用 TauriEventSink（Tauri 事件总线）；
+            // Web 端在 examples/server.rs 注入 ChannelEventSink（SSE）。
+            // 放在日志系统初始化之后，确保 init 的日志能正常输出。
+            usage_events::init(std::sync::Arc::new(
+                crate::runtime::TauriEventSink::new(app.handle().clone()),
+            ));
 
             // 初始化数据库
             let app_config_dir = crate::config::get_app_config_dir();

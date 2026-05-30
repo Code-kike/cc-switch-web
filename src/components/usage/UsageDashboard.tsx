@@ -22,6 +22,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { useQueryClient } from "@tanstack/react-query";
 import { usageKeys } from "@/lib/query/usage";
+import { useUsageEventBridge } from "@/hooks/useUsageEventBridge";
 import {
   Accordion,
   AccordionContent,
@@ -46,6 +47,11 @@ export function UsageDashboard() {
   const [appType, setAppType] = useState<AppTypeFilter>("all");
   const [refreshIntervalMs, setRefreshIntervalMs] = useState(30000);
   const [activeTab, setActiveTab] = useState<UsageDashboardTab>("logs");
+
+  // 后端写入新日志时 emit `usage-log-recorded`，本 hook 立刻 invalidate 所有
+  // usage 查询，实现实时刷新（仅在 Dashboard 挂载时生效，离开页面自动取消监听）。
+  // 桌面端经 Tauri 事件总线，Web 端经 /api/events SSE。
+  useUsageEventBridge();
 
   const refreshIntervalOptionsMs = [0, 5000, 10000, 30000, 60000] as const;
   const changeRefreshInterval = () => {

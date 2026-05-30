@@ -73,9 +73,13 @@ fn normalize_codex_model(raw: &str) -> String {
     }
 
     // Step 3: 剥离 ISO 日期后缀 -YYYY-MM-DD（正好 11 字符）
-    if name.len() > 11 {
+    // 必须先确认切片边界落在字符边界上：非 ASCII 模型名（如 `【官】glm-5.1`）
+    // 否则 `&name[name.len() - 11..]` 会在多字节字符中间切割导致 panic，
+    // 进而拖垮 lib.rs 60s 会话同步后台定时器。
+    if name.len() > 11 && name.is_char_boundary(name.len() - 11) {
         let suffix = &name[name.len() - 11..];
-        if suffix.as_bytes()[0] == b'-'
+        if suffix.is_ascii()
+            && suffix.as_bytes()[0] == b'-'
             && suffix[1..5].chars().all(|c| c.is_ascii_digit())
             && suffix.as_bytes()[5] == b'-'
             && suffix[6..8].chars().all(|c| c.is_ascii_digit())
@@ -498,42 +502,47 @@ fn insert_codex_session_entry(
         ),
     };
 
-    conn.execute(
-        "INSERT OR IGNORE INTO proxy_request_logs (
+    let inserted_rows = conn
+        .execute(
+            "INSERT OR IGNORE INTO proxy_request_logs (
             request_id, provider_id, app_type, model, request_model,
             input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
             input_cost_usd, output_cost_usd, cache_read_cost_usd, cache_creation_cost_usd, total_cost_usd,
             latency_ms, first_token_ms, status_code, error_message, session_id,
             provider_type, is_streaming, cost_multiplier, created_at, data_source
         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
-        rusqlite::params![
-            request_id,
-            "_codex_session",    // provider_id
-            "codex",             // app_type
-            model,
-            model,               // request_model = model
-            delta.input,
-            delta.output,
-            delta.cached_input,
-            0i64,                // cache_creation_tokens: Codex 日志无此数据
-            input_cost,
-            output_cost,
-            cache_read_cost,
-            cache_creation_cost,
-            total_cost,
-            0i64,                // latency_ms
-            Option::<i64>::None, // first_token_ms
-            200i64,              // status_code
-            Option::<String>::None, // error_message
-            session_id.map(|s| s.to_string()),
-            Some("codex_session"), // provider_type
-            1i64,                // is_streaming
-            "1.0",               // cost_multiplier
-            created_at,
-            "codex_session",     // data_source
-        ],
-    )
-    .map_err(|e| AppError::Database(format!("插入 Codex 会话日志失败: {e}")))?;
+            rusqlite::params![
+                request_id,
+                "_codex_session",    // provider_id
+                "codex",             // app_type
+                model,
+                model,               // request_model = model
+                delta.input,
+                delta.output,
+                delta.cached_input,
+                0i64,                // cache_creation_tokens: Codex 日志无此数据
+                input_cost,
+                output_cost,
+                cache_read_cost,
+                cache_creation_cost,
+                total_cost,
+                0i64,                // latency_ms
+                Option::<i64>::None, // first_token_ms
+                200i64,              // status_code
+                Option::<String>::None, // error_message
+                session_id.map(|s| s.to_string()),
+                Some("codex_session"), // provider_type
+                1i64,                // is_streaming
+                "1.0",               // cost_multiplier
+                created_at,
+                "codex_session",     // data_source
+            ],
+        )
+        .map_err(|e| AppError::Database(format!("插入 Codex 会话日志失败: {e}")))?;
+
+    if inserted_rows > 0 {
+        crate::usage_events::notify_log_recorded();
+    }
 
     Ok(true)
 }
@@ -841,6 +850,20 @@ mod tests {
         );
         // prefix + compact date
         assert_eq!(normalize_codex_model("openai/gpt-5.4-20260305"), "gpt-5.4");
+    }
+
+    #[test]
+    fn test_normalize_codex_model_non_ascii_no_panic() {
+        // 非 ASCII 模型名（如 `【官】glm-5.1`）的 11 字节后缀可能落在多字节
+        // 字符中间，旧实现会在 `&name[name.len() - 11..]` 处 panic 拖垮
+        // 会话同步后台定时器。这里仅断言不 panic 且按需保留原名。
+        assert_eq!(normalize_codex_model("【官】glm-5.1"), "【官】glm-5.1");
+        assert_eq!(normalize_codex_model("【官方】GLM-4.6"), "【官方】glm-4.6");
+        // 非 ASCII 前缀 + 合法 ISO 日期后缀仍应被正确剥离
+        assert_eq!(
+            normalize_codex_model("【官】gpt-5.4-2026-03-05"),
+            "【官】gpt-5.4"
+        );
     }
 
     #[test]
