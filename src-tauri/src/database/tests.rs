@@ -667,17 +667,24 @@ fn schema_model_pricing_is_seeded_on_init() {
             "DeepSeek V4 Flash",
             "0.14",
             "0.28",
-            "0.028",
+            "0.0028",
             "0",
         ),
         (
             "deepseek-v4-pro",
             "DeepSeek V4 Pro",
-            "1.68",
-            "3.36",
-            "0.14",
+            "0.435",
+            "0.87",
+            "0.003625",
             "0",
         ),
+        // GPT-5.5 系列：FE presets default to gpt-5.5；缺失定价行会让成本静默记为 0
+        ("gpt-5.5", "GPT-5.5", "5", "30", "0.50", "0"),
+        ("gpt-5.5-low", "GPT-5.5", "5", "30", "0.50", "0"),
+        ("gpt-5.5-medium", "GPT-5.5", "5", "30", "0.50", "0"),
+        ("gpt-5.5-high", "GPT-5.5", "5", "30", "0.50", "0"),
+        ("gpt-5.5-xhigh", "GPT-5.5", "5", "30", "0.50", "0"),
+        ("gpt-5.5-minimal", "GPT-5.5", "5", "30", "0.50", "0"),
     ] {
         let count: i64 = conn
             .query_row(
@@ -698,9 +705,156 @@ fn schema_model_pricing_is_seeded_on_init() {
                 ],
                 |row| row.get(0),
             )
-            .expect("check DeepSeek V4 pricing");
-        assert_eq!(count, 1, "DeepSeek V4 pricing row mismatch: {model_id}");
+            .expect("check seeded model pricing row");
+        assert_eq!(count, 1, "seeded model pricing row mismatch: {model_id}");
     }
+}
+
+#[test]
+fn model_pricing_seed_repairs_known_outdated_builtin_prices() {
+    let db = Database::memory().expect("create memory db");
+
+    {
+        let conn = db.conn.lock().expect("lock conn");
+        conn.execute(
+            "UPDATE model_pricing
+             SET input_cost_per_million = '1.68',
+                 output_cost_per_million = '3.36',
+                 cache_read_cost_per_million = '0.14',
+                 cache_creation_cost_per_million = '0'
+             WHERE model_id = 'deepseek-v4-pro'",
+            [],
+        )
+        .expect("restore old DeepSeek price");
+        conn.execute(
+            "UPDATE model_pricing
+             SET input_cost_per_million = '9',
+                 output_cost_per_million = '9',
+                 cache_read_cost_per_million = '9',
+                 cache_creation_cost_per_million = '0'
+             WHERE model_id = 'glm-5.1'",
+            [],
+        )
+        .expect("set custom GLM price");
+    }
+
+    db.ensure_model_pricing_seeded()
+        .expect("ensure pricing seeded");
+
+    let conn = db.conn.lock().expect("lock conn");
+    let deepseek: (String, String, String) = conn
+        .query_row(
+            "SELECT input_cost_per_million, output_cost_per_million, cache_read_cost_per_million
+             FROM model_pricing WHERE model_id = 'deepseek-v4-pro'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .expect("query DeepSeek price");
+    assert_eq!(
+        deepseek,
+        (
+            "0.435".to_string(),
+            "0.87".to_string(),
+            "0.003625".to_string()
+        )
+    );
+
+    let glm: (String, String, String) = conn
+        .query_row(
+            "SELECT input_cost_per_million, output_cost_per_million, cache_read_cost_per_million
+             FROM model_pricing WHERE model_id = 'glm-5.1'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .expect("query GLM price");
+    assert_eq!(glm, ("9".to_string(), "9".to_string(), "9".to_string()));
+}
+
+#[test]
+fn model_pricing_seed_inserts_new_models_on_already_seeded_db() {
+    // 模拟在 gpt-5.5 加入之前已 seed 过的旧库（升级路径）：
+    // ensure_model_pricing_seeded 每次启动都跑 INSERT OR IGNORE，
+    // 新增模型行应在已 seed 的库上被追加，且不覆盖用户已自定义的现有行。
+    let db = Database::memory().expect("create memory db");
+
+    {
+        let conn = db.conn.lock().expect("lock conn");
+        // 删除所有 gpt-5.5 行，模拟从未 seed 过该系列的旧库。
+        conn.execute(
+            "DELETE FROM model_pricing WHERE model_id LIKE 'gpt-5.5%'",
+            [],
+        )
+        .expect("delete gpt-5.5 rows");
+        // 用户对一个现有行自定义了价格；INSERT OR IGNORE 不应覆盖它。
+        conn.execute(
+            "UPDATE model_pricing
+             SET input_cost_per_million = '99',
+                 output_cost_per_million = '99'
+             WHERE model_id = 'gpt-5.4'",
+            [],
+        )
+        .expect("customize existing gpt-5.4 price");
+
+        let removed: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM model_pricing WHERE model_id LIKE 'gpt-5.5%'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count after delete");
+        assert_eq!(removed, 0, "gpt-5.5 rows should be removed before upgrade");
+    }
+
+    // 再次运行 seed（升级时每次启动调用）。
+    db.ensure_model_pricing_seeded()
+        .expect("ensure pricing seeded on upgrade");
+
+    let conn = db.conn.lock().expect("lock conn");
+
+    // 新增的 gpt-5.5 行应在已 seed 的库上被插入，价格正确。
+    for model_id in [
+        "gpt-5.5",
+        "gpt-5.5-low",
+        "gpt-5.5-medium",
+        "gpt-5.5-high",
+        "gpt-5.5-xhigh",
+        "gpt-5.5-minimal",
+    ] {
+        let row: (String, String, String, String) = conn
+            .query_row(
+                "SELECT display_name, input_cost_per_million,
+                        output_cost_per_million, cache_read_cost_per_million
+                 FROM model_pricing WHERE model_id = ?1",
+                params![model_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap_or_else(|_| panic!("gpt-5.5 row should be inserted on upgrade: {model_id}"));
+        assert_eq!(
+            row,
+            (
+                "GPT-5.5".to_string(),
+                "5".to_string(),
+                "30".to_string(),
+                "0.50".to_string(),
+            ),
+            "gpt-5.5 upgrade price mismatch: {model_id}"
+        );
+    }
+
+    // 用户自定义的现有行价格必须被保留（INSERT OR IGNORE 不覆盖）。
+    let customized: (String, String) = conn
+        .query_row(
+            "SELECT input_cost_per_million, output_cost_per_million
+             FROM model_pricing WHERE model_id = 'gpt-5.4'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("query customized gpt-5.4 price");
+    assert_eq!(
+        customized,
+        ("99".to_string(), "99".to_string()),
+        "existing customized row must not be overwritten by INSERT OR IGNORE"
+    );
 }
 
 #[test]

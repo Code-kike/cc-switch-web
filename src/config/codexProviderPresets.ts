@@ -41,7 +41,7 @@ export function generateThirdPartyAuth(apiKey: string): Record<string, any> {
 export function generateThirdPartyConfig(
   providerName: string,
   baseUrl: string,
-  modelName = "gpt-5.4",
+  modelName = "gpt-5.5",
 ): string {
   // 清理供应商名称，确保符合TOML键名规范
   const cleanProviderName =
@@ -87,7 +87,7 @@ export const codexProviderPresets: CodexProviderPreset[] = [
     config: generateThirdPartyConfig(
       "shengsuanyun",
       "https://router.shengsuanyun.com/api/v1",
-      "gpt-5.4",
+      "openai/gpt-5.5",
     ),
     category: "aggregator",
     isPartner: true,
@@ -118,7 +118,7 @@ export const codexProviderPresets: CodexProviderPreset[] = [
     isOfficial: true,
     auth: generateThirdPartyAuth(""),
     config: `model_provider = "azure"
-model = "gpt-5.4"
+model = "gpt-5.5"
 model_reasoning_effort = "high"
 disable_response_storage = true
 
@@ -146,7 +146,7 @@ requires_openai_auth = true`,
     config: generateThirdPartyConfig(
       "aihubmix",
       "https://aihubmix.com/v1",
-      "gpt-5.4",
+      "gpt-5.5",
     ),
     endpointCandidates: [
       "https://aihubmix.com/v1",
@@ -161,7 +161,7 @@ requires_openai_auth = true`,
     config: generateThirdPartyConfig(
       "dmxapi",
       "https://www.dmxapi.cn/v1",
-      "gpt-5.4",
+      "gpt-5.5",
     ),
     endpointCandidates: ["https://www.dmxapi.cn/v1"],
     isPartner: true, // 合作伙伴
@@ -176,7 +176,7 @@ requires_openai_auth = true`,
     config: generateThirdPartyConfig(
       "packycode",
       "https://www.packyapi.com/v1",
-      "gpt-5.4",
+      "gpt-5.5",
     ),
     endpointCandidates: [
       "https://www.packyapi.com/v1",
@@ -237,7 +237,7 @@ requires_openai_auth = true`,
     config: generateThirdPartyConfig(
       "cubence",
       "https://api.cubence.com/v1",
-      "gpt-5.4",
+      "gpt-5.5",
     ),
     endpointCandidates: [
       "https://api.cubence.com/v1",
@@ -260,7 +260,7 @@ requires_openai_auth = true`,
     config: generateThirdPartyConfig(
       "aigocode",
       "https://api.aigocode.com",
-      "gpt-5.4",
+      "gpt-5.5",
     ),
     endpointCandidates: ["https://api.aigocode.com"],
     isPartner: true, // 合作伙伴
@@ -276,7 +276,7 @@ requires_openai_auth = true`,
     config: generateThirdPartyConfig(
       "rightcode",
       "https://right.codes/codex/v1",
-      "gpt-5.4",
+      "gpt-5.5",
     ),
     category: "third_party",
     isPartner: true,
@@ -292,7 +292,7 @@ requires_openai_auth = true`,
     config: generateThirdPartyConfig(
       "aicodemirror",
       "https://api.aicodemirror.com/api/codex/backend-api/codex",
-      "gpt-5.4",
+      "gpt-5.5",
     ),
     endpointCandidates: [
       "https://api.aicodemirror.com/api/codex/backend-api/codex",
@@ -311,7 +311,7 @@ requires_openai_auth = true`,
     config: generateThirdPartyConfig(
       "aicoding",
       "https://api.aicoding.sh",
-      "gpt-5.4",
+      "gpt-5.5",
     ),
     endpointCandidates: ["https://api.aicoding.sh"],
     isPartner: true,
@@ -327,7 +327,7 @@ requires_openai_auth = true`,
     config: generateThirdPartyConfig(
       "crazyrouter",
       "https://cn.crazyrouter.com/v1",
-      "gpt-5.4",
+      "gpt-5.5",
     ),
     endpointCandidates: ["https://cn.crazyrouter.com/v1"],
     isPartner: true,
@@ -343,7 +343,7 @@ requires_openai_auth = true`,
     config: generateThirdPartyConfig(
       "sssaicode",
       "https://node-hk.sssaicode.com/api/v1",
-      "gpt-5.4",
+      "gpt-5.5",
     ),
     endpointCandidates: [
       "https://node-hk.sssaicode.com/api/v1",
@@ -366,7 +366,7 @@ requires_openai_auth = true`,
     config: generateThirdPartyConfig(
       "compshare",
       "https://api.modelverse.cn/v1",
-      "gpt-5.4",
+      "gpt-5.5",
     ),
     endpointCandidates: ["https://api.modelverse.cn/v1"],
     category: "aggregator",
@@ -385,7 +385,7 @@ requires_openai_auth = true`,
     config: generateThirdPartyConfig(
       "compshare_coding",
       "https://cp.compshare.cn/v1",
-      "gpt-5.4",
+      "gpt-5.5",
     ),
     endpointCandidates: ["https://cp.compshare.cn/v1"],
     category: "aggregator",
@@ -402,7 +402,7 @@ requires_openai_auth = true`,
     config: generateThirdPartyConfig(
       "micu",
       "https://www.micuapi.ai/v1",
-      "gpt-5.4",
+      "gpt-5.5",
     ),
     endpointCandidates: ["https://www.micuapi.ai/v1"],
     category: "third_party",
@@ -419,7 +419,7 @@ requires_openai_auth = true`,
     config: generateThirdPartyConfig(
       "ctok",
       "https://api.ctok.ai/v1",
-      "gpt-5.4",
+      "gpt-5.5",
     ),
     endpointCandidates: ["https://api.ctok.ai/v1"],
     category: "third_party",
@@ -435,7 +435,7 @@ requires_openai_auth = true`,
     config: generateThirdPartyConfig(
       "lionccapi",
       "https://vibecodingapi.ai/v1",
-      "gpt-5.4",
+      "gpt-5.5",
     ),
     category: "third_party",
     isPartner: true,
@@ -450,7 +450,7 @@ requires_openai_auth = true`,
       OPENAI_API_KEY: "",
     },
     config: `model_provider = "e-flowcode"
-model = "gpt-5.4"
+model = "gpt-5.5"
 model_reasoning_effort = "high"
 disable_response_storage = true
 personality = "pragmatic"
@@ -476,7 +476,7 @@ model_auto_compact_token_limit = 9000000`,
     config: generateThirdPartyConfig(
       "lemondata",
       "https://api.lemondata.cc/v1",
-      "gpt-5.4",
+      "gpt-5.5",
     ),
     endpointCandidates: ["https://api.lemondata.cc/v1"],
     isPartner: true,
@@ -491,7 +491,7 @@ model_auto_compact_token_limit = 9000000`,
       OPENAI_API_KEY: "",
     },
     config: `model_provider = "custom"
-model = "gpt-5.4"
+model = "gpt-5.5"
 model_reasoning_effort = "medium"
 disable_response_storage = true
 
@@ -512,7 +512,7 @@ base_url = "https://cc-api.pipellm.ai/v1"`,
     config: generateThirdPartyConfig(
       "openrouter",
       "https://openrouter.ai/api/v1",
-      "gpt-5.4",
+      "gpt-5.5",
     ),
     category: "aggregator",
     icon: "openrouter",

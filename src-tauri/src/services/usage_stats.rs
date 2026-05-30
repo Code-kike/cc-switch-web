@@ -2760,6 +2760,12 @@ mod tests {
             result.is_some(),
             "带前缀+冒号后缀的模型应清洗后匹配到 kimi-k2-0905"
         );
+        // 聚合商点号格式 anthropic/claude-opus-4.8 应能匹配到 claude-opus-4-8
+        let result = find_model_pricing_row(&conn, "anthropic/claude-opus-4.8")?;
+        assert!(
+            result.is_some(),
+            "聚合商点号格式 anthropic/claude-opus-4.8 应能匹配到 claude-opus-4-8"
+        );
 
         // 清洗：@ 替换为 -（seed_model_pricing 已预置 gpt-5.2-codex-low）
         let result = find_model_pricing_row(&conn, "gpt-5.2-codex@low")?;
