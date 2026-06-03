@@ -1,0 +1,2 @@
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "Check phase: verify FE changes (M3/M4/M5) meet quality bar; pricing/SSRF/CI fixes need green gates."}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "Check phase: confirm no type regressions in the TS edits."}
