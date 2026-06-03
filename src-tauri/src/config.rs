@@ -231,8 +231,12 @@ pub fn atomic_write(path: &Path, data: &[u8]) -> Result<(), AppError> {
     {
         use std::os::unix::fs::PermissionsExt;
         if let Ok(meta) = fs::metadata(path) {
+            // 已存在文件：保留原有权限位
             let perm = meta.permissions().mode();
             let _ = fs::set_permissions(&tmp, fs::Permissions::from_mode(perm));
+        } else {
+            // 首次创建：避免使用默认 umask（0644）导致凭证文件全局可读
+            let _ = fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600));
         }
     }
 

@@ -247,7 +247,7 @@ fn locate_fn_line(source: &str, fn_name: &str) -> usize {
             if after
                 .chars()
                 .next()
-                .map_or(true, |c| c == '(' || c == '<' || c.is_whitespace())
+                .is_none_or(|c| c == '(' || c == '<' || c.is_whitespace())
             {
                 return idx + 1;
             }
@@ -305,7 +305,7 @@ impl<'a> Visit<'a> for HandlerCollector<'a> {
                     && name
                         .chars()
                         .next()
-                        .map_or(false, |c| c.is_lowercase() || c == '_')
+                        .is_some_and(|c| c.is_lowercase() || c == '_')
                 {
                     self.entries.push(name);
                 }

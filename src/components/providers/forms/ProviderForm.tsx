@@ -884,6 +884,15 @@ export function ProviderForm({
       }
     }
 
+    // codex: auth.json 语法错误硬拒绝（B 类）
+    // CodexConfigEditor 只写 hook 状态，不写 form.settingsConfig；
+    // 若放行，performSubmit 的 JSON.parse(codexAuth) 会抛错并回退到旧值，
+    // 静默丢弃用户本次编辑却仍提示成功
+    if (appId === "codex" && codexAuthError) {
+      toast.error(t("providerForm.authJsonError"));
+      return;
+    }
+
     // OAuth 未登录：B 类（token 根本不存在，保存了也没法建立）
     const isCopilotProvider =
       templatePreset?.providerType === "github_copilot" ||
@@ -1022,7 +1031,10 @@ export function ProviderForm({
         };
         settingsConfig = JSON.stringify(configObj);
       } catch (err) {
-        settingsConfig = values.settingsConfig.trim();
+        // codexAuth 语法错误：回退到 values.settingsConfig 会静默丢弃用户编辑，
+        // 明确报错并中止，避免“提示成功却未保存”
+        toast.error(t("providerForm.authJsonError"));
+        return;
       }
     } else if (appId === "gemini") {
       try {

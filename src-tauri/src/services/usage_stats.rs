@@ -1641,14 +1641,14 @@ pub(crate) fn find_model_pricing_row(
         .trim()
         .replace('@', "-");
 
-    // 精确匹配清洗后的名称
-    let exact = conn
-        .query_row(
+    // 单键精确查询，封装为闭包避免重复
+    let query_key = |key: &str| -> Result<Option<(String, String, String, String)>, AppError> {
+        conn.query_row(
             "SELECT input_cost_per_million, output_cost_per_million,
                     cache_read_cost_per_million, cache_creation_cost_per_million
              FROM model_pricing
              WHERE model_id = ?1",
-            [&cleaned],
+            [key],
             |row| {
                 Ok((
                     row.get::<_, String>(0)?,
@@ -1659,13 +1659,26 @@ pub(crate) fn find_model_pricing_row(
             },
         )
         .optional()
-        .map_err(|e| AppError::Database(format!("查询模型定价失败: {e}")))?;
+        .map_err(|e| AppError::Database(format!("查询模型定价失败: {e}")))
+    };
 
-    if exact.is_none() {
-        log::warn!("模型 {model_id}（清洗后: {cleaned}）未找到定价信息，成本将记录为 0");
+    // 依次尝试候选键，返回首个命中：
+    // (i) 清洗后原样；(ii) 小写；(iii) 小写后点号转横线
+    // 注意：'.'→'-' 必须放在最后，否则会破坏 gpt-5.5 / minimax-m2.7 / glm-5.1 等点号小写 id
+    let candidates = [
+        cleaned.clone(),
+        cleaned.to_lowercase(),
+        cleaned.to_lowercase().replace('.', "-"),
+    ];
+    for candidate in &candidates {
+        if let Some(row) = query_key(candidate)? {
+            return Ok(Some(row));
+        }
     }
 
-    Ok(exact)
+    log::warn!("模型 {model_id}（清洗后: {cleaned}）未找到定价信息，成本将记录为 0");
+
+    Ok(None)
 }
 
 #[cfg(test)]
@@ -2772,6 +2785,34 @@ mod tests {
         assert!(
             result.is_some(),
             "带 @ 分隔符的模型 gpt-5.2-codex@low 应能匹配到 gpt-5.2-codex-low"
+        );
+
+        // 回退链：清洗后小写命中点号小写 id（seed 已预置 minimax-m2.7 / glm-5.1）
+        let result = find_model_pricing_row(&conn, "MiniMaxAI/MiniMax-M2.7")?;
+        assert!(
+            result.is_some(),
+            "MiniMaxAI/MiniMax-M2.7 应清洗后小写匹配到 minimax-m2.7"
+        );
+        let result = find_model_pricing_row(&conn, "ZhipuAI/GLM-5.1")?;
+        assert!(
+            result.is_some(),
+            "ZhipuAI/GLM-5.1 应清洗后小写匹配到 glm-5.1"
+        );
+
+        // 裸 id 精确命中新增的 seed 行
+        let result = find_model_pricing_row(&conn, "claude-sonnet-4-6")?;
+        assert!(
+            result.is_some(),
+            "裸 id claude-sonnet-4-6 应精确匹配到 seed 行"
+        );
+
+        // 回归守护：'.'→'-' 是最后兜底，不得破坏点号小写 id 的精确/小写命中
+        let result = find_model_pricing_row(&conn, "gpt-5.5")?;
+        assert!(result.is_some(), "gpt-5.5 应精确命中，不应被 '.'→'-' 破坏");
+        let result = find_model_pricing_row(&conn, "moonshotai/minimax-m2.7")?;
+        assert!(
+            result.is_some(),
+            "moonshotai/minimax-m2.7 应清洗后命中 minimax-m2.7，不应被 '.'→'-' 破坏"
         );
 
         // 测试不存在的模型

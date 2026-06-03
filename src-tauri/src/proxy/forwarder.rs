@@ -887,6 +887,8 @@ impl RequestForwarder {
     }
 
     /// 转发单个请求（使用适配器）
+    // 参数较多但语义清晰，重构签名风险较高，此处放宽 clippy 限制
+    #[allow(clippy::too_many_arguments)]
     async fn forward(
         &self,
         app_type: &AppType,

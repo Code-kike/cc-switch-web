@@ -14,7 +14,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 
 use super::super::ApiState;
-use super::common::{json_ok, ApiError, ApiResult};
+use super::common::{json_ok, validate_outbound_url, ApiError, ApiResult};
 
 #[derive(Serialize)]
 struct CsrfTokenResponse {
@@ -193,11 +193,35 @@ async fn get_tool_versions(
 async fn test_api_endpoints(
     Json(request): Json<TestApiEndpointsRequest>,
 ) -> ApiResult<Vec<crate::services::EndpointLatency>> {
-    let results =
-        crate::services::SpeedtestService::test_endpoints(request.urls, request.timeout_secs)
+    // SSRF guard: skip URLs that resolve to internal/private targets without
+    // dialing them, recording a per-URL error so the original order is kept.
+    // (web-server only; desktop test commands stay unrestricted.)
+    let mut results: Vec<Option<crate::services::EndpointLatency>> = vec![None; request.urls.len()];
+    let mut allowed: Vec<(usize, String)> = Vec::new();
+    for (idx, url) in request.urls.into_iter().enumerate() {
+        match validate_outbound_url(&url) {
+            Ok(()) => allowed.push((idx, url)),
+            Err(err) => {
+                results[idx] = Some(crate::services::EndpointLatency {
+                    url,
+                    latency: None,
+                    status: None,
+                    error: Some(err.message()),
+                });
+            }
+        }
+    }
+
+    let allowed_urls: Vec<String> = allowed.iter().map(|(_, url)| url.clone()).collect();
+    let tested =
+        crate::services::SpeedtestService::test_endpoints(allowed_urls, request.timeout_secs)
             .await
             .map_err(ApiError::from_anyhow)?;
-    Ok(json_ok(results))
+    for ((idx, _), latency) in allowed.into_iter().zip(tested) {
+        results[idx] = Some(latency);
+    }
+
+    Ok(json_ok(results.into_iter().flatten().collect::<Vec<_>>()))
 }
 
 async fn reset_circuit_breaker(

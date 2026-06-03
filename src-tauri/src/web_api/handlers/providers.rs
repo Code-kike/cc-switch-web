@@ -285,9 +285,11 @@ async fn import_default_config(
     Json(request): Json<ImportDefaultRequest>,
 ) -> ApiResult<bool> {
     let app_type = parse_app_type(&request.app)?;
-    let imported =
-        crate::services::ProviderService::import_default_config(state.app_state.as_ref(), app_type)
-            .map_err(ApiError::from_anyhow)?;
+    let imported = crate::services::ProviderService::import_default_config_with_snippet_extraction(
+        state.app_state.as_ref(),
+        app_type,
+    )
+    .map_err(ApiError::from_anyhow)?;
     Ok(json_ok(imported))
 }
 

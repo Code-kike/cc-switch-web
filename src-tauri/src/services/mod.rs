@@ -23,6 +23,7 @@ pub mod subscription;
 pub mod tool_version;
 pub mod usage_cache;
 pub mod usage_stats;
+#[cfg(feature = "web-server")]
 pub mod web_update;
 pub mod webdav;
 #[cfg(feature = "desktop")]
@@ -50,6 +51,7 @@ pub use usage_stats::{
     DailyStats, LogFilters, ModelStats, PaginatedLogs, ProviderLimitStatus, ProviderStats,
     RequestLogDetail, UsageSummary,
 };
+#[cfg(feature = "web-server")]
 pub use web_update::WebUpdateInfo;
 #[cfg(not(feature = "desktop"))]
 pub use webdav_auto_sync_web as webdav_auto_sync;
