@@ -1,4 +1,8 @@
-use axum::{extract::Query, routing::get, Json, Router};
+use axum::{
+    extract::Query,
+    routing::{get, post},
+    Json, Router,
+};
 use serde::Deserialize;
 
 use super::super::ApiState;
@@ -22,8 +26,8 @@ pub fn router(_state: ApiState) -> Router {
             "/subscription/get-subscription-quota",
             get(get_subscription_quota),
         )
-        .route("/usage/get-balance", get(get_balance))
-        .route("/usage/get-coding-plan-quota", get(get_coding_plan_quota))
+        .route("/usage/get-balance", post(get_balance))
+        .route("/usage/get-coding-plan-quota", post(get_coding_plan_quota))
 }
 
 async fn get_subscription_quota(
@@ -35,7 +39,7 @@ async fn get_subscription_quota(
     Ok(json_ok(quota))
 }
 
-async fn get_balance(Query(query): Query<BalanceQuery>) -> ApiResult<crate::provider::UsageResult> {
+async fn get_balance(Json(query): Json<BalanceQuery>) -> ApiResult<crate::provider::UsageResult> {
     let result = crate::services::balance::get_balance(&query.base_url, &query.api_key)
         .await
         .map_err(super::common::ApiError::from_service_message)?;
@@ -43,7 +47,7 @@ async fn get_balance(Query(query): Query<BalanceQuery>) -> ApiResult<crate::prov
 }
 
 async fn get_coding_plan_quota(
-    Query(query): Query<BalanceQuery>,
+    Json(query): Json<BalanceQuery>,
 ) -> ApiResult<crate::services::subscription::SubscriptionQuota> {
     let quota =
         crate::services::coding_plan::get_coding_plan_quota(&query.base_url, &query.api_key)

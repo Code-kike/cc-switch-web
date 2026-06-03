@@ -1273,6 +1273,14 @@ impl Database {
                 "0.10",
                 "1.25",
             ),
+            (
+                "claude-haiku-4-5",
+                "Claude Haiku 4.5",
+                "1",
+                "5",
+                "0.10",
+                "1.25",
+            ),
             // Claude 4 系列 (Legacy Models)
             (
                 "claude-opus-4-20250514",

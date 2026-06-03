@@ -2806,6 +2806,18 @@ mod tests {
             "裸 id claude-sonnet-4-6 应精确匹配到 seed 行"
         );
 
+        // 裸 id claude-haiku-4-5：presets 默认裸 id（claudecn/runapi），需命中 seed 行（否则成本为 0）
+        let result = find_model_pricing_row(&conn, "claude-haiku-4-5")?;
+        assert!(
+            result.is_some(),
+            "裸 id claude-haiku-4-5 应精确匹配到 seed 行"
+        );
+        let result = find_model_pricing_row(&conn, "claudecn/claude-haiku-4-5")?;
+        assert!(
+            result.is_some(),
+            "前缀形式 claudecn/claude-haiku-4-5 应清洗后匹配到 claude-haiku-4-5"
+        );
+
         // 回归守护：'.'→'-' 是最后兜底，不得破坏点号小写 id 的精确/小写命中
         let result = find_model_pricing_row(&conn, "gpt-5.5")?;
         assert!(result.is_some(), "gpt-5.5 应精确命中，不应被 '.'→'-' 破坏");

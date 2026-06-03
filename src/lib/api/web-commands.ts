@@ -204,7 +204,7 @@ const cmds = defineCommands({
     path: "/api/config/extract-common-config-snippet",
   },
   fetch_models_for_config: {
-    method: "GET",
+    method: "POST",
     path: "/api/config/fetch-models-for-config",
   },
   get_app_config_dir_override: {
@@ -228,7 +228,7 @@ const cmds = defineCommands({
     method: "GET",
     path: "/api/failover/get-available-providers-for-failover",
   },
-  get_balance: { method: "GET", path: "/api/usage/get-balance" },
+  get_balance: { method: "POST", path: "/api/usage/get-balance" },
   get_circuit_breaker_config: {
     method: "GET",
     path: "/api/config/get-circuit-breaker-config",
@@ -267,7 +267,7 @@ const cmds = defineCommands({
     path: "/api/auth/get-codex-oauth-models",
   },
   get_coding_plan_quota: {
-    method: "GET",
+    method: "POST",
     path: "/api/usage/get-coding-plan-quota",
   },
   get_common_config_snippet: {
