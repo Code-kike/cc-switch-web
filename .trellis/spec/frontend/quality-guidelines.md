@@ -30,6 +30,171 @@ Questions to answer:
 
 ## Required Patterns
 
+### Scenario: Secret-Bearing Web API Commands
+
+#### 1. Scope / Trigger
+
+- Trigger: a Web API command carries provider credentials, API keys, tokens, or
+  generated credential file content.
+- Applies when changing `src/lib/api/web-commands.ts`, `src/lib/api/adapter.ts`,
+  `src-tauri/src/web_api/handlers/*`, or credential-writing helpers such as
+  `config::atomic_write`.
+
+#### 2. Signatures
+
+- Frontend registry:
+  - `fetch_models_for_config: { method: "POST", path: "/api/config/fetch-models-for-config" }`
+  - `get_balance: { method: "POST", path: "/api/usage/get-balance" }`
+  - `get_coding_plan_quota: { method: "POST", path: "/api/usage/get-coding-plan-quota" }`
+- Web handlers:
+  - `POST /api/config/fetch-models-for-config` with `Json<FetchModelsForConfigQuery>`
+  - `POST /api/usage/get-balance` with `Json<BalanceQuery>`
+  - `POST /api/usage/get-coding-plan-quota` with `Json<BalanceQuery>`
+- Storage:
+  - `config::atomic_write(path, data)` writes credential/config files via a
+    temporary file and rename.
+
+#### 3. Contracts
+
+- Secret-bearing web commands must use a JSON body, not query strings.
+- Registry method, Rust route method, and extractor shape must change together:
+  `POST` in `web-commands.ts`, `post(handler)` in Axum, and `Json<T>` in the
+  handler signature.
+- Desktop Tauri commands stay unrestricted unless the change explicitly targets
+  desktop; web-only SSRF/CSRF behavior belongs in `web_api` handlers/adapter.
+- On Unix, newly created credential/config temp files must be opened with
+  `0o600` before bytes are written. Existing destinations may mirror their
+  existing permission bits before rename.
+
+#### 4. Validation & Error Matrix
+
+- `api_key` or token appears in a GET query string -> reject; it can leak through
+  browser history, proxy logs, or access logs.
+- Frontend says `POST` but Axum route still uses `get(...)` -> reject; web mode
+  receives 405/404 while desktop invoke still appears fine.
+- Axum route is `post(...)` but handler still extracts `Query<T>` -> reject; the
+  body is ignored and credential fields deserialize as missing.
+- New Unix credential file is created with default permissions then chmodded ->
+  reject; there is a readable race window before chmod.
+
+#### 5. Good/Base/Bad Cases
+
+- Good: `fetch_models_for_config({ baseUrl, apiKey, ... })` reaches
+  `Json<FetchModelsForConfigQuery>` and the browser URL remains
+  `/api/config/fetch-models-for-config`.
+- Base: non-secret GET commands may continue to use query strings when their
+  arguments are identifiers, filters, or pagination fields.
+- Bad: adding `api_key`, `access_token`, or `Authorization` data to a command
+  whose web registry method is `GET`.
+
+#### 6. Tests Required
+
+- `pnpm check:web-routes` must report `missing: 0` after method/route edits.
+- `pnpm typecheck` must pass after command registry method literal changes.
+- Rust route/handler changes must pass `cargo clippy -- -D warnings` and
+  `cargo test`.
+- Smoke or integration probes for these endpoints must send `POST` with
+  `Content-Type: application/json`, not query strings.
+
+#### 7. Wrong vs Correct
+
+##### Wrong
+
+```typescript
+get_balance: { method: "GET", path: "/api/usage/get-balance" };
+```
+
+```rust
+.route("/usage/get-balance", get(get_balance))
+async fn get_balance(Query(query): Query<BalanceQuery>) -> ApiResult<_> { ... }
+```
+
+##### Correct
+
+```typescript
+get_balance: { method: "POST", path: "/api/usage/get-balance" };
+```
+
+```rust
+.route("/usage/get-balance", post(get_balance))
+async fn get_balance(Json(query): Json<BalanceQuery>) -> ApiResult<_> { ... }
+```
+
+---
+
+### Scenario: Built-In Model Pricing Lookup
+
+#### 1. Scope / Trigger
+
+- Trigger: provider presets, default models, or pricing seeds change.
+- Applies when editing provider preset model IDs,
+  `schema.rs::seed_model_pricing`, or
+  `usage_stats.rs::find_model_pricing_row`.
+
+#### 2. Signatures
+
+- `find_model_pricing_row(conn: &Connection, model_id: &str) -> Result<Option<(String, String, String, String)>, AppError>`
+- `seed_model_pricing(conn)` owns built-in `model_pricing.model_id` rows.
+
+#### 3. Contracts
+
+- Lookup cleans provider prefixes, colon suffixes, and `@` variants before
+  querying.
+- Candidate order is exact cleaned ID, lowercase cleaned ID, then lowercase
+  with dots converted to dashes.
+- Dot-to-dash fallback must stay last so dotted lowercase rows such as
+  `gpt-5.5`, `minimax-m2.7`, and `glm-5.1` still match their exact seed rows.
+- Bare default IDs used by presets, such as `claude-sonnet-4-6` and
+  `claude-haiku-4-5`, must have seed rows when they are not only aliases for a
+  dated model ID.
+
+#### 4. Validation & Error Matrix
+
+- Preset default resolves to no pricing row -> reject; usage cost silently
+  records as `0`.
+- Dot-to-dash runs before exact/lowercase lookup -> reject; dotted seed rows can
+  be bypassed.
+- Adding a preset default without searching `model_pricing` seeds -> reject;
+  this creates a cost-reporting regression.
+
+#### 5. Good/Base/Bad Cases
+
+- Good: `claudecn/claude-haiku-4-5` cleans to `claude-haiku-4-5` and resolves
+  to a seeded price.
+- Good: `MiniMaxAI/MiniMax-M2.7` lowercases and resolves to `minimax-m2.7`.
+- Base: `anthropic/claude-opus-4.8` falls through to dot-to-dash and resolves to
+  `claude-opus-4-8`.
+- Bad: only seeding `claude-haiku-4-5-20251001` while presets default to bare
+  `claude-haiku-4-5`.
+
+#### 6. Tests Required
+
+- Rust regression tests for bare default IDs and prefixed aggregator forms.
+- Guard tests for dotted lowercase IDs to prove dot-to-dash fallback does not
+  preempt exact or lowercase matches.
+- Unknown model IDs must still return `None`.
+
+#### 7. Wrong vs Correct
+
+##### Wrong
+
+```rust
+let key = cleaned.to_lowercase().replace('.', "-");
+query_model_pricing(key)
+```
+
+##### Correct
+
+```rust
+for key in [cleaned.clone(), cleaned.to_lowercase(), cleaned.to_lowercase().replace('.', "-")] {
+    if let Some(row) = query_model_pricing(&key)? {
+        return Ok(Some(row));
+    }
+}
+```
+
+---
+
 ### Scenario: Provider Usage Query Templates
 
 #### 1. Scope / Trigger
