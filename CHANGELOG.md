@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.16.0] - 2026-05-30
+
+Synced upstream `farion1231/cc-switch` v3.16.0 into this Web-first fork. Highlights: real-time usage refresh (dual-runtime via `UiEventSink` — Tauri event bus on desktop, `GET /api/events` SSE in web-server mode); a model & pricing refresh (default Claude Opus → 4.8, GPT-5.5 / ShengSuanYun model-id corrections, with `seed_model_pricing` kept consistent with the frontend presets); a Codex routing refactor that stops force-rewriting the user's `model_provider` plus a remote-compaction toggle; DeepSeek/Anthropic tool-thinking proxy normalization; a Codex session-sync panic fix on non-ASCII model names; and deeplink custom-env preservation on Claude import.
+
+See **[release notes →](docs/release-notes/v3.16.0-en.md)** for the full list (18 sync commits, upstream delta `3c3d4174..8f83fa20`).
+
 ## [3.15.0] - 2026-05-16
 
 Development since v3.14.1 focuses on a dedicated Claude Desktop surface with third-party provider switching through a proxy gateway, a large reverse-proxy hardening pass (reliability, retries, cache, takeover, Gemini/Vertex/Codex paths), expansion of the third-party provider preset catalog (BytePlus / Volcengine / ClaudeAPI / ClaudeCN / RunAPI / RelaxyCode / PatewayAI / Baidu Qianfan), role-based model mapping with a 1M context flag, Codex OAuth live model discovery, and a long tail of usage, OAuth, Codex, and session quality-of-life fixes.

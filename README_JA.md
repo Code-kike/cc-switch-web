@@ -151,7 +151,7 @@ CC Switch ユーザー限定特典： 専用リンクからご<a href="https://d
 
 ## 特長
 
-[完全な更新履歴](CHANGELOG.md) | [リリースノート](docs/release-notes/v3.12.3-ja.md)
+[完全な更新履歴](CHANGELOG.md) | [リリースノート](docs/release-notes/v3.16.0-ja.md)
 
 ### プロバイダ管理
 
@@ -242,7 +242,7 @@ CC Switch は「最小限の介入」という設計原則に従っています�
 
 ## ドキュメント
 
-各機能の詳しい使い方については、**[ユーザーマニュアル](docs/user-manual/ja/README.md)** をご覧ください。プロバイダ管理、MCP/Prompts/Skills、プロキシとフェイルオーバーなど、すべての機能を網羅しています。
+各バージョンの機能と変更点は **[リリースノート](docs/release-notes/v3.16.0-ja.md)** と **[完全な更新履歴](CHANGELOG.md)** をご覧ください。主要機能の概要は上記「特長」を参照してください。
 
 ## クイックスタート
 
