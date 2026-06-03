@@ -1765,6 +1765,51 @@ impl Database {
             ("glm-4.6", "GLM-4.6", "0.28", "1.11", "0.03", "0"),
             ("glm-5", "GLM-5", "1", "3.2", "0.2", "0"),
             ("glm-5.1", "GLM-5.1", "1.4", "4.4", "0.26", "0"),
+            // 第三方 coding 套餐模型（价格来源：openclaw 预设内嵌 cost，单位 $/M）
+            // 注：lookup key 一律小写，与既有 minimax/glm 约定一致；pricing_lookup_candidates
+            // 会对来料 model_id 生成小写候选，故小写 seed 对任意大小写来料都能命中
+            // （含预设里的混合大小写 id，如 katcoder/KAT-Coder-Pro → cleaned KAT-Coder-Pro → lower kat-coder-pro）。
+            // KAT-Coder Pro — openclawProviderPresets.ts:674 cost {input:0.002, output:0.006}
+            ("kat-coder-pro", "KAT-Coder Pro", "0.002", "0.006", "0", "0"),
+            // LongCat Flash Chat — openclawProviderPresets.ts:719 cost {input:0.001, output:0.004}
+            (
+                "longcat-flash-chat",
+                "LongCat Flash Chat",
+                "0.001",
+                "0.004",
+                "0",
+                "0",
+            ),
+            // Ling 2.5 1T — openclawProviderPresets.ts:756 cost {input:0.001, output:0.004}
+            ("ling-2.5-1t", "Ling 2.5 1T", "0.001", "0.004", "0", "0"),
+            // Kimi For Coding — openclawProviderPresets.ts:469 cost {input:0.002, output:0.006}
+            (
+                "kimi-for-coding",
+                "Kimi For Coding",
+                "0.002",
+                "0.006",
+                "0",
+                "0",
+            ),
+            // opencode Antigravity 别名：复用已 seed 的 Claude 4.5 价格（同族同价）
+            // gemini-claude-opus-4-5-thinking = Claude Opus 4.5 价格
+            (
+                "gemini-claude-opus-4-5-thinking",
+                "Antigravity - Claude Opus 4.5",
+                "5",
+                "25",
+                "0.50",
+                "6.25",
+            ),
+            // gemini-claude-sonnet-4-5-thinking = Claude Sonnet 4.5 价格
+            (
+                "gemini-claude-sonnet-4-5-thinking",
+                "Antigravity - Claude Sonnet 4.5",
+                "3",
+                "15",
+                "0.30",
+                "3.75",
+            ),
             // MiMo (小米)
             (
                 "mimo-v2-flash",

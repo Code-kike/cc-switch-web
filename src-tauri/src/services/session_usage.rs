@@ -14,7 +14,7 @@ use crate::error::AppError;
 use crate::proxy::usage::calculator::{CostCalculator, ModelPricing};
 use crate::proxy::usage::parser::TokenUsage;
 use crate::services::usage_stats::{
-    effective_usage_log_filter, should_skip_session_insert, DedupKey,
+    effective_usage_log_filter, pricing_lookup_candidates, should_skip_session_insert, DedupKey,
 };
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
@@ -480,9 +480,13 @@ fn find_model_pricing_for_session(
     conn: &rusqlite::Connection,
     model_id: &str,
 ) -> Option<ModelPricing> {
-    // 精确匹配
-    if let Ok(Some(pricing)) = try_find_pricing(conn, model_id) {
-        return Some(pricing);
+    // 优先走与 proxy 实时计费完全一致的归一化候选
+    // （cleaned / 小写 / 点号转横线 / 去 1M 标记），确保会话日志里的
+    // 点号写法（claude-sonnet-4.6）、大小写、`[1M]` 标记不会再漏命中横线形 seed。
+    for candidate in pricing_lookup_candidates(model_id) {
+        if let Ok(Some(pricing)) = try_find_pricing(conn, &candidate) {
+            return Some(pricing);
+        }
     }
 
     // 模糊匹配：去掉日期后缀
@@ -624,6 +628,46 @@ mod tests {
             message.get("stop_reason").unwrap().as_str().unwrap(),
             "end_turn"
         );
+    }
+
+    #[test]
+    fn test_session_pricing_lookup_normalizes_like_proxy() -> Result<(), AppError> {
+        // Fix B 回归：会话日志里的点号/混合大小写/1M 标记 id 历史上走自有匹配，
+        // 不做 '.'→'-'/小写归一 → 漏命中横线形 seed → 成本 0。
+        // 现在统一复用 pricing_lookup_candidates，应与 proxy 实时计费口径一致。
+        let db = Database::memory()?;
+        let conn = lock_conn!(db.conn);
+
+        // 点号写法应命中横线形 seed（claude-sonnet-4-6 / claude-haiku-4-5 已预置）
+        assert!(
+            find_model_pricing_for_session(&conn, "claude-sonnet-4.6").is_some(),
+            "claude-sonnet-4.6 应归一为 claude-sonnet-4-6 命中"
+        );
+        assert!(
+            find_model_pricing_for_session(&conn, "claude-haiku-4.5").is_some(),
+            "claude-haiku-4.5 应归一为 claude-haiku-4-5 命中"
+        );
+        // 混合大小写
+        assert!(
+            find_model_pricing_for_session(&conn, "Claude-Opus-4-8").is_some(),
+            "大小写混合的 Claude-Opus-4-8 应小写后命中"
+        );
+        // 1M 标记
+        assert!(
+            find_model_pricing_for_session(&conn, "claude-opus-4-8[1M]").is_some(),
+            "claude-opus-4-8[1M] 应剥离标记后命中"
+        );
+        // 既有行为不回归：日期后缀 + 精确匹配仍工作
+        assert!(
+            find_model_pricing_for_session(&conn, "claude-sonnet-4-6-20260217").is_some(),
+            "带日期后缀的 seed 行应精确命中"
+        );
+        assert!(
+            find_model_pricing_for_session(&conn, "no-such-model-xyz").is_none(),
+            "未知模型不应命中"
+        );
+
+        Ok(())
     }
 
     #[test]

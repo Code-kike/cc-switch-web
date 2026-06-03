@@ -250,10 +250,14 @@ pub(crate) fn map_responses_stop_reason(
 /// Build Anthropic-style usage JSON from Responses API usage, including cache tokens.
 ///
 /// Field resolution:
-/// - input tokens: `input_tokens` → `prompt_tokens` → 0
+/// - input tokens: (`input_tokens` → `prompt_tokens` → 0) 再减去缓存命中得到 fresh input
 /// - output tokens: `output_tokens` → `completion_tokens` → 0
 /// - cache read tokens: direct field or nested OpenAI cached token details
 /// - cache creation tokens: direct field only
+///
+/// 关键：OpenAI Responses/Codex 的输入 token 含缓存命中，而该结果会被当作
+/// Anthropic（claude，cache-exclusive）计费，故 input_tokens 必须扣除缓存命中，
+/// 否则缓存部分会被重复计费。与 transform::openai_to_anthropic 保持一致。
 pub(crate) fn build_anthropic_usage_from_responses(usage: Option<&Value>) -> Value {
     let u = match usage {
         Some(v) if !v.is_null() && v.is_object() => v,
@@ -305,32 +309,35 @@ pub(crate) fn build_anthropic_usage_from_responses(usage: Option<&Value>) -> Val
         log::debug!("[Responses] Partial usage object: {:?}", u);
     }
 
+    // 先解析缓存命中数（与下方写入 cache_read_input_tokens 的优先级一致）：
+    // 直接的 Anthropic 风格字段（兼容服务端）最权威，其次 Responses 的
+    // input_tokens_details.cached_tokens，再次 Chat Completions 的
+    // prompt_tokens_details.cached_tokens。
+    let cached = u
+        .get("cache_read_input_tokens")
+        .and_then(|v| v.as_u64())
+        .or_else(|| {
+            u.pointer("/input_tokens_details/cached_tokens")
+                .and_then(|v| v.as_u64())
+        })
+        .or_else(|| {
+            u.pointer("/prompt_tokens_details/cached_tokens")
+                .and_then(|v| v.as_u64())
+        });
+
+    // OpenAI Responses/Codex 的 input_tokens 含缓存命中；Anthropic 语义里
+    // input_tokens 是不含缓存的 fresh input，且成本计算器对 claude 不扣减缓存
+    // （app_type=="claude"），故此处减去缓存命中，避免缓存部分被「input 价 +
+    // cache_read 价」重复计费。与 transform::openai_to_anthropic 口径一致。
+    let fresh_input = input.saturating_sub(cached.unwrap_or(0));
+
     let mut result = json!({
-        "input_tokens": input,
+        "input_tokens": fresh_input,
         "output_tokens": output
     });
 
-    // Step 1: OpenAI nested details as fallback
-    // OpenAI Responses API: input_tokens_details.cached_tokens
-    if let Some(cached) = u
-        .pointer("/input_tokens_details/cached_tokens")
-        .and_then(|v| v.as_u64())
-    {
+    if let Some(cached) = cached {
         result["cache_read_input_tokens"] = json!(cached);
-    }
-    // OpenAI standard: prompt_tokens_details.cached_tokens
-    if let Some(cached) = u
-        .pointer("/prompt_tokens_details/cached_tokens")
-        .and_then(|v| v.as_u64())
-    {
-        if result.get("cache_read_input_tokens").is_none() {
-            result["cache_read_input_tokens"] = json!(cached);
-        }
-    }
-
-    // Step 2: Direct Anthropic-style fields override (authoritative if present)
-    if let Some(v) = u.get("cache_read_input_tokens") {
-        result["cache_read_input_tokens"] = v.clone();
     }
     if let Some(v) = u.get("cache_creation_input_tokens") {
         result["cache_creation_input_tokens"] = v.clone();
@@ -1137,7 +1144,9 @@ mod tests {
         });
 
         let result = responses_to_anthropic(input).unwrap();
-        assert_eq!(result["usage"]["input_tokens"], 100);
+        // input_tokens 应为 input - cached (100 - 80 = 20)，对齐原生 Anthropic
+        // 语义，避免缓存部分被重复计费。
+        assert_eq!(result["usage"]["input_tokens"], 20);
         assert_eq!(result["usage"]["output_tokens"], 50);
         assert_eq!(result["usage"]["cache_read_input_tokens"], 80);
     }
@@ -1161,6 +1170,8 @@ mod tests {
         });
 
         let result = responses_to_anthropic(input).unwrap();
+        // 直接字段 cache_read=60 → input_tokens = 100 - 60 = 40（fresh input）。
+        assert_eq!(result["usage"]["input_tokens"], 40);
         assert_eq!(result["usage"]["cache_read_input_tokens"], 60);
         assert_eq!(result["usage"]["cache_creation_input_tokens"], 20);
     }
@@ -1624,7 +1635,8 @@ mod tests {
                 "cached_tokens": 80
             }
         })));
-        assert_eq!(result["input_tokens"], json!(100));
+        // input_tokens 扣除缓存命中：100 - 80 = 20（fresh input）。
+        assert_eq!(result["input_tokens"], json!(20));
         assert_eq!(result["output_tokens"], json!(50));
         assert_eq!(result["cache_read_input_tokens"], json!(80));
     }
@@ -1639,7 +1651,9 @@ mod tests {
             },
             "cache_read_input_tokens": 100
         })));
+        // 直接字段权威：cached=100 → input_tokens = max(100 - 100, 0) = 0。
         assert_eq!(result["cache_read_input_tokens"], json!(100));
+        assert_eq!(result["input_tokens"], json!(0));
     }
 
     #[test]

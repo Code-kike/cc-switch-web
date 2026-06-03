@@ -100,11 +100,15 @@ struct ToolBlockState {
 const INFINITE_WHITESPACE_THRESHOLD: usize = 20;
 
 fn build_anthropic_usage_json(usage: &Usage) -> Value {
+    let cached = extract_cache_read_tokens(usage);
+    // OpenAI 的 prompt_tokens 已包含缓存命中；Anthropic input_tokens 是 fresh input，
+    // 且计算器对 claude 不再扣减缓存，故此处减去缓存命中以避免重复计费。
+    let input_tokens = usage.prompt_tokens.saturating_sub(cached.unwrap_or(0));
     let mut usage_json = json!({
-        "input_tokens": usage.prompt_tokens,
+        "input_tokens": input_tokens,
         "output_tokens": usage.completion_tokens
     });
-    if let Some(cached) = extract_cache_read_tokens(usage) {
+    if let Some(cached) = cached {
         usage_json["cache_read_input_tokens"] = json!(cached);
     }
     if let Some(created) = usage.cache_creation_input_tokens {
@@ -214,20 +218,14 @@ pub fn create_anthropic_sse_stream<E: std::error::Error + Send + 'static>(
 
                                     if let Some(choice) = chunk.choices.first() {
                                         if !has_sent_message_start {
-                                            // Build usage with cache tokens if available from first chunk
-                                            let mut start_usage = json!({
-                                                "input_tokens": 0,
-                                                "output_tokens": 0
-                                            });
-                                            if let Some(u) = &chunk.usage {
-                                                start_usage["input_tokens"] = json!(u.prompt_tokens);
-                                                if let Some(cached) = extract_cache_read_tokens(u) {
-                                                    start_usage["cache_read_input_tokens"] = json!(cached);
-                                                }
-                                                if let Some(created) = u.cache_creation_input_tokens {
-                                                    start_usage["cache_creation_input_tokens"] = json!(created);
-                                                }
-                                            }
+                                            // Build usage with cache tokens if available from first chunk.
+                                            // 复用 build_anthropic_usage_json 保证 input_tokens 已扣除缓存命中，
+                                            // 与 message_delta 路径口径一致、不重复计费。
+                                            let start_usage = chunk
+                                                .usage
+                                                .as_ref()
+                                                .map(build_anthropic_usage_json)
+                                                .unwrap_or_else(default_anthropic_usage_json);
 
                                             let event = json!({
                                                 "type": "message_start",
@@ -713,6 +711,56 @@ mod tests {
     }
 
     #[test]
+    fn test_build_anthropic_usage_excludes_cached_from_input() {
+        // prompt_tokens 含缓存命中 → input_tokens 应为 prompt_tokens - cached。
+        let usage = Usage {
+            prompt_tokens: 1000,
+            completion_tokens: 50,
+            prompt_tokens_details: Some(PromptTokensDetails { cached_tokens: 200 }),
+            cache_read_input_tokens: None,
+            cache_creation_input_tokens: None,
+        };
+        let json = build_anthropic_usage_json(&usage);
+        assert_eq!(json["input_tokens"], serde_json::json!(800));
+        assert_eq!(json["cache_read_input_tokens"], serde_json::json!(200));
+        assert_eq!(json["output_tokens"], serde_json::json!(50));
+    }
+
+    #[test]
+    fn test_build_anthropic_usage_no_cache_keeps_full_input() {
+        let usage = Usage {
+            prompt_tokens: 400,
+            completion_tokens: 5,
+            prompt_tokens_details: None,
+            cache_read_input_tokens: None,
+            cache_creation_input_tokens: None,
+        };
+        let json = build_anthropic_usage_json(&usage);
+        assert_eq!(json["input_tokens"], serde_json::json!(400));
+        assert!(json.get("cache_read_input_tokens").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_streaming_message_start_excludes_cached_from_input() {
+        // 端到端：首个 chunk 带 usage（prompt_tokens=1000, cached=200），
+        // 转换出的 message_start.usage.input_tokens 应为 800（已扣缓存）。
+        let input = concat!(
+            "data: {\"id\":\"chatcmpl_1\",\"model\":\"gpt-4o\",\"choices\":[{\"delta\":{\"content\":\"hi\"}}],\"usage\":{\"prompt_tokens\":1000,\"completion_tokens\":5,\"prompt_tokens_details\":{\"cached_tokens\":200}}}\n\n",
+            "data: {\"id\":\"chatcmpl_1\",\"model\":\"gpt-4o\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1000,\"completion_tokens\":5,\"prompt_tokens_details\":{\"cached_tokens\":200}}}\n\n",
+            "data: [DONE]\n\n"
+        );
+
+        let events = collect_anthropic_events(input).await;
+        let message_start = events
+            .iter()
+            .find(|event| event_type(event) == Some("message_start"))
+            .expect("message_start event present");
+        let usage = &message_start["message"]["usage"];
+        assert_eq!(usage["input_tokens"], serde_json::json!(800));
+        assert_eq!(usage["cache_read_input_tokens"], serde_json::json!(200));
+    }
+
+    #[test]
     fn test_map_stop_reason_legacy_and_filtered_values() {
         assert_eq!(
             map_stop_reason(Some("function_call")),
@@ -1044,7 +1092,8 @@ mod tests {
             message_delta
                 .pointer("/usage/input_tokens")
                 .and_then(|v| v.as_u64()),
-            Some(13312)
+            // prompt_tokens(13312) - cached(100) = 13212（fresh input，避免重复计费）
+            Some(13212)
         );
         assert_eq!(
             message_delta
