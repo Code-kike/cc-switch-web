@@ -373,7 +373,8 @@ const DailyMemoryPanel: React.FC<DailyMemoryPanelProps> = ({
               title={
                 webMode
                   ? t("settings.webManualPathHint", {
-                      defaultValue: "Web 模式无法浏览服务端文件系统，请手动使用该路径",
+                      defaultValue:
+                        "Web 模式无法浏览服务端文件系统，请手动使用该路径",
                     })
                   : t("workspace.openDirectory")
               }

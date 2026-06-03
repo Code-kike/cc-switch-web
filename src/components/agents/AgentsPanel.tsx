@@ -14,9 +14,7 @@ export function AgentsPanel({}: AgentsPanelProps) {
         <div className="w-20 h-20 rounded-full bg-white/5 flex items-center justify-center mb-4 animate-pulse-slow">
           <Bot className="w-10 h-10 text-muted-foreground" />
         </div>
-        <h3 className="text-xl font-semibold">
-          {t("agents.comingSoonTitle")}
-        </h3>
+        <h3 className="text-xl font-semibold">{t("agents.comingSoonTitle")}</h3>
         <p className="text-muted-foreground max-w-md">
           {t("agents.comingSoonDescription")}
         </p>

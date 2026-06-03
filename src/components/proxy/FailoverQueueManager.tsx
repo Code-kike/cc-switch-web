@@ -109,11 +109,7 @@ export function FailoverQueueManager({
       );
     } catch (error) {
       toast.error(
-        formatActionError(
-          error,
-          "proxy.failoverQueue.addFailed",
-          "添加失败",
-        ),
+        formatActionError(error, "proxy.failoverQueue.addFailed", "添加失败"),
       );
     }
   };
@@ -310,8 +306,11 @@ function QueueItem({
   isRemoving,
 }: QueueItemProps) {
   const { t } = useTranslation();
-  const { data: health, error: healthError, isLoading: isHealthLoading } =
-    useProviderHealth(item.providerId, appType, !disabled);
+  const {
+    data: health,
+    error: healthError,
+    isLoading: isHealthLoading,
+  } = useProviderHealth(item.providerId, appType, !disabled);
   const resetCircuitBreaker = useResetCircuitBreaker();
 
   const handleResetCircuit = async () => {

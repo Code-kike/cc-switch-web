@@ -30,31 +30,34 @@ export function usePromptActions(appId: AppId) {
     [t],
   );
 
-  const reload = useCallback(async (options?: { silent?: boolean }) => {
-    const silent = options?.silent === true;
-    if (!silent) {
-      setLoading(true);
-    }
-    try {
-      const data = await promptsApi.getPrompts(appId);
-      setPrompts(data);
-
-      // 同时加载当前文件内容
-      try {
-        const content = await promptsApi.getCurrentFileContent(appId);
-        setCurrentFileContent(content);
-      } catch (error) {
-        setCurrentFileContent(null);
-        showPromptError("prompts.currentFileLoadFailed", error);
-      }
-    } catch (error) {
-      showPromptError("prompts.loadFailed", error);
-    } finally {
+  const reload = useCallback(
+    async (options?: { silent?: boolean }) => {
+      const silent = options?.silent === true;
       if (!silent) {
-        setLoading(false);
+        setLoading(true);
       }
-    }
-  }, [appId, showPromptError]);
+      try {
+        const data = await promptsApi.getPrompts(appId);
+        setPrompts(data);
+
+        // 同时加载当前文件内容
+        try {
+          const content = await promptsApi.getCurrentFileContent(appId);
+          setCurrentFileContent(content);
+        } catch (error) {
+          setCurrentFileContent(null);
+          showPromptError("prompts.currentFileLoadFailed", error);
+        }
+      } catch (error) {
+        showPromptError("prompts.loadFailed", error);
+      } finally {
+        if (!silent) {
+          setLoading(false);
+        }
+      }
+    },
+    [appId, showPromptError],
+  );
 
   const savePrompt = useCallback(
     async (id: string, prompt: Prompt) => {

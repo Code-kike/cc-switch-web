@@ -249,7 +249,9 @@ export function useCommonConfigSnippet({
           .setCommonConfigSnippet("claude", "")
           .catch((error: unknown) => {
             console.error("保存通用配置失败:", error);
-            setCommonConfigError(formatConfigError(error, "claudeConfig.saveFailed"));
+            setCommonConfigError(
+              formatConfigError(error, "claudeConfig.saveFailed"),
+            );
           });
 
         if (useCommonConfig) {
@@ -275,7 +277,9 @@ export function useCommonConfigSnippet({
           .setCommonConfigSnippet("claude", value)
           .catch((error: unknown) => {
             console.error("保存通用配置失败:", error);
-            setCommonConfigError(formatConfigError(error, "claudeConfig.saveFailed"));
+            setCommonConfigError(
+              formatConfigError(error, "claudeConfig.saveFailed"),
+            );
           });
       }
 
@@ -355,7 +359,9 @@ export function useCommonConfigSnippet({
       await configApi.setCommonConfigSnippet("claude", extracted);
     } catch (error) {
       console.error("提取通用配置失败:", error);
-      setCommonConfigError(formatConfigError(error, "claudeConfig.extractFailed"));
+      setCommonConfigError(
+        formatConfigError(error, "claudeConfig.extractFailed"),
+      );
     } finally {
       setIsExtracting(false);
     }

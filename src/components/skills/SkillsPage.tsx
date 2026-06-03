@@ -127,7 +127,11 @@ export const SkillsPage = forwardRef<SkillsPageHandle, SkillsPageProps>(
         return;
       }
 
-      if (skillsShQuery === "" && skillsShOffset === 0 && accumulatedResults.length === 0) {
+      if (
+        skillsShQuery === "" &&
+        skillsShOffset === 0 &&
+        accumulatedResults.length === 0
+      ) {
         return;
       }
 

@@ -62,7 +62,8 @@ export function RepoManagerPanel({
   const normalizedBranch = branch.trim() || "main";
   const duplicateRepo = parsedRepo
     ? repos.find(
-        (repo) => repo.owner === parsedRepo.owner && repo.name === parsedRepo.name,
+        (repo) =>
+          repo.owner === parsedRepo.owner && repo.name === parsedRepo.name,
       )
     : undefined;
 
@@ -246,7 +247,9 @@ export function RepoManagerPanel({
                         size="icon"
                         type="button"
                         onClick={() => void handleRemove(repo.owner, repo.name)}
-                        title={isRemoving ? t("common.deleting") : t("common.delete")}
+                        title={
+                          isRemoving ? t("common.deleting") : t("common.delete")
+                        }
                         aria-label={
                           isRemoving ? t("common.deleting") : t("common.delete")
                         }
