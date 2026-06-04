@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 6
+- **Total Sessions**: 7
 - **Last Active**: 2026-06-04
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~209 | Active |
+| `journal-1.md` | ~242 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 7 | 2026-06-04 | Fix non-security review findings | `e0b85277` | `chore/repo-hygiene-gitignore-task-dedup` |
 | 6 | 2026-06-04 | Repo hygiene: untrack .github + dedup archived task dirs | `1161253b` | `chore/repo-hygiene-gitignore-task-dedup` |
 | 5 | 2026-06-04 | Add CI web-server example compile check | `112cc83b` | `ci/web-server-example-compile-check` |
 | 4 | 2026-06-04 | Fix web-server example build: model_mapper regression + autoexamples | `fdf41ca8` | `fix/cargo-autoexamples-web-server-includes` |

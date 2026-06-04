@@ -207,3 +207,36 @@ Removed the .github line from .gitignore (dormant trap: new .github files would 
 ### Next Steps
 
 - None - task complete
+
+
+## Session 7: Fix non-security review findings
+
+**Date**: 2026-06-04
+**Task**: Fix non-security review findings
+**Branch**: `chore/repo-hygiene-gitignore-task-dedup`
+
+### Summary
+
+Fixed non-security review findings across web-server behavior, WebDAV confirmation, usage scripts, restore/live-sync consistency, web file picker cancellation, and SSE reconnect handling; validation passed for frontend and Rust test suites.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `e0b85277` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
