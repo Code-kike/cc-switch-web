@@ -1,0 +1,1 @@
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "CI must compile-cover BOTH runtimes; this step adds the web-server (server example) compile coverage the desktop cargo test/clippy steps skip."}

@@ -97,3 +97,6 @@ jobs:
 
       - name: Run tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Web-server example compile check
+        run: cargo check --no-default-features --features web-server --example server --manifest-path src-tauri/Cargo.toml
