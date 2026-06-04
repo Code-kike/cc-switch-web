@@ -306,3 +306,37 @@ Ran standalone web-server smoke validation successfully, confirmed prior GitHub 
 ### Next Steps
 
 - None - task complete
+
+
+## Session 10: Update GitHub Actions runtime compatibility
+
+**Date**: 2026-06-04
+**Task**: Update GitHub Actions runtime compatibility
+**Branch**: `chore/repo-hygiene-gitignore-task-dedup`
+
+### Summary
+
+Upgraded outdated GitHub Actions workflow action majors to avoid Node.js 20 action runtime deprecation, verified workflow YAML parsing, typecheck, format check, unit tests, and recorded the reusable CI runtime guidance in Trellis specs.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `6e54bb63` | (see git log) |
+| `649bbeb3` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
