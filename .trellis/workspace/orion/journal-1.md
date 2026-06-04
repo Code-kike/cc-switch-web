@@ -75,3 +75,36 @@ Round 1 fixed Codex follow-up findings (bare claude-haiku-4-5 seed; atomic_write
 ### Next Steps
 
 - None - task complete
+
+
+## Session 3: Fix Frontend Checks CI: split web-server integration suites
+
+**Date**: 2026-06-04
+**Task**: Fix Frontend Checks CI: split web-server integration suites
+**Branch**: `fix/ci-split-web-server-integration-suites`
+
+### Summary
+
+CI Frontend Checks failed (pre-existing on main+all branches) because pnpm test:unit ran the 20 *.web-server.test.tsx E2E suites that boot a real server (dist-web + cargo --example server), unavailable in the Node-only FE job. Option A: vitest.config.ts excludes **/*.web-server.test.tsx; new standalone vitest.integration.config.ts includes only them; package.json adds test:integration. test:unit now 104 files/521 tests/0 failed Node-only. PR #13. Out of scope (surfaced): web_proxy/web_services examples are pre-existing broken stubs under --features web-server (unused; CI skips via required-features; integration uses --example server).
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `fea1901f` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
