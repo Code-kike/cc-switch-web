@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 2
-- **Last Active**: 2026-06-03
+- **Total Sessions**: 3
+- **Last Active**: 2026-06-04
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~77 | Active |
+| `journal-1.md` | ~110 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 3 | 2026-06-04 | Fix Frontend Checks CI: split web-server integration suites | `fea1901f` | `fix/ci-split-web-server-integration-suites` |
 | 2 | 2026-06-03 | Cross-validation + cost-accuracy follow-up | `080619d6`, `f7725735`, `18a9a9d2` | `fix/audit-remediation-pricing-ci-ssrf-parity` |
 | 1 | 2026-06-03 | Audit remediation (#2-#6): pricing, CI gates, web SSRF, parity, hygiene | `7114e460`, `eba33735`, `88d842f1` | `fix/audit-remediation-pricing-ci-ssrf-parity` |
 <!-- @@@/auto:session-history -->

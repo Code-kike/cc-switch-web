@@ -1,5 +1,5 @@
 import path from "node:path";
-import { configDefaults, defineConfig } from "vitest/config";
+import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 
 export default defineConfig({
@@ -13,9 +13,6 @@ export default defineConfig({
     environment: "jsdom",
     setupFiles: ["./tests/setupGlobals.ts", "./tests/setupTests.ts"],
     globals: true,
-    exclude: [...configDefaults.exclude, "**/*.web-server.test.tsx"],
-    coverage: {
-      reporter: ["text", "lcov"],
-    },
+    include: ["tests/integration/**/*.web-server.test.tsx"],
   },
 });
