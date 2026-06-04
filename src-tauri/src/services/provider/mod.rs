@@ -21,18 +21,22 @@ use crate::settings::CustomEndpoint;
 use crate::store::AppState;
 
 // Re-export sub-module functions for external access
+#[cfg(feature = "desktop")]
+pub use live::should_import_default_config_on_startup;
 pub use live::{
     import_default_config, import_hermes_providers_from_live, import_openclaw_providers_from_live,
-    import_opencode_providers_from_live, read_live_settings,
-    should_import_default_config_on_startup, sync_current_to_live,
+    import_opencode_providers_from_live, read_live_settings, sync_current_to_live,
 };
 
 // Internal re-exports (pub(crate))
+#[cfg(feature = "desktop")]
+pub(crate) use live::build_effective_settings_with_common_config;
+#[cfg(feature = "desktop")]
 pub(crate) use live::sanitize_claude_settings_for_live;
 pub(crate) use live::{
-    build_effective_settings_with_common_config, normalize_provider_common_config_for_storage,
-    provider_exists_in_live_config, strip_common_config_from_live_settings,
-    sync_current_provider_for_app_to_live, write_live_with_common_config,
+    normalize_provider_common_config_for_storage, provider_exists_in_live_config,
+    strip_common_config_from_live_settings, sync_current_provider_for_app_to_live,
+    write_live_with_common_config,
 };
 
 // Internal re-exports

@@ -110,17 +110,51 @@ export async function pickWebFile(accept?: string): Promise<File | null> {
   if (typeof document === "undefined") return null;
   return new Promise((resolve) => {
     const input = document.createElement("input");
+    let settled = false;
+    let focusTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const cleanup = () => {
+      if (focusTimer !== null) {
+        clearTimeout(focusTimer);
+        focusTimer = null;
+      }
+      if (typeof window !== "undefined") {
+        window.removeEventListener("focus", handleWindowFocus);
+      }
+      input.remove();
+    };
+
+    const finish = (file: File | null) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(file);
+    };
+
+    const handleWindowFocus = () => {
+      if (focusTimer !== null) clearTimeout(focusTimer);
+      focusTimer = setTimeout(() => {
+        focusTimer = null;
+        if (!settled && (input.files?.length ?? 0) === 0) {
+          finish(null);
+        }
+      }, 100);
+    };
+
     input.type = "file";
     if (accept) input.accept = accept;
     input.style.display = "none";
     input.addEventListener(
       "change",
       () => {
-        resolve(input.files?.[0] ?? null);
-        input.remove();
+        finish(input.files?.[0] ?? null);
       },
       { once: true },
     );
+    input.addEventListener("cancel", () => finish(null), { once: true });
+    if (typeof window !== "undefined") {
+      window.addEventListener("focus", handleWindowFocus);
+    }
     document.body.appendChild(input);
     input.click();
   });

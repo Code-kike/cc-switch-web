@@ -155,19 +155,22 @@ mod tests {
 
     #[test]
     fn test_endpoints_handles_empty_list() {
-        let result =
-            tauri::async_runtime::block_on(SpeedtestService::test_endpoints(Vec::new(), Some(5)))
-                .expect("empty list should succeed");
+        let result = tokio::runtime::Runtime::new()
+            .expect("tokio runtime")
+            .block_on(SpeedtestService::test_endpoints(Vec::new(), Some(5)))
+            .expect("empty list should succeed");
         assert!(result.is_empty());
     }
 
     #[test]
     fn test_endpoints_reports_invalid_url() {
-        let result = tauri::async_runtime::block_on(SpeedtestService::test_endpoints(
-            vec!["not a url".into(), "".into()],
-            None,
-        ))
-        .expect("invalid inputs should still succeed");
+        let result = tokio::runtime::Runtime::new()
+            .expect("tokio runtime")
+            .block_on(SpeedtestService::test_endpoints(
+                vec!["not a url".into(), "".into()],
+                None,
+            ))
+            .expect("invalid inputs should still succeed");
 
         assert_eq!(result.len(), 2);
         assert!(

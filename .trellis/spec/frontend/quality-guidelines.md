@@ -739,6 +739,186 @@ git diff v3.14.1..upstream-v3.15.0 -- <focused-area>
 
 ---
 
+### Scenario: Standalone Web-Server Smoke Validation
+
+#### 1. Scope / Trigger
+
+- Trigger: validating Web API behavior after changes to Web routes, server runtime,
+  provider/config persistence, session/usage flows, or deployment-facing server
+  behavior.
+- Applies when using `scripts/smoke-web-server.mjs`,
+  `src-tauri/examples/server.rs`, `src-tauri/src/web_api/**`, or
+  `src/lib/api/web-commands.ts`.
+
+#### 2. Signatures
+
+- Web build command:
+  - `pnpm build:web`
+- Smoke command:
+  - `pnpm smoke:web-server`
+- Server entry:
+  - `cargo run --no-default-features --features web-server --example server`
+- Required smoke environment:
+  - `CC_SWITCH_DATA_DIR`
+  - `CC_SWITCH_TEST_HOME`
+  - `CC_SWITCH_WEB_DIST_DIR`
+
+#### 3. Contracts
+
+- `pnpm smoke:web-server` requires `dist-web/index.html`; run
+  `pnpm build:web` first when the artifact is missing or stale.
+- Smoke runs must use isolated temp data/home directories through
+  `CC_SWITCH_DATA_DIR` and `CC_SWITCH_TEST_HOME`; do not point the smoke server
+  at a developer's real CLI configuration.
+- `CC_SWITCH_WEB_DIST_DIR` must point at the built Web bundle that should be
+  served by the standalone server.
+- The smoke result should be interpreted by probe expectations, not by status
+  code alone. Desktop-only endpoints returning `501` and validation probes
+  returning `400` can be correct when the probe expects those statuses.
+- A smoke task should leave business-code files unchanged unless it uncovered a
+  real defect that is being fixed in a separate task.
+
+#### 4. Validation & Error Matrix
+
+- Missing `dist-web/index.html` -> build Web assets before smoke testing.
+- Server exits before `/api/health` responds -> investigate server startup,
+  feature flags, and runtime environment before changing product code.
+- Smoke mutates files outside the isolated temp directories -> reject the run and
+  fix the smoke setup.
+- Probe returns an unexpected status or payload -> categorize as product defect,
+  test fixture defect, or environment flake before mixing repairs into the smoke
+  task.
+- Web route coverage has `missing > 0` after command/route edits -> reject until
+  `pnpm check:web-routes` passes.
+
+#### 5. Good/Base/Bad Cases
+
+- Good: build Web assets when needed, run `pnpm smoke:web-server`, confirm the
+  standalone server starts on localhost, then verify the working tree has no
+  business-code changes.
+- Base: after frontend-only changes that do not touch routes or server runtime,
+  run `pnpm typecheck` and targeted unit tests; smoke can be deferred unless the
+  PRD requires standalone server validation.
+- Bad: relying only on desktop Tauri checks after Web API handler changes.
+- Bad: running the server against a real `$HOME` and treating mutated personal
+  config files as smoke fixtures.
+
+#### 6. Tests Required
+
+- Run `pnpm check:web-routes` after Web command, adapter, route, or handler
+  changes.
+- Run `pnpm typecheck` after frontend or API adapter changes.
+- Run `pnpm smoke:web-server` for standalone Web API/server validation.
+- If `dist-web/index.html` is missing or stale, run `pnpm build:web` before the
+  smoke command.
+- After smoke, run `git status --short` and confirm only intended task or
+  generated artifacts changed.
+
+#### 7. Wrong vs Correct
+
+##### Wrong
+
+```bash
+cargo run --no-default-features --features web-server --example server
+# Then manually click around using the developer's real HOME/config files.
+```
+
+##### Correct
+
+```bash
+pnpm build:web
+pnpm smoke:web-server
+git status --short
+```
+
+---
+
+### Scenario: GitHub Actions Runtime Compatibility
+
+#### 1. Scope / Trigger
+
+- Trigger: GitHub Actions reports that an action is running on a deprecated
+  runtime such as Node.js 20, or a workflow action has an available major version
+  bump already adopted upstream.
+- Applies when editing `.github/workflows/*.yml` action `uses:` entries.
+
+#### 2. Signatures
+
+- CI workflow:
+  - `.github/workflows/ci.yml`
+- Release workflow:
+  - `.github/workflows/release.yml`
+- Stale issue workflow:
+  - `.github/workflows/stale.yml`
+- Current expected action major versions:
+  - `actions/checkout@v6`
+  - `actions/setup-node@v6`
+  - `pnpm/action-setup@v6`
+  - `actions/cache@v5`
+  - `actions/stale@v10`
+  - `softprops/action-gh-release@v3`
+
+#### 3. Contracts
+
+- Fix runtime deprecation by upgrading the action major version, not by setting
+  environment variables that suppress or bypass GitHub runner warnings.
+- Do not change the app runtime version, such as `node-version: "20"`, unless the
+  task explicitly targets application runtime migration.
+- Preserve workflow triggers, permissions, job names, matrix entries, shell
+  commands, cache keys, release artifact names, and stale issue policy unless the
+  task explicitly changes those behaviors.
+- Verify target action tags exist before pinning a new major version.
+- Keep the change scoped to workflow metadata when the goal is runtime
+  compatibility; product code should remain untouched.
+
+#### 4. Validation & Error Matrix
+
+- Workflow still references a deprecated action major after the edit -> reject.
+- Target action tag does not exist -> reject and choose a supported major.
+- App runtime changes without an explicit runtime migration PRD -> reject.
+- YAML no longer parses -> reject before pushing.
+- CI succeeds but still reports the same deprecated action annotation -> inspect
+  all workflows and jobs for remaining older `uses:` entries.
+
+#### 5. Good/Base/Bad Cases
+
+- Good: upgrade `actions/checkout@v4` to `actions/checkout@v6` in every active
+  workflow that still references v4, then confirm PR CI passes.
+- Base: keep `node-version: "20"` in build/test jobs when the application still
+  supports Node 20 and the warning only concerns action runtime.
+- Bad: adding `ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION=true` to silence an action
+  runtime warning.
+- Bad: upgrading release workflow commands and artifact names while only trying
+  to update action runtimes.
+
+#### 6. Tests Required
+
+- Verify target tags with `git ls-remote --tags <action-repo> refs/tags/v<major>`.
+- Parse edited workflow YAML locally with an available YAML parser.
+- Run `git diff --check`.
+- Run `pnpm typecheck`, `pnpm format:check`, and `pnpm test:unit` for PR CI
+  parity.
+- Push and watch the PR CI run; confirm frontend and backend jobs pass and the
+  old action-runtime annotation is gone.
+
+#### 7. Wrong vs Correct
+
+##### Wrong
+
+```yaml
+env:
+  ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
+```
+
+##### Correct
+
+```yaml
+- name: Checkout
+  uses: actions/checkout@v6
+```
+
+---
+
 ## Testing Requirements
 
 <!-- What level of testing is expected -->

@@ -1,9 +1,62 @@
 use rquickjs::{Context, Function, Runtime};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 use url::{Host, Url};
 
 use crate::error::AppError;
+
+const JS_EXECUTION_TIMEOUT: Duration = Duration::from_secs(2);
+
+fn create_bounded_js_runtime() -> Result<(Runtime, Instant), AppError> {
+    let runtime = Runtime::new().map_err(|e| {
+        AppError::localized(
+            "usage_script.runtime_create_failed",
+            format!("创建 JS 运行时失败: {e}"),
+            format!("Failed to create JS runtime: {e}"),
+        )
+    })?;
+    let started_at = Instant::now();
+    let deadline = started_at + JS_EXECUTION_TIMEOUT;
+    runtime.set_interrupt_handler(Some(Box::new(move || Instant::now() >= deadline)));
+    Ok((runtime, started_at))
+}
+
+fn js_timeout_error(zh_stage: &str, en_stage: &str) -> AppError {
+    AppError::localized(
+        "usage_script.execution_timeout",
+        format!(
+            "JS 脚本执行超时（{}，超过 {} 秒）",
+            zh_stage,
+            JS_EXECUTION_TIMEOUT.as_secs()
+        ),
+        format!(
+            "JS script execution timed out ({} exceeded {} seconds)",
+            en_stage,
+            JS_EXECUTION_TIMEOUT.as_secs()
+        ),
+    )
+}
+
+fn map_js_error_or_timeout(
+    started_at: Instant,
+    zh_stage: &str,
+    en_stage: &str,
+    fallback_key: &'static str,
+    zh_prefix: &str,
+    en_prefix: &str,
+    error: rquickjs::Error,
+) -> AppError {
+    if started_at.elapsed() >= JS_EXECUTION_TIMEOUT {
+        return js_timeout_error(zh_stage, en_stage);
+    }
+
+    AppError::localized(
+        fallback_key,
+        format!("{zh_prefix}: {error}"),
+        format!("{en_prefix}: {error}"),
+    )
+}
 
 /// Best-effort extraction of `request.url` from a usage script's JS body, used
 /// at save-time to reject placeholder scripts that would always fail at
@@ -25,13 +78,7 @@ pub fn try_extract_request_url(script_code: &str) -> Result<Option<String>, AppE
         .replace("{{accessToken}}", "placeholder-token")
         .replace("{{userId}}", "placeholder-user");
 
-    let runtime = Runtime::new().map_err(|e| {
-        AppError::localized(
-            "usage_script.runtime_create_failed",
-            format!("创建 JS 运行时失败: {e}"),
-            format!("Failed to create JS runtime: {e}"),
-        )
-    })?;
+    let (runtime, js_started_at) = create_bounded_js_runtime()?;
     let context = Context::full(&runtime).map_err(|e| {
         AppError::localized(
             "usage_script.context_create_failed",
@@ -42,10 +89,14 @@ pub fn try_extract_request_url(script_code: &str) -> Result<Option<String>, AppE
 
     let url_result: Result<Option<String>, AppError> = context.with(|ctx| {
         let config: rquickjs::Object = ctx.eval(prepared).map_err(|e| {
-            AppError::localized(
+            map_js_error_or_timeout(
+                js_started_at,
+                "保存前解析 request.url",
+                "save-time request.url extraction",
                 "usage_script.config_parse_failed",
-                format!("解析配置失败: {e}"),
-                format!("Failed to parse config: {e}"),
+                "解析配置失败",
+                "Failed to parse config",
+                e,
             )
         })?;
 
@@ -98,13 +149,7 @@ pub async fn execute_usage_script(
 
     // 3. 在独立作用域中提取 request 配置（确保 Runtime/Context 在 await 前释放）
     let request_config = {
-        let runtime = Runtime::new().map_err(|e| {
-            AppError::localized(
-                "usage_script.runtime_create_failed",
-                format!("创建 JS 运行时失败: {e}"),
-                format!("Failed to create JS runtime: {e}"),
-            )
-        })?;
+        let (runtime, js_started_at) = create_bounded_js_runtime()?;
         let context = Context::full(&runtime).map_err(|e| {
             AppError::localized(
                 "usage_script.context_create_failed",
@@ -116,10 +161,14 @@ pub async fn execute_usage_script(
         context.with(|ctx| {
             // 执行用户代码，获取配置对象
             let config: rquickjs::Object = ctx.eval(script_with_vars.clone()).map_err(|e| {
-                AppError::localized(
+                map_js_error_or_timeout(
+                    js_started_at,
+                    "解析 request 配置",
+                    "request config parsing",
                     "usage_script.config_parse_failed",
-                    format!("解析配置失败: {e}"),
-                    format!("Failed to parse config: {e}"),
+                    "解析配置失败",
+                    "Failed to parse config",
+                    e,
                 )
             })?;
 
@@ -136,10 +185,14 @@ pub async fn execute_usage_script(
             let request_json: String = ctx
                 .json_stringify(request)
                 .map_err(|e| {
-                    AppError::localized(
+                    map_js_error_or_timeout(
+                        js_started_at,
+                        "序列化 request 配置",
+                        "request config serialization",
                         "usage_script.request_serialize_failed",
-                        format!("序列化 request 失败: {e}"),
-                        format!("Failed to serialize request: {e}"),
+                        "序列化 request 失败",
+                        "Failed to serialize request",
+                        e,
                     )
                 })?
                 .ok_or_else(|| {
@@ -179,13 +232,7 @@ pub async fn execute_usage_script(
 
     // 7. 在独立作用域中执行 extractor（确保 Runtime/Context 在函数结束前释放）
     let result: Value = {
-        let runtime = Runtime::new().map_err(|e| {
-            AppError::localized(
-                "usage_script.runtime_create_failed",
-                format!("创建 JS 运行时失败: {e}"),
-                format!("Failed to create JS runtime: {e}"),
-            )
-        })?;
+        let (runtime, js_started_at) = create_bounded_js_runtime()?;
         let context = Context::full(&runtime).map_err(|e| {
             AppError::localized(
                 "usage_script.context_create_failed",
@@ -197,10 +244,14 @@ pub async fn execute_usage_script(
         context.with(|ctx| {
             // 重新 eval 获取配置对象
             let config: rquickjs::Object = ctx.eval(script_with_vars.clone()).map_err(|e| {
-                AppError::localized(
+                map_js_error_or_timeout(
+                    js_started_at,
+                    "重新解析 extractor 配置",
+                    "extractor config re-parse",
                     "usage_script.config_reparse_failed",
-                    format!("重新解析配置失败: {e}"),
-                    format!("Failed to re-parse config: {e}"),
+                    "重新解析配置失败",
+                    "Failed to re-parse config",
+                    e,
                 )
             })?;
 
@@ -225,10 +276,14 @@ pub async fn execute_usage_script(
 
             // 调用 extractor(response)
             let result_js: rquickjs::Value = extractor.call((response_js,)).map_err(|e| {
-                AppError::localized(
+                map_js_error_or_timeout(
+                    js_started_at,
+                    "执行 extractor",
+                    "extractor execution",
                     "usage_script.extractor_exec_failed",
-                    format!("执行 extractor 失败: {e}"),
-                    format!("Failed to execute extractor: {e}"),
+                    "执行 extractor 失败",
+                    "Failed to execute extractor",
+                    e,
                 )
             })?;
 
@@ -236,10 +291,14 @@ pub async fn execute_usage_script(
             let result_json: String = ctx
                 .json_stringify(result_js)
                 .map_err(|e| {
-                    AppError::localized(
+                    map_js_error_or_timeout(
+                        js_started_at,
+                        "序列化 extractor 结果",
+                        "extractor result serialization",
                         "usage_script.result_serialize_failed",
-                        format!("序列化结果失败: {e}"),
-                        format!("Failed to serialize result: {e}"),
+                        "序列化结果失败",
+                        "Failed to serialize result",
+                        e,
                     )
                 })?
                 .ok_or_else(|| {
@@ -673,6 +732,66 @@ mod tests {
         assert!(
             result.is_ok(),
             "Custom usage scripts should be able to call an explicit HTTP quota endpoint"
+        );
+    }
+
+    #[test]
+    fn request_url_extraction_interrupts_infinite_loop() {
+        let started_at = std::time::Instant::now();
+        let result = try_extract_request_url("while (true) {}");
+
+        assert!(result.is_err(), "infinite loop should be interrupted");
+        assert!(
+            started_at.elapsed() < JS_EXECUTION_TIMEOUT + std::time::Duration::from_secs(3),
+            "interrupt should return promptly"
+        );
+        assert!(
+            result.unwrap_err().to_string().contains("JS 脚本执行超时"),
+            "error should identify the timeout"
+        );
+    }
+
+    #[test]
+    fn extractor_execution_interrupts_infinite_loop() {
+        let (runtime, js_started_at) = create_bounded_js_runtime().expect("runtime");
+        let context = Context::full(&runtime).expect("context");
+        let started_at = std::time::Instant::now();
+
+        let result: Result<(), AppError> = context.with(|ctx| {
+            let extractor: Function =
+                ctx.eval("(function () { while (true) {} })").map_err(|e| {
+                    map_js_error_or_timeout(
+                        js_started_at,
+                        "测试 extractor 解析",
+                        "test extractor parse",
+                        "usage_script.config_parse_failed",
+                        "解析配置失败",
+                        "Failed to parse config",
+                        e,
+                    )
+                })?;
+            let _: rquickjs::Value = extractor.call(()).map_err(|e| {
+                map_js_error_or_timeout(
+                    js_started_at,
+                    "执行 extractor",
+                    "extractor execution",
+                    "usage_script.extractor_exec_failed",
+                    "执行 extractor 失败",
+                    "Failed to execute extractor",
+                    e,
+                )
+            })?;
+            Ok(())
+        });
+
+        assert!(result.is_err(), "infinite extractor should be interrupted");
+        assert!(
+            started_at.elapsed() < JS_EXECUTION_TIMEOUT + std::time::Duration::from_secs(3),
+            "interrupt should return promptly"
+        );
+        assert!(
+            result.unwrap_err().to_string().contains("JS 脚本执行超时"),
+            "error should identify the timeout"
         );
     }
 

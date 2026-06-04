@@ -649,6 +649,10 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
   const shouldShowCredentialsConfig =
     selectedTemplate === TEMPLATE_TYPES.GENERAL ||
     selectedTemplate === TEMPLATE_TYPES.NEW_API;
+  const selectedTemplateUsesScript =
+    selectedTemplate !== TEMPLATE_TYPES.GITHUB_COPILOT &&
+    selectedTemplate !== TEMPLATE_TYPES.TOKEN_PLAN &&
+    selectedTemplate !== TEMPLATE_TYPES.BALANCE;
 
   const footer = (
     <>
@@ -662,16 +666,18 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
           <Play size={14} className="mr-1" />
           {testing ? t("usageScript.testing") : t("usageScript.testScript")}
         </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={handleFormat}
-          disabled={!script.enabled}
-          title={t("usageScript.format")}
-        >
-          <Wand2 size={14} className="mr-1" />
-          {t("usageScript.format")}
-        </Button>
+        {selectedTemplateUsesScript && (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleFormat}
+            disabled={!script.enabled}
+            title={t("usageScript.format")}
+          >
+            <Wand2 size={14} className="mr-1" />
+            {t("usageScript.format")}
+          </Button>
+        )}
       </div>
 
       <div className="flex gap-2">
@@ -1116,43 +1122,41 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
             </div>
           </div>
 
-          {/* 提取器代码 - Copilot 模板不需要 */}
-          {selectedTemplate !== TEMPLATE_TYPES.GITHUB_COPILOT &&
-            selectedTemplate !== TEMPLATE_TYPES.TOKEN_PLAN && (
-              <div className="space-y-4 glass rounded-xl border border-white/10 p-6">
-                <div className="flex items-center justify-between">
-                  <Label className="text-base font-medium">
-                    {t("usageScript.extractorCode")}
-                  </Label>
-                  <div className="text-xs text-muted-foreground">
-                    {t("usageScript.extractorHint")}
-                  </div>
+          {/* 提取器代码 - 内置模板不需要 */}
+          {selectedTemplateUsesScript && (
+            <div className="space-y-4 glass rounded-xl border border-white/10 p-6">
+              <div className="flex items-center justify-between">
+                <Label className="text-base font-medium">
+                  {t("usageScript.extractorCode")}
+                </Label>
+                <div className="text-xs text-muted-foreground">
+                  {t("usageScript.extractorHint")}
                 </div>
-                <JsonEditor
-                  id="usage-code"
-                  value={script.code || ""}
-                  onChange={(value) =>
-                    setScript((prev) => ({ ...prev, code: value }))
-                  }
-                  height={480}
-                  language="javascript"
-                  showMinimap={false}
-                />
               </div>
-            )}
+              <JsonEditor
+                id="usage-code"
+                value={script.code || ""}
+                onChange={(value) =>
+                  setScript((prev) => ({ ...prev, code: value }))
+                }
+                height={480}
+                language="javascript"
+                showMinimap={false}
+              />
+            </div>
+          )}
 
-          {/* 帮助信息 - Copilot 模板不需要 */}
-          {selectedTemplate !== TEMPLATE_TYPES.GITHUB_COPILOT &&
-            selectedTemplate !== TEMPLATE_TYPES.TOKEN_PLAN && (
-              <div className="glass rounded-xl border border-white/10 p-6 text-sm text-foreground/90">
-                <h4 className="font-medium mb-2">
-                  {t("usageScript.scriptHelp")}
-                </h4>
-                <div className="space-y-3 text-xs">
-                  <div>
-                    <strong>{t("usageScript.configFormat")}</strong>
-                    <pre className="mt-1 p-2 bg-black/20 text-foreground rounded border border-white/10 text-[10px] overflow-x-auto">
-                      {`({
+          {/* 帮助信息 - 内置模板不需要 */}
+          {selectedTemplateUsesScript && (
+            <div className="glass rounded-xl border border-white/10 p-6 text-sm text-foreground/90">
+              <h4 className="font-medium mb-2">
+                {t("usageScript.scriptHelp")}
+              </h4>
+              <div className="space-y-3 text-xs">
+                <div>
+                  <strong>{t("usageScript.configFormat")}</strong>
+                  <pre className="mt-1 p-2 bg-black/20 text-foreground rounded border border-white/10 text-[10px] overflow-x-auto">
+                    {`({
   request: {
     url: "{{baseUrl}}/api/usage",
     method: "POST",
@@ -1169,39 +1173,39 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
     };
   }
 })`}
-                    </pre>
-                  </div>
+                  </pre>
+                </div>
 
-                  <div>
-                    <strong>{t("usageScript.extractorFormat")}</strong>
-                    <ul className="mt-1 space-y-0.5 ml-2">
-                      <li>{t("usageScript.fieldIsValid")}</li>
-                      <li>{t("usageScript.fieldInvalidMessage")}</li>
-                      <li>{t("usageScript.fieldRemaining")}</li>
-                      <li>{t("usageScript.fieldUnit")}</li>
-                      <li>{t("usageScript.fieldPlanName")}</li>
-                      <li>{t("usageScript.fieldTotal")}</li>
-                      <li>{t("usageScript.fieldUsed")}</li>
-                      <li>{t("usageScript.fieldExtra")}</li>
-                    </ul>
-                  </div>
+                <div>
+                  <strong>{t("usageScript.extractorFormat")}</strong>
+                  <ul className="mt-1 space-y-0.5 ml-2">
+                    <li>{t("usageScript.fieldIsValid")}</li>
+                    <li>{t("usageScript.fieldInvalidMessage")}</li>
+                    <li>{t("usageScript.fieldRemaining")}</li>
+                    <li>{t("usageScript.fieldUnit")}</li>
+                    <li>{t("usageScript.fieldPlanName")}</li>
+                    <li>{t("usageScript.fieldTotal")}</li>
+                    <li>{t("usageScript.fieldUsed")}</li>
+                    <li>{t("usageScript.fieldExtra")}</li>
+                  </ul>
+                </div>
 
-                  <div className="text-muted-foreground">
-                    <strong>{t("usageScript.tips")}</strong>
-                    <ul className="mt-1 space-y-0.5 ml-2">
-                      <li>
-                        {t("usageScript.tip1", {
-                          apiKey: "{{apiKey}}",
-                          baseUrl: "{{baseUrl}}",
-                        })}
-                      </li>
-                      <li>{t("usageScript.tip2")}</li>
-                      <li>{t("usageScript.tip3")}</li>
-                    </ul>
-                  </div>
+                <div className="text-muted-foreground">
+                  <strong>{t("usageScript.tips")}</strong>
+                  <ul className="mt-1 space-y-0.5 ml-2">
+                    <li>
+                      {t("usageScript.tip1", {
+                        apiKey: "{{apiKey}}",
+                        baseUrl: "{{baseUrl}}",
+                      })}
+                    </li>
+                    <li>{t("usageScript.tip2")}</li>
+                    <li>{t("usageScript.tip3")}</li>
+                  </ul>
                 </div>
               </div>
-            )}
+            </div>
+          )}
         </div>
       )}
 

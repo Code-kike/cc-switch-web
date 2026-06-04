@@ -174,3 +174,169 @@ Closed the CI coverage gap that hid the PR #14 regression: backend job's cargo t
 ### Next Steps
 
 - None - task complete
+
+
+## Session 6: Repo hygiene: untrack .github + dedup archived task dirs
+
+**Date**: 2026-06-04
+**Task**: Repo hygiene: untrack .github + dedup archived task dirs
+**Branch**: `chore/repo-hygiene-gitignore-task-dedup`
+
+### Summary
+
+Removed the .github line from .gitignore (dormant trap: new .github files would not auto-add; the 12 tracked files unaffected). Deduped 4 already-archived task dirs that were tracked in BOTH .trellis/tasks/ and tasks/archive/2026-06/ (squash-merge artifact) — removed the active-location copies (17 files), kept archive/. get_context no longer lists them as active. PR #16. No source/build behavior changes.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `1161253b` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 7: Fix non-security review findings
+
+**Date**: 2026-06-04
+**Task**: Fix non-security review findings
+**Branch**: `chore/repo-hygiene-gitignore-task-dedup`
+
+### Summary
+
+Fixed non-security review findings across web-server behavior, WebDAV confirmation, usage scripts, restore/live-sync consistency, web file picker cancellation, and SSE reconnect handling; validation passed for frontend and Rust test suites.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `e0b85277` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 8: Track Trellis scaffold files
+
+**Date**: 2026-06-04
+**Task**: Track Trellis scaffold files
+**Branch**: `chore/repo-hygiene-gitignore-task-dedup`
+
+### Summary
+
+Committed reusable Trellis/Codex scaffold files, added local ignore coverage for Trellis template hashes, and kept runtime/developer state out of git.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `ff7262bc` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 9: Run web-server smoke test
+
+**Date**: 2026-06-04
+**Task**: Run web-server smoke test
+**Branch**: `chore/repo-hygiene-gitignore-task-dedup`
+
+### Summary
+
+Ran standalone web-server smoke validation successfully, confirmed prior GitHub CI success, ran local route coverage, typecheck, and unit tests, and recorded the smoke validation contract in frontend quality guidelines.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `f959cc0a` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 10: Update GitHub Actions runtime compatibility
+
+**Date**: 2026-06-04
+**Task**: Update GitHub Actions runtime compatibility
+**Branch**: `chore/repo-hygiene-gitignore-task-dedup`
+
+### Summary
+
+Upgraded outdated GitHub Actions workflow action majors to avoid Node.js 20 action runtime deprecation, verified workflow YAML parsing, typecheck, format check, unit tests, and recorded the reusable CI runtime guidance in Trellis specs.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `6e54bb63` | (see git log) |
+| `649bbeb3` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

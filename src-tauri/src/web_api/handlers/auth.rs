@@ -3,7 +3,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 use super::super::ApiState;
 use super::common::{json_ok, ApiError, ApiResult};

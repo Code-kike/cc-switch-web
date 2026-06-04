@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 5
+- **Total Sessions**: 10
 - **Last Active**: 2026-06-04
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~176 | Active |
+| `journal-1.md` | ~342 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,11 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 10 | 2026-06-04 | Update GitHub Actions runtime compatibility | `6e54bb63`, `649bbeb3` | `chore/repo-hygiene-gitignore-task-dedup` |
+| 9 | 2026-06-04 | Run web-server smoke test | `f959cc0a` | `chore/repo-hygiene-gitignore-task-dedup` |
+| 8 | 2026-06-04 | Track Trellis scaffold files | `ff7262bc` | `chore/repo-hygiene-gitignore-task-dedup` |
+| 7 | 2026-06-04 | Fix non-security review findings | `e0b85277` | `chore/repo-hygiene-gitignore-task-dedup` |
+| 6 | 2026-06-04 | Repo hygiene: untrack .github + dedup archived task dirs | `1161253b` | `chore/repo-hygiene-gitignore-task-dedup` |
 | 5 | 2026-06-04 | Add CI web-server example compile check | `112cc83b` | `ci/web-server-example-compile-check` |
 | 4 | 2026-06-04 | Fix web-server example build: model_mapper regression + autoexamples | `fdf41ca8` | `fix/cargo-autoexamples-web-server-includes` |
 | 3 | 2026-06-04 | Fix Frontend Checks CI: split web-server integration suites | `fea1901f` | `fix/ci-split-web-server-integration-suites` |

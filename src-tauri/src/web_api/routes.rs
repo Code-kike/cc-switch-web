@@ -82,10 +82,68 @@ async fn serve_spa_fallback(method: Method, uri: Uri) -> Response {
         return (StatusCode::METHOD_NOT_ALLOWED, "method not allowed").into_response();
     }
 
-    if let Some(response) = try_serve_dist_web_asset(uri.path()).await {
-        return response;
+    try_serve_dist_web_asset(uri.path()).await
+}
+
+async fn try_serve_dist_web_asset(path: &str) -> Response {
+    let rel = path.trim_start_matches('/');
+    let dist_root = dist_web_root();
+
+    if rel.is_empty() {
+        return read_dist_web_file(&dist_root.join("index.html"))
+            .await
+            .unwrap_or_else(spa_placeholder_response);
     }
 
+    let candidate = dist_root.join(rel);
+    if let Some(resp) = read_dist_web_file(&candidate).await {
+        return resp;
+    }
+
+    if !is_static_asset_path(rel) {
+        return read_dist_web_file(&dist_root.join("index.html"))
+            .await
+            .unwrap_or_else(spa_placeholder_response);
+    }
+
+    (StatusCode::NOT_FOUND, "asset not found").into_response()
+}
+
+fn is_static_asset_path(path: &str) -> bool {
+    let Some(extension) = Path::new(path).extension().and_then(|ext| ext.to_str()) else {
+        return false;
+    };
+
+    matches!(
+        extension.to_ascii_lowercase().as_str(),
+        "avif"
+            | "bmp"
+            | "css"
+            | "eot"
+            | "gif"
+            | "html"
+            | "ico"
+            | "jpeg"
+            | "jpg"
+            | "js"
+            | "json"
+            | "map"
+            | "mjs"
+            | "otf"
+            | "png"
+            | "svg"
+            | "ttf"
+            | "txt"
+            | "wasm"
+            | "webmanifest"
+            | "webp"
+            | "woff"
+            | "woff2"
+            | "xml"
+    )
+}
+
+fn spa_placeholder_response() -> Response {
     let body = "<!DOCTYPE html><html><head><title>cc-switch-web</title></head>\
 <body><div id=\"root\"></div><script>\
 console.warn('SPA assets not found — run `pnpm build:web` from repo root.');\
@@ -99,22 +157,6 @@ console.warn('SPA assets not found — run `pnpm build:web` from repo root.');\
         .unwrap_or_else(|_| {
             (StatusCode::INTERNAL_SERVER_ERROR, "fallback build failed").into_response()
         })
-}
-
-async fn try_serve_dist_web_asset(path: &str) -> Option<Response> {
-    let rel = path.trim_start_matches('/');
-    let dist_root = dist_web_root();
-
-    if rel.is_empty() || !rel.contains('.') {
-        return read_dist_web_file(&dist_root.join("index.html")).await;
-    }
-
-    let candidate = dist_root.join(rel);
-    if let Some(resp) = read_dist_web_file(&candidate).await {
-        return Some(resp);
-    }
-
-    read_dist_web_file(&dist_root.join("index.html")).await
 }
 
 fn dist_web_root() -> PathBuf {
@@ -153,4 +195,61 @@ async fn read_dist_web_file(path: &Path) -> Option<Response> {
                 (StatusCode::INTERNAL_SERVER_ERROR, "asset response failed").into_response()
             }),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serial_test::serial;
+
+    #[tokio::test]
+    #[serial]
+    async fn missing_asset_returns_404_instead_of_index() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        std::fs::write(
+            temp_dir.path().join("index.html"),
+            "<div id=\"root\"></div>",
+        )
+        .expect("write index");
+        std::env::set_var("CC_SWITCH_WEB_DIST_DIR", temp_dir.path());
+
+        let response = try_serve_dist_web_asset("/assets/missing.js").await;
+
+        std::env::remove_var("CC_SWITCH_WEB_DIST_DIR");
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn route_path_without_extension_falls_back_to_index() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        std::fs::write(
+            temp_dir.path().join("index.html"),
+            "<div id=\"root\"></div>",
+        )
+        .expect("write index");
+        std::env::set_var("CC_SWITCH_WEB_DIST_DIR", temp_dir.path());
+
+        let response = try_serve_dist_web_asset("/settings/providers").await;
+
+        std::env::remove_var("CC_SWITCH_WEB_DIST_DIR");
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn dotted_route_without_asset_extension_falls_back_to_index() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        std::fs::write(
+            temp_dir.path().join("index.html"),
+            "<div id=\"root\"></div>",
+        )
+        .expect("write index");
+        std::env::set_var("CC_SWITCH_WEB_DIST_DIR", temp_dir.path());
+
+        let response = try_serve_dist_web_asset("/providers/openai.com").await;
+
+        std::env::remove_var("CC_SWITCH_WEB_DIST_DIR");
+        assert_eq!(response.status(), StatusCode::OK);
+    }
 }

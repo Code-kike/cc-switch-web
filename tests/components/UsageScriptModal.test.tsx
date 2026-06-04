@@ -107,6 +107,7 @@ vi.mock("@/components/ui/switch", () => ({
 vi.mock("@/components/JsonEditor", () => ({
   default: ({ value, onChange }: any) => (
     <textarea
+      data-testid="json-editor"
       value={value}
       onChange={(event) => onChange(event.target.value)}
     />
@@ -236,6 +237,28 @@ describe("UsageScriptModal", () => {
         "balance",
       );
     });
+  });
+
+  it("does not show the script editor for the balance template", () => {
+    renderModal(
+      {
+        meta: {
+          usage_script: {
+            enabled: true,
+            language: "javascript",
+            code: "ignored code",
+            timeout: 10,
+            templateType: "balance",
+          },
+        },
+      },
+      "hermes",
+    );
+
+    expect(screen.queryByTestId("json-editor")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "usageScript.format" }),
+    ).not.toBeInTheDocument();
   });
 
   it("tests the token-plan template through the unified usage API", async () => {
