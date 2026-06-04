@@ -6,6 +6,9 @@ use crate::error::AppError;
 use crate::mcp;
 use crate::store::AppState;
 
+/// 单个应用的 MCP 导入函数指针
+type AppImporter = fn(&AppState) -> Result<usize, AppError>;
+
 /// MCP 相关业务逻辑（v3.7.0 统一结构）
 pub struct McpService;
 
@@ -432,7 +435,7 @@ impl McpService {
     /// 从所有支持的应用导入 MCP。部分来源失败时保留成功导入的结果；
     /// 若所有来源都失败且没有导入任何服务器，则向 UI 暴露失败原因。
     pub fn import_from_all_apps(state: &AppState) -> Result<usize, AppError> {
-        let importers: [(&str, fn(&AppState) -> Result<usize, AppError>); 5] = [
+        let importers: [(&str, AppImporter); 5] = [
             ("Claude", Self::import_from_claude),
             ("Codex", Self::import_from_codex),
             ("Gemini", Self::import_from_gemini),

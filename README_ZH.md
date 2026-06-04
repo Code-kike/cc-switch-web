@@ -148,7 +148,7 @@ Claude Code / Codex / Gemini 官方渠道低至 3.8 / 0.2 / 0.9 折，充值更�
 
 ## 功能特性
 
-[完整更新日志](CHANGELOG.md) | [发布说明](docs/release-notes/v3.12.3-zh.md)
+[完整更新日志](CHANGELOG.md) | [发布说明](docs/release-notes/v3.16.0-zh.md)
 
 ### 供应商管理
 
@@ -241,7 +241,7 @@ CC Switch macOS 版本已通过 Apple 代码签名和公证，可直接下载安
 
 ## 文档
 
-如需了解各项功能的详细使用方法，请查阅 **[用户手册](docs/user-manual/zh/README.md)** — 涵盖供应商管理、MCP/Prompts/Skills、代理与故障转移等全部功能。
+各版本的功能与变更请查阅 **[发布说明](docs/release-notes/v3.16.0-zh.md)** 与 **[完整更新日志](CHANGELOG.md)**；核心功能概览见上方「功能特性」。
 
 ## 快速开始
 

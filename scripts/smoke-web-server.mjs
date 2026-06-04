@@ -1743,8 +1743,12 @@ const probes = [
   },
   {
     name: "balance-unknown-provider",
-    method: "GET",
-    path: `/api/usage/get-balance?baseUrl=${encodeURIComponent("https://unknown-balance.example.com")}&apiKey=smoke`,
+    method: "POST",
+    path: "/api/usage/get-balance",
+    body: {
+      baseUrl: "https://unknown-balance.example.com",
+      apiKey: "smoke",
+    },
     validate(response, payload) {
       if (
         !response.ok ||
@@ -1757,8 +1761,12 @@ const probes = [
   },
   {
     name: "coding-plan-unknown-provider",
-    method: "GET",
-    path: `/api/usage/get-coding-plan-quota?baseUrl=${encodeURIComponent("https://unknown-plan.example.com")}&apiKey=smoke`,
+    method: "POST",
+    path: "/api/usage/get-coding-plan-quota",
+    body: {
+      baseUrl: "https://unknown-plan.example.com",
+      apiKey: "smoke",
+    },
     validate(response, payload) {
       if (
         !response.ok ||

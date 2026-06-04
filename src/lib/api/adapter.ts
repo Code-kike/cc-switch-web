@@ -1,64 +1,66 @@
-import { invoke as tauriInvoke } from "@tauri-apps/api/core"
-import { WebApiError, WebAuthError, WebNotSupportedError } from "./errors"
-import type { CommandMap, CommandSpec } from "./types-internal"
+import { invoke as tauriInvoke } from "@tauri-apps/api/core";
+import { WebApiError, WebAuthError, WebNotSupportedError } from "./errors";
+import type { CommandMap, CommandSpec } from "./types-internal";
 
 export const isWebMode = (): boolean =>
-  typeof window !== "undefined" && !window.__TAURI_INTERNALS__ && !window.__TAURI__
+  typeof window !== "undefined" &&
+  !window.__TAURI_INTERNALS__ &&
+  !window.__TAURI__;
 
 export const apiBase = (): string =>
-  (typeof window !== "undefined" && window.__CC_SWITCH_API_BASE__) || ""
+  (typeof window !== "undefined" && window.__CC_SWITCH_API_BASE__) || "";
 
-let csrfToken: string | null = null
-let csrfRefreshPromise: Promise<string> | null = null
+let csrfToken: string | null = null;
+let csrfRefreshPromise: Promise<string> | null = null;
 
 export const setCsrfToken = (t: string | null): void => {
-  csrfToken = t
-}
+  csrfToken = t;
+};
 
-export const getCsrfToken = (): string | null => csrfToken
+export const getCsrfToken = (): string | null => csrfToken;
 
 async function refreshCsrfToken(): Promise<string> {
-  if (csrfRefreshPromise !== null) return csrfRefreshPromise
+  if (csrfRefreshPromise !== null) return csrfRefreshPromise;
   csrfRefreshPromise = (async () => {
     try {
       const r = await fetch(`${apiBase()}/api/system/csrf-token`, {
         credentials: "include",
         headers: { Accept: "application/json" },
-      })
+      });
       if (!r.ok) {
-        throw new WebAuthError(r.status, "CSRF token refresh failed")
+        throw new WebAuthError(r.status, "CSRF token refresh failed");
       }
-      const data = (await r.json()) as { token: string }
-      csrfToken = data.token
-      return data.token
+      const data = (await r.json()) as { token: string };
+      csrfToken = data.token;
+      return data.token;
     } finally {
-      csrfRefreshPromise = null
+      csrfRefreshPromise = null;
     }
-  })()
-  return csrfRefreshPromise
+  })();
+  return csrfRefreshPromise;
 }
 
-const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"])
+const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
-const commandRegistry: Record<string, CommandSpec> = Object.create(null)
+const commandRegistry: Record<string, CommandSpec> = Object.create(null);
 
 export function registerCommands(map: CommandMap): void {
   for (const [k, v] of Object.entries(map)) {
     if (commandRegistry[k] !== undefined) {
       if (typeof console !== "undefined" && console.warn) {
-        console.warn(`[adapter] command "${k}" already registered, overriding`)
+        console.warn(`[adapter] command "${k}" already registered, overriding`);
       }
     }
-    commandRegistry[k] = v
+    commandRegistry[k] = v;
   }
 }
 
 export function getRegisteredCommand(cmd: string): CommandSpec | undefined {
-  return commandRegistry[cmd]
+  return commandRegistry[cmd];
 }
 
 export function listRegisteredCommands(): string[] {
-  return Object.keys(commandRegistry)
+  return Object.keys(commandRegistry);
 }
 
 export async function invoke<T = unknown>(
@@ -66,9 +68,9 @@ export async function invoke<T = unknown>(
   args?: Record<string, unknown>,
 ): Promise<T> {
   if (!isWebMode()) {
-    return tauriInvoke<T>(cmd, args)
+    return tauriInvoke<T>(cmd, args);
   }
-  return httpInvoke<T>(cmd, args)
+  return httpInvoke<T>(cmd, args);
 }
 
 export async function webJsonFetch<T = unknown>(
@@ -81,7 +83,7 @@ export async function webJsonFetch<T = unknown>(
       Accept: "application/json",
       ...(init.headers as Record<string, string> | undefined),
     },
-  })
+  });
 }
 
 export async function webUpload<T = unknown>(
@@ -94,134 +96,137 @@ export async function webUpload<T = unknown>(
     headers: {
       Accept: "application/json",
     },
-  })
+  });
 }
 
 export async function webDownload(
   path: string,
   init: RequestInit = {},
 ): Promise<Blob> {
-  return webFetch<Blob>(path, init, "blob")
+  return webFetch<Blob>(path, init, "blob");
 }
 
 export async function pickWebFile(accept?: string): Promise<File | null> {
-  if (typeof document === "undefined") return null
+  if (typeof document === "undefined") return null;
   return new Promise((resolve) => {
-    const input = document.createElement("input")
-    input.type = "file"
-    if (accept) input.accept = accept
-    input.style.display = "none"
+    const input = document.createElement("input");
+    input.type = "file";
+    if (accept) input.accept = accept;
+    input.style.display = "none";
     input.addEventListener(
       "change",
       () => {
-        resolve(input.files?.[0] ?? null)
-        input.remove()
+        resolve(input.files?.[0] ?? null);
+        input.remove();
       },
       { once: true },
-    )
-    document.body.appendChild(input)
-    input.click()
-  })
+    );
+    document.body.appendChild(input);
+    input.click();
+  });
 }
 
 export function isBrowserFile(value: unknown): value is File {
-  return typeof File !== "undefined" && value instanceof File
+  return typeof File !== "undefined" && value instanceof File;
 }
 
 export function downloadBlob(blob: Blob, filename: string): void {
-  if (typeof document === "undefined") return
-  const url = URL.createObjectURL(blob)
+  if (typeof document === "undefined") return;
+  const url = URL.createObjectURL(blob);
   try {
-    const anchor = document.createElement("a")
-    anchor.href = url
-    anchor.download = filename
-    anchor.style.display = "none"
-    document.body.appendChild(anchor)
-    anchor.click()
-    anchor.remove()
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filename;
+    anchor.style.display = "none";
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
   } finally {
-    URL.revokeObjectURL(url)
+    URL.revokeObjectURL(url);
   }
 }
 
-function buildPath(spec: CommandSpec, args: Record<string, unknown>): {
-  resolvedPath: string
-  remaining: Record<string, unknown>
+function buildPath(
+  spec: CommandSpec,
+  args: Record<string, unknown>,
+): {
+  resolvedPath: string;
+  remaining: Record<string, unknown>;
 } {
-  let resolvedPath = spec.path
-  const remaining: Record<string, unknown> = { ...args }
+  let resolvedPath = spec.path;
+  const remaining: Record<string, unknown> = { ...args };
 
   const pathParams =
     spec.pathParams ??
-    (spec.path.match(/:[a-zA-Z_][a-zA-Z0-9_]*/g) ?? []).map((m) => m.slice(1))
+    (spec.path.match(/:[a-zA-Z_][a-zA-Z0-9_]*/g) ?? []).map((m) => m.slice(1));
 
   for (const p of pathParams) {
-    const v = remaining[p]
+    const v = remaining[p];
     if (v === undefined || v === null) {
-      throw new WebApiError(400, "BAD_PATH_PARAM", `Missing path param ${p}`)
+      throw new WebApiError(400, "BAD_PATH_PARAM", `Missing path param ${p}`);
     }
-    resolvedPath = resolvedPath.replace(`:${p}`, encodeURIComponent(String(v)))
-    delete remaining[p]
+    resolvedPath = resolvedPath.replace(`:${p}`, encodeURIComponent(String(v)));
+    delete remaining[p];
   }
 
-  return { resolvedPath, remaining }
+  return { resolvedPath, remaining };
 }
 
 async function httpInvoke<T>(
   cmd: string,
   args?: Record<string, unknown>,
 ): Promise<T> {
-  const spec = commandRegistry[cmd]
+  const spec = commandRegistry[cmd];
   if (spec === undefined) {
     throw new WebNotSupportedError(
       cmd,
       `Command "${cmd}" not registered in adapter`,
-    )
+    );
   }
   if (spec.unsupported === true) {
-    throw new WebNotSupportedError(cmd)
+    throw new WebNotSupportedError(cmd);
   }
 
-  const { method } = spec
-  const { resolvedPath, remaining } = buildPath(spec, args ?? {})
+  const { method } = spec;
+  const { resolvedPath, remaining } = buildPath(spec, args ?? {});
 
-  let url = apiBase() + resolvedPath
-  let body: string | undefined
+  let url = apiBase() + resolvedPath;
+  let body: string | undefined;
 
   const headers: Record<string, string> = {
     Accept: "application/json",
-  }
+  };
 
   const useQuery =
     method === "GET" ||
     (method === "DELETE" && spec.bodyParams !== true) ||
-    spec.queryParams === true
+    spec.queryParams === true;
 
   if (useQuery) {
-    const qp = new URLSearchParams()
+    const qp = new URLSearchParams();
     for (const [k, v] of Object.entries(remaining)) {
-      if (v === undefined || v === null) continue
-      qp.set(k, typeof v === "string" ? v : JSON.stringify(v))
+      if (v === undefined || v === null) continue;
+      qp.set(k, typeof v === "string" ? v : JSON.stringify(v));
     }
-    const qs = qp.toString()
+    const qs = qp.toString();
     if (qs.length > 0) {
-      url += url.includes("?") ? `&${qs}` : `?${qs}`
+      url += url.includes("?") ? `&${qs}` : `?${qs}`;
     }
   } else {
-    headers["Content-Type"] = "application/json"
-    body = JSON.stringify(remaining)
+    headers["Content-Type"] = "application/json";
+    body = JSON.stringify(remaining);
   }
 
   if (!SAFE_METHODS.has(method)) {
     if (csrfToken === null) {
       try {
-        await refreshCsrfToken()
+        await refreshCsrfToken();
       } catch {
         // Continue without token; server will reject and trigger refresh on retry
       }
     }
     if (csrfToken !== null) {
-      headers["X-CSRF-Token"] = csrfToken
+      headers["X-CSRF-Token"] = csrfToken;
     }
   }
 
@@ -230,9 +235,9 @@ async function httpInvoke<T>(
     headers,
     body,
     credentials: "include",
-  })
+  });
 
-  return parseWebResponse<T>(resp, cmd)
+  return parseWebResponse<T>(resp, cmd);
 }
 
 async function webFetch<T>(
@@ -240,21 +245,21 @@ async function webFetch<T>(
   init: RequestInit,
   responseType: "json" | "blob" = "json",
 ): Promise<T> {
-  const method = (init.method ?? "GET").toUpperCase()
+  const method = (init.method ?? "GET").toUpperCase();
   const headers: Record<string, string> = {
     ...((init.headers as Record<string, string> | undefined) ?? {}),
-  }
+  };
 
   if (!SAFE_METHODS.has(method)) {
     if (csrfToken === null) {
       try {
-        await refreshCsrfToken()
+        await refreshCsrfToken();
       } catch {
         // Continue without token; server will reject and trigger refresh on retry
       }
     }
     if (csrfToken !== null) {
-      headers["X-CSRF-Token"] = csrfToken
+      headers["X-CSRF-Token"] = csrfToken;
     }
   }
 
@@ -263,43 +268,43 @@ async function webFetch<T>(
     method,
     headers,
     credentials: "include",
-  })
+  });
 
-  return parseWebResponse<T>(resp, path, responseType)
+  return parseWebResponse<T>(resp, path, responseType);
 }
 
 async function fetchWithCsrfRetry(
   url: string,
   init: RequestInit,
 ): Promise<Response> {
-  const method = (init.method ?? "GET").toUpperCase()
+  const method = (init.method ?? "GET").toUpperCase();
   const headers: Record<string, string> = {
     ...((init.headers as Record<string, string> | undefined) ?? {}),
-  }
+  };
 
   const fetchOnce = (): Promise<Response> =>
     fetch(url, {
       ...init,
       headers,
       credentials: "include",
-    })
+    });
 
-  let resp = await fetchOnce()
+  let resp = await fetchOnce();
 
   if (resp.status === 403 && !SAFE_METHODS.has(method)) {
-    csrfToken = null
+    csrfToken = null;
     try {
-      await refreshCsrfToken()
+      await refreshCsrfToken();
     } catch {
-      throw new WebAuthError(403, "CSRF refresh failed")
+      throw new WebAuthError(403, "CSRF refresh failed");
     }
     if (csrfToken !== null) {
-      headers["X-CSRF-Token"] = csrfToken
+      headers["X-CSRF-Token"] = csrfToken;
     }
-    resp = await fetchOnce()
+    resp = await fetchOnce();
   }
 
-  return resp
+  return resp;
 }
 
 async function parseWebResponse<T>(
@@ -308,43 +313,43 @@ async function parseWebResponse<T>(
   responseType: "json" | "blob" = "json",
 ): Promise<T> {
   if (resp.status === 401) {
-    csrfToken = null
-    throw new WebAuthError(401, "Session expired")
+    csrfToken = null;
+    throw new WebAuthError(401, "Session expired");
   }
   if (!resp.ok) {
-    let errBody: { code?: string; message?: string; details?: unknown } = {}
+    let errBody: { code?: string; message?: string; details?: unknown } = {};
     try {
-      errBody = await resp.json()
+      errBody = await resp.json();
     } catch {
       // body may be empty or non-JSON
     }
-    const code = errBody.code ?? `HTTP_${resp.status}`
+    const code = errBody.code ?? `HTTP_${resp.status}`;
     if (
       resp.status === 501 ||
       code === "WEB_NOT_SUPPORTED" ||
       code === "WEB_DESKTOP_ONLY" ||
       code === "WEB_UPLOAD_REQUIRED"
     ) {
-      throw new WebNotSupportedError(commandOrPath, errBody.message, code)
+      throw new WebNotSupportedError(commandOrPath, errBody.message, code);
     }
-    throw new WebApiError(resp.status, code, errBody.message, errBody.details)
+    throw new WebApiError(resp.status, code, errBody.message, errBody.details);
   }
 
   if (resp.status === 204) {
-    return undefined as T
+    return undefined as T;
   }
 
   if (responseType === "blob") {
-    return (await resp.blob()) as T
+    return (await resp.blob()) as T;
   }
 
-  const contentType = resp.headers.get("content-type") ?? ""
+  const contentType = resp.headers.get("content-type") ?? "";
   if (!contentType.includes("application/json")) {
-    return (await resp.text()) as unknown as T
+    return (await resp.text()) as unknown as T;
   }
-  return (await resp.json()) as T
+  return (await resp.json()) as T;
 }
 
-export { WebApiError, WebAuthError, WebNotSupportedError } from "./errors"
-export { defineCommands } from "./types-internal"
-export type { CommandMap, CommandSpec, HttpMethod } from "./types-internal"
+export { WebApiError, WebAuthError, WebNotSupportedError } from "./errors";
+export { defineCommands } from "./types-internal";
+export type { CommandMap, CommandSpec, HttpMethod } from "./types-internal";

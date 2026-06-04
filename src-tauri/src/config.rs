@@ -222,6 +222,25 @@ pub fn atomic_write(path: &Path, data: &[u8]) -> Result<(), AppError> {
     tmp.push(format!("{file_name}.tmp.{ts}"));
 
     {
+        // 首次创建凭证文件时，直接以 0600 打开临时文件，消除
+        // create(0644)→write→chmod(0600) 之间的全局可读竞态窗口。
+        #[cfg(unix)]
+        let mut f = {
+            use std::os::unix::fs::OpenOptionsExt;
+            if fs::metadata(path).is_ok() {
+                // 已存在文件：沿用普通创建，权限稍后镜像原文件
+                fs::File::create(&tmp).map_err(|e| AppError::io(&tmp, e))?
+            } else {
+                fs::OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .mode(0o600)
+                    .open(&tmp)
+                    .map_err(|e| AppError::io(&tmp, e))?
+            }
+        };
+        #[cfg(not(unix))]
         let mut f = fs::File::create(&tmp).map_err(|e| AppError::io(&tmp, e))?;
         f.write_all(data).map_err(|e| AppError::io(&tmp, e))?;
         f.flush().map_err(|e| AppError::io(&tmp, e))?;
@@ -231,9 +250,11 @@ pub fn atomic_write(path: &Path, data: &[u8]) -> Result<(), AppError> {
     {
         use std::os::unix::fs::PermissionsExt;
         if let Ok(meta) = fs::metadata(path) {
+            // 已存在文件：保留原有权限位
             let perm = meta.permissions().mode();
             let _ = fs::set_permissions(&tmp, fs::Permissions::from_mode(perm));
         }
+        // 首次创建：临时文件已在上方以 0600 打开，无需再次 chmod
     }
 
     #[cfg(windows)]

@@ -56,6 +56,14 @@ required-features = []
 name = "server"
 required-features = ["web-server"]
 
+[[example]]
+name = "web_proxy"
+required-features = ["web-server"]
+
+[[example]]
+name = "web_services"
+required-features = ["web-server"]
+
 [build-dependencies]
 tauri-build = { version = "2.4.0", features = [], optional = true }
 

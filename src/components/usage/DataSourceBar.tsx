@@ -82,7 +82,8 @@ export function DataSourceBar({ refreshIntervalMs }: DataSourceBarProps) {
       return t("common.loading", { defaultValue: "Loading" });
     }
     return t("usage.noDataYet", {
-      defaultValue: "No usage data yet. Import session logs to populate this dashboard.",
+      defaultValue:
+        "No usage data yet. Import session logs to populate this dashboard.",
     });
   })();
 

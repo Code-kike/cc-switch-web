@@ -1,0 +1,2 @@
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "#3 GET->POST spans FE web-commands.ts method + Rust route/extractor; keep the FE<->web-API contract paired."}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "web-commands.ts method literal change must keep the defineCommands typing intact."}

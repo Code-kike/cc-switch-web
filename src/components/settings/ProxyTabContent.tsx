@@ -179,7 +179,8 @@ export function ProxyTabContent({
                 <div className="p-4 rounded-lg border border-blue-500/20 bg-blue-500/5">
                   <p className="text-sm font-medium">
                     {t("proxy.failover.webConfigOnlyTitle", {
-                      defaultValue: "Web mode keeps failover in configuration-only mode",
+                      defaultValue:
+                        "Web mode keeps failover in configuration-only mode",
                     })}
                   </p>
                   <p className="mt-1 text-xs text-muted-foreground">

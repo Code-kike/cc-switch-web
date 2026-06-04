@@ -251,17 +251,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     usage_events::init(Arc::clone(&sink));
     let state = ApiState::new(app_state, copilot_auth, codex_oauth, sink, events);
 
-    // One-shot DB cleanup: strip legacy `_cc_source` / `provider_key` markers
-    // that older `import_hermes_providers_from_live` baked into provider
-    // records. Idempotent and gated by a settings flag, so a successful run
-    // never repeats. See `ProviderService::cleanup_hermes_legacy_runtime_markers_if_needed`.
-    if let Err(err) =
-        crate::services::ProviderService::cleanup_hermes_legacy_runtime_markers_if_needed(
-            state.app_state.as_ref(),
-        )
-    {
-        log::warn!("Failed to clean Hermes legacy runtime markers: {err}");
-    }
+    // Startup parity with the desktop `initialize_common_config_snippets`
+    // hook: auto-extract common config snippets from clean live files, run the
+    // one-shot legacy common-config migration, and strip legacy
+    // `_cc_source` / `provider_key` markers that older
+    // `import_hermes_providers_from_live` baked into provider records. All steps
+    // are idempotent and gated by their own settings flags, so a successful run
+    // never repeats. See
+    // `ProviderService::initialize_common_config_snippets`.
+    crate::services::ProviderService::initialize_common_config_snippets(state.app_state.as_ref());
 
     // Build router and bind.
     let app = build_router(state);

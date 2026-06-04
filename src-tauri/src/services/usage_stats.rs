@@ -1626,29 +1626,61 @@ impl Database {
     }
 }
 
-pub(crate) fn find_model_pricing_row(
-    conn: &Connection,
-    model_id: &str,
-) -> Result<Option<(String, String, String, String)>, AppError> {
-    // 清洗模型名称：去前缀(/)、去后缀(:)、@ 替换为 -
-    // 例如 moonshotai/gpt-5.2-codex@low:v2 → gpt-5.2-codex-low
-    let cleaned = model_id
+/// 清洗模型名称：去前缀(/)、去后缀(:)、@ 替换为 -
+/// 例如 moonshotai/gpt-5.2-codex@low:v2 → gpt-5.2-codex-low
+fn clean_model_id(model_id: &str) -> String {
+    model_id
         .rsplit_once('/')
         .map_or(model_id, |(_, r)| r)
         .split(':')
         .next()
         .unwrap_or(model_id)
         .trim()
-        .replace('@', "-");
+        .replace('@', "-")
+}
 
-    // 精确匹配清洗后的名称
-    let exact = conn
-        .query_row(
+/// 生成定价表查询的有序候选键。
+///
+/// 该函数是 `find_model_pricing_row`（proxy 实时计费）与
+/// `session_usage::find_model_pricing_for_session`（会话日志补算）共用的唯一
+/// 归一化来源，避免两条查询路径在大小写 / 点号 / `[1M]` 标记处理上出现分歧
+/// （历史上会话日志路径未做 `.`→`-`/小写归一，导致 `claude-sonnet-4.6` 等
+/// 点号写法漏命中横线形 seed → 成本记 0）。
+///
+/// 候选顺序：
+/// (i) 清洗后原样；(ii) 小写；(iii) 小写后点号转横线；(iv) 去掉尾部 1M 标记
+/// 注意：'.'→'-' 必须在 1M 处理之前且不能更早，否则会破坏
+/// gpt-5.5 / minimax-m2.7 / glm-5.1 等点号小写 id；去重后保持首次出现顺序。
+pub(crate) fn pricing_lookup_candidates(model_id: &str) -> Vec<String> {
+    let cleaned = clean_model_id(model_id);
+    let lower = cleaned.to_lowercase();
+    let dot_dash = lower.replace('.', "-");
+    // 复用 proxy 的 1M 标记剥离逻辑（大小写不敏感、容忍尾随空白），
+    // Claude Code 接管会回写 `claude-opus-4-8[1M]` 等带标记 id。
+    let one_m_stripped =
+        crate::proxy::model_mapper::strip_one_m_suffix_for_upstream(&cleaned).to_string();
+
+    let mut candidates: Vec<String> = Vec::with_capacity(4);
+    for candidate in [cleaned, lower, dot_dash, one_m_stripped] {
+        if !candidates.contains(&candidate) {
+            candidates.push(candidate);
+        }
+    }
+    candidates
+}
+
+pub(crate) fn find_model_pricing_row(
+    conn: &Connection,
+    model_id: &str,
+) -> Result<Option<(String, String, String, String)>, AppError> {
+    // 单键精确查询，封装为闭包避免重复
+    let query_key = |key: &str| -> Result<Option<(String, String, String, String)>, AppError> {
+        conn.query_row(
             "SELECT input_cost_per_million, output_cost_per_million,
                     cache_read_cost_per_million, cache_creation_cost_per_million
              FROM model_pricing
              WHERE model_id = ?1",
-            [&cleaned],
+            [key],
             |row| {
                 Ok((
                     row.get::<_, String>(0)?,
@@ -1659,13 +1691,20 @@ pub(crate) fn find_model_pricing_row(
             },
         )
         .optional()
-        .map_err(|e| AppError::Database(format!("查询模型定价失败: {e}")))?;
+        .map_err(|e| AppError::Database(format!("查询模型定价失败: {e}")))
+    };
 
-    if exact.is_none() {
-        log::warn!("模型 {model_id}（清洗后: {cleaned}）未找到定价信息，成本将记录为 0");
+    // 依次尝试共享的候选键，返回首个命中
+    let candidates = pricing_lookup_candidates(model_id);
+    for candidate in &candidates {
+        if let Some(row) = query_key(candidate)? {
+            return Ok(Some(row));
+        }
     }
 
-    Ok(exact)
+    log::warn!("模型 {model_id}（候选键: {candidates:?}）未找到定价信息，成本将记录为 0");
+
+    Ok(None)
 }
 
 #[cfg(test)]
@@ -2774,10 +2813,106 @@ mod tests {
             "带 @ 分隔符的模型 gpt-5.2-codex@low 应能匹配到 gpt-5.2-codex-low"
         );
 
+        // 回退链：清洗后小写命中点号小写 id（seed 已预置 minimax-m2.7 / glm-5.1）
+        let result = find_model_pricing_row(&conn, "MiniMaxAI/MiniMax-M2.7")?;
+        assert!(
+            result.is_some(),
+            "MiniMaxAI/MiniMax-M2.7 应清洗后小写匹配到 minimax-m2.7"
+        );
+        let result = find_model_pricing_row(&conn, "ZhipuAI/GLM-5.1")?;
+        assert!(
+            result.is_some(),
+            "ZhipuAI/GLM-5.1 应清洗后小写匹配到 glm-5.1"
+        );
+
+        // 裸 id 精确命中新增的 seed 行
+        let result = find_model_pricing_row(&conn, "claude-sonnet-4-6")?;
+        assert!(
+            result.is_some(),
+            "裸 id claude-sonnet-4-6 应精确匹配到 seed 行"
+        );
+
+        // 裸 id claude-haiku-4-5：presets 默认裸 id（claudecn/runapi），需命中 seed 行（否则成本为 0）
+        let result = find_model_pricing_row(&conn, "claude-haiku-4-5")?;
+        assert!(
+            result.is_some(),
+            "裸 id claude-haiku-4-5 应精确匹配到 seed 行"
+        );
+        let result = find_model_pricing_row(&conn, "claudecn/claude-haiku-4-5")?;
+        assert!(
+            result.is_some(),
+            "前缀形式 claudecn/claude-haiku-4-5 应清洗后匹配到 claude-haiku-4-5"
+        );
+
+        // 回归守护：'.'→'-' 是最后兜底，不得破坏点号小写 id 的精确/小写命中
+        let result = find_model_pricing_row(&conn, "gpt-5.5")?;
+        assert!(result.is_some(), "gpt-5.5 应精确命中，不应被 '.'→'-' 破坏");
+        let result = find_model_pricing_row(&conn, "moonshotai/minimax-m2.7")?;
+        assert!(
+            result.is_some(),
+            "moonshotai/minimax-m2.7 应清洗后命中 minimax-m2.7，不应被 '.'→'-' 破坏"
+        );
+
+        // Round 2 / Fix A：Claude Code 接管回写 `[1M]`/`[1m]` 标记，需剥离后命中
+        let result = find_model_pricing_row(&conn, "claude-opus-4-8[1M]")?;
+        assert!(
+            result.is_some(),
+            "claude-opus-4-8[1M] 应剥离 1M 标记后命中 claude-opus-4-8"
+        );
+        let result = find_model_pricing_row(&conn, "claude-opus-4-8[1m]")?;
+        assert!(
+            result.is_some(),
+            "claude-opus-4-8[1m]（小写标记）也应剥离后命中"
+        );
+        // 1M 剥离不得误伤点号小写 id（trailing-ws-safe + 大小写不敏感仅匹配 [1m]）
+        let result = find_model_pricing_row(&conn, "gpt-5.5")?;
+        assert!(result.is_some(), "gpt-5.5 不应被 1M 剥离逻辑影响");
+
+        // Round 2 / Fix D：第三方 coding 套餐 seed 一律小写存储，须对
+        // (a) 预设里的前缀+混合大小写 id，(b) 全小写来料 都能命中（小写候选）。
+        for incoming in [
+            "katcoder/KAT-Coder-Pro", // 预设 suggestedDefaults 形态
+            "kat-coder-pro",          // 上游回显小写
+            "longcat/LongCat-Flash-Chat",
+            "longcat-flash-chat",
+            "bailing/Ling-2.5-1T",
+            "ling-2.5-1t",
+            "kimi-coding/kimi-for-coding",
+            "gemini-claude-opus-4-5-thinking",
+            "gemini-claude-sonnet-4-5-thinking",
+        ] {
+            assert!(
+                find_model_pricing_row(&conn, incoming)?.is_some(),
+                "Fix D seed 应命中: {incoming}"
+            );
+        }
+
         // 测试不存在的模型
         let result = find_model_pricing_row(&conn, "unknown-model-123")?;
         assert!(result.is_none(), "不应该匹配不存在的模型");
 
         Ok(())
+    }
+
+    #[test]
+    fn test_pricing_lookup_candidates_order_and_normalization() {
+        // 前缀/冒号清洗 + 小写 + 点号转横线 + 1M 剥离，且去重保序。
+        let candidates = pricing_lookup_candidates("anthropic/Claude-Sonnet-4.6:beta");
+        assert_eq!(candidates[0], "Claude-Sonnet-4.6");
+        assert!(candidates.contains(&"claude-sonnet-4.6".to_string()));
+        assert!(candidates.contains(&"claude-sonnet-4-6".to_string()));
+
+        // 1M 标记剥离作为候选之一
+        let candidates = pricing_lookup_candidates("claude-opus-4-8[1M]");
+        assert!(
+            candidates.contains(&"claude-opus-4-8".to_string()),
+            "应包含剥离 1M 标记后的候选: {candidates:?}"
+        );
+
+        // 点号小写 id 不应被 '.'→'-' 之外的步骤破坏，且无重复项
+        let candidates = pricing_lookup_candidates("gpt-5.5");
+        assert_eq!(candidates[0], "gpt-5.5");
+        let unique: std::collections::HashSet<_> = candidates.iter().collect();
+        assert_eq!(unique.len(), candidates.len(), "候选键应去重");
     }
 }

@@ -75,6 +75,12 @@ struct CodexOauthModelsQuery {
     account_id: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CodexOauthQuotaQuery {
+    account_id: Option<String>,
+}
+
 pub fn router(state: ApiState) -> Router {
     Router::new()
         .route("/auth/auth-start-login", post(auth_start_login))
@@ -88,6 +94,7 @@ pub fn router(state: ApiState) -> Router {
         )
         .route("/auth/auth-logout", post(auth_logout))
         .route("/auth/get-codex-oauth-models", get(get_codex_oauth_models))
+        .route("/auth/get-codex-oauth-quota", get(get_codex_oauth_quota))
         .with_state(state)
 }
 
@@ -373,4 +380,49 @@ async fn get_codex_oauth_models(
         .await
         .map_err(ApiError::bad_request)?;
     Ok(json_ok(models))
+}
+
+async fn get_codex_oauth_quota(
+    State(state): State<ApiState>,
+    Query(query): Query<CodexOauthQuotaQuery>,
+) -> ApiResult<crate::services::subscription::SubscriptionQuota> {
+    use crate::services::subscription::{CredentialStatus, SubscriptionQuota};
+
+    let manager = state.codex_oauth.read().await;
+
+    // 解析最终使用的账号 ID：显式 > 默认账号 > 无账号 (not_found)
+    let resolved = match query
+        .account_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    {
+        Some(id) => Some(id.to_string()),
+        None => manager.default_account_id().await,
+    };
+    let Some(id) = resolved else {
+        return Ok(json_ok(SubscriptionQuota::not_found("codex_oauth")));
+    };
+
+    // 获取（必要时自动刷新）access_token
+    let token = match manager.get_valid_token_for_account(&id).await {
+        Ok(t) => t,
+        Err(e) => {
+            return Ok(json_ok(SubscriptionQuota::error(
+                "codex_oauth",
+                CredentialStatus::Expired,
+                format!("Codex OAuth token unavailable: {e}"),
+            )));
+        }
+    };
+
+    Ok(json_ok(
+        crate::services::subscription::query_codex_quota(
+            &token,
+            Some(&id),
+            "codex_oauth",
+            "Codex OAuth access token expired or rejected. Please re-login via cc-switch.",
+        )
+        .await,
+    ))
 }

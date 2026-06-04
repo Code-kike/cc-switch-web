@@ -351,10 +351,7 @@ const UnifiedSkillsPanel = React.forwardRef<
             },
           );
         } catch (error) {
-          showSkillActionError(
-            error,
-            "skills.restoreFromBackup.deleteFailed",
-          );
+          showSkillActionError(error, "skills.restoreFromBackup.deleteFailed");
         }
       },
     });

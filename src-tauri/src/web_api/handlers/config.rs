@@ -9,7 +9,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use super::super::ApiState;
-use super::common::{json_ok, ApiError, ApiResult};
+use super::common::{json_ok, validate_outbound_url, ApiError, ApiResult};
 
 #[derive(Deserialize)]
 struct AppQuery {
@@ -192,7 +192,7 @@ pub fn router(state: ApiState) -> Router {
         )
         .route(
             "/config/fetch-models-for-config",
-            get(fetch_models_for_config),
+            post(fetch_models_for_config),
         )
         .route(
             "/config/get-stream-check-config",
@@ -452,8 +452,14 @@ async fn extract_common_config_snippet(
 }
 
 async fn fetch_models_for_config(
-    Query(query): Query<FetchModelsForConfigQuery>,
+    Json(query): Json<FetchModelsForConfigQuery>,
 ) -> ApiResult<Vec<crate::services::model_fetch::FetchedModel>> {
+    // SSRF guard: reject internal/private targets before dialing the shared
+    // model-fetch service (web-server only; desktop keeps unrestricted access).
+    validate_outbound_url(&query.base_url)?;
+    if let Some(models_url) = query.models_url.as_deref() {
+        validate_outbound_url(models_url)?;
+    }
     let models = crate::services::model_fetch::fetch_models(
         &query.base_url,
         &query.api_key,

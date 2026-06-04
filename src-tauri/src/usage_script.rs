@@ -11,10 +11,10 @@ use crate::error::AppError;
 ///
 /// Substitutes the standard placeholders with sentinel values so a templated
 /// URL like `{{baseUrl}}/balance` survives extraction. Returns:
-///   - `Ok(Some(url))`  when the script parses and exposes a string URL
-///   - `Ok(None)`       when the script does not declare `request.url` (caller
-///                      decides whether that's a save-blocking issue)
-///   - `Err(_)`         only on JS runtime/eval failures the caller should log
+/// - `Ok(Some(url))`  when the script parses and exposes a string URL
+/// - `Ok(None)`       when the script does not declare `request.url` (caller
+///   decides whether that's a save-blocking issue)
+/// - `Err(_)`         only on JS runtime/eval failures the caller should log
 ///
 /// Built-in templates (`balance` / `token_plan` / `github_copilot`) ignore the
 /// JS body entirely, so callers should skip this check for those.

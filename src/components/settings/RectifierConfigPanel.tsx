@@ -46,7 +46,10 @@ export function RectifierConfigPanel() {
       if (rectifierResult.status === "fulfilled") {
         setConfig(rectifierResult.value);
       } else {
-        console.error("Failed to load rectifier config:", rectifierResult.reason);
+        console.error(
+          "Failed to load rectifier config:",
+          rectifierResult.reason,
+        );
         const detail =
           extractErrorMessage(rectifierResult.reason) || t("common.unknown");
         errors.push(
@@ -59,7 +62,10 @@ export function RectifierConfigPanel() {
       if (optimizerResult.status === "fulfilled") {
         setOptimizerConfig(optimizerResult.value);
       } else {
-        console.error("Failed to load optimizer config:", optimizerResult.reason);
+        console.error(
+          "Failed to load optimizer config:",
+          optimizerResult.reason,
+        );
         const detail =
           extractErrorMessage(optimizerResult.reason) || t("common.unknown");
         errors.push(

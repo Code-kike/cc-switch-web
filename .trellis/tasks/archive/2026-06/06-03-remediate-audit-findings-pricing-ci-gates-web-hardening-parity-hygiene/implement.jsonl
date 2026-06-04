@@ -1,0 +1,6 @@
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Dual-runtime parity reasoning for M2/M3: FE web-commands.ts <-> Rust web_api handler <-> desktop command must stay paired."}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "M2 shared import+snippet-extraction method across both runtimes; pricing fallback helper and SSRF validator should be single shared helpers, not duplicated."}
+{"file": ".trellis/spec/frontend/hook-guidelines.md", "reason": "M4 web __lagged recovery bridge hook + M3 useCodexOauthQuota gating follow hook lifecycle/cleanup conventions."}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "M4 react-query cache invalidation on the lagged-recovery path (which namespaces to invalidate)."}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "M5 ProviderForm submit-guard on codexAuthError must mirror existing opencode/openclaw/hermes guard patterns."}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "TS edits in web-commands.ts / event-adapter.ts / ProviderForm.tsx must respect the project's type-safety conventions."}

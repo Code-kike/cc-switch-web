@@ -2383,6 +2383,130 @@ impl ProviderService {
         import_default_config(state, app_type)
     }
 
+    /// Import default configuration and, on success, extract the common config
+    /// snippet and run the legacy common-config migration.
+    ///
+    /// This mirrors the post-import startup logic that originally lived in
+    /// `lib.rs`. The bare [`Self::import_default_config`] only materializes the
+    /// `default` provider; this variant additionally seeds the common config
+    /// snippet so user-triggered imports behave the same on desktop and web.
+    ///
+    /// Returns `Ok(true)` if imported, `Ok(false)` if skipped.
+    pub fn import_default_config_with_snippet_extraction(
+        state: &AppState,
+        app_type: AppType,
+    ) -> Result<bool, AppError> {
+        let imported = Self::import_default_config(state, app_type.clone())?;
+
+        if imported {
+            // Extract common config snippet (mirrors old startup logic in lib.rs)
+            if state
+                .db
+                .should_auto_extract_config_snippet(app_type.as_str())?
+            {
+                match Self::extract_common_config_snippet(state, app_type.clone()) {
+                    Ok(snippet) if !snippet.is_empty() && snippet != "{}" => {
+                        let _ = state
+                            .db
+                            .set_config_snippet(app_type.as_str(), Some(snippet));
+                        let _ = state
+                            .db
+                            .set_config_snippet_cleared(app_type.as_str(), false);
+                    }
+                    _ => {}
+                }
+            }
+
+            Self::migrate_legacy_common_config_usage_if_needed(state, app_type.clone())?;
+        }
+
+        Ok(imported)
+    }
+
+    /// Auto-extract common config snippets from clean live files at startup and
+    /// run the one-shot legacy common-config + Hermes runtime-marker migrations.
+    ///
+    /// Mirrors the desktop `initialize_common_config_snippets` startup hook in
+    /// `lib.rs` so the headless web server reaches the same post-startup state.
+    /// Must run before proxy takeover is restored, otherwise we'd read
+    /// proxy-placeholder configs instead of the user's actual live settings.
+    pub fn initialize_common_config_snippets(state: &AppState) {
+        for app_type in crate::app_config::AppType::all() {
+            if !state
+                .db
+                .should_auto_extract_config_snippet(app_type.as_str())
+                .unwrap_or(false)
+            {
+                continue;
+            }
+
+            let settings = match Self::read_live_settings(app_type.clone()) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+
+            match Self::extract_common_config_snippet_from_settings(app_type.clone(), &settings) {
+                Ok(snippet) if !snippet.is_empty() && snippet != "{}" => {
+                    match state
+                        .db
+                        .set_config_snippet(app_type.as_str(), Some(snippet))
+                    {
+                        Ok(()) => {
+                            let _ = state
+                                .db
+                                .set_config_snippet_cleared(app_type.as_str(), false);
+                            log::info!(
+                                "✓ Auto-extracted common config snippet for {}",
+                                app_type.as_str()
+                            );
+                        }
+                        Err(e) => log::warn!(
+                            "✗ Failed to save config snippet for {}: {e}",
+                            app_type.as_str()
+                        ),
+                    }
+                }
+                Ok(_) => log::debug!(
+                    "○ Live config for {} has no extractable common fields",
+                    app_type.as_str()
+                ),
+                Err(e) => log::warn!(
+                    "✗ Failed to extract config snippet for {}: {e}",
+                    app_type.as_str()
+                ),
+            }
+        }
+
+        let should_run_legacy_migration = state
+            .db
+            .is_legacy_common_config_migrated()
+            .map(|done| !done)
+            .unwrap_or(true);
+
+        if should_run_legacy_migration {
+            for app_type in [AppType::Claude, AppType::Codex, AppType::Gemini] {
+                if let Err(e) =
+                    Self::migrate_legacy_common_config_usage_if_needed(state, app_type.clone())
+                {
+                    log::warn!(
+                        "✗ Failed to migrate legacy common-config usage for {}: {e}",
+                        app_type.as_str()
+                    );
+                }
+            }
+
+            if let Err(e) = state.db.set_legacy_common_config_migrated(true) {
+                log::warn!("✗ Failed to persist legacy common-config migration flag: {e}");
+            }
+        }
+
+        // One-shot Hermes runtime-marker cleanup; idempotent and gated by its own
+        // settings flag so it stays a no-op after the first successful run.
+        if let Err(e) = Self::cleanup_hermes_legacy_runtime_markers_if_needed(state) {
+            log::warn!("✗ Failed to clean Hermes legacy runtime markers: {e}");
+        }
+    }
+
     /// Read current live settings (re-export)
     pub fn read_live_settings(app_type: AppType) -> Result<Value, AppError> {
         read_live_settings(app_type)

@@ -90,7 +90,9 @@ const EMPTY_RESOLVED_DIRECTORIES: ResolvedDirectories = {
 };
 
 const normalizeDefaultDirectories = (
-  defaults?: Partial<Record<keyof ResolvedDirectories, string | null | undefined>>,
+  defaults?: Partial<
+    Record<keyof ResolvedDirectories, string | null | undefined>
+  >,
 ): ResolvedDirectories => ({
   appConfig: sanitizeDir(defaults?.appConfig) ?? "",
   claude: sanitizeDir(defaults?.claude) ?? "",
@@ -101,28 +103,29 @@ const normalizeDefaultDirectories = (
   hermes: sanitizeDir(defaults?.hermes) ?? "",
 });
 
-const resolveDesktopDefaultDirectories = async (): Promise<ResolvedDirectories> => {
-  try {
-    const path = await import("@tauri-apps/api/path");
-    const home = await path.homeDir();
+const resolveDesktopDefaultDirectories =
+  async (): Promise<ResolvedDirectories> => {
+    try {
+      const path = await import("@tauri-apps/api/path");
+      const home = await path.homeDir();
 
-    return normalizeDefaultDirectories({
-      appConfig: await path.join(home, ".cc-switch"),
-      claude: await path.join(home, ".claude"),
-      codex: await path.join(home, ".codex"),
-      gemini: await path.join(home, ".gemini"),
-      opencode: await path.join(home, ".config/opencode"),
-      openclaw: await path.join(home, ".openclaw"),
-      hermes: await path.join(home, ".hermes"),
-    });
-  } catch (error) {
-    console.error(
-      "[useDirectorySettings] Failed to resolve desktop default directories",
-      error,
-    );
-    return EMPTY_RESOLVED_DIRECTORIES;
-  }
-};
+      return normalizeDefaultDirectories({
+        appConfig: await path.join(home, ".cc-switch"),
+        claude: await path.join(home, ".claude"),
+        codex: await path.join(home, ".codex"),
+        gemini: await path.join(home, ".gemini"),
+        opencode: await path.join(home, ".config/opencode"),
+        openclaw: await path.join(home, ".openclaw"),
+        hermes: await path.join(home, ".hermes"),
+      });
+    } catch (error) {
+      console.error(
+        "[useDirectorySettings] Failed to resolve desktop default directories",
+        error,
+      );
+      return EMPTY_RESOLVED_DIRECTORIES;
+    }
+  };
 
 const resolveDefaultDirectories = async (): Promise<ResolvedDirectories> => {
   if (!isWebMode()) {

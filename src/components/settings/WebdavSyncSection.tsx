@@ -410,7 +410,14 @@ export function WebdavSyncSection({
     } finally {
       setActionState("idle");
     }
-  }, [buildSettings, formatError, form.password, passwordTouched, queryClient, t]);
+  }, [
+    buildSettings,
+    formatError,
+    form.password,
+    passwordTouched,
+    queryClient,
+    t,
+  ]);
 
   /** Fetch remote info, then open upload confirmation dialog. */
   const handleUploadClick = useCallback(async () => {
