@@ -174,3 +174,36 @@ Closed the CI coverage gap that hid the PR #14 regression: backend job's cargo t
 ### Next Steps
 
 - None - task complete
+
+
+## Session 6: Repo hygiene: untrack .github + dedup archived task dirs
+
+**Date**: 2026-06-04
+**Task**: Repo hygiene: untrack .github + dedup archived task dirs
+**Branch**: `chore/repo-hygiene-gitignore-task-dedup`
+
+### Summary
+
+Removed the .github line from .gitignore (dormant trap: new .github files would not auto-add; the 12 tracked files unaffected). Deduped 4 already-archived task dirs that were tracked in BOTH .trellis/tasks/ and tasks/archive/2026-06/ (squash-merge artifact) — removed the active-location copies (17 files), kept archive/. get_context no longer lists them as active. PR #16. No source/build behavior changes.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `1161253b` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
