@@ -240,3 +240,36 @@ Fixed non-security review findings across web-server behavior, WebDAV confirmati
 ### Next Steps
 
 - None - task complete
+
+
+## Session 8: Track Trellis scaffold files
+
+**Date**: 2026-06-04
+**Task**: Track Trellis scaffold files
+**Branch**: `chore/repo-hygiene-gitignore-task-dedup`
+
+### Summary
+
+Committed reusable Trellis/Codex scaffold files, added local ignore coverage for Trellis template hashes, and kept runtime/developer state out of git.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `ff7262bc` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
