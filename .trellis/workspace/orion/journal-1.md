@@ -108,3 +108,36 @@ CI Frontend Checks failed (pre-existing on main+all branches) because pnpm test:
 ### Next Steps
 
 - None - task complete
+
+
+## Session 4: Fix web-server example build: model_mapper regression + autoexamples
+
+**Date**: 2026-06-04
+**Task**: Fix web-server example build: model_mapper regression + autoexamples
+**Branch**: `fix/cargo-autoexamples-web-server-includes`
+
+### Summary
+
+Surfaced + fixed a regression: the server web-server example (deployable web binary) failed to compile under --features web-server (E0433 cannot find model_mapper in proxy) since PR #11, where Round-2 added crate::proxy::model_mapper to usage_stats.rs but examples/web_proxy.rs (server's mod proxy) never declared it. Undetected: cargo test (desktop) skips the example via required-features + a prior --example server gate gave a FALSE PASS. Fix: web_proxy.rs declares the model_mapper path module. Also set autoexamples=false + explicit-only server example, so cargo no longer treats web_proxy/web_services (no fn main; server.rs #[path] includes) as standalone example targets. PR #14. Verified: --example server compiles; cargo test/clippy/fmt green.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `fdf41ca8` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
