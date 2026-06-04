@@ -1,5 +1,0 @@
-{"file": ".trellis/tasks/05-30-sync-upstream-v316/research/upstream-v316-audit.md", "reason": "The authoritative v3.16.0 delta audit: exact commits per batch, fork-specific adaptation notes (usage-event SSE, panic fix, codex_config care), port order, and verify gates"}
-{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "This sync spans Rust backend, React frontend, and the dual-runtime web parity layer — cross-layer reasoning is mandatory (esp. the usage-event Tauri-emit vs SSE adaptation)"}
-{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Ports must reuse existing fork patterns (UiEventSink/event-adapter/useUsageCacheBridge) rather than copy upstream Tauri-only code verbatim"}
-{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "Frontend quality bar for the ported FE changes (presets, version.ts, useUsageEventBridge, UsageDashboard)"}
-{"file": ".trellis/spec/frontend/state-management.md", "reason": "Real-time usage event batch touches React Query cache + event bridge; follow the project's state-management conventions"}
