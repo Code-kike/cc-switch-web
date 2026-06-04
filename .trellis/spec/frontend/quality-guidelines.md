@@ -739,6 +739,100 @@ git diff v3.14.1..upstream-v3.15.0 -- <focused-area>
 
 ---
 
+### Scenario: Standalone Web-Server Smoke Validation
+
+#### 1. Scope / Trigger
+
+- Trigger: validating Web API behavior after changes to Web routes, server runtime,
+  provider/config persistence, session/usage flows, or deployment-facing server
+  behavior.
+- Applies when using `scripts/smoke-web-server.mjs`,
+  `src-tauri/examples/server.rs`, `src-tauri/src/web_api/**`, or
+  `src/lib/api/web-commands.ts`.
+
+#### 2. Signatures
+
+- Web build command:
+  - `pnpm build:web`
+- Smoke command:
+  - `pnpm smoke:web-server`
+- Server entry:
+  - `cargo run --no-default-features --features web-server --example server`
+- Required smoke environment:
+  - `CC_SWITCH_DATA_DIR`
+  - `CC_SWITCH_TEST_HOME`
+  - `CC_SWITCH_WEB_DIST_DIR`
+
+#### 3. Contracts
+
+- `pnpm smoke:web-server` requires `dist-web/index.html`; run
+  `pnpm build:web` first when the artifact is missing or stale.
+- Smoke runs must use isolated temp data/home directories through
+  `CC_SWITCH_DATA_DIR` and `CC_SWITCH_TEST_HOME`; do not point the smoke server
+  at a developer's real CLI configuration.
+- `CC_SWITCH_WEB_DIST_DIR` must point at the built Web bundle that should be
+  served by the standalone server.
+- The smoke result should be interpreted by probe expectations, not by status
+  code alone. Desktop-only endpoints returning `501` and validation probes
+  returning `400` can be correct when the probe expects those statuses.
+- A smoke task should leave business-code files unchanged unless it uncovered a
+  real defect that is being fixed in a separate task.
+
+#### 4. Validation & Error Matrix
+
+- Missing `dist-web/index.html` -> build Web assets before smoke testing.
+- Server exits before `/api/health` responds -> investigate server startup,
+  feature flags, and runtime environment before changing product code.
+- Smoke mutates files outside the isolated temp directories -> reject the run and
+  fix the smoke setup.
+- Probe returns an unexpected status or payload -> categorize as product defect,
+  test fixture defect, or environment flake before mixing repairs into the smoke
+  task.
+- Web route coverage has `missing > 0` after command/route edits -> reject until
+  `pnpm check:web-routes` passes.
+
+#### 5. Good/Base/Bad Cases
+
+- Good: build Web assets when needed, run `pnpm smoke:web-server`, confirm the
+  standalone server starts on localhost, then verify the working tree has no
+  business-code changes.
+- Base: after frontend-only changes that do not touch routes or server runtime,
+  run `pnpm typecheck` and targeted unit tests; smoke can be deferred unless the
+  PRD requires standalone server validation.
+- Bad: relying only on desktop Tauri checks after Web API handler changes.
+- Bad: running the server against a real `$HOME` and treating mutated personal
+  config files as smoke fixtures.
+
+#### 6. Tests Required
+
+- Run `pnpm check:web-routes` after Web command, adapter, route, or handler
+  changes.
+- Run `pnpm typecheck` after frontend or API adapter changes.
+- Run `pnpm smoke:web-server` for standalone Web API/server validation.
+- If `dist-web/index.html` is missing or stale, run `pnpm build:web` before the
+  smoke command.
+- After smoke, run `git status --short` and confirm only intended task or
+  generated artifacts changed.
+
+#### 7. Wrong vs Correct
+
+##### Wrong
+
+```bash
+cargo run --no-default-features --features web-server --example server
+# Then manually click around using the developer's real HOME/config files.
+```
+
+##### Correct
+
+```bash
+pnpm build:web
+pnpm smoke:web-server
+git status --short
+```
+
+---
+
 ## Testing Requirements
 
 <!-- What level of testing is expected -->
