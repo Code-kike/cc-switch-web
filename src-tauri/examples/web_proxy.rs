@@ -13,6 +13,9 @@ pub mod http_client;
 #[path = "../src/proxy/json_canonical.rs"]
 pub(crate) mod json_canonical;
 
+#[path = "../src/proxy/model_mapper.rs"]
+pub mod model_mapper;
+
 #[path = "../src/proxy/providers/mod.rs"]
 pub mod providers;
 

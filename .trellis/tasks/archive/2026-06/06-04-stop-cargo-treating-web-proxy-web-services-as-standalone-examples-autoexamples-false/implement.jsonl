@@ -1,0 +1,1 @@
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "examples/server.rs is the dual-runtime web-server build assembly point that #[path]-includes web_proxy.rs/web_services.rs; the Cargo example-target config must keep that include working while not compiling them standalone."}
