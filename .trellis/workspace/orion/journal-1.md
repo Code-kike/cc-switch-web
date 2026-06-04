@@ -141,3 +141,36 @@ Surfaced + fixed a regression: the server web-server example (deployable web bin
 ### Next Steps
 
 - None - task complete
+
+
+## Session 5: Add CI web-server example compile check
+
+**Date**: 2026-06-04
+**Task**: Add CI web-server example compile check
+**Branch**: `ci/web-server-example-compile-check`
+
+### Summary
+
+Closed the CI coverage gap that hid the PR #14 regression: backend job's cargo test/clippy run desktop features and skip the server example (required-features), so the web-server binary was never compiled in CI. Added a 'cargo check --no-default-features --features web-server --example server' step to the backend job (cargo check, not clippy -D warnings, due to ~189 benign example dead-code warnings). PR #15, all CI green. Future 'proxy dep added to a shared service but not wired into examples/web_proxy.rs' regressions now fail CI directly. Noted: .gitignore:31 has a .github rule (ci.yml is tracked so unaffected; new workflow files would need git add -f).
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `112cc83b` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
