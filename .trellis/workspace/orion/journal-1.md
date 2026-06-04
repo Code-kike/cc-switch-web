@@ -273,3 +273,36 @@ Committed reusable Trellis/Codex scaffold files, added local ignore coverage for
 ### Next Steps
 
 - None - task complete
+
+
+## Session 9: Run web-server smoke test
+
+**Date**: 2026-06-04
+**Task**: Run web-server smoke test
+**Branch**: `chore/repo-hygiene-gitignore-task-dedup`
+
+### Summary
+
+Ran standalone web-server smoke validation successfully, confirmed prior GitHub CI success, ran local route coverage, typecheck, and unit tests, and recorded the smoke validation contract in frontend quality guidelines.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `f959cc0a` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
