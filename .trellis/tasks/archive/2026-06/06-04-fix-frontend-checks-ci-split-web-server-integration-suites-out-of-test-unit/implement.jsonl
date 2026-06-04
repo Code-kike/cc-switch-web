@@ -1,0 +1,1 @@
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "Vitest split (test:unit vs test:integration) must keep the project's test conventions; the secret-bearing/web-API scenario added in Round 2 lives here too."}

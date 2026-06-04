@@ -1,0 +1,1 @@
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "Check phase: confirm test:unit stays green/complete after the split and integration suites are correctly separated."}
