@@ -4,6 +4,7 @@ use axum::{
     Json, Router,
 };
 use serde::Deserialize;
+use std::sync::Arc;
 
 use super::super::ApiState;
 use super::common::{json_ok, web_not_supported, ApiError, ApiResult};
@@ -36,6 +37,13 @@ struct RestoreSkillBackupRequest {
 fn parse_app_type(app: &str) -> Result<crate::app_config::AppType, ApiError> {
     use std::str::FromStr;
     crate::app_config::AppType::from_str(app).map_err(|err| ApiError::bad_request(err.to_string()))
+}
+
+fn run_post_restore_sync(db: Arc<crate::database::Database>) -> Result<(), crate::error::AppError> {
+    let app_state = crate::store::AppState::new(db);
+    crate::services::ProviderService::sync_current_to_live(&app_state)?;
+    crate::settings::reload_settings()?;
+    Ok(())
 }
 
 pub fn router(state: ApiState) -> Router {
@@ -79,10 +87,17 @@ async fn restore_db_backup(
     Json(request): Json<BackupFilenameQuery>,
 ) -> ApiResult<String> {
     let db = state.app_state.db.clone();
-    let restored = tokio::task::spawn_blocking(move || db.restore_from_backup(&request.filename))
-        .await
-        .map_err(ApiError::from_anyhow)?
-        .map_err(ApiError::from_anyhow)?;
+    let db_for_sync = db.clone();
+    let restored = tokio::task::spawn_blocking(move || {
+        let restored = db.restore_from_backup(&request.filename)?;
+        if let Err(err) = run_post_restore_sync(db_for_sync) {
+            log::warn!("[Web Backups] post-restore sync warning: {err}");
+        }
+        Ok::<_, crate::error::AppError>(restored)
+    })
+    .await
+    .map_err(ApiError::from_anyhow)?
+    .map_err(ApiError::from_anyhow)?;
     Ok(json_ok(restored))
 }
 

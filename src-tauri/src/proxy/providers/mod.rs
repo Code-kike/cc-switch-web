@@ -36,11 +36,12 @@ use serde::{Deserialize, Serialize};
 // 公开导出
 pub use adapter::ProviderAdapter;
 pub use auth::{AuthInfo, AuthStrategy};
+#[cfg(feature = "desktop")]
 pub use claude::{
-    claude_api_format_needs_transform, get_claude_api_format,
-    normalize_anthropic_tool_thinking_history_for_provider,
-    transform_claude_request_for_api_format, ClaudeAdapter,
+    claude_api_format_needs_transform, normalize_anthropic_tool_thinking_history_for_provider,
+    transform_claude_request_for_api_format,
 };
+pub use claude::{get_claude_api_format, ClaudeAdapter};
 pub use codex::CodexAdapter;
 pub use gemini::GeminiAdapter;
 

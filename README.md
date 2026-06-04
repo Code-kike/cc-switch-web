@@ -8,8 +8,6 @@
 [![Built with Tauri](https://img.shields.io/badge/backend-Tauri%202%20Web%20Server-orange.svg)](https://tauri.app/)
 [![Frontend](https://img.shields.io/badge/frontend-React%20%2B%20Vite-646cff.svg)](#development)
 
-
-
 </div>
 
 ## Overview
@@ -46,6 +44,13 @@ This repository focuses on solving that gap.
 - **Reuse of existing `~/.cc-switch` data** instead of forcing a separate data silo
 - **Modern `cc-switch` feature base** rather than staying limited to early web prototypes
 - **Standalone web server runtime** for Linux server or workstation deployment
+
+Web-server mode is primarily for remote configuration and management. You can
+edit providers, prompts, MCP servers, skills, sessions, and related settings
+from a browser, while operations that require controlling a local proxy runtime
+remain desktop-only. In Web mode, proxy and failover settings are available as
+configuration, but starting the local proxy process, runtime takeover, and live
+proxy control are intentionally not exposed by the standalone server.
 
 ## Current Deployment Model
 

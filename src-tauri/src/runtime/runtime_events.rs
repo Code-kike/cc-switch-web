@@ -29,8 +29,10 @@ pub trait UiEventSink: Send + Sync {
 }
 
 /// Drops every event. Used in tests or as a placeholder during migration.
+#[cfg(feature = "desktop")]
 pub struct NoopEventSink;
 
+#[cfg(feature = "desktop")]
 impl UiEventSink for NoopEventSink {
     fn emit_json(&self, _event: &str, _payload: Value) {}
 }

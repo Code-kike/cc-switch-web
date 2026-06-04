@@ -897,6 +897,14 @@ export function WebdavSyncSection({
                     </dt>
                     <dd>{formatDate(remoteInfo.createdAt)}</dd>
                     <dt className="font-medium text-foreground">
+                      {t("settings.webdavSync.confirmDownload.snapshotId")}
+                    </dt>
+                    <dd>
+                      <code className="text-xs bg-muted px-1.5 py-0.5 rounded break-all">
+                        {remoteInfo.snapshotId}
+                      </code>
+                    </dd>
+                    <dt className="font-medium text-foreground">
                       {t("settings.webdavSync.confirmDownload.path")}
                     </dt>
                     <dd>

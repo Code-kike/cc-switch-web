@@ -154,10 +154,18 @@ pub async fn restore_db_backup(
     filename: String,
 ) -> Result<String, String> {
     let db = state.db.clone();
-    tauri::async_runtime::spawn_blocking(move || db.restore_from_backup(&filename))
-        .await
-        .map_err(|e| format!("Restore failed: {e}"))?
-        .map_err(|e: AppError| e.to_string())
+    let db_for_sync = db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let safety_id = db.restore_from_backup(&filename)?;
+        let warning = post_sync_warning_from_result(Ok(run_post_import_sync(db_for_sync)));
+        if let Some(msg) = warning.as_ref() {
+            log::warn!("[Restore] post-restore sync warning: {msg}");
+        }
+        Ok::<_, AppError>(safety_id)
+    })
+    .await
+    .map_err(|e| format!("Restore failed: {e}"))?
+    .map_err(|e: AppError| e.to_string())
 }
 
 /// Rename a database backup file

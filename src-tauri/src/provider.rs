@@ -142,7 +142,7 @@ pub struct UsageScript {
     pub user_id: Option<String>,
     /// 模板类型（用于后端判断验证规则）
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[serde(rename = "templateType")]
+    #[serde(rename = "templateType", alias = "template_type")]
     pub template_type: Option<String>,
     /// 自动查询间隔（单位：分钟，0 表示禁用自动查询）
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -745,7 +745,7 @@ pub struct OpenCodeModelLimit {
 mod tests {
     use super::{
         ClaudeModelConfig, CodexModelConfig, GeminiModelConfig, OpenCodeProviderConfig, Provider,
-        ProviderManager, ProviderMeta, UniversalProvider,
+        ProviderManager, ProviderMeta, UniversalProvider, UsageScript,
     };
     use serde_json::json;
 
@@ -1037,6 +1037,19 @@ mod tests {
             ..Default::default()
         });
         assert!(copilot.is_github_copilot());
+    }
+
+    #[test]
+    fn usage_script_accepts_legacy_template_type_key() {
+        let script: UsageScript = serde_json::from_value(json!({
+            "enabled": true,
+            "language": "javascript",
+            "code": "",
+            "template_type": "github_copilot"
+        }))
+        .expect("legacy usage script");
+
+        assert_eq!(script.template_type.as_deref(), Some("github_copilot"));
     }
 
     #[test]

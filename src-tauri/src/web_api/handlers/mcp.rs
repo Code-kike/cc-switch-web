@@ -195,8 +195,16 @@ async fn get_mcp_config(
     Query(query): Query<AppQuery>,
 ) -> ApiResult<McpConfigResponse> {
     let app_type = parse_app_type(&query.app)?;
-    let servers = crate::services::McpService::get_servers(state.app_state.as_ref(), app_type)
-        .map_err(ApiError::from_anyhow)?;
+    let servers = crate::services::McpService::get_all_servers(state.app_state.as_ref())
+        .map_err(ApiError::from_anyhow)?
+        .into_iter()
+        .filter_map(|(id, server)| {
+            server
+                .apps
+                .is_enabled_for(&app_type)
+                .then_some((id, server.server))
+        })
+        .collect();
     Ok(json_ok(McpConfigResponse {
         config_path: crate::config::get_app_config_path()
             .to_string_lossy()
@@ -269,12 +277,12 @@ async fn set_mcp_enabled(
     Json(request): Json<SetMcpEnabledRequest>,
 ) -> ApiResult<bool> {
     let app_type = parse_app_type(&request.app)?;
-    let updated = crate::services::McpService::set_enabled(
+    crate::services::McpService::toggle_app(
         state.app_state.as_ref(),
-        app_type,
         &request.id,
+        app_type,
         request.enabled,
     )
     .map_err(ApiError::from_anyhow)?;
-    Ok(json_ok(updated))
+    Ok(json_ok(true))
 }

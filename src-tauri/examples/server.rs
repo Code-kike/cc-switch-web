@@ -29,7 +29,7 @@ mod runtime;
 mod bootstrap;
 
 mod app_store {
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
     use std::sync::{OnceLock, RwLock};
 
     use crate::error::AppError;
@@ -136,6 +136,8 @@ mod codex_config;
 mod config;
 #[path = "../src/database/mod.rs"]
 mod database;
+#[cfg(test)]
+pub use database::Database;
 #[path = "../src/deeplink/mod.rs"]
 mod deeplink;
 #[path = "../src/services/env_checker.rs"]

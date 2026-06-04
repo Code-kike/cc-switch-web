@@ -12,7 +12,20 @@ const apiBase = (): string =>
 let sse: EventSource | null = null;
 let reconnectAttempts = 0;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let reconnectListenersAttached = false;
 const subscribers = new Map<string, Set<EventCallback>>();
+
+function hasSubscribers(): boolean {
+  return subscribers.size > 0;
+}
+
+function canConnectNow(): boolean {
+  const isVisible =
+    typeof document === "undefined" || document.visibilityState === "visible";
+  const isOnline =
+    typeof navigator === "undefined" || navigator.onLine !== false;
+  return isVisible && isOnline;
+}
 
 function clearReconnect(): void {
   if (reconnectTimer !== null) {
@@ -21,9 +34,57 @@ function clearReconnect(): void {
   }
 }
 
+function scheduleReconnect(): void {
+  if (reconnectTimer !== null || !hasSubscribers()) return;
+  const delay = Math.min(1000 * 2 ** reconnectAttempts, 30_000);
+  reconnectAttempts += 1;
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    if (!hasSubscribers()) return;
+    if (canConnectNow()) {
+      ensureSse();
+      return;
+    }
+    scheduleReconnect();
+  }, delay);
+}
+
+function handleReconnectSignal(): void {
+  if (!hasSubscribers() || !canConnectNow()) return;
+  clearReconnect();
+  ensureSse();
+}
+
+function addReconnectListeners(): void {
+  if (reconnectListenersAttached) return;
+  if (typeof document !== "undefined") {
+    document.addEventListener("visibilitychange", handleReconnectSignal);
+  }
+  if (typeof window !== "undefined") {
+    window.addEventListener("online", handleReconnectSignal);
+  }
+  reconnectListenersAttached = true;
+}
+
+function removeReconnectListeners(): void {
+  if (!reconnectListenersAttached) return;
+  if (typeof document !== "undefined") {
+    document.removeEventListener("visibilitychange", handleReconnectSignal);
+  }
+  if (typeof window !== "undefined") {
+    window.removeEventListener("online", handleReconnectSignal);
+  }
+  reconnectListenersAttached = false;
+}
+
 function ensureSse(): void {
   if (sse !== null) return;
+  if (!hasSubscribers()) return;
   if (typeof EventSource === "undefined") return;
+  if (!canConnectNow()) {
+    scheduleReconnect();
+    return;
+  }
 
   const url = `${apiBase()}/api/events`;
   sse = new EventSource(url, { withCredentials: true });
@@ -53,17 +114,7 @@ function ensureSse(): void {
     sse?.close();
     sse = null;
     clearReconnect();
-    const delay = Math.min(1000 * 2 ** reconnectAttempts, 30_000);
-    reconnectAttempts += 1;
-    reconnectTimer = setTimeout(() => {
-      if (
-        typeof document !== "undefined" &&
-        document.visibilityState === "visible" &&
-        navigator.onLine
-      ) {
-        ensureSse();
-      }
-    }, delay);
+    scheduleReconnect();
   };
 
   sse.onopen = () => {
@@ -82,14 +133,16 @@ export async function listen<T = unknown>(
   const set = subscribers.get(event) ?? new Set();
   set.add(cb as EventCallback);
   subscribers.set(event, set);
+  addReconnectListeners();
   ensureSse();
   return () => {
     set.delete(cb as EventCallback);
     if (set.size === 0) subscribers.delete(event);
-    if (subscribers.size === 0) {
+    if (!hasSubscribers()) {
       sse?.close();
       sse = null;
       clearReconnect();
+      removeReconnectListeners();
     }
   };
 }
@@ -99,5 +152,6 @@ export function closeAllSubscriptions(): void {
   sse = null;
   subscribers.clear();
   clearReconnect();
+  removeReconnectListeners();
   reconnectAttempts = 0;
 }

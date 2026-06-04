@@ -8,9 +8,13 @@
 //! - `CoreRuntime` collects spawned worker handles for graceful shutdown.
 
 pub mod runtime_events;
+#[cfg(feature = "desktop")]
 pub mod runtime_handle;
 
-pub use runtime_events::{ChannelEventSink, EventEnvelope, NoopEventSink, UiEventSink};
+#[cfg(feature = "desktop")]
+pub use runtime_events::NoopEventSink;
+pub use runtime_events::{ChannelEventSink, EventEnvelope, UiEventSink};
+#[cfg(feature = "desktop")]
 pub use runtime_handle::CoreRuntime;
 
 #[cfg(feature = "desktop")]

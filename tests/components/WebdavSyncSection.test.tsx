@@ -448,6 +448,13 @@ describe("WebdavSyncSection", () => {
     await waitFor(() => {
       expect(settingsApiMock.webdavSyncFetchRemoteInfo).toHaveBeenCalledTimes(1);
     });
+    expect(
+      screen.getByText("settings.webdavSync.confirmDownload.snapshotId"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("snapshot-1")).toBeInTheDocument();
+    expect(
+      screen.getByText("settings.webdavSync.confirmDownload.warning"),
+    ).toBeInTheDocument();
 
     fireEvent.click(
       screen.getByRole("button", {
