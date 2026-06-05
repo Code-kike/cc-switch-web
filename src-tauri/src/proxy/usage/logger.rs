@@ -72,6 +72,18 @@ impl<'a> UsageLogger<'a> {
                 0
             });
 
+        // L29 (investigated, intentional cross-source dedup — NOT last-writer data loss):
+        // `request_id` here is `TokenUsage::dedup_request_id()`, which is
+        // `session:{message_id}` whenever a message id is available — the SAME key the
+        // session-log sync writer uses (services/session_usage*.rs). A proxy row and a
+        // session-log row sharing `session:{message_id}` describe the *same* assistant
+        // message observed via two channels, so collapsing them to one row is correct
+        // (folding the source into the key, or keeping both, would DOUBLE-COUNT a single
+        // billable message). The proxy observation is authoritative (real latency, status,
+        // streaming, cost), so `INSERT OR REPLACE` lets a proxy row supersede an earlier
+        // session-log estimate for the same message; the reverse direction is already
+        // guarded because the session writer uses `INSERT OR IGNORE` + a content dedup
+        // (`should_skip_session_insert`) and never clobbers a proxy row.
         conn.execute(
             "INSERT OR REPLACE INTO proxy_request_logs (
                 request_id, provider_id, app_type, model, request_model,
@@ -430,6 +442,88 @@ mod tests {
             .unwrap();
         assert_eq!(status, 500);
         assert_eq!(error, Some("Internal Server Error".to_string()));
+        Ok(())
+    }
+
+    /// L29 regression: a proxy row and a session-log row sharing the same
+    /// `session:{message_id}` key are the SAME logical message; they must
+    /// collapse to ONE authoritative proxy row (deliberate cross-source dedup),
+    /// never two rows (double count) nor leave the proxy observation lost.
+    #[test]
+    fn test_proxy_row_supersedes_session_log_row_for_same_message() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        let request_id = "session:msg_dedup";
+
+        // Pre-existing session-log row (latency 0 estimate) for this message.
+        {
+            let conn = crate::database::lock_conn!(db.conn);
+            conn.execute(
+                "INSERT INTO proxy_request_logs (
+                    request_id, provider_id, app_type, model, request_model,
+                    input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+                    total_cost_usd, latency_ms, status_code, created_at, data_source
+                ) VALUES (?, '_session', 'claude', 'claude-sonnet-4-5', 'claude-sonnet-4-5',
+                          100, 20, 0, 0, '0.05', 0, 200, 1000, 'session_log')",
+                rusqlite::params![request_id],
+            )
+            .unwrap();
+        }
+
+        // The proxy observes the SAME message (real latency) under the shared id.
+        let logger = UsageLogger::new(&db);
+        let log = RequestLog {
+            request_id: request_id.to_string(),
+            provider_id: "real-provider".to_string(),
+            app_type: "claude".to_string(),
+            model: "claude-sonnet-4-5".to_string(),
+            request_model: "claude-sonnet-4-5".to_string(),
+            usage: TokenUsage {
+                input_tokens: 100,
+                output_tokens: 20,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
+                model: None,
+                message_id: Some("msg_dedup".to_string()),
+            },
+            cost: None,
+            latency_ms: 1234,
+            first_token_ms: Some(50),
+            status_code: 200,
+            error_message: None,
+            session_id: Some("sess".to_string()),
+            provider_type: Some("claude".to_string()),
+            is_streaming: true,
+            cost_multiplier: "1.0".to_string(),
+        };
+        logger.log_request(&log)?;
+
+        let conn = crate::database::lock_conn!(db.conn);
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM proxy_request_logs WHERE request_id = ?1",
+            rusqlite::params![request_id],
+            |row| row.get(0),
+        )?;
+        assert_eq!(
+            count, 1,
+            "shared session id must collapse to one row, not double-count"
+        );
+
+        let (latency, provider_id, data_source): (i64, String, String) = conn.query_row(
+            "SELECT latency_ms, provider_id, data_source FROM proxy_request_logs WHERE request_id = ?1",
+            rusqlite::params![request_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        // The authoritative proxy row (real latency / provider) supersedes the estimate.
+        assert_eq!(latency, 1234, "proxy observation must win for the same message");
+        assert_eq!(provider_id, "real-provider");
+        // The proxy logger leaves data_source at its 'proxy' default, so the row
+        // is now a proxy-source row — the session_log estimate was superseded,
+        // not duplicated.
+        assert_eq!(
+            data_source, "proxy",
+            "proxy row must supersede the session_log estimate"
+        );
+
         Ok(())
     }
 }

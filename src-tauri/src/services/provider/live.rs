@@ -726,12 +726,92 @@ impl LiveSnapshot {
     }
 }
 
+/// Whether two Claude live configs identify the SAME provider, used to choose
+/// re-sync (merge unmanaged keys) vs switch (wholesale) in `write_live_snapshot`.
+///
+/// Identity = matching `ANTHROPIC_BASE_URL`; if BOTH sides also carry an auth
+/// token it must match too (so two accounts on the same endpoint count as a
+/// switch). A differing/absent endpoint is treated as a switch (wholesale),
+/// preserving the historical behavior whenever identity is ambiguous.
+///
+/// Known limitation: two DISTINCT *tokenless* providers sharing the SAME
+/// endpoint are indistinguishable here and count as the "same" provider, so a
+/// switch between them would merge unmanaged top-level keys. Accepted because
+/// (a) `env`/credentials are always taken wholesale and never carried over, so
+/// only non-secret top-level keys (e.g. `statusLine`) could leak, and (b) it
+/// requires two tokenless providers on an identical base URL. Distinguishing
+/// them reliably would require threading an explicit switch-vs-resync flag
+/// through `write_live_snapshot` (a larger change, deferred).
+fn claude_live_is_same_provider(existing: &Value, snapshot: &Value) -> bool {
+    fn endpoint_and_token(value: &Value) -> (Option<&str>, Option<&str>) {
+        let env = value.get("env").and_then(|env| env.as_object());
+        let endpoint = env
+            .and_then(|env| env.get("ANTHROPIC_BASE_URL"))
+            .and_then(|v| v.as_str());
+        let token = env
+            .and_then(|env| {
+                env.get("ANTHROPIC_AUTH_TOKEN")
+                    .or_else(|| env.get("ANTHROPIC_API_KEY"))
+            })
+            .and_then(|v| v.as_str());
+        (endpoint, token)
+    }
+
+    let (existing_endpoint, existing_token) = endpoint_and_token(existing);
+    let (snapshot_endpoint, snapshot_token) = endpoint_and_token(snapshot);
+
+    // Endpoint must be present and equal.
+    match (existing_endpoint, snapshot_endpoint) {
+        (Some(a), Some(b)) if a == b => {}
+        _ => return false,
+    }
+    // If both declare a token, require a match; otherwise endpoint match suffices.
+    match (existing_token, snapshot_token) {
+        (Some(a), Some(b)) => a == b,
+        _ => true,
+    }
+}
+
+/// On a same-provider re-sync, re-attach the user's unmanaged top-level keys
+/// (e.g. `statusLine`, `hooks`) that a wholesale Claude snapshot would drop.
+///
+/// Returns `snapshot` unchanged when there is no existing live file, it is
+/// unparseable, or it identifies a DIFFERENT provider (a genuine switch — see
+/// the M32 note in `write_live_snapshot`). `env` is always taken wholesale from
+/// the snapshot (provider-managed); it is never resurrected from disk.
+fn merge_unmanaged_claude_live_keys(path: &std::path::Path, snapshot: Value) -> Value {
+    let existing: Value = match read_json_file(path) {
+        Ok(value) => value,
+        Err(_) => return snapshot,
+    };
+    if !claude_live_is_same_provider(&existing, &snapshot) {
+        return snapshot;
+    }
+    let Some(existing_obj) = existing.as_object() else {
+        return snapshot;
+    };
+    let Value::Object(mut snap_obj) = snapshot else {
+        return snapshot;
+    };
+    for (key, value) in existing_obj {
+        // `env` is fully provider-managed; never carry stale creds/model from disk.
+        if key == "env" {
+            continue;
+        }
+        // Only preserve keys the provider snapshot does not already manage.
+        if !snap_obj.contains_key(key) {
+            snap_obj.insert(key.clone(), value.clone());
+        }
+    }
+    Value::Object(snap_obj)
+}
+
 /// Write live configuration snapshot for a provider
 pub(crate) fn write_live_snapshot(app_type: &AppType, provider: &Provider) -> Result<(), AppError> {
     match app_type {
         AppType::Claude => {
-            // M32 (investigated, intentionally wholesale): Claude's live
-            // `settings.json` is overwritten as a snapshot of the active
+            // M32 (investigated, intentionally wholesale on switch): Claude's
+            // live `settings.json` is overwritten as a snapshot of the active
             // provider rather than merged with the on-disk file. This is
             // load-bearing, NOT an oversight:
             //   * On provider switch, `switch_provider` first backfills the
@@ -740,7 +820,7 @@ pub(crate) fn write_live_snapshot(app_type: &AppType, provider: &Provider) -> Re
             //     was active are captured into that provider's stored config
             //     before the snapshot for the incoming provider is written.
             //   * At write time the live file still holds the *previous*
-            //     provider's settings, so a merge would leak the previous
+            //     provider's settings, so a blanket merge would leak the previous
             //     provider's `env`/`model`/top-level keys into the newly
             //     activated provider (cross-provider contamination) — a worse,
             //     silent correctness bug than the edit-loss it would fix.
@@ -750,11 +830,27 @@ pub(crate) fn write_live_snapshot(app_type: &AppType, provider: &Provider) -> Re
             // Unlike Gemini (whose provider-owned secrets live in a separate
             // `.env`, leaving `settings.json` safe to merge), Claude keeps
             // provider-owned `env` in the same file as user-owned keys, so a
-            // blanket merge cannot distinguish the two. The remaining gap
-            // (a same-provider re-sync that has not been backfilled first) is
-            // better closed by backfilling before re-sync in a dedicated task.
+            // blanket merge cannot distinguish the two.
+            //
+            // M32-RESIDUAL: the remaining gap is a *same-provider re-sync* (not a
+            // switch) — e.g. editing the current provider, startup
+            // `sync_current_to_live`, or `sync_current_provider_for_app_to_live`.
+            // There the on-disk file already belongs to THIS provider, so the
+            // wholesale write silently dropped top-level keys the user added
+            // directly to settings.json. `merge_unmanaged_claude_live_keys`
+            // re-attaches those unmanaged top-level keys *only* when the existing
+            // file identifies the same provider (matching endpoint + credential);
+            // a genuine switch (different provider on disk) still writes wholesale.
             let path = get_claude_settings_path();
             let settings = sanitize_claude_settings_for_live(&provider.settings_config);
+            let merged = merge_unmanaged_claude_live_keys(&path, settings);
+            // Re-sanitize after the merge: `merge_unmanaged_claude_live_keys`
+            // re-attaches unmanaged top-level keys read straight from the on-disk
+            // file, which must not be allowed to resurrect the internal-only fields
+            // `sanitize_claude_settings_for_live` strips — should a prior/imported
+            // settings.json ever have carried one at top level. Idempotent on the
+            // common path (snapshot was already sanitized; the merge adds no env).
+            let settings = sanitize_claude_settings_for_live(&merged);
             write_json_file(&path, &settings)?;
         }
         AppType::Codex => {
@@ -1751,15 +1847,17 @@ mod tests {
         assert!(provider_common_config_strip_opt_in(&on));
     }
 
-    // ── M32: Claude live settings are written wholesale (intentional) ─────
+    // ── M32: Claude live settings are written wholesale on switch (intentional) ──
 
-    /// Documents the investigated M32 decision: `write_live_snapshot` for Claude
-    /// replaces `settings.json` with a snapshot of the active provider. This
-    /// asserts the wholesale semantics (top-level keys absent from the provider
-    /// config are not carried over) so a future change that introduces merging
-    /// has to update this test deliberately. See the comment at the Claude arm
-    /// of `write_live_snapshot` for why merging would cause cross-provider
-    /// contamination.
+    /// Documents the investigated M32 decision: on a *switch* (the on-disk file
+    /// belongs to a DIFFERENT provider — here `stale.example` → `fresh.example`),
+    /// `write_live_snapshot` for Claude replaces `settings.json` wholesale rather
+    /// than merging, so the outgoing provider's keys cannot leak into the
+    /// incoming one. Asserts the wholesale semantics (top-level keys absent from
+    /// the provider config are not carried over). The same-provider re-sync case
+    /// (which DOES preserve unmanaged keys) is covered by
+    /// `claude_live_resync_preserves_unmanaged_keys`. See the comment at the
+    /// Claude arm of `write_live_snapshot` for the full rationale.
     #[test]
     #[serial_test::serial]
     fn claude_live_snapshot_is_wholesale() {
@@ -1799,6 +1897,88 @@ mod tests {
             written.get("statusLine").is_none(),
             "wholesale snapshot must not retain keys outside the active provider"
         );
+
+        match old_test_home {
+            Some(v) => std::env::set_var("CC_SWITCH_TEST_HOME", v),
+            None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
+        }
+    }
+
+    /// M32-RESIDUAL: a same-provider re-sync (the on-disk file already belongs to
+    /// THIS provider — matching endpoint + token) must preserve the user's
+    /// unmanaged top-level keys (e.g. `statusLine`) while still applying the
+    /// provider's managed keys. `env` is taken wholesale from the provider (no
+    /// stale on-disk credentials/model survive).
+    #[test]
+    #[serial_test::serial]
+    fn claude_live_resync_preserves_unmanaged_keys() {
+        let temp = tempfile::tempdir().unwrap();
+        let old_test_home = std::env::var_os("CC_SWITCH_TEST_HOME");
+        std::env::set_var("CC_SWITCH_TEST_HOME", temp.path());
+
+        let settings_path = get_claude_settings_path();
+        std::fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
+        // On-disk file for the SAME provider (same base URL + token) plus a
+        // user-added unmanaged top-level key and a stale managed env override.
+        write_json_file(
+            &settings_path,
+            &json!({
+                "statusLine": { "type": "command", "command": "echo hi" },
+                "env": {
+                    "ANTHROPIC_BASE_URL": "https://same.example",
+                    "ANTHROPIC_AUTH_TOKEN": "tok-1",
+                    "ANTHROPIC_MODEL": "stale-model"
+                }
+            }),
+        )
+        .unwrap();
+
+        let provider = Provider::with_id(
+            "p1".to_string(),
+            "P1".to_string(),
+            json!({
+                "env": {
+                    "ANTHROPIC_BASE_URL": "https://same.example",
+                    "ANTHROPIC_AUTH_TOKEN": "tok-1"
+                }
+            }),
+            None,
+        );
+        write_live_snapshot(&AppType::Claude, &provider).unwrap();
+
+        let written: Value = read_json_file(&settings_path).unwrap();
+        // (a) unmanaged user key preserved on same-provider re-sync.
+        assert_eq!(
+            written.get("statusLine"),
+            Some(&json!({ "type": "command", "command": "echo hi" })),
+            "same-provider re-sync must preserve unmanaged top-level keys"
+        );
+        // env is taken wholesale from the provider: stale managed override is gone.
+        assert!(
+            written["env"].get("ANTHROPIC_MODEL").is_none(),
+            "env must be provider-managed; stale on-disk model must not survive"
+        );
+        assert_eq!(written["env"]["ANTHROPIC_AUTH_TOKEN"], json!("tok-1"));
+
+        // (b) a switch to a DIFFERENT provider (different token) stays wholesale.
+        let other = Provider::with_id(
+            "p2".to_string(),
+            "P2".to_string(),
+            json!({
+                "env": {
+                    "ANTHROPIC_BASE_URL": "https://same.example",
+                    "ANTHROPIC_AUTH_TOKEN": "tok-2"
+                }
+            }),
+            None,
+        );
+        write_live_snapshot(&AppType::Claude, &other).unwrap();
+        let written: Value = read_json_file(&settings_path).unwrap();
+        assert!(
+            written.get("statusLine").is_none(),
+            "switch to a different provider (different token) must stay wholesale"
+        );
+        assert_eq!(written["env"]["ANTHROPIC_AUTH_TOKEN"], json!("tok-2"));
 
         match old_test_home {
             Some(v) => std::env::set_var("CC_SWITCH_TEST_HOME", v),

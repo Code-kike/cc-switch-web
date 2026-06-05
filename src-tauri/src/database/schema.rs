@@ -1771,6 +1771,11 @@ impl Database {
             // （含预设里的混合大小写 id，如 katcoder/KAT-Coder-Pro → cleaned KAT-Coder-Pro → lower kat-coder-pro）。
             // KAT-Coder Pro — openclawProviderPresets.ts:674 cost {input:0.002, output:0.006}
             ("kat-coder-pro", "KAT-Coder Pro", "0.002", "0.006", "0", "0"),
+            // KAT-Coder Air — claudeProviderPresets.ts KAT-Coder 预设的 HAIKU 默认模型
+            // (`KAT-Coder-Air V1`)。openclaw 预设未内嵌 Air 价格，暂按同族 Pro 套餐价
+            // 兜底（量级可忽略），待厂商公布后细化。归一链：`KAT-Coder-Air V1` →
+            // 小写空格转横线 `kat-coder-air-v1` → 去 `-vN` → `kat-coder-air`。
+            ("kat-coder-air", "KAT-Coder Air", "0.002", "0.006", "0", "0"),
             // LongCat Flash Chat — openclawProviderPresets.ts:719 cost {input:0.001, output:0.004}
             (
                 "longcat-flash-chat",
@@ -1786,6 +1791,30 @@ impl Database {
             (
                 "kimi-for-coding",
                 "Kimi For Coding",
+                "0.002",
+                "0.006",
+                "0",
+                "0",
+            ),
+            // 云网关 coding 别名（claudeProviderPresets.ts / openclawProviderPresets.ts 引用）。
+            // 两者均为厂商 coding 端点的 "latest" 滚动别名，预设未内嵌 cost；
+            // 价格按本节 cn coding 套餐档（同平台 DouBaoSeed Code Preview = 0.002/0.006）
+            // 兜底，避免成本记 0，待厂商公布后细化。
+            // Volcengine ARK（ark.cn-beijing.volces.com/api/coding）— 与 DouBaoSeed 同平台。
+            // 归一链：openclaw `ark_agentplan/ark-code-latest` → 去前缀 `ark-code-latest`；
+            // claude `ANTHROPIC_MODEL: ark-code-latest` 直接命中。
+            (
+                "ark-code-latest",
+                "Ark Code Latest",
+                "0.002",
+                "0.006",
+                "0",
+                "0",
+            ),
+            // Baidu Qianfan（claudeProviderPresets.ts `ANTHROPIC_MODEL: qianfan-code-latest`）。
+            (
+                "qianfan-code-latest",
+                "Qianfan Code Latest",
                 "0.002",
                 "0.006",
                 "0",
