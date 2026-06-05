@@ -496,26 +496,86 @@ fn convert_message_to_openai(
     Ok(result)
 }
 
-/// 清理 JSON schema（移除不支持的 format）
-pub fn clean_schema(mut schema: Value) -> Value {
-    if let Some(obj) = schema.as_object_mut() {
-        // 移除 "format": "uri"
-        if obj.get("format").and_then(|v| v.as_str()) == Some("uri") {
-            obj.remove("format");
-        }
+/// 清理 JSON schema：移除 OpenAI 严格 schema 校验拒绝的 `format: "uri"`，
+/// 并对所有承载子 schema 的关键字递归应用同样的清理。
+///
+/// OpenAI Chat / Responses 的 function/tool `parameters` 校验不接受
+/// `format: "uri"`，整条工具定义会被以 HTTP 400 拒绝。早期实现只递归
+/// `properties` / `items`，藏在 `$defs` / `definitions` / `anyOf` / `oneOf`
+/// / `allOf` / 对象形式的 `additionalProperties` 等组合关键字里的
+/// `format: "uri"` 会漏网并继续触发 400（M30）。这里遍历 JSON Schema 全部
+/// 子 schema 承载/组合关键字，使清理覆盖整棵树。
+///
+/// 仅移除 `format: "uri"`（与历史行为一致），不扩大删除集合，避免对宽松后端
+/// 误删合法约束（`enum` / `const` / `default` 等非 schema 值保持不变）。
+pub fn clean_schema(schema: Value) -> Value {
+    match schema {
+        Value::Object(mut obj) => {
+            // 移除 OpenAI 不支持的 "format": "uri"
+            if obj.get("format").and_then(|v| v.as_str()) == Some("uri") {
+                obj.remove("format");
+            }
 
-        // 递归清理嵌套 schema
-        if let Some(properties) = obj.get_mut("properties").and_then(|v| v.as_object_mut()) {
-            for (_, value) in properties.iter_mut() {
-                *value = clean_schema(value.clone());
+            // 递归清理所有承载子 schema 的关键字。
+            for (key, value) in obj.iter_mut() {
+                clean_schema_child(key.as_str(), value);
+            }
+
+            Value::Object(obj)
+        }
+        // 布尔 schema（如 `additionalProperties: false`）与原子值原样返回。
+        other => other,
+    }
+}
+
+/// 按关键字承载子 schema 的形态，把 [`clean_schema`] 递归到对应位置。
+///
+/// 覆盖三类承载方式：
+/// - **子 schema 映射**（每个 value 都是独立 schema）
+/// - **子 schema 数组**（每个元素都是 schema）
+/// - **单个子 schema**（value 本身就是 schema；布尔形态原样保留）
+///
+/// `enum` / `const` / `default` / `examples` 等承载的是普通取值而非 schema，
+/// 不在递归之列，避免把合法数据当 schema 误清理。
+fn clean_schema_child(key: &str, value: &mut Value) {
+    match key {
+        // 子 schema 映射：每个 value 都是独立 schema。
+        "properties" | "$defs" | "definitions" | "patternProperties" | "dependentSchemas" => {
+            if let Some(map) = value.as_object_mut() {
+                for sub in map.values_mut() {
+                    *sub = clean_schema(std::mem::take(sub));
+                }
             }
         }
-
-        if let Some(items) = obj.get_mut("items") {
-            *items = clean_schema(items.clone());
+        // 子 schema 数组：每个元素都是 schema。
+        "anyOf" | "oneOf" | "allOf" | "prefixItems" => {
+            if let Some(arr) = value.as_array_mut() {
+                for sub in arr.iter_mut() {
+                    *sub = clean_schema(std::mem::take(sub));
+                }
+            }
         }
+        // `items`：现代 JSON Schema 是单个 schema；draft-04 元组形态是 schema 数组。
+        "items" => match value {
+            Value::Array(arr) => {
+                for sub in arr.iter_mut() {
+                    *sub = clean_schema(std::mem::take(sub));
+                }
+            }
+            Value::Object(_) => {
+                *value = clean_schema(std::mem::take(value));
+            }
+            _ => {}
+        },
+        // 单个子 schema（对象时递归；`additionalProperties: false` 等布尔形态保持不变）。
+        "additionalProperties" | "unevaluatedProperties" | "propertyNames" | "not" | "if"
+        | "then" | "else" | "contains" | "additionalItems" | "unevaluatedItems"
+            if value.is_object() =>
+        {
+            *value = clean_schema(std::mem::take(value));
+        }
+        _ => {}
     }
-    schema
 }
 
 /// OpenAI 响应 → Anthropic 响应
@@ -1703,5 +1763,161 @@ mod tests {
             run_tool_choice(json!({"type": "tool", "name": "search"})),
             json!({"type": "function", "function": {"name": "search"}}),
         );
+    }
+
+    // ── clean_schema deep-recursion tests (M30) ──
+
+    #[test]
+    fn clean_schema_strips_top_level_format_uri() {
+        let cleaned = clean_schema(json!({"type": "string", "format": "uri"}));
+        assert!(cleaned.get("format").is_none());
+        assert_eq!(cleaned["type"], "string");
+    }
+
+    #[test]
+    fn clean_schema_strips_format_uri_inside_properties_and_items() {
+        // The legacy recursion already covered these two; keep them pinned.
+        let cleaned = clean_schema(json!({
+            "type": "object",
+            "properties": {
+                "link": {"type": "string", "format": "uri"},
+                "links": {"type": "array", "items": {"type": "string", "format": "uri"}}
+            }
+        }));
+        assert!(cleaned["properties"]["link"].get("format").is_none());
+        assert!(cleaned["properties"]["links"]["items"]
+            .get("format")
+            .is_none());
+    }
+
+    #[test]
+    fn clean_schema_strips_format_uri_inside_defs_and_ref_targets() {
+        // `$defs` / `definitions` subschemas were ignored by the shallow
+        // recursion, so a `format: "uri"` there reached OpenAI and 400'd.
+        let cleaned = clean_schema(json!({
+            "type": "object",
+            "properties": {"home": {"$ref": "#/$defs/link"}},
+            "$defs": {
+                "link": {"type": "string", "format": "uri"}
+            },
+            "definitions": {
+                "legacy_link": {"type": "string", "format": "uri"}
+            }
+        }));
+        assert!(cleaned["$defs"]["link"].get("format").is_none());
+        assert!(cleaned["definitions"]["legacy_link"]
+            .get("format")
+            .is_none());
+        // $ref itself is opaque and must be preserved untouched.
+        assert_eq!(cleaned["properties"]["home"]["$ref"], "#/$defs/link");
+    }
+
+    #[test]
+    fn clean_schema_strips_format_uri_inside_composition_keywords() {
+        let cleaned = clean_schema(json!({
+            "anyOf": [
+                {"type": "string", "format": "uri"},
+                {"type": "null"}
+            ],
+            "oneOf": [{"type": "string", "format": "uri"}],
+            "allOf": [{"type": "string", "format": "uri"}]
+        }));
+        assert!(cleaned["anyOf"][0].get("format").is_none());
+        assert_eq!(cleaned["anyOf"][1]["type"], "null");
+        assert!(cleaned["oneOf"][0].get("format").is_none());
+        assert!(cleaned["allOf"][0].get("format").is_none());
+    }
+
+    #[test]
+    fn clean_schema_strips_format_uri_inside_object_additional_properties() {
+        let cleaned = clean_schema(json!({
+            "type": "object",
+            "additionalProperties": {"type": "string", "format": "uri"}
+        }));
+        assert!(cleaned["additionalProperties"].get("format").is_none());
+        assert_eq!(cleaned["additionalProperties"]["type"], "string");
+    }
+
+    #[test]
+    fn clean_schema_preserves_boolean_additional_properties() {
+        // `additionalProperties: false` is a strictness constraint OpenAI honors;
+        // recursing into it must not coerce or drop the boolean.
+        let cleaned = clean_schema(json!({
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "additionalProperties": false
+        }));
+        assert_eq!(cleaned["additionalProperties"], json!(false));
+    }
+
+    #[test]
+    fn clean_schema_reaches_deeply_nested_combinations() {
+        // properties → items → anyOf → object additionalProperties, each with a
+        // stray `format: "uri"`. Every level must be cleaned.
+        let cleaned = clean_schema(json!({
+            "type": "object",
+            "properties": {
+                "rows": {
+                    "type": "array",
+                    "items": {
+                        "anyOf": [
+                            {
+                                "type": "object",
+                                "additionalProperties": {"type": "string", "format": "uri"},
+                                "properties": {
+                                    "self": {"type": "string", "format": "uri"}
+                                }
+                            }
+                        ]
+                    }
+                }
+            }
+        }));
+        let leaf = &cleaned["properties"]["rows"]["items"]["anyOf"][0];
+        assert!(leaf["additionalProperties"].get("format").is_none());
+        assert!(leaf["properties"]["self"].get("format").is_none());
+    }
+
+    #[test]
+    fn clean_schema_does_not_overstrip_non_uri_formats_or_values() {
+        // Only `format: "uri"` is targeted; `date-time` and arbitrary data
+        // (enum/const/default) must survive untouched.
+        let cleaned = clean_schema(json!({
+            "type": "object",
+            "properties": {
+                "created": {"type": "string", "format": "date-time"},
+                "kind": {"enum": ["uri", "path"]},
+                "flag": {"const": "uri"},
+                "fallback": {"default": "uri"}
+            }
+        }));
+        assert_eq!(cleaned["properties"]["created"]["format"], "date-time");
+        assert_eq!(cleaned["properties"]["kind"]["enum"], json!(["uri", "path"]));
+        assert_eq!(cleaned["properties"]["flag"]["const"], "uri");
+        assert_eq!(cleaned["properties"]["fallback"]["default"], "uri");
+    }
+
+    #[test]
+    fn clean_schema_strips_format_uri_in_tool_parameters_end_to_end() {
+        // Guards the actual call site: tool input_schema with a nested `$defs`
+        // `format: "uri"` must arrive at OpenAI without the rejected format.
+        let input = json!({
+            "model": "gpt-4o",
+            "max_tokens": 64,
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [{
+                "name": "fetch",
+                "description": "fetch a url",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"target": {"$ref": "#/$defs/u"}},
+                    "$defs": {"u": {"type": "string", "format": "uri"}}
+                }
+            }]
+        });
+
+        let result = anthropic_to_openai(input).unwrap();
+        let params = &result["tools"][0]["function"]["parameters"];
+        assert!(params["$defs"]["u"].get("format").is_none());
     }
 }
