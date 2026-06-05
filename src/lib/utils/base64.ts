@@ -32,9 +32,12 @@ export function decodeBase64Utf8(str: string): string {
     }
   } catch (e) {
     console.error("Base64 decode error:", e, "Input:", str);
-    // Last resort fallback using deprecated but sometimes working method
+    // Last resort: decode without the padding fix-ups, still via TextDecoder
+    // (avoids the deprecated escape()/unescape() pair).
     try {
-      return decodeURIComponent(escape(atob(str.replace(/ /g, "+"))));
+      const binString = atob(str.replace(/ /g, "+"));
+      const bytes = Uint8Array.from(binString, (m) => m.codePointAt(0)!);
+      return new TextDecoder("utf-8", { fatal: false }).decode(bytes);
     } catch {
       // If all else fails, return original string
       return str;

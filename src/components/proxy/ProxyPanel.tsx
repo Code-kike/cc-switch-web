@@ -16,6 +16,7 @@ import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { ToggleRow } from "@/components/ui/toggle-row";
 import { useProxyStatus } from "@/hooks/useProxyStatus";
+import { copyText } from "@/lib/clipboard";
 import { toast } from "sonner";
 import { useFailoverQueue } from "@/lib/query/failover";
 import { ProviderHealthBadge } from "@/components/providers/ProviderHealthBadge";
@@ -341,16 +342,23 @@ export function ProxyPanel({
                   <Button
                     size="sm"
                     variant="outline"
-                    onClick={() => {
-                      navigator.clipboard.writeText(
-                        formatAddressForUrl(status.address, status.port),
-                      );
-                      toast.success(
-                        t("proxy.panel.addressCopied", {
-                          defaultValue: "地址已复制",
-                        }),
-                        { closeButton: true },
-                      );
+                    onClick={async () => {
+                      try {
+                        await copyText(
+                          formatAddressForUrl(status.address, status.port),
+                        );
+                        toast.success(
+                          t("proxy.panel.addressCopied", {
+                            defaultValue: "地址已复制",
+                          }),
+                          { closeButton: true },
+                        );
+                      } catch {
+                        toast.error(
+                          t("common.error", { defaultValue: "复制失败" }),
+                          { closeButton: true },
+                        );
+                      }
                     }}
                   >
                     {t("common.copy")}

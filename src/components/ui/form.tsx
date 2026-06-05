@@ -42,11 +42,14 @@ const useFormField = () => {
   const itemContext = React.useContext(FormItemContext);
   const { getFieldState, formState } = useFormContext();
 
+  // NOTE: FormLabel / FormControl / FormDescription / FormMessage are
+  // intentionally used both inside and outside <FormField> in this codebase
+  // (as standalone styled label/layout primitives). We therefore must NOT
+  // throw when there is no field context. The previous `if (!fieldContext)`
+  // guard was dead code (the default context value is a truthy `{}`), so it
+  // is removed outright rather than "fixed" into a throw that would break
+  // those call sites.
   const fieldState = getFieldState(fieldContext.name, formState);
-
-  if (!fieldContext) {
-    throw new Error("useFormField should be used within <FormField>");
-  }
 
   const id = itemContext.id;
 
