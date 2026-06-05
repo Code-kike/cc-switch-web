@@ -690,4 +690,34 @@ describe("App integration with MSW", () => {
 
     liveIdsSpy.mockRestore();
   });
+
+  it("clamps a persisted view that is not allowed for the restored app (L32)", async () => {
+    // openclaw-only view persisted alongside a claude app: must clamp to the
+    // providers list instead of rendering openclaw's workspace panel.
+    localStorage.setItem("cc-switch-last-app", "claude");
+    localStorage.setItem("cc-switch-last-view", "workspace");
+
+    const { default: App } = await import("@/App");
+    renderApp(App);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("provider-list")).toBeInTheDocument(),
+    );
+    expect(screen.getByTestId("app-switcher").textContent).toContain("claude");
+    // The persisted (now-invalid) view is rewritten to providers.
+    expect(localStorage.getItem("cc-switch-last-view")).toBe("providers");
+  });
+
+  it("preserves a persisted view that is allowed for the restored app (L32)", async () => {
+    localStorage.setItem("cc-switch-last-app", "claude");
+    localStorage.setItem("cc-switch-last-view", "mcp");
+
+    const { default: App } = await import("@/App");
+    renderApp(App);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("mcp-panel")).toBeInTheDocument(),
+    );
+    expect(screen.queryByTestId("provider-list")).not.toBeInTheDocument();
+  });
 });

@@ -62,7 +62,6 @@ export function useUpdateGlobalProxyConfig() {
     onSuccess: () => {
       toast.success(t("proxy.settings.toast.saved"), { closeButton: true });
       queryClient.invalidateQueries({ queryKey: ["globalProxyConfig"] });
-      queryClient.invalidateQueries({ queryKey: ["proxyConfig"] });
       queryClient.invalidateQueries({ queryKey: ["proxyStatus"] });
     },
     onError: (error: unknown) => {
@@ -101,7 +100,6 @@ export function useUpdateAppProxyConfig() {
       queryClient.invalidateQueries({
         queryKey: ["appProxyConfig", variables.appType],
       });
-      queryClient.invalidateQueries({ queryKey: ["proxyConfig"] });
       queryClient.invalidateQueries({ queryKey: ["circuitBreakerConfig"] });
     },
     onError: (error: unknown) => {

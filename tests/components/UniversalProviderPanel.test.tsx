@@ -1,6 +1,14 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { UniversalProviderPanel } from "@/components/universal/UniversalProviderPanel";
+import { universalProviderKeys } from "@/lib/query/universal";
 
 const toastSuccessMock = vi.fn();
 const toastErrorMock = vi.fn();
@@ -128,6 +136,18 @@ vi.mock("@/components/ConfirmDialog", () => ({
 }));
 
 describe("UniversalProviderPanel", () => {
+  const renderPanel = () => {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const utils = render(
+      <QueryClientProvider client={client}>
+        <UniversalProviderPanel />
+      </QueryClientProvider>,
+    );
+    return { ...utils, client };
+  };
+
   beforeEach(() => {
     toastSuccessMock.mockReset();
     toastErrorMock.mockReset();
@@ -154,7 +174,7 @@ describe("UniversalProviderPanel", () => {
     upsertMock.mockResolvedValue(true);
     syncMock.mockResolvedValue(true);
 
-    render(<UniversalProviderPanel />);
+    renderPanel();
 
     await waitFor(() => {
       expect(screen.getByText("universalProvider.empty")).toBeInTheDocument();
@@ -217,7 +237,7 @@ describe("UniversalProviderPanel", () => {
     upsertMock.mockResolvedValue(true);
     syncMock.mockResolvedValue(true);
 
-    render(<UniversalProviderPanel />);
+    renderPanel();
 
     await waitFor(() => {
       expect(screen.getByText("Existing Provider")).toBeInTheDocument();
@@ -241,5 +261,37 @@ describe("UniversalProviderPanel", () => {
 
     expect(syncMock).not.toHaveBeenCalled();
     expect(toastSuccessMock).toHaveBeenCalledWith("universalProvider.updated");
+  });
+
+  it("refreshes the list when the universal-provider query is invalidated externally (M42)", async () => {
+    getAllMock.mockResolvedValue({
+      "synced-external": {
+        id: "synced-external",
+        name: "Synced External",
+        providerType: "newapi",
+        baseUrl: "https://external.example.com",
+        apiKey: "secret",
+        apps: { claude: true, codex: true, gemini: true },
+        models: {},
+        createdAt: 1,
+      },
+    });
+    getAllMock.mockResolvedValueOnce({});
+
+    const { client } = renderPanel();
+
+    await waitFor(() => {
+      expect(screen.getByText("universalProvider.empty")).toBeInTheDocument();
+    });
+
+    // Simulate the App-level `universal-provider-synced` listener invalidating
+    // the shared query key (M42): the panel must refetch, not stay stale.
+    await act(async () => {
+      await client.invalidateQueries({ queryKey: universalProviderKeys.all });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Synced External")).toBeInTheDocument();
+    });
   });
 });

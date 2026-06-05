@@ -1,20 +1,51 @@
-import { useState, useCallback, useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Layers, Plus } from "lucide-react";
 import { toast } from "sonner";
+import { useQueryClient } from "@tanstack/react-query";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Button } from "@/components/ui/button";
 import { UniversalProviderCard } from "./UniversalProviderCard";
 import { UniversalProviderFormModal } from "./UniversalProviderFormModal";
 import { universalProvidersApi } from "@/lib/api";
-import type { UniversalProvider, UniversalProvidersMap } from "@/types";
+import {
+  universalProviderKeys,
+  useUniversalProvidersQuery,
+} from "@/lib/query/universal";
+import type { UniversalProvider } from "@/types";
 
 export function UniversalProviderPanel() {
   const { t } = useTranslation();
+  const queryClient = useQueryClient();
+
+  // 数据：统一供应商列表走 React Query，使 App 层
+  // `universal-provider-synced` 事件失效后面板能即时刷新（M42）。
+  const {
+    data: providers = {},
+    isLoading: loading,
+    isError,
+    error,
+  } = useUniversalProvidersQuery();
+
+  const invalidateProviders = useCallback(
+    () =>
+      queryClient.invalidateQueries({ queryKey: universalProviderKeys.all }),
+    [queryClient],
+  );
+
+  // 加载失败提示（保持原有 UX）
+  useEffect(() => {
+    if (isError) {
+      console.error("Failed to load universal providers:", error);
+      toast.error(
+        t("universalProvider.loadError", {
+          defaultValue: "加载统一供应商失败",
+        }),
+      );
+    }
+  }, [isError, error, t]);
 
   // 状态
-  const [providers, setProviders] = useState<UniversalProvidersMap>({});
-  const [loading, setLoading] = useState(true);
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [editingProvider, setEditingProvider] =
     useState<UniversalProvider | null>(null);
@@ -28,28 +59,6 @@ export function UniversalProviderPanel() {
     id: string;
     name: string;
   }>({ open: false, id: "", name: "" });
-
-  // 加载数据
-  const loadProviders = useCallback(async () => {
-    try {
-      setLoading(true);
-      const data = await universalProvidersApi.getAll();
-      setProviders(data ?? {});
-    } catch (error) {
-      console.error("Failed to load universal providers:", error);
-      toast.error(
-        t("universalProvider.loadError", {
-          defaultValue: "加载统一供应商失败",
-        }),
-      );
-    } finally {
-      setLoading(false);
-    }
-  }, [t]);
-
-  useEffect(() => {
-    loadProviders();
-  }, [loadProviders]);
 
   // 添加/编辑供应商
   const handleSave = useCallback(
@@ -71,7 +80,7 @@ export function UniversalProviderPanel() {
                 defaultValue: "统一供应商已添加并同步",
               }),
         );
-        loadProviders();
+        await invalidateProviders();
         setEditingProvider(null);
         return true;
       } catch (error) {
@@ -84,7 +93,7 @@ export function UniversalProviderPanel() {
         return false;
       }
     },
-    [editingProvider, loadProviders, t],
+    [editingProvider, invalidateProviders, t],
   );
 
   // 保存并同步供应商
@@ -98,7 +107,7 @@ export function UniversalProviderPanel() {
             defaultValue: "已保存并同步到所有应用",
           }),
         );
-        loadProviders();
+        await invalidateProviders();
         setEditingProvider(null);
         return true;
       } catch (error) {
@@ -111,7 +120,7 @@ export function UniversalProviderPanel() {
         return false;
       }
     },
-    [loadProviders, t],
+    [invalidateProviders, t],
   );
 
   // 删除供应商
@@ -123,7 +132,7 @@ export function UniversalProviderPanel() {
       toast.success(
         t("universalProvider.deleted", { defaultValue: "统一供应商已删除" }),
       );
-      loadProviders();
+      await invalidateProviders();
     } catch (error) {
       console.error("Failed to delete universal provider:", error);
       toast.error(
@@ -134,7 +143,7 @@ export function UniversalProviderPanel() {
     } finally {
       setDeleteConfirm({ open: false, id: "", name: "" });
     }
-  }, [deleteConfirm.id, loadProviders, t]);
+  }, [deleteConfirm.id, invalidateProviders, t]);
 
   // 同步供应商
   const handleSync = useCallback(async () => {

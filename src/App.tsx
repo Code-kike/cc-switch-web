@@ -33,6 +33,7 @@ import type { EnvConflict } from "@/types/env";
 import { invoke, isWebMode } from "@/lib/api/adapter";
 import { listen } from "@/lib/api/event-adapter";
 import { useProvidersQuery, useSettingsQuery } from "@/lib/query";
+import { universalProviderKeys } from "@/lib/query/universal";
 import {
   providersApi,
   settingsApi,
@@ -73,10 +74,16 @@ import { EnvWarningBanner } from "@/components/env/EnvWarningBanner";
 import { ProxyToggle } from "@/components/proxy/ProxyToggle";
 import { FailoverToggle } from "@/components/proxy/FailoverToggle";
 import UsageScriptModal from "@/components/UsageScriptModal";
-import UnifiedMcpPanel from "@/components/mcp/UnifiedMcpPanel";
-import PromptPanel from "@/components/prompts/PromptPanel";
-import { SkillsPage } from "@/components/skills/SkillsPage";
-import UnifiedSkillsPanel from "@/components/skills/UnifiedSkillsPanel";
+import UnifiedMcpPanel, {
+  type UnifiedMcpPanelHandle,
+} from "@/components/mcp/UnifiedMcpPanel";
+import PromptPanel, {
+  type PromptPanelHandle,
+} from "@/components/prompts/PromptPanel";
+import { SkillsPage, type SkillsPageHandle } from "@/components/skills/SkillsPage";
+import UnifiedSkillsPanel, {
+  type UnifiedSkillsPanelHandle,
+} from "@/components/skills/UnifiedSkillsPanel";
 import {
   DeepLinkImportDialog,
   type DeepLinkImportDialogHandle,
@@ -160,9 +167,39 @@ const VALID_VIEWS: View[] = [
   "hermesMemory",
 ];
 
-const getInitialView = (): View => {
+// Views reachable regardless of the active app: the providers list (default),
+// the settings page (gear icon / Cmd+,), and the app-agnostic agents panel.
+const GLOBAL_VIEWS: View[] = ["providers", "settings", "agents"];
+
+// App-specific views, derived from each app's header toolbar in App():
+// an app only exposes navigation to the views listed here. A persisted view
+// that is not permitted for the active app must be clamped, otherwise a panel
+// belonging to a different app can render under a mismatched app (e.g. the
+// openclaw workspace panel under claude, or hermesMemory under codex). This
+// happens because `activeApp` and `currentView` are persisted independently
+// and the visibility effect can switch `activeApp` away from a hidden app
+// while a now-incompatible view is still active (L32).
+const APP_VIEWS: Record<AppId, View[]> = {
+  claude: ["skills", "skillsDiscovery", "prompts", "universal", "sessions", "mcp"],
+  codex: ["skills", "skillsDiscovery", "prompts", "universal", "sessions", "mcp"],
+  gemini: ["skills", "skillsDiscovery", "prompts", "universal", "sessions", "mcp"],
+  opencode: ["skills", "skillsDiscovery", "prompts", "sessions", "mcp"],
+  openclaw: [
+    "workspace",
+    "openclawEnv",
+    "openclawTools",
+    "openclawAgents",
+    "sessions",
+  ],
+  hermes: ["skills", "skillsDiscovery", "hermesMemory", "mcp"],
+};
+
+const isViewAllowedForApp = (view: View, app: AppId): boolean =>
+  GLOBAL_VIEWS.includes(view) || APP_VIEWS[app].includes(view);
+
+const getInitialView = (app: AppId): View => {
   const saved = localStorage.getItem(VIEW_STORAGE_KEY) as View | null;
-  if (saved && VALID_VIEWS.includes(saved)) {
+  if (saved && VALID_VIEWS.includes(saved) && isViewAllowedForApp(saved, app)) {
     return saved;
   }
   return "providers";
@@ -179,7 +216,9 @@ function App() {
   const webMode = isWebMode();
 
   const [activeApp, setActiveApp] = useState<AppId>(getInitialApp);
-  const [currentView, setCurrentView] = useState<View>(getInitialView);
+  const [currentView, setCurrentView] = useState<View>(() =>
+    getInitialView(getInitialApp()),
+  );
   const [settingsDefaultTab, setSettingsDefaultTab] = useState("general");
   const [isAddOpen, setIsAddOpen] = useState(false);
   const [isWindowMaximized, setIsWindowMaximized] = useState(false);
@@ -224,17 +263,13 @@ function App() {
     }
   }, [visibleApps, activeApp]);
 
-  // Fallback from sessions view when switching to an app without session support
+  // Keep the active view consistent with the active app. When `activeApp`
+  // changes (initial restore, or the visibility effect above switching away
+  // from a hidden app), clamp any view that is not reachable for the new app
+  // back to the providers list, so an app-specific panel never renders under a
+  // mismatched app (L32).
   useEffect(() => {
-    if (
-      currentView === "sessions" &&
-      activeApp !== "claude" &&
-      activeApp !== "codex" &&
-      activeApp !== "opencode" &&
-      activeApp !== "openclaw" &&
-      activeApp !== "gemini" &&
-      activeApp !== "hermes"
-    ) {
+    if (!isViewAllowedForApp(currentView, activeApp)) {
       setCurrentView("providers");
     }
   }, [activeApp, currentView]);
@@ -257,10 +292,10 @@ function App() {
   useUsageCacheBridge();
   useLaggedRecovery();
 
-  const promptPanelRef = useRef<any>(null);
-  const mcpPanelRef = useRef<any>(null);
-  const skillsPageRef = useRef<any>(null);
-  const unifiedSkillsPanelRef = useRef<any>(null);
+  const promptPanelRef = useRef<PromptPanelHandle>(null);
+  const mcpPanelRef = useRef<UnifiedMcpPanelHandle>(null);
+  const skillsPageRef = useRef<SkillsPageHandle>(null);
+  const unifiedSkillsPanelRef = useRef<UnifiedSkillsPanelHandle>(null);
   const deepLinkImportDialogRef = useRef<DeepLinkImportDialogHandle>(null);
   const addActionButtonClass =
     "bg-orange-500 hover:bg-orange-600 dark:bg-orange-500 dark:hover:bg-orange-600 text-white shadow-lg shadow-orange-500/30 dark:shadow-orange-500/40 rounded-full w-8 h-8";
@@ -413,6 +448,10 @@ function App() {
       try {
         const off = await listen("universal-provider-synced", async () => {
           await queryClient.invalidateQueries({ queryKey: ["providers"] });
+          // 让 UniversalProviderPanel 的 React Query 同步刷新（M42）
+          await queryClient.invalidateQueries({
+            queryKey: universalProviderKeys.all,
+          });
           try {
             await providersApi.updateTrayMenu();
           } catch (error) {
@@ -1312,7 +1351,8 @@ function App() {
           </div>
 
           <div className="flex flex-1 min-w-0 items-center justify-end gap-1.5">
-            {currentView === "providers" &&
+            {!webMode &&
+              currentView === "providers" &&
               activeApp !== "opencode" &&
               activeApp !== "openclaw" &&
               activeApp !== "hermes" && (
