@@ -46,6 +46,15 @@ pub struct ForwardError {
 
 pub(crate) struct ActiveConnectionGuard {
     status: Arc<RwLock<ProxyStatus>>,
+    /// Runtime handle captured at construction time.
+    ///
+    /// `acquire` is always called from within the proxy's Tokio runtime, so a
+    /// handle is guaranteed available here. Capturing it means `drop` no longer
+    /// depends on `Handle::try_current()` succeeding — the decrement is still
+    /// scheduled even when the guard is dropped outside a runtime context
+    /// (e.g. on a plain thread or during teardown), preventing the
+    /// active-connection counter from drifting upward (L1).
+    handle: tokio::runtime::Handle,
 }
 
 impl ActiveConnectionGuard {
@@ -54,19 +63,23 @@ impl ActiveConnectionGuard {
             let mut status = status.write().await;
             status.active_connections = status.active_connections.saturating_add(1);
         }
-        Self { status }
+        Self {
+            status,
+            handle: tokio::runtime::Handle::current(),
+        }
     }
 }
 
 impl Drop for ActiveConnectionGuard {
     fn drop(&mut self) {
         let status = self.status.clone();
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            handle.spawn(async move {
-                let mut status = status.write().await;
-                status.active_connections = status.active_connections.saturating_sub(1);
-            });
-        }
+        // Use the handle captured at construction rather than
+        // `Handle::try_current()`: the latter returns `Err` when `drop` runs
+        // outside a runtime context, which would silently skip the decrement.
+        self.handle.spawn(async move {
+            let mut status = status.write().await;
+            status.active_connections = status.active_connections.saturating_sub(1);
+        });
     }
 }
 
@@ -117,7 +130,6 @@ impl RequestForwarder {
         session_id: String,
         session_client_provided: bool,
         streaming_first_byte_timeout: u64,
-        _streaming_idle_timeout: u64,
         rectifier_config: RectifierConfig,
         optimizer_config: OptimizerConfig,
         copilot_optimizer_config: CopilotOptimizerConfig,
@@ -2662,6 +2674,39 @@ mod tests {
         };
 
         assert!(matches!(err, ProxyError::ForwardFailed(_)));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn active_connection_guard_decrements_when_dropped_off_runtime() {
+        let status = Arc::new(RwLock::new(ProxyStatus::default()));
+        let guard = ActiveConnectionGuard::acquire(status.clone()).await;
+        assert_eq!(status.read().await.active_connections, 1);
+
+        // Drop the guard on a plain OS thread with no Tokio runtime context, so
+        // `Handle::try_current()` inside `drop` would fail. The handle captured
+        // at construction must still schedule the decrement (L1 regression).
+        let join = std::thread::spawn(move || {
+            assert!(
+                tokio::runtime::Handle::try_current().is_err(),
+                "precondition: the dropping thread must be outside a runtime"
+            );
+            drop(guard);
+        });
+        join.join().unwrap();
+
+        // Wait for the spawned decrement task to run on the original runtime.
+        let mut decremented = false;
+        for _ in 0..200 {
+            if status.read().await.active_connections == 0 {
+                decremented = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert!(
+            decremented,
+            "a guard dropped off-runtime must still decrement active_connections"
+        );
     }
 
     #[test]

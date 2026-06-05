@@ -188,25 +188,27 @@ impl RequestContext {
     /// 使用共享的 ProviderRouter，确保熔断器状态跨请求保持
     ///
     /// 配置生效规则：
-    /// - 故障转移开启：超时配置正常生效（0 表示禁用超时）
-    /// - 故障转移关闭：超时配置不生效（全部传入 0）
+    /// - 故障转移开启：非流式 / 首包超时正常生效（0 表示禁用超时）
+    /// - 故障转移关闭：非流式 / 首包超时不生效（传入 0）
+    ///
+    /// 注意：流式**空闲**超时（idle watchdog）不经过 forwarder，而是由
+    /// `streaming_timeout_config()` 提供给 response_processor 的透传流逐块判定。
+    /// forwarder 仅负责故障转移相关的首包预读，因此这里不再传入 idle 超时。
     pub fn create_forwarder(&self, state: &ProxyState) -> RequestForwarder {
-        let (non_streaming_timeout, first_byte_timeout, idle_timeout) =
-            if self.app_config.auto_failover_enabled {
-                // 故障转移开启：使用配置的值（0 = 禁用超时）
-                (
-                    self.app_config.non_streaming_timeout as u64,
-                    self.app_config.streaming_first_byte_timeout as u64,
-                    self.app_config.streaming_idle_timeout as u64,
-                )
-            } else {
-                // 故障转移关闭：不启用超时配置
-                log::debug!(
-                    "[{}] Failover disabled, timeout configs are bypassed",
-                    self.tag
-                );
-                (0, 0, 0)
-            };
+        let (non_streaming_timeout, first_byte_timeout) = if self.app_config.auto_failover_enabled {
+            // 故障转移开启：使用配置的值（0 = 禁用超时）
+            (
+                self.app_config.non_streaming_timeout as u64,
+                self.app_config.streaming_first_byte_timeout as u64,
+            )
+        } else {
+            // 故障转移关闭：不启用 forwarder 侧的总时长/首包预读超时
+            log::debug!(
+                "[{}] Failover disabled, forwarder timeout configs are bypassed",
+                self.tag
+            );
+            (0, 0)
+        };
         let max_retries = if self.app_config.auto_failover_enabled {
             self.app_config.max_retries
         } else {
@@ -225,7 +227,6 @@ impl RequestContext {
             self.session_id.clone(),
             self.session_client_provided,
             first_byte_timeout,
-            idle_timeout,
             self.rectifier_config.clone(),
             self.optimizer_config.clone(),
             self.copilot_optimizer_config.clone(),
@@ -249,23 +250,29 @@ impl RequestContext {
     /// 获取流式超时配置
     ///
     /// 配置生效规则：
-    /// - 故障转移开启：返回配置的值（0 表示禁用超时检查）
-    /// - 故障转移关闭：返回 0（禁用超时检查）
+    /// - **空闲超时（idle watchdog）**：无论故障转移是否开启都生效（0 表示禁用）。
+    ///   它在每次收到字节时重置，因此只会掐断“完全停滞”的流，而不会限制仍在持续
+    ///   产出的长流，更不会限制流的总时长（L4）。
+    /// - **首包超时**：仅在故障转移开启时生效；关闭时为 0（首包等待交由 idle
+    ///   watchdog 兜底，见 `create_logged_passthrough_stream`）。
     #[inline]
     pub fn streaming_timeout_config(&self) -> StreamingTimeoutConfig {
-        if self.app_config.auto_failover_enabled {
-            // 故障转移开启：使用配置的值（0 = 禁用超时）
-            StreamingTimeoutConfig {
-                first_byte_timeout: self.app_config.streaming_first_byte_timeout as u64,
-                idle_timeout: self.app_config.streaming_idle_timeout as u64,
-            }
+        resolve_streaming_timeout_config(&self.app_config)
+    }
+}
+
+/// 纯函数：从 `AppProxyConfig` 解析流式超时配置（便于单测）。
+///
+/// 关键点（L4）：空闲超时始终透传，即使故障转移关闭——idle watchdog 逐块重置，
+/// 只会终止停滞的流，不会切断仍在产出的长流，也不限制总时长。
+fn resolve_streaming_timeout_config(config: &AppProxyConfig) -> StreamingTimeoutConfig {
+    StreamingTimeoutConfig {
+        first_byte_timeout: if config.auto_failover_enabled {
+            config.streaming_first_byte_timeout as u64
         } else {
-            // 故障转移关闭：禁用流式超时检查
-            StreamingTimeoutConfig {
-                first_byte_timeout: 0,
-                idle_timeout: 0,
-            }
-        }
+            0
+        },
+        idle_timeout: config.streaming_idle_timeout as u64,
     }
 }
 
@@ -288,6 +295,47 @@ pub(crate) fn extract_gemini_model_from_path(endpoint: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::extract_gemini_model_from_path;
+    use super::{resolve_streaming_timeout_config, AppProxyConfig};
+
+    fn app_config(auto_failover_enabled: bool) -> AppProxyConfig {
+        AppProxyConfig {
+            app_type: "claude".to_string(),
+            enabled: true,
+            auto_failover_enabled,
+            max_retries: 3,
+            streaming_first_byte_timeout: 60,
+            streaming_idle_timeout: 120,
+            non_streaming_timeout: 600,
+            circuit_failure_threshold: 4,
+            circuit_success_threshold: 2,
+            circuit_timeout_seconds: 60,
+            circuit_error_rate_threshold: 0.6,
+            circuit_min_requests: 10,
+        }
+    }
+
+    #[test]
+    fn streaming_timeouts_use_configured_values_when_failover_enabled() {
+        let cfg = resolve_streaming_timeout_config(&app_config(true));
+        assert_eq!(cfg.first_byte_timeout, 60);
+        assert_eq!(cfg.idle_timeout, 120);
+    }
+
+    /// L4: when failover is OFF the idle watchdog must still be active so a
+    /// stalled SSE stream cannot hang forever; only the first-byte timeout is
+    /// disabled (the idle watchdog backstops the initial wait too).
+    #[test]
+    fn idle_timeout_stays_active_when_failover_disabled() {
+        let cfg = resolve_streaming_timeout_config(&app_config(false));
+        assert_eq!(
+            cfg.first_byte_timeout, 0,
+            "first-byte timeout is bypassed when failover is off"
+        );
+        assert_eq!(
+            cfg.idle_timeout, 120,
+            "idle watchdog must remain active even when failover is off"
+        );
+    }
 
     #[test]
     fn extract_model_with_action() {

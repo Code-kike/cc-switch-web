@@ -124,31 +124,26 @@ impl CircuitBreaker {
 
     /// 判断当前 Provider 是否“可被纳入候选链路”
     ///
-    /// 这个方法不会占用 HalfOpen 探测名额，仅用于路由选择阶段的“可用性判断”：
+    /// 这是**纯只读**的可用性判断（L2）：仅用于路由选择阶段，不会修改熔断器状态，
+    /// 也不会占用 HalfOpen 探测名额。
     /// - Closed / HalfOpen：可用（返回 true）
-    /// - Open：若超时到达则切到 HalfOpen 并返回 true，否则返回 false
+    /// - Open：若超时已到达则可用（返回 true），否则返回 false
     ///
-    /// 注意：真正发起请求前仍需调用 `allow_request()` 来获取 HalfOpen 探测名额，
-    /// 并在请求结束后通过 `record_success()` / `record_failure()` 释放。
+    /// 注意：Open → HalfOpen 的真正状态转换以及单次探测名额的获取，统一发生在
+    /// 请求**实际尝试**时的 `allow_request()` 中。把转换从“选择阶段”移除后，被选中
+    /// 但最终未被尝试的 Provider（例如前序 Provider 已成功）不会被无意义地切到
+    /// HalfOpen，状态更贴近真实探测发生的时刻。
     pub async fn is_available(&self) -> bool {
         let state = *self.state.read().await;
-        let config = self.config.read().await;
 
         match state {
             CircuitState::Closed | CircuitState::HalfOpen => true,
             CircuitState::Open => {
-                if let Some(opened_at) = *self.last_opened_at.read().await {
-                    if opened_at.elapsed().as_secs() >= config.timeout_seconds {
-                        drop(config); // 释放读锁再转换状态
-                        log::info!(
-                            "[{}] 熔断器 Open → HalfOpen (超时恢复)",
-                            log_cb::OPEN_TO_HALF_OPEN
-                        );
-                        self.transition_to_half_open().await;
-                        return true;
-                    }
-                }
-                false
+                let config = self.config.read().await;
+                let opened = *self.last_opened_at.read().await;
+                opened.is_some_and(|opened_at| {
+                    opened_at.elapsed().as_secs() >= config.timeout_seconds
+                })
             }
         }
     }
@@ -472,6 +467,43 @@ mod tests {
         let second = breaker.allow_request().await;
         assert!(!second.allowed);
         assert!(!second.used_half_open_permit);
+    }
+
+    #[tokio::test]
+    async fn is_available_is_pure_read_and_does_not_transition_open_to_half_open() {
+        // timeout_seconds=0 → 一旦 Open，超时立即视为“已到达”
+        let breaker = CircuitBreaker::new(CircuitBreakerConfig {
+            timeout_seconds: 0,
+            ..Default::default()
+        });
+        breaker.transition_to_open().await;
+        assert_eq!(breaker.get_state().await, CircuitState::Open);
+
+        // 选择阶段的可用性判断：超时已到 → 视为候选可用，但**不得**修改状态
+        assert!(breaker.is_available().await);
+        assert_eq!(
+            breaker.get_state().await,
+            CircuitState::Open,
+            "is_available 不应在选择阶段触发 Open → HalfOpen 转换"
+        );
+
+        // 真正的转换 + 单次探测名额，发生在请求实际尝试时的 allow_request()
+        let allow = breaker.allow_request().await;
+        assert!(allow.allowed);
+        assert!(allow.used_half_open_permit);
+        assert_eq!(breaker.get_state().await, CircuitState::HalfOpen);
+    }
+
+    #[tokio::test]
+    async fn is_available_returns_false_while_open_and_timeout_not_elapsed() {
+        let breaker = CircuitBreaker::new(CircuitBreakerConfig {
+            timeout_seconds: 3600,
+            ..Default::default()
+        });
+        breaker.transition_to_open().await;
+
+        assert!(!breaker.is_available().await);
+        assert_eq!(breaker.get_state().await, CircuitState::Open);
     }
 
     #[tokio::test]

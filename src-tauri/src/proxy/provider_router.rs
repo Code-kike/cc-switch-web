@@ -509,4 +509,62 @@ mod tests {
         assert!(third.allowed);
         assert!(third.used_half_open_permit);
     }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_select_providers_does_not_mutate_breaker_state() {
+        use crate::proxy::circuit_breaker::CircuitState;
+
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory().unwrap());
+
+        // failure_threshold=1 → 一次失败即熔断；timeout=0 → Open 后立即“超时到达”
+        db.update_circuit_breaker_config(&CircuitBreakerConfig {
+            failure_threshold: 1,
+            timeout_seconds: 0,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        let provider_a =
+            Provider::with_id("a".to_string(), "Provider A".to_string(), json!({}), None);
+        db.save_provider("claude", &provider_a).unwrap();
+        db.add_to_failover_queue("claude", "a").unwrap();
+
+        let mut config = db.get_proxy_config_for_app("claude").await.unwrap();
+        config.auto_failover_enabled = true;
+        db.update_proxy_config_for_app(config).await.unwrap();
+
+        let router = ProviderRouter::new(db.clone());
+
+        // 触发熔断：Provider a → Open
+        router
+            .record_result("a", "claude", false, false, Some("fail".to_string()))
+            .await
+            .unwrap();
+        assert_eq!(
+            router.get_circuit_breaker_stats("a", "claude").await.unwrap().state,
+            CircuitState::Open
+        );
+
+        // 选择阶段：a 超时已到达 → 作为候选返回，但熔断器状态必须仍为 Open（纯只读）
+        let providers = router.select_providers("claude").await.unwrap();
+        assert_eq!(providers.len(), 1);
+        assert_eq!(providers[0].id, "a");
+        assert_eq!(
+            router.get_circuit_breaker_stats("a", "claude").await.unwrap().state,
+            CircuitState::Open,
+            "select_providers 不应把 Open 熔断器切换到 HalfOpen"
+        );
+
+        // 真正尝试时才发生 Open → HalfOpen 转换并占用探测名额
+        let permit = router.allow_provider_request("a", "claude").await;
+        assert!(permit.allowed);
+        assert!(permit.used_half_open_permit);
+        assert_eq!(
+            router.get_circuit_breaker_stats("a", "claude").await.unwrap().state,
+            CircuitState::HalfOpen
+        );
+    }
 }

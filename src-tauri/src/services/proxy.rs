@@ -1124,53 +1124,77 @@ impl ProxyService {
     async fn takeover_live_configs(&self) -> Result<(), String> {
         let (proxy_url, proxy_codex_base_url) = self.build_proxy_urls().await?;
 
+        // 每个 app 的 Live 写入都在该 app 的切换锁下进行，与 hot_switch/restore
+        // 串行化，避免 enable 接管写入与并发热切换/恢复竞争同一 Live 文件（M22）。
+        // 锁按 app 粒度逐个获取、在块结束时释放，避免跨 app 持锁带来的死锁风险；
+        // 这些 takeover 内部辅助方法均不再获取 switch_locks，因此不存在重入。
+
         // Claude: 修改 ANTHROPIC_BASE_URL，使用占位符替代真实 Token（代理会注入真实 Token）
-        if let Ok(mut live_config) = self.read_claude_live() {
-            let claude_provider = self.require_current_provider_for_app(&AppType::Claude)?;
-            let claude_provider = self.claude_provider_with_effective_settings(&claude_provider)?;
-            Self::apply_claude_takeover_fields_for_provider(
-                &mut live_config,
-                &proxy_url,
-                &claude_provider,
-            );
-            self.write_claude_live(&live_config)?;
-            log::info!("Claude Live 配置已接管，代理地址: {proxy_url}");
+        {
+            let _guard = self
+                .switch_locks
+                .lock_for_app(AppType::Claude.as_str())
+                .await;
+            if let Ok(mut live_config) = self.read_claude_live() {
+                let claude_provider = self.require_current_provider_for_app(&AppType::Claude)?;
+                let claude_provider =
+                    self.claude_provider_with_effective_settings(&claude_provider)?;
+                Self::apply_claude_takeover_fields_for_provider(
+                    &mut live_config,
+                    &proxy_url,
+                    &claude_provider,
+                );
+                self.write_claude_live(&live_config)?;
+                log::info!("Claude Live 配置已接管，代理地址: {proxy_url}");
+            }
         }
 
         // Codex: 修改 config.toml 的 base_url，auth.json 的 OPENAI_API_KEY（代理会注入真实 Token）
-        let codex_provider = self.require_current_provider_for_app(&AppType::Codex)?;
-        if let Ok(mut live_config) = self.read_codex_live() {
-            // 1. 修改 auth.json 中的 OPENAI_API_KEY（使用占位符）
-            if let Some(auth) = live_config.get_mut("auth").and_then(|v| v.as_object_mut()) {
-                auth.insert("OPENAI_API_KEY".to_string(), json!(PROXY_TOKEN_PLACEHOLDER));
+        {
+            let _guard = self
+                .switch_locks
+                .lock_for_app(AppType::Codex.as_str())
+                .await;
+            let codex_provider = self.require_current_provider_for_app(&AppType::Codex)?;
+            if let Ok(mut live_config) = self.read_codex_live() {
+                // 1. 修改 auth.json 中的 OPENAI_API_KEY（使用占位符）
+                if let Some(auth) = live_config.get_mut("auth").and_then(|v| v.as_object_mut()) {
+                    auth.insert("OPENAI_API_KEY".to_string(), json!(PROXY_TOKEN_PLACEHOLDER));
+                }
+
+                // 2. 修改 config.toml 中的 base_url
+                let config_str = live_config
+                    .get("config")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let updated_config = Self::update_toml_base_url(config_str, &proxy_codex_base_url);
+                live_config["config"] = json!(updated_config);
+
+                self.write_codex_live_for_provider(&live_config, Some(&codex_provider))?;
+                log::info!("Codex Live 配置已接管，代理地址: {proxy_codex_base_url}");
             }
-
-            // 2. 修改 config.toml 中的 base_url
-            let config_str = live_config
-                .get("config")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let updated_config = Self::update_toml_base_url(config_str, &proxy_codex_base_url);
-            live_config["config"] = json!(updated_config);
-
-            self.write_codex_live_for_provider(&live_config, Some(&codex_provider))?;
-            log::info!("Codex Live 配置已接管，代理地址: {proxy_codex_base_url}");
         }
 
         // Gemini: 修改 GOOGLE_GEMINI_BASE_URL，使用占位符替代真实 Token（代理会注入真实 Token）
-        if let Ok(mut live_config) = self.read_gemini_live() {
-            if let Some(env) = live_config.get_mut("env").and_then(|v| v.as_object_mut()) {
-                env.insert("GOOGLE_GEMINI_BASE_URL".to_string(), json!(&proxy_url));
-                // 使用占位符，避免显示缺少 key 的警告
-                env.insert("GEMINI_API_KEY".to_string(), json!(PROXY_TOKEN_PLACEHOLDER));
-            } else {
-                live_config["env"] = json!({
-                    "GOOGLE_GEMINI_BASE_URL": &proxy_url,
-                    "GEMINI_API_KEY": PROXY_TOKEN_PLACEHOLDER
-                });
+        {
+            let _guard = self
+                .switch_locks
+                .lock_for_app(AppType::Gemini.as_str())
+                .await;
+            if let Ok(mut live_config) = self.read_gemini_live() {
+                if let Some(env) = live_config.get_mut("env").and_then(|v| v.as_object_mut()) {
+                    env.insert("GOOGLE_GEMINI_BASE_URL".to_string(), json!(&proxy_url));
+                    // 使用占位符，避免显示缺少 key 的警告
+                    env.insert("GEMINI_API_KEY".to_string(), json!(PROXY_TOKEN_PLACEHOLDER));
+                } else {
+                    live_config["env"] = json!({
+                        "GOOGLE_GEMINI_BASE_URL": &proxy_url,
+                        "GEMINI_API_KEY": PROXY_TOKEN_PLACEHOLDER
+                    });
+                }
+                self.write_gemini_live(&live_config)?;
+                log::info!("Gemini Live 配置已接管，代理地址: {proxy_url}");
             }
-            self.write_gemini_live(&live_config)?;
-            log::info!("Gemini Live 配置已接管，代理地址: {proxy_url}");
         }
 
         Ok(())
@@ -1178,6 +1202,9 @@ impl ProxyService {
 
     /// 接管指定应用的 Live 配置（严格模式：目标配置不存在则返回错误）
     async fn takeover_live_config_strict(&self, app_type: &AppType) -> Result<(), String> {
+        // 与 hot_switch/restore 共用 per-app 切换锁，串行化 enable 接管写入（M22）。
+        // 调用方（set_takeover_for_app 的 enable 路径）未持有该锁，无重入风险。
+        let _guard = self.switch_locks.lock_for_app(app_type.as_str()).await;
         let (proxy_url, proxy_codex_base_url) = self.build_proxy_urls().await?;
 
         match app_type {
@@ -1239,6 +1266,9 @@ impl ProxyService {
 
     /// 接管指定应用的 Live 配置（尽力而为：配置不存在/读取失败则跳过）
     async fn takeover_live_config_best_effort(&self, app_type: &AppType) -> Result<(), String> {
+        // 与 hot_switch/restore 共用 per-app 切换锁，串行化接管写入（M22）。
+        // 调用方（update_proxy_config 重启后的地址同步）未持有该锁，无重入风险。
+        let _guard = self.switch_locks.lock_for_app(app_type.as_str()).await;
         let (proxy_url, proxy_codex_base_url) = self.build_proxy_urls().await?;
 
         match app_type {
@@ -3027,6 +3057,65 @@ model = "gpt-5.1-codex"
             .expect("backup exists");
         let expected = serde_json::to_string(&provider_c.settings_config).expect("serialize");
         assert_eq!(backup.original_config, expected);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn takeover_live_config_serializes_on_switch_lock() {
+        use tokio::time::{sleep, Duration};
+
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let service = ProxyService::new(db.clone());
+
+        // Seed a current Claude provider + a readable (not-yet-taken-over) Live file.
+        let provider_a = Provider::with_id(
+            "a".to_string(),
+            "A".to_string(),
+            json!({ "env": { "ANTHROPIC_API_KEY": "a-key" } }),
+            None,
+        );
+        db.save_provider("claude", &provider_a)
+            .expect("save provider a");
+        db.set_current_provider("claude", "a")
+            .expect("set current provider");
+        crate::settings::set_current_provider(&AppType::Claude, Some("a"))
+            .expect("set local current provider");
+        service
+            .write_claude_live(&json!({ "env": { "ANTHROPIC_API_KEY": "orig" } }))
+            .expect("seed live file");
+
+        // Hold the Claude switch lock, then kick off an enable-time takeover write.
+        let guard = service.lock_switch_for_test("claude").await;
+        let service_for_takeover = service.clone();
+        let takeover = tokio::spawn(async move {
+            service_for_takeover
+                .takeover_live_config_best_effort(&AppType::Claude)
+                .await
+        });
+
+        // While the lock is held the takeover must block (M22: serialized on the
+        // same per-app switch lock as hot_switch/restore).
+        sleep(Duration::from_millis(30)).await;
+        assert!(
+            !takeover.is_finished(),
+            "takeover must serialize behind the per-app switch lock"
+        );
+
+        // Releasing the lock lets the takeover proceed and apply the takeover fields.
+        drop(guard);
+        takeover
+            .await
+            .expect("join takeover")
+            .expect("takeover succeeds");
+
+        let live = service.read_claude_live().expect("read claude live");
+        assert!(
+            ProxyService::is_claude_live_taken_over(&live),
+            "Claude Live should be taken over once the switch lock is released"
+        );
     }
 
     #[tokio::test]
