@@ -152,6 +152,8 @@ mod gemini_mcp;
 mod hermes_config;
 #[path = "../src/init_status.rs"]
 mod init_status;
+#[path = "../src/json5_doc.rs"]
+mod json5_doc;
 #[path = "../src/mcp/mod.rs"]
 mod mcp;
 #[path = "../src/openclaw_config.rs"]

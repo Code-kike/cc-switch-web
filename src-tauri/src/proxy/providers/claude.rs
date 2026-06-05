@@ -647,30 +647,36 @@ impl ProviderAdapter for ClaudeAdapter {
 
         match provider_type {
             ProviderType::GeminiCli => {
-                // Parse stored OAuth JSON and only attach access_token when
-                // it's actually usable. `parse_oauth_credentials` accepts
-                // refresh-token-only JSON (which is legitimate before the
-                // first refresh) and also surfaces `{"access_token": "", ...}`
-                // for expired credentials. In both cases we would otherwise
-                // send `Authorization: Bearer ` to upstream and get a 401.
-                //
-                // CC Switch does not currently exchange the refresh_token for
-                // a fresh access_token. Until that path exists, degrade to
-                // plain GoogleOAuth strategy (which still sends the raw key
-                // as a fallback) and log loudly so users know to refresh
-                // their `~/.gemini/oauth_creds.json`.
+                // Parse the stored Google OAuth blob and route GeminiCli through
+                // the GoogleOAuth strategy. The proxy forwarder now exchanges the
+                // stored `refresh_token` for a fresh access_token when the current
+                // one is missing or expiring (M31, via `gemini_oauth::manager`),
+                // so we hand it whatever token we have and let the forwarder
+                // refresh as needed. `parse_oauth_credentials` accepts
+                // refresh-token-only JSON (legitimate before the first refresh)
+                // and surfaces `{"access_token": "", ...}` for expired creds.
                 match super::gemini::GeminiAdapter::new().parse_oauth_credentials(&key) {
                     Some(creds) if !creds.access_token.is_empty() => {
                         Some(AuthInfo::with_access_token(key, creds.access_token))
                     }
-                    Some(_) => {
-                        log::warn!(
-                            "[Gemini OAuth] access_token missing or empty for provider `{}`; \
-                             bearer auth will likely fail with 401. Refresh \
-                             ~/.gemini/oauth_creds.json via the gemini CLI to obtain a new token.",
-                            provider.id
-                        );
-                        Some(AuthInfo::new(key, AuthStrategy::GoogleOAuth))
+                    Some(creds) => {
+                        if creds
+                            .refresh_token
+                            .as_deref()
+                            .is_some_and(|t| !t.trim().is_empty())
+                        {
+                            // No usable access_token yet, but the forwarder can
+                            // mint one from the refresh_token.
+                            Some(AuthInfo::new(key, AuthStrategy::GoogleOAuth))
+                        } else {
+                            log::warn!(
+                                "[Gemini OAuth] no access_token or refresh_token for provider `{}`; \
+                                 bearer auth will likely fail with 401. Re-export \
+                                 ~/.gemini/oauth_creds.json via the gemini CLI.",
+                                provider.id
+                            );
+                            Some(AuthInfo::new(key, AuthStrategy::GoogleOAuth))
+                        }
                     }
                     None => Some(AuthInfo::new(key, AuthStrategy::GoogleOAuth)),
                 }

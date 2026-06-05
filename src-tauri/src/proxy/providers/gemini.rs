@@ -21,6 +21,9 @@ pub struct OAuthCredentials {
     pub refresh_token: Option<String>,
     pub client_id: Option<String>,
     pub client_secret: Option<String>,
+    /// access_token 过期时间（Unix 毫秒时间戳），来自 `~/.gemini/oauth_creds.json`
+    /// 的 `expiry_date` 字段；缺失时为 None。
+    pub expiry_date: Option<i64>,
 }
 
 #[allow(dead_code)]
@@ -33,6 +36,12 @@ impl OAuthCredentials {
     /// 检查是否可以刷新 token
     pub fn can_refresh(&self) -> bool {
         self.refresh_token.is_some() && self.client_id.is_some() && self.client_secret.is_some()
+    }
+
+    /// 去除首尾空白后的非空 access_token。
+    pub fn non_empty_access_token(&self) -> Option<String> {
+        let trimmed = self.access_token.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_string())
     }
 }
 
@@ -82,6 +91,7 @@ impl GeminiAdapter {
                 refresh_token: None,
                 client_id: None,
                 client_secret: None,
+                expiry_date: None,
             });
         }
 
@@ -105,6 +115,11 @@ impl GeminiAdapter {
                     .get("client_secret")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
+                // `expiry_date` is a Unix millisecond timestamp in
+                // `~/.gemini/oauth_creds.json`; accept integer or float.
+                let expiry_date = json
+                    .get("expiry_date")
+                    .and_then(|v| v.as_i64().or_else(|| v.as_f64().map(|f| f as i64)));
 
                 // 如果有 access_token 或 refresh_token，返回凭证
                 if !access_token.is_empty() || refresh_token.is_some() {
@@ -113,6 +128,7 @@ impl GeminiAdapter {
                         refresh_token,
                         client_id,
                         client_secret,
+                        expiry_date,
                     });
                 }
             }
@@ -442,5 +458,33 @@ mod tests {
         let adapter = GeminiAdapter::new();
         assert!(adapter.parse_oauth_credentials("AIza-api-key").is_none());
         assert!(adapter.parse_oauth_credentials("invalid-json{").is_none());
+    }
+
+    #[test]
+    fn test_parse_oauth_credentials_full_blob_with_expiry() {
+        let adapter = GeminiAdapter::new();
+        let creds = adapter
+            .parse_oauth_credentials(
+                r#"{"access_token":"ya29.tok","refresh_token":"1//rt","client_id":"cid","client_secret":"cs","expiry_date":1717000000000}"#,
+            )
+            .unwrap();
+        assert_eq!(creds.access_token, "ya29.tok");
+        assert_eq!(creds.refresh_token.as_deref(), Some("1//rt"));
+        assert_eq!(creds.client_id.as_deref(), Some("cid"));
+        assert_eq!(creds.client_secret.as_deref(), Some("cs"));
+        assert_eq!(creds.expiry_date, Some(1_717_000_000_000));
+        assert_eq!(creds.non_empty_access_token().as_deref(), Some("ya29.tok"));
+    }
+
+    #[test]
+    fn test_parse_oauth_credentials_refresh_only_has_no_expiry() {
+        let adapter = GeminiAdapter::new();
+        let creds = adapter
+            .parse_oauth_credentials(r#"{"refresh_token":"1//rt"}"#)
+            .unwrap();
+        assert!(creds.access_token.is_empty());
+        assert_eq!(creds.refresh_token.as_deref(), Some("1//rt"));
+        assert_eq!(creds.expiry_date, None);
+        assert!(creds.non_empty_access_token().is_none());
     }
 }

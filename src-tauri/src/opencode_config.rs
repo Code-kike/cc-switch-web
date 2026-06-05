@@ -1,4 +1,4 @@
-use crate::config::write_json_file;
+use crate::config::{atomic_write, write_json_file};
 use crate::error::AppError;
 use crate::provider::OpenCodeProviderConfig;
 use crate::settings::get_opencode_override_dir;
@@ -71,10 +71,61 @@ pub fn read_opencode_config() -> Result<Value, AppError> {
 
 pub fn write_opencode_config(config: &Value) -> Result<(), AppError> {
     let path = get_opencode_config_path();
-    write_json_file(&path, config)?;
 
+    // M33: `opencode.json` is read as JSON5 (comments allowed) but used to be
+    // written via `write_json_file` (strict, key-sorted JSON), which silently
+    // destroyed user comments and key order on the first provider write. Edit
+    // the existing document in place so comments/order survive, mirroring
+    // OpenClaw's comment-preserving round-trip. Falls back to a strict write
+    // when there is nothing to preserve or the edit can't be round-trip-verified.
+    if let Some(source) = comment_preserving_source(&path, config) {
+        atomic_write(&path, source.as_bytes())?;
+        log::debug!("OpenCode config written (comment-preserving) to {path:?}");
+        return Ok(());
+    }
+
+    write_json_file(&path, config)?;
     log::debug!("OpenCode config written to {path:?}");
     Ok(())
+}
+
+/// Build comment-preserving JSON5 source for `config` by editing the file
+/// currently at `path`, or return `None` to signal a plain strict write.
+///
+/// Returns `None` (→ strict-write fallback) when: the file is absent or
+/// unreadable (nothing to preserve), `config` isn't an object, the existing
+/// file isn't parseable JSON5, or the edited source does not round-trip back to
+/// exactly `config`. Correct data always wins over comment preservation.
+fn comment_preserving_source(path: &std::path::Path, config: &Value) -> Option<String> {
+    let existing = std::fs::read_to_string(path).ok()?;
+    let desired = config.as_object()?;
+
+    let current: Value = json5::from_str(&existing).ok()?;
+    let current_obj = current.as_object()?;
+
+    let mut doc = crate::json5_doc::Json5Document::parse(&existing).ok()?;
+
+    // Upsert changed/added top-level sections (skip unchanged ones so their
+    // inner formatting/comments are left untouched).
+    for (key, value) in desired {
+        if current_obj.get(key) != Some(value) {
+            doc.set_root_section(key, value).ok()?;
+        }
+    }
+
+    // Drop top-level sections no longer present in the desired config.
+    for key in doc.root_keys() {
+        if !desired.contains_key(&key) {
+            doc.remove_root_section(&key);
+        }
+    }
+
+    let rendered = doc.to_source();
+
+    match json5::from_str::<Value>(&rendered) {
+        Ok(parsed) if &parsed == config => Some(rendered),
+        _ => None,
+    }
 }
 
 pub fn get_providers() -> Result<Map<String, Value>, AppError> {
@@ -230,4 +281,70 @@ pub fn remove_plugins_by_prefixes(prefixes: &[&str]) -> Result<(), AppError> {
     }
 
     write_opencode_config(&config)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    /// M33 regression: writing a provider into an `opencode.json` that contains
+    /// comments must not destroy those comments (previously `write_json_file`
+    /// re-serialised strict, sorted JSON and dropped them on the first write).
+    #[test]
+    #[serial_test::serial]
+    fn set_provider_preserves_comments_and_existing_keys() {
+        let temp = tempfile::tempdir().unwrap();
+        let old_home = std::env::var_os("CC_SWITCH_TEST_HOME");
+        std::env::set_var("CC_SWITCH_TEST_HOME", temp.path());
+
+        let config_path = get_opencode_config_path();
+        fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+        let original = "{\n  // my custom comment\n  \"$schema\": \"https://opencode.ai/config.json\",\n  theme: \"dark\", // inline note\n}\n";
+        fs::write(&config_path, original).unwrap();
+
+        set_provider("myprov", json!({ "npm": "@scope/pkg", "options": {} })).unwrap();
+
+        let written = fs::read_to_string(&config_path).unwrap();
+        assert!(
+            written.contains("// my custom comment"),
+            "top-level comment must survive a provider write, got:\n{written}"
+        );
+        assert!(
+            written.contains("// inline note"),
+            "inline comment lost:\n{written}"
+        );
+        assert!(written.contains("myprov"));
+
+        // Semantics: provider added, pre-existing keys retained.
+        let parsed = read_opencode_config().unwrap();
+        assert_eq!(parsed["provider"]["myprov"]["npm"], json!("@scope/pkg"));
+        assert_eq!(parsed["$schema"], json!("https://opencode.ai/config.json"));
+        assert_eq!(parsed["theme"], json!("dark"));
+
+        match old_home {
+            Some(v) => std::env::set_var("CC_SWITCH_TEST_HOME", v),
+            None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
+        }
+    }
+
+    /// When the file does not yet exist there are no comments to preserve; the
+    /// write must still succeed and produce a valid config.
+    #[test]
+    #[serial_test::serial]
+    fn set_provider_creates_config_when_absent() {
+        let temp = tempfile::tempdir().unwrap();
+        let old_home = std::env::var_os("CC_SWITCH_TEST_HOME");
+        std::env::set_var("CC_SWITCH_TEST_HOME", temp.path());
+
+        set_provider("p", json!({ "npm": "pkg" })).unwrap();
+
+        let parsed = read_opencode_config().unwrap();
+        assert_eq!(parsed["provider"]["p"]["npm"], json!("pkg"));
+
+        match old_home {
+            Some(v) => std::env::set_var("CC_SWITCH_TEST_HOME", v),
+            None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
+        }
+    }
 }

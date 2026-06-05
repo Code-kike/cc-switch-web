@@ -532,28 +532,59 @@ pub(crate) fn strip_common_config_from_live_settings(
         }
     };
 
-    let backfill_settings = if provider_uses_common_config(app_type, provider, snippet.as_deref()) {
-        match snippet.as_deref() {
-            Some(snippet_text) => {
-                match remove_common_config_from_settings(app_type, &live_settings, snippet_text) {
-                    Ok(settings) => settings,
-                    Err(err) => {
-                        log::warn!(
-                            "Failed to strip common config for {} provider '{}': {err}",
-                            app_type.as_str(),
-                            provider.id
-                        );
-                        live_settings
-                    }
-                }
-            }
-            None => live_settings,
-        }
-    } else {
-        live_settings
-    };
+    let backfill_settings =
+        strip_common_config_for_backfill(app_type, provider, snippet.as_deref(), live_settings);
 
     restore_live_settings_for_provider_backfill(app_type, provider, backfill_settings)
+}
+
+/// Whether the destructive backfill strip should run for this provider.
+///
+/// L30: The legacy subset auto-detection (`provider_uses_common_config` with a
+/// `None` meta flag) can match a provider that merely *coincidentally* shares
+/// the snippet's fields, then strip those provider-owned fields during backfill
+/// — silent data loss. Backfill is destructive (it rewrites the stored provider
+/// settings), so it must mirror `normalize_provider_common_config_for_storage`
+/// and only strip when the provider has *explicitly* opted into common config.
+/// The non-destructive apply path (`build_effective_settings_with_common_config`)
+/// keeps the looser legacy detection.
+fn provider_common_config_strip_opt_in(provider: &Provider) -> bool {
+    provider
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.common_config_enabled)
+        .unwrap_or(false)
+}
+
+fn strip_common_config_for_backfill(
+    app_type: &AppType,
+    provider: &Provider,
+    snippet: Option<&str>,
+    live_settings: Value,
+) -> Value {
+    if !provider_common_config_strip_opt_in(provider) {
+        return live_settings;
+    }
+
+    let Some(snippet_text) = snippet else {
+        return live_settings;
+    };
+
+    if snippet_text.trim().is_empty() {
+        return live_settings;
+    }
+
+    match remove_common_config_from_settings(app_type, &live_settings, snippet_text) {
+        Ok(settings) => settings,
+        Err(err) => {
+            log::warn!(
+                "Failed to strip common config for {} provider '{}': {err}",
+                app_type.as_str(),
+                provider.id
+            );
+            live_settings
+        }
+    }
 }
 
 fn restore_live_settings_for_provider_backfill(
@@ -699,6 +730,29 @@ impl LiveSnapshot {
 pub(crate) fn write_live_snapshot(app_type: &AppType, provider: &Provider) -> Result<(), AppError> {
     match app_type {
         AppType::Claude => {
+            // M32 (investigated, intentionally wholesale): Claude's live
+            // `settings.json` is overwritten as a snapshot of the active
+            // provider rather than merged with the on-disk file. This is
+            // load-bearing, NOT an oversight:
+            //   * On provider switch, `switch_provider` first backfills the
+            //     *outgoing* provider via `strip_common_config_from_live_settings`
+            //     (services/provider/mod.rs), so user edits made while a provider
+            //     was active are captured into that provider's stored config
+            //     before the snapshot for the incoming provider is written.
+            //   * At write time the live file still holds the *previous*
+            //     provider's settings, so a merge would leak the previous
+            //     provider's `env`/`model`/top-level keys into the newly
+            //     activated provider (cross-provider contamination) — a worse,
+            //     silent correctness bug than the edit-loss it would fix.
+            //   * While the proxy is active, the takeover path
+            //     (`takeover_live_configs`) already does a read-modify-write
+            //     overlay that preserves unrelated user keys.
+            // Unlike Gemini (whose provider-owned secrets live in a separate
+            // `.env`, leaving `settings.json` safe to merge), Claude keeps
+            // provider-owned `env` in the same file as user-owned keys, so a
+            // blanket merge cannot distinguish the two. The remaining gap
+            // (a same-provider re-sync that has not been backfilled first) is
+            // better closed by backfilling before re-sync in a dedicated task.
             let path = get_claude_settings_path();
             let settings = sanitize_claude_settings_for_live(&provider.settings_config);
             write_json_file(&path, &settings)?;
@@ -1613,5 +1667,142 @@ mod tests {
             .map(|value| value.as_str().expect("tool id should be string"))
             .collect();
         assert_eq!(values, vec!["tool2"]);
+    }
+
+    // ── L30: backfill strip must require explicit opt-in ──────────────────
+
+    fn provider_with_common_config_flag(settings: Value, flag: Option<bool>) -> Provider {
+        let mut provider = Provider::with_id(
+            "legacy".to_string(),
+            "Legacy".to_string(),
+            settings,
+            None,
+        );
+        provider.meta = Some(crate::provider::ProviderMeta {
+            common_config_enabled: flag,
+            ..Default::default()
+        });
+        provider
+    }
+
+    /// A legacy provider (no explicit `common_config_enabled`) whose settings
+    /// *coincidentally* contain the entire snippet must NOT have those fields
+    /// stripped during backfill — previously the legacy subset auto-detection
+    /// fired and removed provider-owned fields (silent data loss).
+    #[test]
+    fn backfill_does_not_strip_for_legacy_provider_coincidentally_matching_snippet() {
+        let snippet = r#"{ "env": { "ANTHROPIC_BASE_URL": "https://api.anthropic.com" } }"#;
+        // The provider legitimately uses the official base URL — it just
+        // happens to equal the common-config snippet.
+        let live = json!({
+            "env": {
+                "ANTHROPIC_BASE_URL": "https://api.anthropic.com",
+                "ANTHROPIC_API_KEY": "sk-provider-owned"
+            }
+        });
+
+        // Sanity check: the legacy subset detection *would* have matched.
+        assert!(
+            settings_contain_common_config(&AppType::Claude, &live, snippet),
+            "precondition: snippet is a coincidental subset of the provider settings"
+        );
+
+        let provider = provider_with_common_config_flag(live.clone(), None);
+        let result =
+            strip_common_config_for_backfill(&AppType::Claude, &provider, Some(snippet), live);
+
+        // The coincidentally-shared base URL must survive.
+        assert_eq!(
+            result["env"]["ANTHROPIC_BASE_URL"],
+            json!("https://api.anthropic.com"),
+            "legacy provider must keep its provider-owned base URL"
+        );
+        assert_eq!(result["env"]["ANTHROPIC_API_KEY"], json!("sk-provider-owned"));
+    }
+
+    /// When the provider has explicitly opted in, backfill still strips the
+    /// snippet so the field is not stored twice.
+    #[test]
+    fn backfill_strips_when_provider_explicitly_opts_in() {
+        let snippet = r#"{ "includeCoAuthoredBy": false }"#;
+        let live = json!({
+            "includeCoAuthoredBy": false,
+            "env": { "ANTHROPIC_API_KEY": "sk-test" }
+        });
+
+        let provider = provider_with_common_config_flag(live.clone(), Some(true));
+        let result =
+            strip_common_config_for_backfill(&AppType::Claude, &provider, Some(snippet), live);
+
+        assert!(
+            result.get("includeCoAuthoredBy").is_none(),
+            "explicit opt-in should strip the snippet field"
+        );
+        assert_eq!(result["env"]["ANTHROPIC_API_KEY"], json!("sk-test"));
+    }
+
+    #[test]
+    fn backfill_strip_opt_in_follows_explicit_flag() {
+        let none = provider_with_common_config_flag(json!({}), None);
+        let off = provider_with_common_config_flag(json!({}), Some(false));
+        let on = provider_with_common_config_flag(json!({}), Some(true));
+        assert!(!provider_common_config_strip_opt_in(&none));
+        assert!(!provider_common_config_strip_opt_in(&off));
+        assert!(provider_common_config_strip_opt_in(&on));
+    }
+
+    // ── M32: Claude live settings are written wholesale (intentional) ─────
+
+    /// Documents the investigated M32 decision: `write_live_snapshot` for Claude
+    /// replaces `settings.json` with a snapshot of the active provider. This
+    /// asserts the wholesale semantics (top-level keys absent from the provider
+    /// config are not carried over) so a future change that introduces merging
+    /// has to update this test deliberately. See the comment at the Claude arm
+    /// of `write_live_snapshot` for why merging would cause cross-provider
+    /// contamination.
+    #[test]
+    #[serial_test::serial]
+    fn claude_live_snapshot_is_wholesale() {
+        let temp = tempfile::tempdir().unwrap();
+        let old_test_home = std::env::var_os("CC_SWITCH_TEST_HOME");
+        std::env::set_var("CC_SWITCH_TEST_HOME", temp.path());
+
+        let settings_path = get_claude_settings_path();
+        std::fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
+        // Pre-existing live file with a key the provider does NOT manage and a
+        // stale value for a key it does manage.
+        write_json_file(
+            &settings_path,
+            &json!({
+                "statusLine": { "type": "command", "command": "echo hi" },
+                "env": { "ANTHROPIC_BASE_URL": "https://stale.example" }
+            }),
+        )
+        .unwrap();
+
+        let provider = Provider::with_id(
+            "p1".to_string(),
+            "P1".to_string(),
+            json!({ "env": { "ANTHROPIC_BASE_URL": "https://fresh.example" } }),
+            None,
+        );
+        write_live_snapshot(&AppType::Claude, &provider).unwrap();
+
+        let written: Value = read_json_file(&settings_path).unwrap();
+        // Managed key reflects the provider.
+        assert_eq!(
+            written["env"]["ANTHROPIC_BASE_URL"],
+            json!("https://fresh.example")
+        );
+        // Wholesale: unmanaged `statusLine` is NOT preserved (snapshot semantics).
+        assert!(
+            written.get("statusLine").is_none(),
+            "wholesale snapshot must not retain keys outside the active provider"
+        );
+
+        match old_test_home {
+            Some(v) => std::env::set_var("CC_SWITCH_TEST_HOME", v),
+            None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
+        }
     }
 }

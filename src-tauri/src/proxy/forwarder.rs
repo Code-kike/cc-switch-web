@@ -1260,6 +1260,34 @@ impl RequestForwarder {
                 }
             }
 
+            // Gemini (Google) OAuth: refresh the access token from the stored
+            // refresh_token when it is missing/expiring, so an expired ~1h
+            // `ya29.` token no longer degrades to a 401 (M31). The manager is a
+            // process-global singleton (no AppHandle needed) and falls back to
+            // the stored token if a refresh isn't possible.
+            if auth.strategy == AuthStrategy::GoogleOAuth {
+                if let Some(creds) =
+                    super::providers::GeminiAdapter::new().parse_oauth_credentials(&auth.api_key)
+                {
+                    if creds
+                        .refresh_token
+                        .as_deref()
+                        .is_some_and(|t| !t.trim().is_empty())
+                    {
+                        match super::providers::gemini_oauth::manager()
+                            .get_valid_token(&creds)
+                            .await
+                        {
+                            Some(token) => auth.access_token = Some(token),
+                            None => log::warn!(
+                                "[Gemini OAuth] no usable token for provider '{}'; bearer auth may 401",
+                                provider.id
+                            ),
+                        }
+                    }
+                }
+            }
+
             adapter.get_auth_headers(&auth)?
         } else {
             Vec::new()

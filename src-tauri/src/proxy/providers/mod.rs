@@ -19,6 +19,11 @@ pub mod codex_oauth_auth;
 pub mod copilot_auth;
 pub mod copilot_model_map;
 mod gemini;
+// `gemini_oauth` is wired into the desktop `forwarder`; the web-server shim
+// (`examples/web_proxy.rs`) doesn't include the forwarder, so the module is
+// dead code there only. Keep desktop strict, silence the web build.
+#[cfg_attr(not(feature = "desktop"), allow(dead_code))]
+pub mod gemini_oauth;
 pub(crate) mod gemini_schema;
 pub mod gemini_shadow;
 pub mod models;
