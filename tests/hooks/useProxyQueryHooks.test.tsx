@@ -3,8 +3,6 @@ import { renderHook, act, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  useProxyConfig,
-  useSwitchProxyProvider,
   useUpdateAppProxyConfig,
   useUpdateGlobalProxyConfig,
 } from "@/lib/query/proxy";
@@ -12,11 +10,8 @@ import {
 const toastErrorMock = vi.fn();
 const toastSuccessMock = vi.fn();
 
-const getProxyConfigMock = vi.fn();
-const updateProxyConfigMock = vi.fn();
 const updateGlobalProxyConfigMock = vi.fn();
 const updateProxyConfigForAppMock = vi.fn();
-const switchProxyProviderMock = vi.fn();
 const getGlobalProxyConfigMock = vi.fn();
 
 vi.mock("sonner", () => ({
@@ -39,16 +34,12 @@ vi.mock("react-i18next", () => ({
 
 vi.mock("@/lib/api/proxy", () => ({
   proxyApi: {
-    getProxyConfig: (...args: unknown[]) => getProxyConfigMock(...args),
-    updateProxyConfig: (...args: unknown[]) => updateProxyConfigMock(...args),
     getGlobalProxyConfig: (...args: unknown[]) =>
       getGlobalProxyConfigMock(...args),
     updateGlobalProxyConfig: (...args: unknown[]) =>
       updateGlobalProxyConfigMock(...args),
     updateProxyConfigForApp: (...args: unknown[]) =>
       updateProxyConfigForAppMock(...args),
-    switchProxyProvider: (...args: unknown[]) =>
-      switchProxyProviderMock(...args),
   },
 }));
 
@@ -69,50 +60,10 @@ describe("proxy query hooks", () => {
   beforeEach(() => {
     toastErrorMock.mockReset();
     toastSuccessMock.mockReset();
-    getProxyConfigMock.mockReset();
-    updateProxyConfigMock.mockReset();
     updateGlobalProxyConfigMock.mockReset();
     updateProxyConfigForAppMock.mockReset();
-    switchProxyProviderMock.mockReset();
     getGlobalProxyConfigMock.mockReset();
-    getProxyConfigMock.mockResolvedValue({});
     getGlobalProxyConfigMock.mockResolvedValue({});
-  });
-
-  it("shows structured detail when switching proxy provider fails", async () => {
-    switchProxyProviderMock.mockRejectedValueOnce({ detail: "switch exploded" });
-    const { result } = renderHook(() => useSwitchProxyProvider(), {
-      wrapper: createWrapper(),
-    });
-
-    await act(async () => {
-      await result.current
-        .mutateAsync({ appType: "claude", providerId: "provider-1" })
-        .catch(() => undefined);
-    });
-
-    await waitFor(() => {
-      expect(toastErrorMock).toHaveBeenCalledWith(
-        "proxy.switchFailed:switch exploded",
-      );
-    });
-  });
-
-  it("shows structured detail when saving legacy proxy config fails", async () => {
-    updateProxyConfigMock.mockRejectedValueOnce({ detail: "legacy save failed" });
-    const { result } = renderHook(() => useProxyConfig(), {
-      wrapper: createWrapper(),
-    });
-
-    await act(async () => {
-      await result.current.updateConfig({} as never).catch(() => undefined);
-    });
-
-    await waitFor(() => {
-      expect(toastErrorMock).toHaveBeenCalledWith(
-        "proxy.settings.toast.saveFailed:legacy save failed",
-      );
-    });
   });
 
   it("shows structured detail when saving global proxy config fails", async () => {
@@ -143,9 +94,9 @@ describe("proxy query hooks", () => {
     });
 
     await act(async () => {
-      await result.current.mutateAsync({ appType: "claude" } as never).catch(
-        () => undefined,
-      );
+      await result.current
+        .mutateAsync({ appType: "claude" } as never)
+        .catch(() => undefined);
     });
 
     await waitFor(() => {

@@ -10,6 +10,7 @@ import { toast } from "sonner";
 import { isWebMode } from "@/lib/api/adapter";
 import { hermesApi } from "@/lib/api/hermes";
 import { providersApi } from "@/lib/api/providers";
+import { usageKeys } from "@/lib/query/usage";
 import type { HermesMemoryKind } from "@/types";
 import { extractErrorMessage } from "@/utils/errorUtils";
 
@@ -59,7 +60,9 @@ export function invalidateHermesProviderCaches(
     queryClient.invalidateQueries({ queryKey: hermesKeys.liveProviderIds }),
     queryClient.invalidateQueries({ queryKey: hermesKeys.modelConfig }),
     ...ids.map((id) =>
-      queryClient.invalidateQueries({ queryKey: ["usage", id, "hermes"] }),
+      queryClient.invalidateQueries({
+        queryKey: usageKeys.script(id, "hermes"),
+      }),
     ),
   ]);
 }

@@ -6,6 +6,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Provider, UsageScript, UsageData, createUsageScript } from "@/types";
 import { usageApi, settingsApi, type AppId } from "@/lib/api";
 import { useSettingsQuery } from "@/lib/query";
+import { usageKeys } from "@/lib/query/usage";
 import {
   extractCodexBaseUrl,
   extractCodexExperimentalBearerToken,
@@ -416,7 +417,10 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
             duration: 3000,
             closeButton: true,
           });
-          queryClient.setQueryData(["usage", provider.id, appId], result);
+          queryClient.setQueryData(
+            usageKeys.script(provider.id, appId),
+            result,
+          );
         } else {
           toast.error(
             `${t("usageScript.testFailed")}: ${result.error || t("endpointTest.noResult")}`,
@@ -453,7 +457,10 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
             duration: 3000,
             closeButton: true,
           });
-          queryClient.setQueryData(["usage", provider.id, appId], result);
+          queryClient.setQueryData(
+            usageKeys.script(provider.id, appId),
+            result,
+          );
         } else {
           toast.error(
             `${t("usageScript.testFailed")}: ${result.error || t("endpointTest.noResult")}`,
@@ -494,7 +501,10 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
             duration: 3000,
             closeButton: true,
           });
-          queryClient.setQueryData(["usage", provider.id, appId], result);
+          queryClient.setQueryData(
+            usageKeys.script(provider.id, appId),
+            result,
+          );
         } else {
           toast.error(
             `${t("usageScript.testFailed")}: ${result.error || t("endpointTest.noResult")}`,
@@ -531,7 +541,7 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
         });
 
         // 🔧 测试成功后，更新主界面列表的用量查询缓存
-        queryClient.setQueryData(["usage", provider.id, appId], result);
+        queryClient.setQueryData(usageKeys.script(provider.id, appId), result);
       } else {
         toast.error(
           `${t("usageScript.testFailed")}: ${result.error || t("endpointTest.noResult")}`,

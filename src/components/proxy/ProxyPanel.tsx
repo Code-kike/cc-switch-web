@@ -22,7 +22,6 @@ import { useFailoverQueue } from "@/lib/query/failover";
 import { ProviderHealthBadge } from "@/components/providers/ProviderHealthBadge";
 import { useProviderHealth } from "@/lib/query/failover";
 import {
-  useProxyTakeoverStatus,
   useSetProxyTakeoverForApp,
   useGlobalProxyConfig,
   useUpdateGlobalProxyConfig,
@@ -74,10 +73,11 @@ export function ProxyPanel({
   disableRuntimeControls = false,
 }: ProxyPanelProps) {
   const { t } = useTranslation();
-  const { status, isRunning } = useProxyStatus();
+  // 接管状态由 canonical useProxyStatus 统一持有（M37）：避免与 lib/query/proxy
+  // 的重复查询共用同一 query key 却各自轮询。
+  const { status, isRunning, takeoverStatus } = useProxyStatus();
 
   // 获取应用接管状态
-  const { data: takeoverStatus } = useProxyTakeoverStatus();
   const setTakeoverForApp = useSetProxyTakeoverForApp();
 
   // 获取全局代理配置
