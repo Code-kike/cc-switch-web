@@ -297,9 +297,11 @@ describe.sequential("ImportExportSection against real web server", () => {
       const snapshotA = await getClaudeProviders();
       const currentA = await getCurrentClaudeProvider();
       expect(currentA).toBe(providerA.id);
-      expect(snapshotA[providerA.id]?.settingsConfig?.env?.ANTHROPIC_AUTH_TOKEN).toBe(
-        "claude-import-a-key",
-      );
+      expect(
+        (snapshotA[providerA.id]?.settingsConfig?.env as
+          | Record<string, string>
+          | undefined)?.ANTHROPIC_AUTH_TOKEN,
+      ).toBe("claude-import-a-key");
 
       const exportedSql = await exportSqlSnapshot(webServer.baseUrl);
       const importFile = new File([exportedSql], "config-snapshot-a.sql", {

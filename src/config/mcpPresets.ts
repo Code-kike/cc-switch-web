@@ -1,6 +1,14 @@
 import { McpServer, McpServerSpec } from "../types";
 import { isWindows } from "@/lib/platform";
 
+// NOTE (M14): `McpServer` carries a `[key: string]: unknown` index signature.
+// `Omit` (= `Pick<T, Exclude<keyof T, K>>`) collapses such a type because
+// `keyof McpServer` widens to `string | number`, dropping the named field
+// types — so every `McpPreset` property degrades to `unknown`. Consumers
+// therefore narrow preset fields (id/docs/tags) with explicit casts at the use
+// site. Proper follow-up fix: extract a no-index base interface from
+// `McpServer` and derive `McpPreset` from it (also requires making `apps`
+// optional here, since preset literals intentionally omit it).
 export type McpPreset = Omit<McpServer, "enabled" | "description">;
 
 // 创建跨平台 npx 命令配置

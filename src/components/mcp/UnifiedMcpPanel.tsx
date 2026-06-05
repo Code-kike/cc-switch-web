@@ -254,9 +254,12 @@ const UnifiedMcpListItem: React.FC<UnifiedMcpListItemProps> = ({
   const description = server.description || "";
 
   const meta = mcpPresets.find((p) => p.id === id);
-  const docsUrl = server.docs || meta?.docs;
-  const homepageUrl = server.homepage || meta?.homepage;
-  const tags = server.tags || meta?.tags;
+  // `McpPreset` is `Omit<McpServer, ...>`; the `McpServer` string index
+  // signature collapses its named field types to `unknown`, so narrow the
+  // preset fields (string/string[]) at the boundary. See McpPreset note.
+  const docsUrl = server.docs || (meta?.docs as string | undefined);
+  const homepageUrl = server.homepage || (meta?.homepage as string | undefined);
+  const tags = server.tags || (meta?.tags as string[] | undefined);
 
   const openDocs = async () => {
     const url = docsUrl || homepageUrl;

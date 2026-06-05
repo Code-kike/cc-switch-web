@@ -470,7 +470,7 @@ const McpFormModal: React.FC<McpFormModalProps> = ({
                     const descriptionKey = `mcp.presets.${preset.id}.description`;
                     return (
                       <button
-                        key={preset.id}
+                        key={preset.id as string}
                         type="button"
                         onClick={() => applyPreset(idx)}
                         className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
@@ -480,7 +480,7 @@ const McpFormModal: React.FC<McpFormModalProps> = ({
                         }`}
                         title={t(descriptionKey)}
                       >
-                        {preset.id}
+                        {preset.id as string}
                       </button>
                     );
                   })}
