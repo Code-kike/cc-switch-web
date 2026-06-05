@@ -11,8 +11,9 @@ pub struct ApiState {
         Arc<tokio::sync::RwLock<crate::proxy::providers::copilot_auth::CopilotAuthManager>>,
     pub codex_oauth:
         Arc<tokio::sync::RwLock<crate::proxy::providers::codex_oauth_auth::CodexOAuthManager>>,
-    /// Shared event sink. Web mode uses `ChannelEventSink`; tests can use
-    /// `NoopEventSink`. Used by handlers that need to emit events to SSE.
+    /// Shared event sink. Web mode uses `ChannelEventSink`; the desktop-only
+    /// `NoopEventSink` is a no-op placeholder. Used by handlers that need to
+    /// emit events to SSE.
     pub sink: Arc<dyn super::super::runtime::UiEventSink>,
     /// Broadcast stream backing `/api/events`.
     pub events: broadcast::Sender<crate::runtime::EventEnvelope>,
