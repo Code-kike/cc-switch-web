@@ -112,14 +112,40 @@ pub fn classify_request(
     }
 }
 
+/// Warmup 探针的 max_tokens 上限（含）。
+///
+/// Claude Code 的 warmup/连通性探针只为预热连接，请求一个极小的补全
+/// （典型 max_tokens=1）。真实用户回合则请求成百上千 token（主对话 ≈ 32k，
+/// 子代理 ≥ 2k）。这里把"声明了较大 max_tokens"的请求排除在 warmup 之外，
+/// 是为了满足 M11：**任何真实用户请求都不应被静默降级到小模型**。
+/// 阈值取得保守——足以覆盖探针，又远低于任何真实回合。
+const WARMUP_MAX_TOKENS_CEILING: u64 = 256;
+
 /// 检测是否为 warmup/探针请求（适合降级到小模型）。
 ///
 /// 与参考实现对齐，三个条件同时满足：
 /// 1. 请求头有 `anthropic-beta`（Claude Code warmup 探针的标志）
 /// 2. 无 tools 定义
 /// 3. 非 compact 请求
+///
+/// M11 收窄：额外要求 `max_tokens` 缺省或不超过 [`WARMUP_MAX_TOKENS_CEILING`]。
+/// 真实用户回合（即便恰好没带 tools）会声明较大的 max_tokens，从而绝不会被
+/// 误判为 warmup 并静默换成 `gpt-5-mini`。该判定严格收窄了原有启发式
+/// （只会减少 warmup 命中，不会增加），不影响"探针降级省配额"的初衷——
+/// 探针本就请求极小补全。降级开关本身可通过 `CopilotOptimizerConfig.warmup_downgrade`
+/// 关闭（默认开启），降级目标模型由 `warmup_model` 配置，二者已端到端落库。
 fn is_warmup_request(body: &Value, has_anthropic_beta: bool, is_compact: bool) -> bool {
     if !has_anthropic_beta || is_compact {
+        return false;
+    }
+    // M11：声明了较大 max_tokens 的请求是真实用户回合，绝不降级
+    let max_tokens_is_probe_sized = match body.get("max_tokens").and_then(|v| v.as_u64()) {
+        Some(max_tokens) => max_tokens <= WARMUP_MAX_TOKENS_CEILING,
+        // Anthropic API 要求 max_tokens 必填；缺省通常仅见于畸形/测试请求，
+        // 此时降级无害，保持与原有行为一致（不因缺省而拦截探针）。
+        None => true,
+    };
+    if !max_tokens_is_probe_sized {
         return false;
     }
     // 无工具定义
@@ -469,12 +495,22 @@ pub fn strip_thinking_blocks(mut body: Value) -> Value {
         let Some(content) = msg.get_mut("content").and_then(|c| c.as_array_mut()) else {
             continue;
         };
+        let had_blocks = !content.is_empty();
         content.retain(|block| {
             !matches!(
                 block.get("type").and_then(|t| t.as_str()),
                 Some("thinking") | Some("redacted_thinking")
             )
         });
+        // M9：若剥离把整条 assistant 消息清空了（原本全是 thinking/redacted_thinking），
+        // 不能留下 content:[]。OpenAI 兼容端点的转换器会直接**丢弃**空 content 的消息
+        // （transform.rs::convert_message_to_openai），破坏 user/assistant 交替并触发
+        // 上游 400 —— 进而可能再次触发反应式整流形成无谓重试。这里补一个最小有效
+        // text block，使消息保留且结构合法。占位文本用非空白 "."，与 rectifier
+        // 路径保持一致并规避 Anthropic 末条 assistant 的尾随空白校验。
+        if had_blocks && content.is_empty() {
+            content.push(serde_json::json!({"type": "text", "text": "."}));
+        }
     }
 
     body
@@ -529,7 +565,13 @@ fn find_last_user_content(body: &Value) -> Option<String> {
                 .collect();
 
             if !filtered.is_empty() {
-                return Some(serde_json::to_string(&filtered).unwrap_or_default());
+                // L6 修复：用 canonical（按 key 排序）序列化，使逻辑相同、仅 key 顺序
+                // 不同的请求体产生同一个哈希。crate 启用了 serde_json 的
+                // `preserve_order`，因此 `serde_json::to_string` 会保留插入顺序，
+                // 同一内容因 key 顺序不同会得到不同的确定性 Request ID。
+                return Some(super::json_canonical::canonical_json_string(&Value::Array(
+                    filtered,
+                )));
             }
         }
     }
@@ -831,6 +873,58 @@ mod tests {
         assert!(!result.is_warmup);
     }
 
+    // === M11: warmup 收窄 — 真实用户回合绝不被降级 ===
+
+    #[test]
+    fn test_not_warmup_when_user_requests_large_max_tokens() {
+        // 真实用户回合即便没带 tools 也会声明较大 max_tokens，
+        // 绝不应被误判为 warmup 并静默降级到小模型。
+        let body = json!({
+            "model": "claude-sonnet-4-20250514",
+            "max_tokens": 32000,
+            "messages": [
+                {"role": "user", "content": "Please write a detailed essay about distributed systems"}
+            ]
+        });
+        let result = classify_request(&body, true, true, false);
+        assert_eq!(result.initiator, "user");
+        assert!(
+            !result.is_warmup,
+            "声明了大 max_tokens 的真实用户请求不能被判为 warmup"
+        );
+    }
+
+    #[test]
+    fn test_warmup_when_probe_sized_max_tokens() {
+        // 真正的 warmup 探针请求极小补全（典型 max_tokens=1）→ 仍判为 warmup
+        let body = json!({
+            "model": "claude-sonnet-4-20250514",
+            "max_tokens": 1,
+            "messages": [
+                {"role": "user", "content": "warmup"}
+            ]
+        });
+        let result = classify_request(&body, true, true, false);
+        assert_eq!(result.initiator, "user");
+        assert!(result.is_warmup);
+    }
+
+    #[test]
+    fn test_warmup_boundary_at_ceiling() {
+        // max_tokens 恰好等于上限 → 仍算探针；超过 1 即不算
+        let at_ceiling = json!({
+            "max_tokens": WARMUP_MAX_TOKENS_CEILING,
+            "messages": [{"role": "user", "content": "hi"}]
+        });
+        assert!(classify_request(&at_ceiling, true, true, false).is_warmup);
+
+        let above_ceiling = json!({
+            "max_tokens": WARMUP_MAX_TOKENS_CEILING + 1,
+            "messages": [{"role": "user", "content": "hi"}]
+        });
+        assert!(!classify_request(&above_ceiling, true, true, false).is_warmup);
+    }
+
     // === merge_tool_results 测试 ===
 
     #[test]
@@ -1034,6 +1128,30 @@ mod tests {
         });
         let id = deterministic_request_id(&body, "session");
         assert!(Uuid::parse_str(&id).is_ok());
+    }
+
+    #[test]
+    fn test_deterministic_id_stable_across_key_order() {
+        // L6：crate 启用了 serde_json 的 preserve_order，因此 json! 会保留字面顺序。
+        // 仅 key 顺序不同、逻辑相同的两个请求体，必须得到相同的确定性 Request ID。
+        let body1 = json!({
+            "messages": [{"role": "user", "content": [
+                {"type": "text", "text": "hello", "extra": {"a": 1, "b": 2}}
+            ]}]
+        });
+        let body2 = json!({
+            "messages": [{"role": "user", "content": [
+                {"extra": {"b": 2, "a": 1}, "text": "hello", "type": "text"}
+            ]}]
+        });
+        // 前置确认两个 body 的字面序列化确实不同（否则该测试无意义）
+        assert_ne!(
+            serde_json::to_string(&body1).unwrap(),
+            serde_json::to_string(&body2).unwrap()
+        );
+        let id1 = deterministic_request_id(&body1, "s");
+        let id2 = deterministic_request_id(&body2, "s");
+        assert_eq!(id1, id2);
     }
 
     // === deterministic_interaction_id 测试 ===
@@ -1449,13 +1567,31 @@ mod tests {
     }
 
     #[test]
-    fn test_strip_thinking_leaves_empty_content_array() {
-        // 仅含 thinking 的 assistant 消息剥完后 content 为空——保留上游自处理
+    fn test_strip_thinking_inserts_placeholder_when_emptied() {
+        // M9：仅含 thinking 的 assistant 消息剥完后不能留下 content:[]，
+        // 否则 OpenAI 兼容转换器会丢弃整条消息、破坏交替并触发上游 400。
+        // 应补一个最小有效 text block。
         let body = serde_json::json!({
             "messages": [
                 {"role": "assistant", "content": [
                     {"type": "thinking", "thinking": "solo"}
                 ]}
+            ]
+        });
+        let result = strip_thinking_blocks(body);
+        let content = result["messages"][0]["content"].as_array().unwrap();
+        assert_eq!(content.len(), 1);
+        assert_eq!(content[0]["type"], "text");
+        // 非空 content（数组非空且为合法 block）
+        assert!(content[0]["text"].as_str().is_some());
+    }
+
+    #[test]
+    fn test_strip_thinking_does_not_touch_originally_empty_content() {
+        // 原本就是空数组的消息不补占位（不是我们剥空的）
+        let body = serde_json::json!({
+            "messages": [
+                {"role": "assistant", "content": []}
             ]
         });
         let result = strip_thinking_blocks(body);
