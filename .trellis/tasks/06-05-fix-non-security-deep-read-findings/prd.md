@@ -122,6 +122,14 @@ Order rationale: lowest-risk first to validate gates, then data-loss/correctness
 
 All four resolved above (scope, Tier 4, bootstrap, branching).
 
+## Progress log
+
+- **B1 ✅ committed `fb2e7377`** — L7 (dead guard removed, behavior-preserving), L8 (escape→TextDecoder), M35 (randomUUID→generateUUID, 5 files), L18 (clipboard→copyText, 3 files). typecheck + 526 unit tests green. M37 found NOT dead (still imported) → deferred to B6.
+- **B2 ✅ committed `c1faedfe`** — M33 (OpenCode comment-preserving write via new json5_doc.rs + safety net), L30 (common-config strip now explicit opt-in), M31 (Gemini OAuth refresh via new gemini_oauth.rs). M32 = DESCOPED (Claude wholesale write is intentional; merge would cause cross-provider contamination on switch — evidence comment + `claude_live_snapshot_is_wholesale` test). Reviewed by trellis-check; cargo test --lib 1221 passed, clippy --lib clean, web check green.
+  - **B2.1 (M32 residual)** folded into next batch: non-switch same-provider re-sync still wholesale-overwrites → preserve unmanaged user keys on same-provider re-sync only.
+- **B3a (in progress)** — backend data/cost correctness: B2.1 (M32 residual), M21 (cost=0 seed+normalization), L29 (usage dedup last-writer-wins).
+- Re-grouped remaining: B3b = proxy forwarding correctness (M30, L1, L2, L4, L27, L28, M22); B4 = proxy behavior (M8-M11, L5, L6); B5 = backend cleanup/refactor; B6 = FE state/types/refactor (incl. M37); B7 = CI/tooling (incl. M16/H4 pre-existing clippy); B8 = docs.
+
 ## Acceptance Criteria (evolving)
 
 - [ ] Selected-scope findings fixed with tests where behavior changes
