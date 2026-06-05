@@ -192,6 +192,72 @@ impl RequestForwarder {
         });
     }
 
+    /// 成功响应的统一收尾处理。
+    ///
+    /// 主成功路径、签名整流重试成功路径、budget 整流重试成功路径此前各自内联了一份
+    /// 语义完全相同的实现（仅注释/换行不同），此处抽取为单一 helper，行为完全一致。
+    /// 各调用点专属的日志（如 RECT-002 / RECT-011）保留在调用点之上，本 helper 只承载
+    /// 三处共享的成功收尾逻辑：记录熔断器成功、同步当前 provider、更新成功统计、
+    /// （必要时）异步触发供应商切换，最后构造并返回 `ForwardResult`。
+    ///
+    /// 成功：普通闭合熔断状态由 `record_success_result` 异步记录，避免阻塞流式首包返回；
+    /// HalfOpen 探测仍同步等待，保证 permit 与熔断状态及时释放。
+    async fn handle_successful_response(
+        &self,
+        provider: &Provider,
+        app_type_str: &str,
+        used_half_open_permit: bool,
+        response: ProxyResponse,
+        claude_api_format: Option<String>,
+    ) -> ForwardResult {
+        self.record_success_result(&provider.id, app_type_str, used_half_open_permit)
+            .await;
+
+        // 更新当前应用类型使用的 provider
+        {
+            let mut current_providers = self.current_providers.write().await;
+            current_providers.insert(
+                app_type_str.to_string(),
+                (provider.id.clone(), provider.name.clone()),
+            );
+        }
+
+        // 更新成功统计
+        {
+            let mut status = self.status.write().await;
+            status.success_requests += 1;
+            status.last_error = None;
+            let should_switch =
+                self.current_provider_id_at_start.as_str() != provider.id.as_str();
+            if should_switch {
+                status.failover_count += 1;
+
+                // 异步触发供应商切换，更新 UI/托盘，并把“当前供应商”同步为实际使用的 provider
+                let fm = self.failover_manager.clone();
+                let ah = self.app_handle.clone();
+                let pid = provider.id.clone();
+                let pname = provider.name.clone();
+                let at = app_type_str.to_string();
+
+                tokio::spawn(async move {
+                    let _ = fm.try_switch(ah.as_ref(), &at, &pid, &pname).await;
+                });
+            }
+            // 重新计算成功率
+            if status.total_requests > 0 {
+                status.success_rate =
+                    (status.success_requests as f32 / status.total_requests as f32) * 100.0;
+            }
+        }
+
+        ForwardResult {
+            response,
+            provider: provider.clone(),
+            claude_api_format,
+            connection_guard: None,
+        }
+    }
+
     /// 转发请求（带故障转移）
     ///
     /// 这是客户端请求维度的 thin wrapper：只在入口记一次 total_requests /
@@ -342,55 +408,15 @@ impl RequestForwarder {
                 .await
             {
                 Ok((response, claude_api_format)) => {
-                    // 成功：普通闭合熔断状态异步记录，避免阻塞流式首包返回；
-                    // HalfOpen 探测仍同步等待，保证 permit 与熔断状态及时释放。
-                    self.record_success_result(&provider.id, app_type_str, used_half_open_permit)
-                        .await;
-
-                    // 更新当前应用类型使用的 provider
-                    {
-                        let mut current_providers = self.current_providers.write().await;
-                        current_providers.insert(
-                            app_type_str.to_string(),
-                            (provider.id.clone(), provider.name.clone()),
-                        );
-                    }
-
-                    // 更新成功统计
-                    {
-                        let mut status = self.status.write().await;
-                        status.success_requests += 1;
-                        status.last_error = None;
-                        let should_switch =
-                            self.current_provider_id_at_start.as_str() != provider.id.as_str();
-                        if should_switch {
-                            status.failover_count += 1;
-
-                            // 异步触发供应商切换，更新 UI/托盘，并把“当前供应商”同步为实际使用的 provider
-                            let fm = self.failover_manager.clone();
-                            let ah = self.app_handle.clone();
-                            let pid = provider.id.clone();
-                            let pname = provider.name.clone();
-                            let at = app_type_str.to_string();
-
-                            tokio::spawn(async move {
-                                let _ = fm.try_switch(ah.as_ref(), &at, &pid, &pname).await;
-                            });
-                        }
-                        // 重新计算成功率
-                        if status.total_requests > 0 {
-                            status.success_rate = (status.success_requests as f32
-                                / status.total_requests as f32)
-                                * 100.0;
-                        }
-                    }
-
-                    return Ok(ForwardResult {
-                        response,
-                        provider: provider.clone(),
-                        claude_api_format,
-                        connection_guard: None,
-                    });
+                    return Ok(self
+                        .handle_successful_response(
+                            provider,
+                            app_type_str,
+                            used_half_open_permit,
+                            response,
+                            claude_api_format,
+                        )
+                        .await);
                 }
                 Err(e) => {
                     // 检测是否需要触发整流器（仅 Claude/ClaudeAuth 供应商）
@@ -469,61 +495,15 @@ impl RequestForwarder {
                                 {
                                     Ok((response, claude_api_format)) => {
                                         log::info!("[{app_type_str}] [RECT-002] 整流重试成功");
-                                        self.record_success_result(
-                                            &provider.id,
-                                            app_type_str,
-                                            used_half_open_permit,
-                                        )
-                                        .await;
-
-                                        // 更新当前应用类型使用的 provider
-                                        {
-                                            let mut current_providers =
-                                                self.current_providers.write().await;
-                                            current_providers.insert(
-                                                app_type_str.to_string(),
-                                                (provider.id.clone(), provider.name.clone()),
-                                            );
-                                        }
-
-                                        // 更新成功统计
-                                        {
-                                            let mut status = self.status.write().await;
-                                            status.success_requests += 1;
-                                            status.last_error = None;
-                                            let should_switch =
-                                                self.current_provider_id_at_start.as_str()
-                                                    != provider.id.as_str();
-                                            if should_switch {
-                                                status.failover_count += 1;
-
-                                                // 异步触发供应商切换，更新 UI/托盘
-                                                let fm = self.failover_manager.clone();
-                                                let ah = self.app_handle.clone();
-                                                let pid = provider.id.clone();
-                                                let pname = provider.name.clone();
-                                                let at = app_type_str.to_string();
-
-                                                tokio::spawn(async move {
-                                                    let _ = fm
-                                                        .try_switch(ah.as_ref(), &at, &pid, &pname)
-                                                        .await;
-                                                });
-                                            }
-                                            if status.total_requests > 0 {
-                                                status.success_rate = (status.success_requests
-                                                    as f32
-                                                    / status.total_requests as f32)
-                                                    * 100.0;
-                                            }
-                                        }
-
-                                        return Ok(ForwardResult {
-                                            response,
-                                            provider: provider.clone(),
-                                            claude_api_format,
-                                            connection_guard: None,
-                                        });
+                                        return Ok(self
+                                            .handle_successful_response(
+                                                provider,
+                                                app_type_str,
+                                                used_half_open_permit,
+                                                response,
+                                                claude_api_format,
+                                            )
+                                            .await);
                                     }
                                     Err(retry_err) => {
                                         // 整流重试仍失败：区分错误类型
@@ -666,55 +646,15 @@ impl RequestForwarder {
                             {
                                 Ok((response, claude_api_format)) => {
                                     log::info!("[{app_type_str}] [RECT-011] budget 整流重试成功");
-                                    self.record_success_result(
-                                        &provider.id,
-                                        app_type_str,
-                                        used_half_open_permit,
-                                    )
-                                    .await;
-
-                                    {
-                                        let mut current_providers =
-                                            self.current_providers.write().await;
-                                        current_providers.insert(
-                                            app_type_str.to_string(),
-                                            (provider.id.clone(), provider.name.clone()),
-                                        );
-                                    }
-
-                                    {
-                                        let mut status = self.status.write().await;
-                                        status.success_requests += 1;
-                                        status.last_error = None;
-                                        let should_switch =
-                                            self.current_provider_id_at_start.as_str()
-                                                != provider.id.as_str();
-                                        if should_switch {
-                                            status.failover_count += 1;
-                                            let fm = self.failover_manager.clone();
-                                            let ah = self.app_handle.clone();
-                                            let pid = provider.id.clone();
-                                            let pname = provider.name.clone();
-                                            let at = app_type_str.to_string();
-                                            tokio::spawn(async move {
-                                                let _ = fm
-                                                    .try_switch(ah.as_ref(), &at, &pid, &pname)
-                                                    .await;
-                                            });
-                                        }
-                                        if status.total_requests > 0 {
-                                            status.success_rate = (status.success_requests as f32
-                                                / status.total_requests as f32)
-                                                * 100.0;
-                                        }
-                                    }
-
-                                    return Ok(ForwardResult {
-                                        response,
-                                        provider: provider.clone(),
-                                        claude_api_format,
-                                        connection_guard: None,
-                                    });
+                                    return Ok(self
+                                        .handle_successful_response(
+                                            provider,
+                                            app_type_str,
+                                            used_half_open_permit,
+                                            response,
+                                            claude_api_format,
+                                        )
+                                        .await);
                                 }
                                 Err(retry_err) => {
                                     log::warn!(
@@ -2354,6 +2294,14 @@ mod tests {
         non_streaming_timeout: std::time::Duration,
         streaming_first_byte_timeout: std::time::Duration,
     ) -> RequestForwarder {
+        test_forwarder_with_start("", non_streaming_timeout, streaming_first_byte_timeout)
+    }
+
+    fn test_forwarder_with_start(
+        current_provider_id_at_start: &str,
+        non_streaming_timeout: std::time::Duration,
+        streaming_first_byte_timeout: std::time::Duration,
+    ) -> RequestForwarder {
         let db = Arc::new(Database::memory().expect("memory db"));
 
         RequestForwarder {
@@ -2363,7 +2311,7 @@ mod tests {
             gemini_shadow: Arc::new(GeminiShadowStore::new()),
             failover_manager: Arc::new(FailoverSwitchManager::new(db)),
             app_handle: None,
-            current_provider_id_at_start: String::new(),
+            current_provider_id_at_start: current_provider_id_at_start.to_string(),
             session_id: String::new(),
             session_client_provided: false,
             rectifier_config: RectifierConfig::default(),
@@ -2373,6 +2321,93 @@ mod tests {
             streaming_first_byte_timeout,
             max_attempts: 1,
         }
+    }
+
+    #[tokio::test]
+    async fn handle_successful_response_records_success_and_switches_provider() {
+        // 特征化测试（M1 重构安全网）：固定主/整流重试成功路径共享的收尾行为。
+        // 当实际命中的 provider 与请求开始时的“当前 provider”不同时，应记录成功、
+        // 清空 last_error、计入一次 failover，并按 success/total 重算成功率。
+        let forwarder = test_forwarder_with_start(
+            // 起始“当前 provider”为空 → 与命中的 provider-1 不同 → 触发切换计数。
+            "",
+            std::time::Duration::from_secs(1),
+            std::time::Duration::from_secs(1),
+        );
+        // 模拟外层 wrapper 已在客户端维度递增 total_requests，并存在一条旧错误。
+        {
+            let mut status = forwarder.status.write().await;
+            status.total_requests = 1;
+            status.last_error = Some("stale".to_string());
+        }
+        let provider = test_provider_with_type(None);
+        let response =
+            ProxyResponse::buffered(StatusCode::OK, HeaderMap::new(), Bytes::from_static(b"ok"));
+
+        let result = forwarder
+            .handle_successful_response(
+                &provider,
+                "claude",
+                false,
+                response,
+                Some("anthropic".to_string()),
+            )
+            .await;
+
+        // ForwardResult 原样透传 response/provider/claude_api_format，且不携带 guard。
+        assert_eq!(result.provider.id, "provider-1");
+        assert_eq!(result.claude_api_format.as_deref(), Some("anthropic"));
+        assert!(result.connection_guard.is_none());
+        assert_eq!(result.response.status(), StatusCode::OK);
+
+        // current_providers 被同步为实际命中的 provider。
+        {
+            let current = forwarder.current_providers.read().await;
+            assert_eq!(
+                current.get("claude").cloned(),
+                Some(("provider-1".to_string(), "Provider 1".to_string()))
+            );
+        }
+
+        // 成功统计：success_requests +1、last_error 清空、failover +1、成功率 = 1/1*100。
+        {
+            let status = forwarder.status.read().await;
+            assert_eq!(status.success_requests, 1);
+            assert_eq!(status.last_error, None);
+            assert_eq!(status.failover_count, 1);
+            assert_eq!(status.success_rate, 100.0);
+        }
+    }
+
+    #[tokio::test]
+    async fn handle_successful_response_skips_failover_when_provider_unchanged() {
+        // 特征化测试（M1 重构安全网）：命中的 provider 与起始 provider 相同时，
+        // 不递增 failover_count，但仍记录成功、清空 last_error 并重算成功率。
+        let forwarder = test_forwarder_with_start(
+            // 起始即 provider-1 → 与命中一致 → 不触发切换计数。
+            "provider-1",
+            std::time::Duration::from_secs(1),
+            std::time::Duration::from_secs(1),
+        );
+        {
+            let mut status = forwarder.status.write().await;
+            status.total_requests = 4;
+            status.success_requests = 1;
+        }
+        let provider = test_provider_with_type(None);
+        let response =
+            ProxyResponse::buffered(StatusCode::OK, HeaderMap::new(), Bytes::from_static(b"ok"));
+
+        let _ = forwarder
+            .handle_successful_response(&provider, "claude", false, response, None)
+            .await;
+
+        let status = forwarder.status.read().await;
+        assert_eq!(status.failover_count, 0);
+        assert_eq!(status.success_requests, 2);
+        assert_eq!(status.last_error, None);
+        // 成功率 = 2/4*100 = 50.0
+        assert_eq!(status.success_rate, 50.0);
     }
 
     #[test]
