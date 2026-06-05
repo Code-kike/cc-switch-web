@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::{OnceLock, RwLock};
+use std::sync::{Mutex, OnceLock, RwLock};
 
 use crate::app_config::AppType;
 use crate::error::AppError;
@@ -474,8 +474,23 @@ fn save_settings_file(settings: &AppSettings) -> Result<(), AppError> {
 
 static SETTINGS_STORE: OnceLock<RwLock<AppSettings>> = OnceLock::new();
 
+/// Serializes every settings mutation (and its blocking disk write) so that:
+///   1. concurrent read-modify-write callers can't interleave and lose updates;
+///   2. the on-disk file and the in-memory cache never diverge (the disk write
+///      and the in-memory swap happen as one ordered unit).
+///
+/// Crucially, this lock — not the `SETTINGS_STORE` write guard — is what is held
+/// across the blocking disk I/O. The `SETTINGS_STORE` write guard is taken only
+/// for the brief in-memory swap, so readers (`get_settings`, the various
+/// `get_*_override_dir` helpers, etc.) are never blocked waiting on disk I/O.
+static SETTINGS_WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
 fn settings_store() -> &'static RwLock<AppSettings> {
     SETTINGS_STORE.get_or_init(|| RwLock::new(AppSettings::load_from_file()))
+}
+
+fn settings_write_lock() -> &'static Mutex<()> {
+    SETTINGS_WRITE_LOCK.get_or_init(|| Mutex::new(()))
 }
 
 fn resolve_override_path(raw: &str) -> PathBuf {
@@ -517,13 +532,20 @@ pub fn get_settings_for_frontend() -> AppSettings {
 
 pub fn update_settings(mut new_settings: AppSettings) -> Result<(), AppError> {
     new_settings.normalize_paths();
+
+    // Serialize with other mutations so the disk write and the in-memory swap
+    // stay ordered (no divergence). The blocking disk write happens while
+    // holding only this lock — NOT the SETTINGS_STORE write guard.
+    let _write = settings_write_lock()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     save_settings_file(&new_settings)?;
 
-    let mut guard = settings_store().write().unwrap_or_else(|e| {
+    // Brief write lock only for the in-memory swap.
+    *settings_store().write().unwrap_or_else(|e| {
         log::warn!("设置锁已毒化，使用恢复值: {e}");
         e.into_inner()
-    });
-    *guard = new_settings;
+    }) = new_settings;
     Ok(())
 }
 
@@ -531,27 +553,49 @@ fn mutate_settings<F>(mutator: F) -> Result<(), AppError>
 where
     F: FnOnce(&mut AppSettings),
 {
-    let mut guard = settings_store().write().unwrap_or_else(|e| {
-        log::warn!("设置锁已毒化，使用恢复值: {e}");
-        e.into_inner()
-    });
-    let mut next = guard.clone();
+    // Serialize mutations so the read-modify-write is atomic (no lost updates)
+    // and the disk write is ordered consistently with the in-memory swap.
+    let _write = settings_write_lock()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+
+    // Snapshot current settings under a brief read lock, then release it before
+    // doing any blocking disk I/O.
+    let mut next = settings_store()
+        .read()
+        .unwrap_or_else(|e| {
+            log::warn!("设置锁已毒化，使用恢复值: {e}");
+            e.into_inner()
+        })
+        .clone();
     mutator(&mut next);
     next.normalize_paths();
+
+    // Blocking disk write happens WITHOUT holding the SETTINGS_STORE guard.
     save_settings_file(&next)?;
-    *guard = next;
+
+    // Brief write lock only for the in-memory swap.
+    *settings_store().write().unwrap_or_else(|e| {
+        log::warn!("设置锁已毒化，使用恢复值: {e}");
+        e.into_inner()
+    }) = next;
     Ok(())
 }
 
 /// 从文件重新加载设置到内存缓存
 /// 用于导入配置等场景，确保内存缓存与文件同步
 pub fn reload_settings() -> Result<(), AppError> {
+    // Serialize with mutations so a concurrent writer can't slot its in-memory
+    // swap between our file read and our swap (which would diverge memory from
+    // disk). The file read itself does not hold the SETTINGS_STORE guard.
+    let _write = settings_write_lock()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let fresh_settings = AppSettings::load_from_file();
-    let mut guard = settings_store().write().unwrap_or_else(|e| {
+    *settings_store().write().unwrap_or_else(|e| {
         log::warn!("设置锁已毒化，使用恢复值: {e}");
         e.into_inner()
-    });
-    *guard = fresh_settings;
+    }) = fresh_settings;
     Ok(())
 }
 
@@ -767,4 +811,156 @@ pub fn update_webdav_sync_status(status: WebDavSyncStatus) -> Result<(), AppErro
             sync.status = status;
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serial_test::serial;
+    use std::env;
+    use std::sync::{Arc, Barrier};
+    use std::thread;
+    use tempfile::TempDir;
+
+    /// Redirects the settings file to a throwaway temp dir for the duration of a
+    /// test and restores the original env on drop (mirrors the helper used in
+    /// `proxy::provider_router` / `services::proxy` tests).
+    struct TempHome {
+        #[allow(dead_code)]
+        dir: TempDir,
+        original_home: Option<String>,
+        original_userprofile: Option<String>,
+        original_test_home: Option<String>,
+    }
+
+    impl TempHome {
+        fn new() -> Self {
+            let dir = TempDir::new().expect("failed to create temp home");
+            let original_home = env::var("HOME").ok();
+            let original_userprofile = env::var("USERPROFILE").ok();
+            let original_test_home = env::var("CC_SWITCH_TEST_HOME").ok();
+
+            env::set_var("HOME", dir.path());
+            env::set_var("USERPROFILE", dir.path());
+            env::set_var("CC_SWITCH_TEST_HOME", dir.path());
+            reload_settings().expect("reload settings");
+
+            Self {
+                dir,
+                original_home,
+                original_userprofile,
+                original_test_home,
+            }
+        }
+    }
+
+    impl Drop for TempHome {
+        fn drop(&mut self) {
+            match &self.original_home {
+                Some(value) => env::set_var("HOME", value),
+                None => env::remove_var("HOME"),
+            }
+            match &self.original_userprofile {
+                Some(value) => env::set_var("USERPROFILE", value),
+                None => env::remove_var("USERPROFILE"),
+            }
+            match &self.original_test_home {
+                Some(value) => env::set_var("CC_SWITCH_TEST_HOME", value),
+                None => env::remove_var("CC_SWITCH_TEST_HOME"),
+            }
+            // Reset the in-memory cache to the restored home so later tests start clean.
+            let _ = reload_settings();
+        }
+    }
+
+    fn read_disk_settings() -> AppSettings {
+        let path = AppSettings::settings_path().expect("settings path");
+        let content = std::fs::read_to_string(&path).expect("read settings file");
+        serde_json::from_str(&content).expect("parse settings file")
+    }
+
+    /// L14: many concurrent `update_settings` calls must not deadlock, and the
+    /// persisted file must never diverge from the in-memory cache (the disk
+    /// write + in-memory swap are serialized as one ordered unit).
+    #[test]
+    #[serial]
+    fn concurrent_update_settings_no_deadlock_and_disk_matches_memory() {
+        let _home = TempHome::new();
+
+        const N: u32 = 16;
+        let barrier = Arc::new(Barrier::new(N as usize));
+        let handles: Vec<_> = (0..N)
+            .map(|i| {
+                let barrier = barrier.clone();
+                thread::spawn(move || {
+                    let mut s = get_settings();
+                    s.backup_interval_hours = Some(i);
+                    barrier.wait(); // maximize contention on the write path
+                    update_settings(s).expect("update_settings");
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().expect("a writer thread panicked or deadlocked");
+        }
+
+        let mem = get_settings().backup_interval_hours;
+        assert!(
+            matches!(mem, Some(v) if v < N),
+            "in-memory value must be one of the writers' values, got {mem:?}"
+        );
+        assert_eq!(
+            read_disk_settings().backup_interval_hours,
+            mem,
+            "persisted settings diverged from the in-memory cache"
+        );
+    }
+
+    /// L14: concurrent read-modify-write (`mutate_settings`) calls touching
+    /// independent fields must not lose updates — the critical-section
+    /// minimization must keep RMW atomic.
+    #[test]
+    #[serial]
+    fn concurrent_mutate_settings_preserves_all_independent_updates() {
+        let _home = TempHome::new();
+
+        let apps = [
+            AppType::Claude,
+            AppType::Codex,
+            AppType::Gemini,
+            AppType::OpenCode,
+            AppType::OpenClaw,
+            AppType::Hermes,
+        ];
+        let barrier = Arc::new(Barrier::new(apps.len()));
+        let handles: Vec<_> = apps
+            .iter()
+            .cloned()
+            .map(|app| {
+                let barrier = barrier.clone();
+                thread::spawn(move || {
+                    let id = format!("p-{}", app.as_str());
+                    barrier.wait();
+                    set_current_provider(&app, Some(&id)).expect("set_current_provider");
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().expect("a mutate thread panicked or deadlocked");
+        }
+
+        // Every app's value must survive (no lost RMW updates).
+        for app in &apps {
+            assert_eq!(
+                get_current_provider(app),
+                Some(format!("p-{}", app.as_str())),
+                "lost update for {app:?}"
+            );
+        }
+        // Disk must match memory.
+        let disk = read_disk_settings();
+        let mem = get_settings();
+        assert_eq!(disk.current_provider_claude, mem.current_provider_claude);
+        assert_eq!(disk.current_provider_hermes, mem.current_provider_hermes);
+    }
 }

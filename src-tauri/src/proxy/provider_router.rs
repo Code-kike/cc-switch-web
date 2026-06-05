@@ -202,7 +202,6 @@ impl ProviderRouter {
     }
 
     /// 获取熔断器状态
-    #[allow(dead_code)]
     pub async fn get_circuit_breaker_stats(
         &self,
         provider_id: &str,
@@ -566,5 +565,35 @@ mod tests {
             router.get_circuit_breaker_stats("a", "claude").await.unwrap().state,
             CircuitState::HalfOpen
         );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn get_circuit_breaker_stats_reports_window_and_none_for_unknown() {
+        use crate::proxy::circuit_breaker::CircuitState;
+
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory().unwrap());
+        let router = ProviderRouter::new(db);
+
+        // 未知 Provider（尚未创建熔断器）→ None（L31：不再是恒定 None 桩）
+        assert!(router
+            .get_circuit_breaker_stats("ghost", "claude")
+            .await
+            .is_none());
+
+        // 在熔断器上记录 1 成功 + 1 失败
+        let breaker = router.get_or_create_circuit_breaker("claude:a").await;
+        breaker.record_success(false).await;
+        breaker.record_failure(false).await;
+
+        let stats = router
+            .get_circuit_breaker_stats("a", "claude")
+            .await
+            .expect("熔断器创建后应返回统计");
+        assert_eq!(stats.state, CircuitState::Closed);
+        assert_eq!(stats.total_requests, 2, "窗口应包含最近 2 次结果");
+        assert_eq!(stats.failed_requests, 1);
+        assert_eq!(stats.consecutive_failures, 1);
     }
 }
