@@ -196,37 +196,108 @@ fn serialize_yaml_section(key: &str, value: &serde_yaml::Value) -> Result<String
     Ok(yaml_str)
 }
 
-/// Replace a YAML section in raw text, or append it if not found.
-fn replace_yaml_section(
-    raw: &str,
-    section_key: &str,
-    value: &serde_yaml::Value,
-) -> Result<String, AppError> {
-    let serialized = serialize_yaml_section(section_key, value)?;
-
+/// Splice a serialized section into `raw` (replacing the matched range) or
+/// append it at the end. This is the comment-preserving "happy path"; callers
+/// guard its output with [`replace_yaml_section`]'s structural safety net.
+fn splice_or_append_section(raw: &str, section_key: &str, serialized: &str) -> String {
     if let Some((start, end)) = find_yaml_section_range(raw, section_key) {
         let mut result = String::with_capacity(raw.len());
         result.push_str(&raw[..start]);
-        result.push_str(&serialized);
+        result.push_str(serialized);
         // Ensure proper separation between sections
         let remainder = &raw[end..];
         if !serialized.ends_with('\n') && !remainder.is_empty() && !remainder.starts_with('\n') {
             result.push('\n');
         }
         result.push_str(remainder);
-        Ok(result)
+        result
     } else {
         // Section not found — append at end
         let mut result = raw.to_string();
         if !result.is_empty() && !result.ends_with('\n') {
             result.push('\n');
         }
-        result.push_str(&serialized);
+        result.push_str(serialized);
         if !result.ends_with('\n') {
             result.push('\n');
         }
-        Ok(result)
+        result
     }
+}
+
+/// Compute the YAML structure we intend after replacing `section_key` with
+/// `value`: parse `raw` as a mapping and overwrite that one key.
+///
+/// Returns `None` when `raw` does not parse as a top-level mapping (empty file,
+/// scalar, or malformed) — in that case there is nothing to verify against, so
+/// the caller trusts the line-based splice (its append path already handles the
+/// empty-file case correctly).
+fn expected_mapping_after_replace(
+    raw: &str,
+    section_key: &str,
+    value: &serde_yaml::Value,
+) -> Option<serde_yaml::Value> {
+    let parsed: serde_yaml::Value = serde_yaml::from_str(raw).ok()?;
+    let serde_yaml::Value::Mapping(mut map) = parsed else {
+        return None;
+    };
+    map.insert(
+        serde_yaml::Value::String(section_key.to_string()),
+        value.clone(),
+    );
+    Some(serde_yaml::Value::Mapping(map))
+}
+
+/// Replace a YAML section in raw text, or append it if not found.
+///
+/// Uses a comment-preserving line-based splice ([`splice_or_append_section`])
+/// on the happy path, guarded by a structural safety net:
+///
+/// `find_yaml_section_range` bounds sections by scanning for column-0 `key:`
+/// lines, which can mis-bound a section when a value contains a column-0 line
+/// that merely *looks* like a mapping key. The realistic trigger is a
+/// hand-edited config with a double-quoted scalar whose continuation line is
+/// un-indented — valid YAML (newlines fold to spaces), e.g.
+///
+/// ```yaml
+/// banner: "hello
+/// world: yes"
+/// ```
+///
+/// Here `world: yes"` sits at column 0 and the line scanner treats it as the
+/// next top-level key, truncating the prior section. To guarantee we never
+/// persist corrupted/lossy output, we re-parse the spliced result and compare
+/// it to the intended structure; on any mismatch we fall back to a full
+/// structural rewrite (correct, but drops comments). The fallback is rare —
+/// only un-indented multi-line scalars trigger it, and serde_yaml never *emits*
+/// that shape, so CC Switch-written files always take the happy path.
+fn replace_yaml_section(
+    raw: &str,
+    section_key: &str,
+    value: &serde_yaml::Value,
+) -> Result<String, AppError> {
+    let serialized = serialize_yaml_section(section_key, value)?;
+    let spliced = splice_or_append_section(raw, section_key, &serialized);
+
+    if let Some(expected) = expected_mapping_after_replace(raw, section_key, value) {
+        let spliced_matches = serde_yaml::from_str::<serde_yaml::Value>(&spliced)
+            .map(|parsed| parsed == expected)
+            .unwrap_or(false);
+        if !spliced_matches {
+            log::warn!(
+                "Hermes section '{section_key}' line-based replace mis-bounded \
+                 (likely an un-indented multi-line scalar); falling back to a \
+                 structural rewrite — comments in config.yaml may be dropped."
+            );
+            return serde_yaml::to_string(&expected).map_err(|e| {
+                AppError::Config(format!(
+                    "Failed to serialize Hermes config during fallback rewrite: {e}"
+                ))
+            });
+        }
+    }
+
+    Ok(spliced)
 }
 
 // ============================================================================
@@ -1328,6 +1399,60 @@ model:
     }
 
     // ---- Provider CRUD via mock config ----
+
+    #[test]
+    fn replace_section_survives_un_indented_multiline_scalar() {
+        // Regression guard (M34): a user hand-edited config.yaml with a
+        // double-quoted scalar whose continuation line sits at column 0. This
+        // is valid YAML — flow scalars fold the newline into a space — but the
+        // line-based section finder treats `world: yes"` as the next top-level
+        // key, truncating the `banner` section mid-value. The structural safety
+        // net must detect the corruption and fall back to a full rewrite so no
+        // data is lost and no spurious key leaks.
+        let raw = "\
+agent:
+  max_turns: 10
+banner: \"hello
+world: yes\"
+model:
+  default: gpt-4
+";
+        // Precondition: confirm this is genuinely valid YAML (otherwise
+        // read_hermes_config would reject it before any write is attempted) and
+        // that the scalar folds as expected.
+        let parsed: serde_yaml::Value = serde_yaml::from_str(raw).expect("input is valid YAML");
+        assert_eq!(
+            parsed.get("banner").and_then(|v| v.as_str()),
+            Some("hello world: yes"),
+            "double-quoted scalar should fold the un-indented continuation"
+        );
+
+        let new_banner = serde_yaml::Value::String("safe-value".to_string());
+        let result = replace_yaml_section(raw, "banner", &new_banner).unwrap();
+
+        let out: serde_yaml::Value =
+            serde_yaml::from_str(&result).expect("result must be valid YAML");
+        // Target section replaced.
+        assert_eq!(out.get("banner").and_then(|v| v.as_str()), Some("safe-value"));
+        // The mis-bound must NOT leak the folded continuation as a spurious key.
+        assert!(
+            out.get("world").is_none(),
+            "fallback must not leak a spurious 'world' key: {result}"
+        );
+        // Untouched sections survive intact.
+        assert_eq!(
+            out.get("agent")
+                .and_then(|v| v.get("max_turns"))
+                .and_then(|v| v.as_u64()),
+            Some(10)
+        );
+        assert_eq!(
+            out.get("model")
+                .and_then(|v| v.get("default"))
+                .and_then(|v| v.as_str()),
+            Some("gpt-4")
+        );
+    }
 
     #[test]
     #[serial]
