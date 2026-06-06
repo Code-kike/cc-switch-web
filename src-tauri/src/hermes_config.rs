@@ -1433,7 +1433,10 @@ model:
         let out: serde_yaml::Value =
             serde_yaml::from_str(&result).expect("result must be valid YAML");
         // Target section replaced.
-        assert_eq!(out.get("banner").and_then(|v| v.as_str()), Some("safe-value"));
+        assert_eq!(
+            out.get("banner").and_then(|v| v.as_str()),
+            Some("safe-value")
+        );
         // The mis-bound must NOT leak the folded continuation as a spurious key.
         assert!(
             out.get("world").is_none(),

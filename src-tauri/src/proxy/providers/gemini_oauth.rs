@@ -242,8 +242,8 @@ mod tests {
     async fn stored_token_with_future_expiry_skips_network() {
         let mgr = GeminiOAuthManager::default();
         let future = now_ms() + 3_600_000; // 1h out
-        // No token endpoint is configured; if this tried to refresh it would
-        // hit the network. It must return the stored token directly instead.
+                                           // No token endpoint is configured; if this tried to refresh it would
+                                           // hit the network. It must return the stored token directly instead.
         let got = mgr
             .get_valid_token(&creds("ya29.fresh", Some("1//rt"), Some(future)))
             .await;
@@ -260,7 +260,11 @@ mod tests {
         let mgr = GeminiOAuthManager::default();
         let past = now_ms() - 10_000; // already expired
         let got = mgr
-            .get_valid_token(&creds("ya29.stale", Some("1//rt-expired-fallback"), Some(past)))
+            .get_valid_token(&creds(
+                "ya29.stale",
+                Some("1//rt-expired-fallback"),
+                Some(past),
+            ))
             .await;
         // Refresh failed → falls back to the stored (stale) token rather than
         // dropping auth entirely.
@@ -299,7 +303,11 @@ mod tests {
         let got = mgr
             .get_valid_token(&creds("ya29.old", Some(rt), Some(past)))
             .await;
-        assert_eq!(got.as_deref(), Some("ya29.NEW"), "should use refreshed token");
+        assert_eq!(
+            got.as_deref(),
+            Some("ya29.NEW"),
+            "should use refreshed token"
+        );
 
         // Cached: a second call returns the refreshed token without needing the
         // (now-closed) endpoint.

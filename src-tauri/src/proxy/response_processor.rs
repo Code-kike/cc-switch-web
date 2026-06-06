@@ -480,9 +480,7 @@ impl Drop for SseUsageFinishGuard {
                     });
                 }
                 None => {
-                    log::warn!(
-                        "SSE 用量收尾保护触发时未捕获到 Tokio runtime，跳过异步 finish"
-                    );
+                    log::warn!("SSE 用量收尾保护触发时未捕获到 Tokio runtime，跳过异步 finish");
                 }
             }
         }
@@ -1137,9 +1135,15 @@ mod tests {
         let out = create_logged_passthrough_stream(input, "Test", None, cfg, None);
         let collected: Vec<_> = out.collect().await;
 
-        assert_eq!(collected.len(), 2, "expected first chunk then a timeout error");
+        assert_eq!(
+            collected.len(),
+            2,
+            "expected first chunk then a timeout error"
+        );
         assert!(collected[0].is_ok(), "first chunk should pass through");
-        let err = collected[1].as_ref().expect_err("stalled stream must time out");
+        let err = collected[1]
+            .as_ref()
+            .expect_err("stalled stream must time out");
         assert!(
             err.to_string().contains("超时"),
             "idle watchdog should surface a timeout error, got: {err}"
@@ -1167,7 +1171,11 @@ mod tests {
         let out = create_logged_passthrough_stream(input, "Test", None, cfg, None);
         let collected: Vec<_> = out.collect().await;
 
-        assert_eq!(collected.len(), 3, "all progressing chunks should pass through");
+        assert_eq!(
+            collected.len(),
+            3,
+            "all progressing chunks should pass through"
+        );
         assert!(
             collected.iter().all(|r| r.is_ok()),
             "a progressing stream must not trip the idle watchdog"

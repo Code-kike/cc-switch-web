@@ -543,7 +543,11 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            router.get_circuit_breaker_stats("a", "claude").await.unwrap().state,
+            router
+                .get_circuit_breaker_stats("a", "claude")
+                .await
+                .unwrap()
+                .state,
             CircuitState::Open
         );
 
@@ -552,7 +556,11 @@ mod tests {
         assert_eq!(providers.len(), 1);
         assert_eq!(providers[0].id, "a");
         assert_eq!(
-            router.get_circuit_breaker_stats("a", "claude").await.unwrap().state,
+            router
+                .get_circuit_breaker_stats("a", "claude")
+                .await
+                .unwrap()
+                .state,
             CircuitState::Open,
             "select_providers 不应把 Open 熔断器切换到 HalfOpen"
         );
@@ -562,7 +570,11 @@ mod tests {
         assert!(permit.allowed);
         assert!(permit.used_half_open_permit);
         assert_eq!(
-            router.get_circuit_breaker_stats("a", "claude").await.unwrap().state,
+            router
+                .get_circuit_breaker_stats("a", "claude")
+                .await
+                .unwrap()
+                .state,
             CircuitState::HalfOpen
         );
     }

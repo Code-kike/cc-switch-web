@@ -514,7 +514,10 @@ mod tests {
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )?;
         // The authoritative proxy row (real latency / provider) supersedes the estimate.
-        assert_eq!(latency, 1234, "proxy observation must win for the same message");
+        assert_eq!(
+            latency, 1234,
+            "proxy observation must win for the same message"
+        );
         assert_eq!(provider_id, "real-provider");
         // The proxy logger leaves data_source at its 'proxy' default, so the row
         // is now a proxy-source row — the session_log estimate was superseded,

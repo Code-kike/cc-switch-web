@@ -1768,12 +1768,8 @@ mod tests {
     // ── L30: backfill strip must require explicit opt-in ──────────────────
 
     fn provider_with_common_config_flag(settings: Value, flag: Option<bool>) -> Provider {
-        let mut provider = Provider::with_id(
-            "legacy".to_string(),
-            "Legacy".to_string(),
-            settings,
-            None,
-        );
+        let mut provider =
+            Provider::with_id("legacy".to_string(), "Legacy".to_string(), settings, None);
         provider.meta = Some(crate::provider::ProviderMeta {
             common_config_enabled: flag,
             ..Default::default()
@@ -1813,7 +1809,10 @@ mod tests {
             json!("https://api.anthropic.com"),
             "legacy provider must keep its provider-owned base URL"
         );
-        assert_eq!(result["env"]["ANTHROPIC_API_KEY"], json!("sk-provider-owned"));
+        assert_eq!(
+            result["env"]["ANTHROPIC_API_KEY"],
+            json!("sk-provider-owned")
+        );
     }
 
     /// When the provider has explicitly opted in, backfill still strips the

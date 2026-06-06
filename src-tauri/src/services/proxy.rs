@@ -2257,7 +2257,9 @@ impl ProxyService {
         app_type: &str,
     ) -> Result<Option<crate::proxy::CircuitBreakerStats>, String> {
         if let Some(server) = self.server.read().await.as_ref() {
-            Ok(server.get_circuit_breaker_stats(provider_id, app_type).await)
+            Ok(server
+                .get_circuit_breaker_stats(provider_id, app_type)
+                .await)
         } else {
             Ok(None)
         }

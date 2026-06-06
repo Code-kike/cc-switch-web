@@ -568,8 +568,16 @@ fn clean_schema_child(key: &str, value: &mut Value) {
             _ => {}
         },
         // 单个子 schema（对象时递归；`additionalProperties: false` 等布尔形态保持不变）。
-        "additionalProperties" | "unevaluatedProperties" | "propertyNames" | "not" | "if"
-        | "then" | "else" | "contains" | "additionalItems" | "unevaluatedItems"
+        "additionalProperties"
+        | "unevaluatedProperties"
+        | "propertyNames"
+        | "not"
+        | "if"
+        | "then"
+        | "else"
+        | "contains"
+        | "additionalItems"
+        | "unevaluatedItems"
             if value.is_object() =>
         {
             *value = clean_schema(std::mem::take(value));
@@ -1892,7 +1900,10 @@ mod tests {
             }
         }));
         assert_eq!(cleaned["properties"]["created"]["format"], "date-time");
-        assert_eq!(cleaned["properties"]["kind"]["enum"], json!(["uri", "path"]));
+        assert_eq!(
+            cleaned["properties"]["kind"]["enum"],
+            json!(["uri", "path"])
+        );
         assert_eq!(cleaned["properties"]["flag"]["const"], "uri");
         assert_eq!(cleaned["properties"]["fallback"]["default"], "uri");
     }
