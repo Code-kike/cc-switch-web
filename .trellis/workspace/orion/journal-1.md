@@ -340,3 +340,62 @@ Upgraded outdated GitHub Actions workflow action majors to avoid Node.js 20 acti
 ### Next Steps
 
 - None - task complete
+
+
+## Session 11: Deep-read cc-switch + fix all non-security findings
+
+**Date**: 2026-06-06
+**Task**: Deep-read cc-switch + fix all non-security findings
+**Branch**: `fix/non-security-deep-read-findings`
+
+### Summary
+
+3-round architecture deep-read (18 subsystems) then fixed all ~45 NON-security findings across batched commits B1-B8 (security excluded per personal-use scope): data-loss/correctness (Claude settings merge, OpenCode comments, cost=0 pricing, Gemini OAuth refresh, SSE hang, switch_lock, schema clean, model-mapping), proxy behavior (rectifier/optimizer M8-M11/L5/L6), refactors (M1 forwarder dedup, M2 CB sliding window, L26 conservative God-component extraction, serde_yaml->serde_yaml_ng), FE react-query/types/M40 form-validation, CI hardening (web build/parity/locale/smoke/integration + clippy --all-targets/fmt gates), docs (web-first README_ZH/JA). Several 'looked-like-bugs' descoped-with-evidence (M32/L29/L27/M10/L22/M3/M6). Caught+fixed a real Claude-rename revert regression via newly-wired integration tests. Full CI gate suite green: 1272 Rust + 575 FE unit + 50 integration tests, clippy/fmt/typecheck/prettier/route-parity/locale-parity all clean.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `ebfb0835` | (see git log) |
+| `a9a36d59` | (see git log) |
+| `068736c2` | (see git log) |
+| `f96afa2f` | (see git log) |
+| `19eac480` | (see git log) |
+| `6dda2d78` | (see git log) |
+| `64166ce7` | (see git log) |
+| `f0006877` | (see git log) |
+| `334af2b5` | (see git log) |
+| `f9b2abbb` | (see git log) |
+| `466bbefd` | (see git log) |
+| `d0be273d` | (see git log) |
+| `c8ea038c` | (see git log) |
+| `27ccf227` | (see git log) |
+| `065dd870` | (see git log) |
+| `e8e4dee1` | (see git log) |
+| `93cd3ff0` | (see git log) |
+| `64dc3fdc` | (see git log) |
+| `ae38bb7b` | (see git log) |
+| `86b1d606` | (see git log) |
+| `a125cc34` | (see git log) |
+| `cb7c6870` | (see git log) |
+| `229e795e` | (see git log) |
+| `f96df43c` | (see git log) |
+| `c1faedfe` | (see git log) |
+| `fb2e7377` | (see git log) |
+| `d241c5e6` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
