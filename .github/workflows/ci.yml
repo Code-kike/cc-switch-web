@@ -59,6 +59,11 @@ jobs:
       - name: Web route parity gate
         run: pnpm check:web-routes
 
+      # Locale key-parity gate (L9): every i18n key must exist in all locale
+      # files (en/ja/zh). Node-only; reuses the deps installed above.
+      - name: Locale key parity gate
+        run: pnpm check:locales
+
   backend:
     name: Backend Checks
     runs-on: ubuntu-22.04

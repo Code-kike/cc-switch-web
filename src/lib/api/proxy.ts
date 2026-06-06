@@ -1,6 +1,5 @@
 import { invoke } from "./adapter";
 import type {
-  ProxyConfig,
   ProxyStatus,
   ProxyServerInfo,
   ProxyTakeoverStatus,
@@ -57,18 +56,6 @@ export const proxyApi = {
     enabled: boolean,
   ): Promise<void> {
     return invoke("set_proxy_takeover_for_app", { appType, enabled });
-  },
-
-  // ========== Legacy 代理配置 API (兼容) ==========
-
-  // 获取代理配置（旧版 v2 兼容接口）
-  async getProxyConfig(): Promise<ProxyConfig> {
-    return invoke("get_proxy_config");
-  },
-
-  // 更新代理配置（旧版 v2 兼容接口）
-  async updateProxyConfig(config: ProxyConfig): Promise<void> {
-    return invoke("update_proxy_config", { config });
   },
 
   // ========== v3+ 全局/应用级配置 API ==========

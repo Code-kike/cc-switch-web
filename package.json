@@ -16,6 +16,7 @@
     "typecheck": "tsc --noEmit",
     "check:web-routes": "node scripts/check-web-route-coverage.mjs",
     "check:web-parity": "node scripts/check-web-route-coverage.mjs --list-parity",
+    "check:locales": "node scripts/check-locale-parity.mjs",
     "format": "prettier --write \"src/**/*.{js,jsx,ts,tsx,css,json}\"",
     "format:check": "prettier --check \"src/**/*.{js,jsx,ts,tsx,css,json}\"",
     "test:unit": "vitest run",
