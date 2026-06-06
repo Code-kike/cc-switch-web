@@ -50,28 +50,39 @@ describe("providerConfigUtils TOML edge cases (characterization)", () => {
     });
   });
 
-  describe("KNOWN LIMITATION: trailing inline comments dropped on edit", () => {
-    it("setCodexBaseUrl drops a trailing inline comment on the rewritten line", () => {
+  describe("trailing inline comments are preserved on edit (B6g)", () => {
+    it("setCodexBaseUrl preserves a trailing inline comment on the rewritten line", () => {
       const input = 'base_url = "https://old/v1" # keep me\nmodel = "m"\n';
       expect(setCodexBaseUrl(input, "https://new/v1")).toBe(
-        'base_url = "https://new/v1"\nmodel = "m"\n',
+        'base_url = "https://new/v1" # keep me\nmodel = "m"\n',
       );
     });
 
-    it("setCodexModelName drops a trailing inline comment on the rewritten line", () => {
+    it("setCodexModelName preserves a trailing inline comment on the rewritten line", () => {
       expect(setCodexModelName('model = "old" # c\n', "new")).toBe(
-        'model = "new"\n',
+        'model = "new" # c\n',
       );
     });
 
-    it("setCodexTopLevelInt drops a trailing inline comment on the rewritten line", () => {
+    it("setCodexTopLevelInt preserves a trailing inline comment on the rewritten line", () => {
       expect(
         setCodexTopLevelInt(
           "request_max_retries = 3 # tune\n",
           "request_max_retries",
           5,
         ),
-      ).toBe("request_max_retries = 5\n");
+      ).toBe("request_max_retries = 5 # tune\n");
+    });
+
+    it("setCodexBaseUrl keeps a # inside the value AND a real trailing comment", () => {
+      // The in-quote `#frag` must NOT be treated as a comment, while the genuine
+      // trailing `# real comment` must be preserved.
+      expect(
+        setCodexBaseUrl(
+          'base_url = "https://x/v1?a=#frag" # real comment\n',
+          "https://y/v1?b=#z",
+        ),
+      ).toBe('base_url = "https://y/v1?b=#z" # real comment\n');
     });
   });
 

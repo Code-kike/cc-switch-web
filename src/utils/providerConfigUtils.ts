@@ -393,9 +393,12 @@ export const setApiKeyInConfig = (
 //
 // KNOWN FRAGILITY (the line-splice helpers assume single-line `key = "value"`;
 // characterization tests live in tests/utils/providerConfigUtils.toml-edge-cases.test.ts):
-//   - setCodexBaseUrl / setCodexModelName / setCodexTopLevelInt drop a trailing
-//     inline comment on the line they rewrite (the bearer-token / provider-name
-//     writers keep it). Follow-up: unify via the `$1…$2` REPLACE-pattern idiom.
+//   - setCodexBaseUrl / setCodexModelName / setCodexTopLevelInt now PRESERVE a
+//     trailing inline comment on the line they rewrite (fixed in B6g) via the same
+//     `$1…$2` capture-group REPLACE idiom as updateCodexExperimentalBearerToken /
+//     setCodexRemoteCompaction. Latent edge shared by all five writers: a literal
+//     `$1`/`$2`/`$&` sequence inside the *new* value is mis-substituted by
+//     String.prototype.replace (not hit by app-generated URLs/model names/ints).
 //   - inline-table providers (`model_providers = { custom = { … } }`) are not
 //     seen as a section, so setCodexBaseUrl appends a second
 //     `[model_providers.custom]` table → duplicate key → invalid TOML.
@@ -465,11 +468,19 @@ export const hasTomlCommonConfigSnippet = (
 const TOML_SECTION_HEADER_PATTERN = /^\s*\[([^\]\r\n]+)\]\s*$/;
 const TOML_BASE_URL_PATTERN =
   /^\s*base_url\s*=\s*(["'])([^"'\r\n]+)\1\s*(?:#.*)?$/;
+// $1 = `base_url = ` prefix, $2 = trailing whitespace + optional inline comment.
+// Mirrors TOML_EXPERIMENTAL_BEARER_TOKEN_REPLACE_PATTERN so the value can be
+// rewritten in place while preserving the user's trailing comment.
+const TOML_BASE_URL_REPLACE_PATTERN =
+  /^(\s*base_url\s*=\s*)(?:"(?:\\.|[^"\\\r\n])*"|'[^'\r\n]*')(\s*(?:#.*)?)$/;
 const TOML_EXPERIMENTAL_BEARER_TOKEN_PATTERN =
   /^\s*experimental_bearer_token\s*=\s*(["'])([^"'\r\n]+)\1\s*(?:#.*)?$/;
 const TOML_EXPERIMENTAL_BEARER_TOKEN_REPLACE_PATTERN =
   /^(\s*experimental_bearer_token\s*=\s*)(?:"(?:\\.|[^"\\\r\n])*"|'[^'\r\n]*')(\s*(?:#.*)?)$/;
 const TOML_MODEL_PATTERN = /^\s*model\s*=\s*(["'])([^"'\r\n]+)\1\s*(?:#.*)?$/;
+// $1 = `model = ` prefix, $2 = trailing whitespace + optional inline comment.
+const TOML_MODEL_REPLACE_PATTERN =
+  /^(\s*model\s*=\s*)(?:"(?:\\.|[^"\\\r\n])*"|'[^'\r\n]*')(\s*(?:#.*)?)$/;
 const TOML_MODEL_PROVIDER_LINE_PATTERN =
   /^\s*model_provider\s*=\s*(["'])([^"'\r\n]+)\1\s*(?:#.*)?$/;
 const TOML_PROVIDER_NAME_PATTERN =
@@ -992,7 +1003,13 @@ export const setCodexBaseUrl = (
       : undefined;
 
     if (targetMatch) {
-      lines[targetMatch.index] = replacementLine;
+      const existingLine = lines[targetMatch.index];
+      lines[targetMatch.index] = TOML_BASE_URL_REPLACE_PATTERN.test(existingLine)
+        ? existingLine.replace(
+            TOML_BASE_URL_REPLACE_PATTERN,
+            `$1"${normalizedUrl}"$2`,
+          )
+        : replacementLine;
       return finalizeTomlText(lines);
     }
 
@@ -1022,7 +1039,13 @@ export const setCodexBaseUrl = (
     topLevelEndIndex,
   );
   if (topLevelMatch) {
-    lines[topLevelMatch.index] = replacementLine;
+    const existingLine = lines[topLevelMatch.index];
+    lines[topLevelMatch.index] = TOML_BASE_URL_REPLACE_PATTERN.test(existingLine)
+      ? existingLine.replace(
+          TOML_BASE_URL_REPLACE_PATTERN,
+          `$1"${normalizedUrl}"$2`,
+        )
+      : replacementLine;
     return finalizeTomlText(lines);
   }
 
@@ -1090,7 +1113,10 @@ export const setCodexModelName = (
 
   const replacementLine = `model = "${trimmed}"`;
   if (topLevelMatch) {
-    lines[topLevelMatch.index] = replacementLine;
+    const existingLine = lines[topLevelMatch.index];
+    lines[topLevelMatch.index] = TOML_MODEL_REPLACE_PATTERN.test(existingLine)
+      ? existingLine.replace(TOML_MODEL_REPLACE_PATTERN, `$1"${trimmed}"$2`)
+      : replacementLine;
     return finalizeTomlText(lines);
   }
 
@@ -1310,6 +1336,10 @@ export const setCodexRemoteCompaction = (
 const tomlTopLevelIntPattern = (field: string) =>
   new RegExp(`^\\s*${field}\\s*=\\s*(\\d+)\\s*(?:#.*)?$`);
 
+// $1 = `field = ` prefix, $2 = trailing whitespace + optional inline comment.
+const tomlTopLevelIntReplacePattern = (field: string) =>
+  new RegExp(`^(\\s*${field}\\s*=\\s*)\\d+(\\s*(?:#.*)?)$`);
+
 const findTopLevelIntMatch = (
   lines: string[],
   fieldName: string,
@@ -1355,7 +1385,11 @@ export const setCodexTopLevelInt = (
   const replacementLine = `${fieldName} = ${value}`;
 
   if (existing) {
-    lines[existing.index] = replacementLine;
+    const replacePattern = tomlTopLevelIntReplacePattern(fieldName);
+    const existingLine = lines[existing.index];
+    lines[existing.index] = replacePattern.test(existingLine)
+      ? existingLine.replace(replacePattern, `$1${value}$2`)
+      : replacementLine;
     return finalizeTomlText(lines);
   }
 
