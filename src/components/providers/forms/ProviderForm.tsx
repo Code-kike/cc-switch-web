@@ -7,7 +7,10 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Form, FormField, FormItem, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
-import { providerFormSchema, type ProviderFormData } from "@/lib/schemas/provider";
+import {
+  providerFormSchema,
+  type ProviderFormData,
+} from "@/lib/schemas/provider";
 import { providersApi, settingsApi, type AppId } from "@/lib/api";
 import { generateUUID } from "@/utils/uuid";
 import type {

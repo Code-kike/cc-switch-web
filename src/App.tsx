@@ -80,7 +80,10 @@ import UnifiedMcpPanel, {
 import PromptPanel, {
   type PromptPanelHandle,
 } from "@/components/prompts/PromptPanel";
-import { SkillsPage, type SkillsPageHandle } from "@/components/skills/SkillsPage";
+import {
+  SkillsPage,
+  type SkillsPageHandle,
+} from "@/components/skills/SkillsPage";
 import UnifiedSkillsPanel, {
   type UnifiedSkillsPanelHandle,
 } from "@/components/skills/UnifiedSkillsPanel";

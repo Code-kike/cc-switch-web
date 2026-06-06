@@ -416,7 +416,11 @@ mod tests {
             parsed["ui"].get("displayName").is_none(),
             "ui.displayName must be excluded from common config"
         );
-        assert_eq!(parsed["ui"]["theme"], json!("dark"), "other ui.* fields kept");
+        assert_eq!(
+            parsed["ui"]["theme"],
+            json!("dark"),
+            "other ui.* fields kept"
+        );
         assert_eq!(parsed["includeCoAuthoredBy"], json!(false));
     }
 

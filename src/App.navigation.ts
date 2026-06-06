@@ -72,9 +72,30 @@ const GLOBAL_VIEWS: View[] = ["providers", "settings", "agents"];
 // and the visibility effect can switch `activeApp` away from a hidden app
 // while a now-incompatible view is still active (L32).
 const APP_VIEWS: Record<AppId, View[]> = {
-  claude: ["skills", "skillsDiscovery", "prompts", "universal", "sessions", "mcp"],
-  codex: ["skills", "skillsDiscovery", "prompts", "universal", "sessions", "mcp"],
-  gemini: ["skills", "skillsDiscovery", "prompts", "universal", "sessions", "mcp"],
+  claude: [
+    "skills",
+    "skillsDiscovery",
+    "prompts",
+    "universal",
+    "sessions",
+    "mcp",
+  ],
+  codex: [
+    "skills",
+    "skillsDiscovery",
+    "prompts",
+    "universal",
+    "sessions",
+    "mcp",
+  ],
+  gemini: [
+    "skills",
+    "skillsDiscovery",
+    "prompts",
+    "universal",
+    "sessions",
+    "mcp",
+  ],
   opencode: ["skills", "skillsDiscovery", "prompts", "sessions", "mcp"],
   openclaw: [
     "workspace",

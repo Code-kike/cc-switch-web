@@ -1004,7 +1004,9 @@ export const setCodexBaseUrl = (
 
     if (targetMatch) {
       const existingLine = lines[targetMatch.index];
-      lines[targetMatch.index] = TOML_BASE_URL_REPLACE_PATTERN.test(existingLine)
+      lines[targetMatch.index] = TOML_BASE_URL_REPLACE_PATTERN.test(
+        existingLine,
+      )
         ? existingLine.replace(
             TOML_BASE_URL_REPLACE_PATTERN,
             `$1"${normalizedUrl}"$2`,
@@ -1040,7 +1042,9 @@ export const setCodexBaseUrl = (
   );
   if (topLevelMatch) {
     const existingLine = lines[topLevelMatch.index];
-    lines[topLevelMatch.index] = TOML_BASE_URL_REPLACE_PATTERN.test(existingLine)
+    lines[topLevelMatch.index] = TOML_BASE_URL_REPLACE_PATTERN.test(
+      existingLine,
+    )
       ? existingLine.replace(
           TOML_BASE_URL_REPLACE_PATTERN,
           `$1"${normalizedUrl}"$2`,
