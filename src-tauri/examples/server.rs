@@ -2,7 +2,7 @@
 //!
 //! Layer 2 / Task 4. Bootstraps the shared core (`bootstrap::init_core_state`),
 //! mounts the 28 web_api handlers, and listens on `HOST:PORT` (defaults
-//! `127.0.0.1:3000`). Graceful shutdown on SIGINT/SIGTERM.
+//! `127.0.0.1:3010`). Graceful shutdown on SIGINT/SIGTERM.
 //!
 //! Run with:
 //!   cargo run --no-default-features --features web-server --example server
@@ -10,7 +10,7 @@
 //! Environment variables:
 //!   HOST            (default: 127.0.0.1) — refuse non-loopback unless
 //!                   ALLOW_HTTP_BASIC_OVER_HTTP=1
-//!   PORT            (default: 3000)
+//!   PORT            (default: 3010 — matches the systemd unit + install script)
 //!   CC_SWITCH_DATA_DIR (default: ~/.cc-switch) — used by bootstrap::data_dir
 //!   CORS_ALLOW_ORIGINS (comma-separated, optional)
 //!   ENABLE_HSTS     (default: true; set "false" for plain-HTTP local use)
@@ -235,10 +235,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .unwrap_or("127.0.0.1")
         .parse()
         .map_err(|e| format!("invalid HOST: {e}"))?;
+    // Default 3010 to stay consistent with `deploy/systemd/cc-switch-web.service`
+    // and `scripts/install-cc-switch-web-service.sh` (deep-read finding L15).
     let port: u16 = std::env::var("PORT")
         .ok()
         .as_deref()
-        .unwrap_or("3000")
+        .unwrap_or("3010")
         .parse()
         .map_err(|e| format!("invalid PORT: {e}"))?;
     let addr = SocketAddr::new(host, port);
