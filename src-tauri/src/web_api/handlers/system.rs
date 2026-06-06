@@ -238,7 +238,9 @@ async fn reset_circuit_breaker(
     state
         .app_state
         .proxy_service
-        .reset_provider_circuit_breaker(&request.app_type, &request.provider_id)
+        // Arg order is (provider_id, app_type) — matches the desktop
+        // ProxyService convention; see proxy_web.rs for why this is pinned.
+        .reset_provider_circuit_breaker(&request.provider_id, &request.app_type)
         .await
         .map_err(ApiError::from_service_message)?;
 

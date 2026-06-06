@@ -148,6 +148,19 @@ pub async fn execute_usage_script(
     }
 
     // 3. 在独立作用域中提取 request 配置（确保 Runtime/Context 在 await 前释放）
+    //
+    // L22 — Why the script body is eval'd twice (here and again at step 7):
+    // rquickjs is built without the `parallel` feature, so `Runtime`/`Context`
+    // and every `'js` value (`Object`/`Function`/...) are `!Send`. This async
+    // fn is awaited from both an Axum handler and Tauri commands, so its future
+    // MUST be `Send` — the JS runtime therefore cannot live across the
+    // `send_http_request().await` (step 6) that sits between extracting the
+    // request config and running the `extractor`. The `extractor` is a live JS
+    // `Function` bound to this context's lifetime; it cannot be serialized or
+    // moved out, so step 7 must re-eval the script to reconstruct it in a fresh
+    // runtime. This double-eval is intentional and required for `Send`-safety,
+    // NOT a perf bug to "optimize" by merging the two scopes. Only the phase-1
+    // `request` is sent over the wire, so the outbound request is deterministic.
     let request_config = {
         let (runtime, js_started_at) = create_bounded_js_runtime()?;
         let context = Context::full(&runtime).map_err(|e| {
@@ -231,6 +244,8 @@ pub async fn execute_usage_script(
     let response_data = send_http_request(&request, timeout_secs).await?;
 
     // 7. 在独立作用域中执行 extractor（确保 Runtime/Context 在函数结束前释放）
+    // Second eval of the same script — see the L22 note at step 3 for why a
+    // fresh `!Send` runtime is required here rather than reusing step 3's.
     let result: Value = {
         let (runtime, js_started_at) = create_bounded_js_runtime()?;
         let context = Context::full(&runtime).map_err(|e| {

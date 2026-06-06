@@ -127,10 +127,14 @@ impl ProxyService {
         Ok(())
     }
 
+    /// No-op in web mode (the local proxy does not run here). Param order is
+    /// kept as `(provider_id, app_type)` to match the desktop
+    /// `ProxyService::reset_provider_circuit_breaker` convention, so a future
+    /// real implementation cannot silently swap the two `&str` arguments.
     pub async fn reset_provider_circuit_breaker(
         &self,
-        _app_type: &str,
         _provider_id: &str,
+        _app_type: &str,
     ) -> Result<(), String> {
         Ok(())
     }
