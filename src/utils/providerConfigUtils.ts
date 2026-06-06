@@ -358,6 +358,54 @@ export const setApiKeyInConfig = (
 };
 
 // ========== TOML Config Utilities ==========
+//
+// Design note (M13 — assessed, kept hand-rolled on purpose):
+//
+// These Codex `config.toml` helpers are a DELIBERATE HYBRID. Do NOT "simplify"
+// the in-place editors to a `smol-toml` parse→mutate→stringify round-trip:
+// `stringify` re-serializes from the parsed AST and therefore DROPS every
+// comment and the original key order / blank-line layout. The whole reason the
+// write helpers below splice individual lines by regex is to PRESERVE the
+// user's comments and formatting (guarded by tests such as
+// "preserves feature-section comments when disabling Goal mode" and
+// "...replaces the active provider token and keeps comments").
+//
+// READ / EXTRACT helpers (value lookups):
+//   - parse-first (smol-toml) with a raw line-scan fallback so a value can
+//     still be recovered while the user is mid-edit on invalid TOML:
+//     getCodexModelProviderName, extractCodexExperimentalBearerToken,
+//     isCodexGoalModeEnabled, isCodexRemoteCompactionEnabled.
+//   - pure line-scan (no parse-first): extractCodexBaseUrl (plus its
+//     "recoverable misplaced base_url" fuzzy logic), extractCodexModelName,
+//     extractCodexTopLevelInt.
+//   - structural subset check: hasTomlCommonConfigSnippet (parse-first, with a
+//     whitespace text-match fallback).
+//
+// WRITE / EDIT helpers (comment + layout preserving, single-line splice):
+//   updateCodexExperimentalBearerToken, setCodexBaseUrl, setCodexModelName,
+//   setCodexGoalMode, setCodexRemoteCompaction, setCodexTopLevelInt,
+//   removeCodexTopLevelField.
+//
+// updateTomlCommonConfigSnippet is the ONE write path that uses
+// parse + deepMerge/deepRemove + stringify and therefore intentionally drops
+// comments — acceptable because it rebuilds a fully-managed snippet region, not
+// the user's hand-authored config.
+//
+// KNOWN FRAGILITY (the line-splice helpers assume single-line `key = "value"`;
+// characterization tests live in tests/utils/providerConfigUtils.toml-edge-cases.test.ts):
+//   - setCodexBaseUrl / setCodexModelName / setCodexTopLevelInt drop a trailing
+//     inline comment on the line they rewrite (the bearer-token / provider-name
+//     writers keep it). Follow-up: unify via the `$1…$2` REPLACE-pattern idiom.
+//   - inline-table providers (`model_providers = { custom = { … } }`) are not
+//     seen as a section, so setCodexBaseUrl appends a second
+//     `[model_providers.custom]` table → duplicate key → invalid TOML.
+//   - multiline basic/literal strings, arrays-of-tables (`[[x]]`), and
+//     dotted/quoted keys (`custom.base_url = …`) are not recognized.
+//   - CRLF input yields mixed line endings (normalizeTomlText only normalizes
+//     quotes, and splices insert "\n").
+// In practice the FE only ever generates the single-line `[model_providers.x]`
+// table form, so these gaps are not hit by app-generated configs; revisit only
+// if hand-authored-config support becomes a goal.
 
 export interface UpdateTomlCommonConfigResult {
   updatedConfig: string;
