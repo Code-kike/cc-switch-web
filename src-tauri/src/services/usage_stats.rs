@@ -1639,6 +1639,46 @@ fn clean_model_id(model_id: &str) -> String {
         .replace('@', "-")
 }
 
+/// 去掉模型名末尾的 `-YYYYMMDD` 日期后缀（恰好 8 位数字）。
+/// 例如 `claude-opus-4-8-20260601` → `claude-opus-4-8`。
+/// 仅当确实以 `-` + 8 位数字结尾时返回 `Some`，避免误伤普通 id（3 位等长度不匹配）。
+fn strip_trailing_date_suffix(id: &str) -> Option<String> {
+    let bytes = id.as_bytes();
+    // 需要 `-` 分隔符 + 8 位数字，故 `-` 之前至少要有 1 个字符。
+    let dash_pos = bytes.len().checked_sub(9)?;
+    // 末尾 8 字节必须全为 ASCII 数字，且其前一个字节是 `-`。
+    // 全 ASCII ⇒ `dash_pos` 必为字符边界，切片安全（不会 panic）。
+    if bytes[dash_pos] == b'-' && bytes[dash_pos + 1..].iter().all(u8::is_ascii_digit) {
+        Some(id[..dash_pos].to_string())
+    } else {
+        None
+    }
+}
+
+/// 去掉 Bedrock 风格的末尾 `-vN` 版本标记（N 为数字）。
+/// 例如 `claude-haiku-4-5-20251001-v1` → `claude-haiku-4-5-20251001`，
+/// 供应商版本号（如 `KAT-Coder-Pro V1` → 归一后的 `kat-coder-pro-v1`）也借此向裸 id 靠拢。
+fn strip_trailing_version_suffix(id: &str) -> Option<String> {
+    let idx = id.rfind("-v")?;
+    let digits = &id[idx + 2..];
+    if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) {
+        let trimmed = &id[..idx];
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+    None
+}
+
+/// 解析 Bedrock 跨区域推理档名 `<geo>.anthropic.<model>`，返回底层模型名。
+/// 例如 `global.anthropic.claude-opus-4-8` → `claude-opus-4-8`。
+/// Bedrock 价格与底层 Claude 模型一致，故归一到底层名而非为每个区域单独 seed。
+fn strip_bedrock_region_prefix(id: &str) -> Option<String> {
+    id.rsplit_once(".anthropic.")
+        .map(|(_, model)| model.to_string())
+        .filter(|m| !m.is_empty())
+}
+
 /// 生成定价表查询的有序候选键。
 ///
 /// 该函数是 `find_model_pricing_row`（proxy 实时计费）与
@@ -1647,10 +1687,17 @@ fn clean_model_id(model_id: &str) -> String {
 /// （历史上会话日志路径未做 `.`→`-`/小写归一，导致 `claude-sonnet-4.6` 等
 /// 点号写法漏命中横线形 seed → 成本记 0）。
 ///
-/// 候选顺序：
-/// (i) 清洗后原样；(ii) 小写；(iii) 小写后点号转横线；(iv) 去掉尾部 1M 标记
+/// 候选顺序（前 4 个为既有基础候选，永远排在最前，确保兜底归一不越过更精确的匹配）：
+/// (i) 清洗后原样；(ii) 小写；(iii) 小写后点号转横线；(iv) 去掉尾部 1M 标记。
 /// 注意：'.'→'-' 必须在 1M 处理之前且不能更早，否则会破坏
 /// gpt-5.5 / minimax-m2.7 / glm-5.1 等点号小写 id；去重后保持首次出现顺序。
+///
+/// 兜底候选（M21，一律追加在基础候选之后）：
+/// (v) Bedrock 跨区域推理档名 `<geo>.anthropic.<model>` → 底层模型名；
+/// (vi) 空格转横线（`KAT-Coder-Pro V1` → `kat-coder-pro-v1`）；
+/// (vii) 末尾 `-vN` 版本标记剥离；(viii) 末尾 `-YYYYMMDD` 日期剥离。
+/// 这些仅在基础候选全部漏命中时才生效，且 seed 中无 `-vN` 结尾 id，
+/// 故不会把不同模型误判为同一条定价。
 pub(crate) fn pricing_lookup_candidates(model_id: &str) -> Vec<String> {
     let cleaned = clean_model_id(model_id);
     let lower = cleaned.to_lowercase();
@@ -1660,9 +1707,41 @@ pub(crate) fn pricing_lookup_candidates(model_id: &str) -> Vec<String> {
     let one_m_stripped =
         crate::proxy::model_mapper::strip_one_m_suffix_for_upstream(&cleaned).to_string();
 
-    let mut candidates: Vec<String> = Vec::with_capacity(4);
-    for candidate in [cleaned, lower, dot_dash, one_m_stripped] {
-        if !candidates.contains(&candidate) {
+    // 基础候选优先。
+    let mut raw: Vec<String> = vec![cleaned.clone(), lower, dot_dash.clone(), one_m_stripped];
+
+    // ---- 兜底归一（追加在基础候选之后，永不越过更精确的命中） ----
+
+    // 供应商 id 内含空格时转横线（如 `KAT-Coder-Pro V1` → `kat-coder-pro-v1`）。
+    let space_dash = dot_dash.replace(' ', "-");
+    let mut suffix_bases: Vec<String> = vec![dot_dash, space_dash];
+
+    // Bedrock 跨区域推理档名归一到底层 Claude 模型名（价格相同，复用底层 seed）。
+    if let Some(bedrock) = strip_bedrock_region_prefix(&cleaned) {
+        let bedrock_dot_dash = bedrock.to_lowercase().replace('.', "-");
+        raw.push(bedrock.clone());
+        raw.push(bedrock.to_lowercase());
+        suffix_bases.push(bedrock_dot_dash);
+    }
+
+    // 对每个兜底基础形再尝试剥离 `-vN` 版本与 `-YYYYMMDD` 日期后缀。
+    for base in suffix_bases {
+        if let Some(no_ver) = strip_trailing_version_suffix(&base) {
+            if let Some(no_ver_date) = strip_trailing_date_suffix(&no_ver) {
+                raw.push(no_ver_date);
+            }
+            raw.push(no_ver);
+        }
+        if let Some(no_date) = strip_trailing_date_suffix(&base) {
+            raw.push(no_date);
+        }
+        raw.push(base);
+    }
+
+    // 去重保序，过滤空串。
+    let mut candidates: Vec<String> = Vec::with_capacity(raw.len());
+    for candidate in raw {
+        if !candidate.is_empty() && !candidates.contains(&candidate) {
             candidates.push(candidate);
         }
     }
@@ -2887,9 +2966,69 @@ mod tests {
             );
         }
 
+        // M21 Fix：末尾 `-YYYYMMDD` 日期后缀剥离 —— 带日期的滚动发布应回退到裸 seed。
+        // `claude-opus-4-8-20260601`（假想的未来日期版本）→ 去日期 → `claude-opus-4-8`（已 seed）。
+        let result = find_model_pricing_row(&conn, "claude-opus-4-8-20260601")?;
+        assert!(
+            result.is_some(),
+            "带日期后缀的 claude-opus-4-8-20260601 应去日期后命中 claude-opus-4-8"
+        );
+
+        // M21 Fix：Bedrock 跨区域推理档名 `<geo>.anthropic.<model>` → 底层 Claude 模型。
+        let result = find_model_pricing_row(&conn, "global.anthropic.claude-opus-4-8")?;
+        assert!(
+            result.is_some(),
+            "Bedrock global.anthropic.claude-opus-4-8 应归一到 claude-opus-4-8"
+        );
+        let result = find_model_pricing_row(&conn, "global.anthropic.claude-sonnet-4-6")?;
+        assert!(
+            result.is_some(),
+            "Bedrock global.anthropic.claude-sonnet-4-6 应归一到 claude-sonnet-4-6"
+        );
+        // Bedrock 带版本+日期：`...-20251001-v1:0` → 去 `:0` 清洗 → 去 `-v1` → 命中带日期 seed。
+        let result =
+            find_model_pricing_row(&conn, "global.anthropic.claude-haiku-4-5-20251001-v1:0")?;
+        assert!(
+            result.is_some(),
+            "Bedrock 带 -vN 版本标记的 haiku 档名应剥离后命中 claude-haiku-4-5-20251001"
+        );
+
+        // M21 Fix：供应商带空格+版本号的 model id（claudeProviderPresets KAT-Coder）。
+        // `KAT-Coder-Pro V1` → 小写空格转横线 → 去 `-vN` → 命中已 seed 的 kat-coder-pro。
+        let result = find_model_pricing_row(&conn, "KAT-Coder-Pro V1")?;
+        assert!(
+            result.is_some(),
+            "KAT-Coder-Pro V1 应空格转横线去版本后命中 kat-coder-pro"
+        );
+        // `KAT-Coder-Air V1` → kat-coder-air（M21 新增 seed）。
+        let result = find_model_pricing_row(&conn, "KAT-Coder-Air V1")?;
+        assert!(
+            result.is_some(),
+            "KAT-Coder-Air V1 应命中 M21 新增的 kat-coder-air seed"
+        );
+
+        // M21 Fix：新增云网关 coding 别名 seed（此前漏 seed → 成本记 0）。
+        for incoming in [
+            "ark-code-latest",
+            "ark_agentplan/ark-code-latest", // openclaw 前缀形态
+            "qianfan-code-latest",
+        ] {
+            assert!(
+                find_model_pricing_row(&conn, incoming)?.is_some(),
+                "M21 新增 seed 应命中: {incoming}"
+            );
+        }
+
         // 测试不存在的模型
         let result = find_model_pricing_row(&conn, "unknown-model-123")?;
         assert!(result.is_none(), "不应该匹配不存在的模型");
+        // 兜底归一不得制造误命中：未知模型即便带 8 位日期后缀（去日期后仍无对应裸 seed）
+        // 也应返回 None。
+        let result = find_model_pricing_row(&conn, "totally-unknown-model-20260101")?;
+        assert!(
+            result.is_none(),
+            "未知模型带日期后缀去日期后仍无 seed，不应误命中"
+        );
 
         Ok(())
     }
@@ -2914,5 +3053,35 @@ mod tests {
         assert_eq!(candidates[0], "gpt-5.5");
         let unique: std::collections::HashSet<_> = candidates.iter().collect();
         assert_eq!(unique.len(), candidates.len(), "候选键应去重");
+
+        // M21：基础候选（精确）始终排在兜底归一之前。
+        let candidates = pricing_lookup_candidates("global.anthropic.claude-opus-4-8");
+        assert_eq!(candidates[0], "global.anthropic.claude-opus-4-8");
+        assert!(
+            candidates.contains(&"claude-opus-4-8".to_string()),
+            "Bedrock 档名应产出底层模型候选: {candidates:?}"
+        );
+
+        // M21：末尾 `-YYYYMMDD` 日期剥离作为兜底候选。
+        let candidates = pricing_lookup_candidates("claude-opus-4-8-20260601");
+        assert_eq!(candidates[0], "claude-opus-4-8-20260601");
+        assert!(
+            candidates.contains(&"claude-opus-4-8".to_string()),
+            "应包含去日期后缀的候选: {candidates:?}"
+        );
+
+        // M21：空格转横线 + `-vN` 版本剥离。
+        let candidates = pricing_lookup_candidates("KAT-Coder-Pro V1");
+        assert!(
+            candidates.contains(&"kat-coder-pro".to_string()),
+            "KAT-Coder-Pro V1 应产出 kat-coder-pro 候选: {candidates:?}"
+        );
+
+        // M21：3 位数字后缀不是日期，不得被日期剥离破坏（无误生成裸候选）。
+        let candidates = pricing_lookup_candidates("unknown-model-123");
+        assert!(
+            !candidates.contains(&"unknown-model".to_string()),
+            "3 位数字后缀不应触发日期剥离: {candidates:?}"
+        );
     }
 }

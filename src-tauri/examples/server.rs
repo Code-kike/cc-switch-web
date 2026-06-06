@@ -2,7 +2,7 @@
 //!
 //! Layer 2 / Task 4. Bootstraps the shared core (`bootstrap::init_core_state`),
 //! mounts the 28 web_api handlers, and listens on `HOST:PORT` (defaults
-//! `127.0.0.1:3000`). Graceful shutdown on SIGINT/SIGTERM.
+//! `127.0.0.1:3010`). Graceful shutdown on SIGINT/SIGTERM.
 //!
 //! Run with:
 //!   cargo run --no-default-features --features web-server --example server
@@ -10,17 +10,42 @@
 //! Environment variables:
 //!   HOST            (default: 127.0.0.1) — refuse non-loopback unless
 //!                   ALLOW_HTTP_BASIC_OVER_HTTP=1
-//!   PORT            (default: 3000)
+//!   PORT            (default: 3010 — matches the systemd unit + install script)
 //!   CC_SWITCH_DATA_DIR (default: ~/.cc-switch) — used by bootstrap::data_dir
 //!   CORS_ALLOW_ORIGINS (comma-separated, optional)
 //!   ENABLE_HSTS     (default: true; set "false" for plain-HTTP local use)
 //!   WEB_COOKIE_SECURE (auto|true|false; default auto, follows HTTPS)
 //!   ALLOW_HTTP_BASIC_OVER_HTTP=1 — required for non-loopback HTTP listen
 //!
-//! NOTE: This example uses `#[path]` to consume `runtime`, `bootstrap`, and
-//! `web_api` modules from `src/`. They are not exposed via `lib.rs` because
-//! that file is currently desktop-gated; the integration is deferred to the
-//! Layer 1 / Task 2 wrap-up patch.
+//! ## Dual-build `#[path]` contract (M6)
+//!
+//! This example re-includes ~30 modules from `src/` via `#[path = "../src/..."]`
+//! rather than going through `lib.rs`, because `lib.rs` is entirely
+//! `#![cfg(feature = "desktop")]`-gated and so exposes nothing to a
+//! `--no-default-features --features web-server` build. Each `#[path]` line
+//! below compiles that `src` module *directly into this example crate*.
+//!
+//! **Invariant — keep reachable `src` modules `tauri`-free.** Any `src` module
+//! reachable from this file (directly, or transitively through another
+//! `#[path]`-included module) MUST NOT reference `tauri`/`tauri_plugin_*`, or
+//! the web build breaks. There is currently NO default-CI coverage that would
+//! catch such a regression — the desktop `cargo clippy`/`cargo test` gates only
+//! build the `desktop` feature. The real safety net is wiring this web build
+//! (`cargo check --no-default-features --features web-server --example server`)
+//! into CI (deep-read finding H4, Batch 7); until then, run it manually after
+//! touching any backend module.
+//!
+//! **Why `app_store` is reimplemented inline below instead of `#[path]`-included:**
+//! the desktop `src/app_store.rs` is Tauri-coupled — it persists the
+//! `app_config_dir` override through `tauri_plugin_store::StoreExt`, which does
+//! not exist in the web build. The inline module persists the *same*
+//! `app_paths.json` (so desktop and web read each other's setting) but via plain
+//! `std::fs` + `serde_json`. The two impls share the in-memory override cache
+//! and `~` path resolution by copy. A proper de-duplication (a shared,
+//! `tauri`-free `app_store` core that both runtimes consume) is a follow-up; it
+//! is deliberately NOT done here because the persistence backends genuinely
+//! differ and restructuring the dual-runtime module mechanism carries more
+//! regression risk than the ~25 duplicated lines justify.
 
 #[path = "../src/runtime/mod.rs"]
 mod runtime;
@@ -28,6 +53,10 @@ mod runtime;
 #[path = "../src/bootstrap.rs"]
 mod bootstrap;
 
+/// Web-runtime reimplementation of `src/app_store.rs`. See the dual-build
+/// `#[path]` contract at the top of this file for why this is inline rather
+/// than `#[path]`-included: the desktop original is Tauri-`Store`-coupled, so
+/// the web build persists the same `app_paths.json` via `std::fs` instead.
 mod app_store {
     use std::path::PathBuf;
     use std::sync::{OnceLock, RwLock};
@@ -152,6 +181,8 @@ mod gemini_mcp;
 mod hermes_config;
 #[path = "../src/init_status.rs"]
 mod init_status;
+#[path = "../src/json5_doc.rs"]
+mod json5_doc;
 #[path = "../src/mcp/mod.rs"]
 mod mcp;
 #[path = "../src/openclaw_config.rs"]
@@ -204,10 +235,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .unwrap_or("127.0.0.1")
         .parse()
         .map_err(|e| format!("invalid HOST: {e}"))?;
+    // Default 3010 to stay consistent with `deploy/systemd/cc-switch-web.service`
+    // and `scripts/install-cc-switch-web-service.sh` (deep-read finding L15).
     let port: u16 = std::env::var("PORT")
         .ok()
         .as_deref()
-        .unwrap_or("3000")
+        .unwrap_or("3010")
         .parse()
         .map_err(|e| format!("invalid PORT: {e}"))?;
     let addr = SocketAddr::new(host, port);

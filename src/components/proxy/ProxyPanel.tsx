@@ -16,12 +16,12 @@ import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { ToggleRow } from "@/components/ui/toggle-row";
 import { useProxyStatus } from "@/hooks/useProxyStatus";
+import { copyText } from "@/lib/clipboard";
 import { toast } from "sonner";
 import { useFailoverQueue } from "@/lib/query/failover";
 import { ProviderHealthBadge } from "@/components/providers/ProviderHealthBadge";
 import { useProviderHealth } from "@/lib/query/failover";
 import {
-  useProxyTakeoverStatus,
   useSetProxyTakeoverForApp,
   useGlobalProxyConfig,
   useUpdateGlobalProxyConfig,
@@ -73,10 +73,11 @@ export function ProxyPanel({
   disableRuntimeControls = false,
 }: ProxyPanelProps) {
   const { t } = useTranslation();
-  const { status, isRunning } = useProxyStatus();
+  // 接管状态由 canonical useProxyStatus 统一持有（M37）：避免与 lib/query/proxy
+  // 的重复查询共用同一 query key 却各自轮询。
+  const { status, isRunning, takeoverStatus } = useProxyStatus();
 
   // 获取应用接管状态
-  const { data: takeoverStatus } = useProxyTakeoverStatus();
   const setTakeoverForApp = useSetProxyTakeoverForApp();
 
   // 获取全局代理配置
@@ -341,16 +342,23 @@ export function ProxyPanel({
                   <Button
                     size="sm"
                     variant="outline"
-                    onClick={() => {
-                      navigator.clipboard.writeText(
-                        formatAddressForUrl(status.address, status.port),
-                      );
-                      toast.success(
-                        t("proxy.panel.addressCopied", {
-                          defaultValue: "地址已复制",
-                        }),
-                        { closeButton: true },
-                      );
+                    onClick={async () => {
+                      try {
+                        await copyText(
+                          formatAddressForUrl(status.address, status.port),
+                        );
+                        toast.success(
+                          t("proxy.panel.addressCopied", {
+                            defaultValue: "地址已复制",
+                          }),
+                          { closeButton: true },
+                        );
+                      } catch {
+                        toast.error(
+                          t("common.error", { defaultValue: "复制失败" }),
+                          { closeButton: true },
+                        );
+                      }
                     }}
                   >
                     {t("common.copy")}

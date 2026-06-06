@@ -5,17 +5,12 @@
 //! - `UiEventSink` decouples proxy/failover/webdav from `tauri::AppHandle`.
 //! - `ChannelEventSink` is the Web mode counterpart, fanning events to SSE
 //!   subscribers via a tokio broadcast channel.
-//! - `CoreRuntime` collects spawned worker handles for graceful shutdown.
 
 pub mod runtime_events;
-#[cfg(feature = "desktop")]
-pub mod runtime_handle;
 
 #[cfg(feature = "desktop")]
 pub use runtime_events::NoopEventSink;
 pub use runtime_events::{ChannelEventSink, EventEnvelope, UiEventSink};
-#[cfg(feature = "desktop")]
-pub use runtime_handle::CoreRuntime;
 
 #[cfg(feature = "desktop")]
 pub use runtime_events::TauriEventSink;

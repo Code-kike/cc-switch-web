@@ -409,14 +409,17 @@ pub async fn update_circuit_breaker_config(
 }
 
 /// 获取熔断器统计信息（仅当代理服务器运行时）
+///
+/// 代理未运行或该 Provider 尚未创建熔断器实例时返回 `None`。
+/// `total_requests` / `failed_requests` 反映当前错误率滑动窗口内的样本（非历史累计）。
 #[tauri::command]
 pub async fn get_circuit_breaker_stats(
     state: tauri::State<'_, AppState>,
     provider_id: String,
     app_type: String,
 ) -> Result<Option<CircuitBreakerStats>, String> {
-    // 这个功能需要访问运行中的代理服务器的内存状态
-    // 目前先返回 None，后续可以通过 ProxyService 暴露接口来实现
-    let _ = (state, provider_id, app_type);
-    Ok(None)
+    state
+        .proxy_service
+        .get_circuit_breaker_stats(&provider_id, &app_type)
+        .await
 }

@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 10
-- **Last Active**: 2026-06-04
+- **Total Sessions**: 11
+- **Last Active**: 2026-06-06
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~342 | Active |
+| `journal-1.md` | ~401 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 11 | 2026-06-06 | Deep-read cc-switch + fix all non-security findings | `ebfb0835`, `a9a36d59`, `068736c2`, `f96afa2f`, `19eac480`, `6dda2d78`, `64166ce7`, `f0006877`, `334af2b5`, `f9b2abbb`, `466bbefd`, `d0be273d`, `c8ea038c`, `27ccf227`, `065dd870`, `e8e4dee1`, `93cd3ff0`, `64dc3fdc`, `ae38bb7b`, `86b1d606`, `a125cc34`, `cb7c6870`, `229e795e`, `f96df43c`, `c1faedfe`, `fb2e7377`, `d241c5e6` | `fix/non-security-deep-read-findings` |
 | 10 | 2026-06-04 | Update GitHub Actions runtime compatibility | `6e54bb63`, `649bbeb3` | `chore/repo-hygiene-gitignore-task-dedup` |
 | 9 | 2026-06-04 | Run web-server smoke test | `f959cc0a` | `chore/repo-hygiene-gitignore-task-dedup` |
 | 8 | 2026-06-04 | Track Trellis scaffold files | `ff7262bc` | `chore/repo-hygiene-gitignore-task-dedup` |

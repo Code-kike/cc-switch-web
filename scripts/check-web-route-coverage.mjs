@@ -1,4 +1,26 @@
 #!/usr/bin/env node
+//
+// Web route coverage / command-parity gate.
+//
+// SSOT (deep-read finding M41): `src/lib/api/web-commands.ts` is the
+// authoritative source of truth for the command <-> HTTP-route parity surface.
+// It is the runtime route table the web adapter resolves command specs from
+// (by command name). `commands.manifest.json` at the repo root is only
+// advisory/heuristic — it is regenerated from the Tauri `#[tauri::command]`
+// surface to help author web-commands.ts, but this check intentionally reads
+// web-commands.ts (not the manifest) so the gate validates the surface the app
+// actually uses. Do not switch this script to the manifest without resolving
+// the two-SSOT split first.
+//
+// LIMITATION (deep-read finding L10): route discovery below scrapes the Rust
+// handlers with a naive `.route("<literal>")` regex. It therefore only sees
+// string-literal route paths. Routes that are built from a macro, a variable,
+// a `const`, or string concatenation/formatting are invisible to this gate and
+// would show up as false "missing" entries (or, for wildcard `/*path` mounts,
+// be matched only by the prefix heuristic below). If a route ever fails to be
+// detected, prefer making its `.route("...")` argument a string literal over
+// loosening this matcher.
+//
 import fs from "node:fs";
 import path from "node:path";
 import ts from "typescript";

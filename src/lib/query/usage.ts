@@ -122,6 +122,44 @@ export const usageKeys = {
     [...usageKeys.all, providerId, appType] as const,
 };
 
+/**
+ * `usage` 命名空间中由 `proxy_request_logs` 表派生的"仪表盘聚合"分区标识。
+ *
+ * 这些是 UsageDashboard 直接渲染、且会随新日志行写入而变化的查询；它们的
+ * query key 形如 `["usage", <section>, ...]`，第二段是下列固定标识之一。
+ */
+export const USAGE_LOG_DERIVED_SECTIONS = [
+  "summary",
+  "summary-by-app",
+  "trends",
+  "provider-stats",
+  "model-stats",
+  "logs",
+] as const;
+
+/**
+ * 判断某个 query key 是否属于"日志派生的仪表盘聚合"分区（M38）。
+ *
+ * `usage-log-recorded` 事件（`proxy_request_logs` 写入新行）的 payload 为空
+ * （见 `src-tauri/src/usage_events.rs`），无法按 provider/app 精准定位，但可以
+ * 排除明显与该事件无关、重拉纯属浪费的查询：
+ * - 按供应商的脚本查询 `usageKeys.script` = `["usage", providerId, appType]`，
+ *   其数据来自外部计费脚本（`usageApi.query` 发起的外部 API 调用），与
+ *   `proxy_request_logs` 无关；用 `usageKeys.all`（`["usage"]`）做前缀失效会把
+ *   它们一并重拉，触发昂贵且无意义的外部请求。
+ * - `pricing` / `limits` / `detail` 同样不随新增日志行变化。
+ *
+ * 因此该事件只 invalidate 本函数命中的聚合查询。注意：`__lagged` 兜底恢复
+ * （见 `useLaggedRecovery`）仍会 invalidate 整个命名空间，不受此约束。
+ */
+export function isUsageLogDerivedKey(queryKey: readonly unknown[]): boolean {
+  return (
+    queryKey[0] === usageKeys.all[0] &&
+    typeof queryKey[1] === "string" &&
+    (USAGE_LOG_DERIVED_SECTIONS as readonly string[]).includes(queryKey[1])
+  );
+}
+
 // Hooks
 export function useUsageSummary(
   range: UsageRangeSelection,

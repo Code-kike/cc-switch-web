@@ -447,12 +447,21 @@ impl SseUsageCollector {
 
 struct SseUsageFinishGuard {
     collector: Option<SseUsageCollector>,
+    /// Runtime handle captured at construction.
+    ///
+    /// The guard is built inside the polled passthrough stream, where a Tokio
+    /// runtime is guaranteed present. Capturing the handle here means `drop`
+    /// no longer relies on `Handle::try_current()` succeeding at drop time —
+    /// the trailing `finish()` (which flushes usage logging) is still scheduled
+    /// even if the guard is dropped outside a runtime context (L1).
+    handle: Option<tokio::runtime::Handle>,
 }
 
 impl SseUsageFinishGuard {
     fn new(collector: SseUsageCollector) -> Self {
         Self {
             collector: Some(collector),
+            handle: tokio::runtime::Handle::try_current().ok(),
         }
     }
 
@@ -464,12 +473,15 @@ impl SseUsageFinishGuard {
 impl Drop for SseUsageFinishGuard {
     fn drop(&mut self) {
         if let Some(collector) = self.collector.take() {
-            if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                handle.spawn(async move {
-                    collector.finish().await;
-                });
-            } else {
-                log::warn!("SSE 用量收尾保护触发时 Tokio runtime 不可用，跳过异步 finish");
+            match &self.handle {
+                Some(handle) => {
+                    handle.spawn(async move {
+                        collector.finish().await;
+                    });
+                }
+                None => {
+                    log::warn!("SSE 用量收尾保护触发时未捕获到 Tokio runtime，跳过异步 finish");
+                }
             }
         }
     }
@@ -704,9 +716,11 @@ pub fn create_logged_passthrough_stream(
         tokio::pin!(stream);
 
         loop {
-            // 选择超时时间：首字节超时或静默期超时
+            // 选择超时时间：首包用首字节超时；后续块用静默期超时。
+            // 首包在没有显式首字节超时时回退到 idle watchdog，确保“连上游但
+            // 一直不吐数据”的停滞流也能被掐断，而不是无限等待（L4）。
             let timeout_duration = if is_first_chunk {
-                first_byte_timeout
+                first_byte_timeout.or(idle_timeout)
             } else {
                 idle_timeout
             };
@@ -986,9 +1000,11 @@ mod tests {
         db.set_pricing_model_source(app_type, "response").await?;
         seed_pricing(&db)?;
 
-        let mut meta = ProviderMeta::default();
-        meta.cost_multiplier = Some("2".to_string());
-        meta.pricing_model_source = Some("request".to_string());
+        let meta = ProviderMeta {
+            cost_multiplier: Some("2".to_string()),
+            pricing_model_source: Some("request".to_string()),
+            ..Default::default()
+        };
         insert_provider(&db, "provider-1", app_type, meta)?;
 
         let state = build_state(db.clone());
@@ -1095,5 +1111,74 @@ mod tests {
             Decimal::from_str("1.5").unwrap()
         );
         Ok(())
+    }
+
+    /// L4: a stalled stream must be cut by the idle watchdog even when the
+    /// first-byte timeout is disabled (failover off). The idle timeout backstops
+    /// the first chunk too.
+    #[tokio::test]
+    async fn logged_passthrough_idle_timeout_fires_on_stalled_stream() {
+        let input = async_stream::stream! {
+            yield Ok::<Bytes, std::io::Error>(Bytes::from_static(b"chunk-1"));
+            // Stall forever after the first chunk.
+            futures::future::pending::<()>().await;
+            yield Ok(Bytes::new());
+        };
+
+        // first_byte_timeout=0 mirrors the "failover off" config; idle=1s is the
+        // watchdog that must still fire.
+        let cfg = StreamingTimeoutConfig {
+            first_byte_timeout: 0,
+            idle_timeout: 1,
+        };
+
+        let out = create_logged_passthrough_stream(input, "Test", None, cfg, None);
+        let collected: Vec<_> = out.collect().await;
+
+        assert_eq!(
+            collected.len(),
+            2,
+            "expected first chunk then a timeout error"
+        );
+        assert!(collected[0].is_ok(), "first chunk should pass through");
+        let err = collected[1]
+            .as_ref()
+            .expect_err("stalled stream must time out");
+        assert!(
+            err.to_string().contains("超时"),
+            "idle watchdog should surface a timeout error, got: {err}"
+        );
+    }
+
+    /// L4: a slow-but-progressing stream must NOT be cut — the idle watchdog
+    /// resets on every chunk, so chunks arriving within the idle window all pass
+    /// through without a timeout.
+    #[tokio::test]
+    async fn logged_passthrough_idle_timeout_resets_on_progress() {
+        let input = async_stream::stream! {
+            for i in 0..3u8 {
+                // 200ms gap < 1s idle window → watchdog keeps resetting.
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                yield Ok::<Bytes, std::io::Error>(Bytes::from(format!("chunk-{i}")));
+            }
+        };
+
+        let cfg = StreamingTimeoutConfig {
+            first_byte_timeout: 0,
+            idle_timeout: 1,
+        };
+
+        let out = create_logged_passthrough_stream(input, "Test", None, cfg, None);
+        let collected: Vec<_> = out.collect().await;
+
+        assert_eq!(
+            collected.len(),
+            3,
+            "all progressing chunks should pass through"
+        );
+        assert!(
+            collected.iter().all(|r| r.is_ok()),
+            "a progressing stream must not trip the idle watchdog"
+        );
     }
 }

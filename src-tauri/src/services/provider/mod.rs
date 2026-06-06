@@ -390,6 +390,41 @@ mod tests {
     }
 
     #[test]
+    fn extract_claude_common_config_excludes_ui_display_name() {
+        // `ui.displayName` is the per-provider name mirror; importing a Claude
+        // config and editing the provider must not let the common-config snippet
+        // re-inject the old name. Extraction must drop `ui.displayName` (and an
+        // emptied `ui`) so the snippet never carries a provider-specific name.
+        let only_display_name = json!({
+            "env": { "ANTHROPIC_AUTH_TOKEN": "tok", "ANTHROPIC_BASE_URL": "https://x" },
+            "ui": { "displayName": "Live Claude" }
+        });
+        let extracted = ProviderService::extract_claude_common_config(&only_display_name)
+            .expect("extract should succeed");
+        // env was only credentials/url and `ui` only the display name → snippet empty.
+        assert_eq!(extracted, "{}", "snippet must not carry ui.displayName");
+
+        // A genuinely-shared `ui.*` field is preserved while displayName is dropped.
+        let mixed_ui = json!({
+            "ui": { "displayName": "Live Claude", "theme": "dark" },
+            "includeCoAuthoredBy": false
+        });
+        let extracted = ProviderService::extract_claude_common_config(&mixed_ui)
+            .expect("extract should succeed");
+        let parsed: Value = serde_json::from_str(&extracted).expect("valid JSON");
+        assert!(
+            parsed["ui"].get("displayName").is_none(),
+            "ui.displayName must be excluded from common config"
+        );
+        assert_eq!(
+            parsed["ui"]["theme"],
+            json!("dark"),
+            "other ui.* fields kept"
+        );
+        assert_eq!(parsed["includeCoAuthoredBy"], json!(false));
+    }
+
+    #[test]
     fn extract_codex_common_config_preserves_mcp_servers_base_url() {
         let config_toml = r#"model_provider = "azure"
 model = "gpt-4"
@@ -2247,6 +2282,21 @@ impl ProviderService {
         if let Some(obj) = config.as_object_mut() {
             for key in TOP_LEVEL_EXCLUDES {
                 obj.remove(*key);
+            }
+        }
+
+        // `ui.displayName` mirrors the provider's own name (written per-provider
+        // by the form's name sync). It is intrinsically provider-specific and
+        // must NEVER be carried by the shared common-config snippet: otherwise a
+        // later `apply_common_config_to_settings` deep-merge would re-inject the
+        // stale name and silently revert a provider rename in the live config.
+        // Strip it here at the extraction source (drop an emptied `ui`).
+        if let Some(ui) = config.get_mut("ui").and_then(|v| v.as_object_mut()) {
+            ui.remove("displayName");
+            if ui.is_empty() {
+                if let Some(obj) = config.as_object_mut() {
+                    obj.remove("ui");
+                }
             }
         }
 

@@ -21,6 +21,7 @@ import {
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { settingsApi } from "@/lib/api";
+import { copyText } from "@/lib/clipboard";
 import { isWebMode } from "@/lib/api/adapter";
 import { useUpdate } from "@/contexts/UpdateContext";
 import { getCurrentVersion, relaunchApp } from "@/lib/updater";
@@ -339,7 +340,7 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
 
   const handleCopyInstallCommands = useCallback(async () => {
     try {
-      await navigator.clipboard.writeText(ONE_CLICK_INSTALL_COMMANDS);
+      await copyText(ONE_CLICK_INSTALL_COMMANDS);
       toast.success(t("settings.installCommandsCopied"), { closeButton: true });
     } catch (error) {
       console.error("[AboutSection] Failed to copy install commands", error);

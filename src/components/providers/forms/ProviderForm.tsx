@@ -7,8 +7,12 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Form, FormField, FormItem, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
-import { providerSchema, type ProviderFormData } from "@/lib/schemas/provider";
+import {
+  providerFormSchema,
+  type ProviderFormData,
+} from "@/lib/schemas/provider";
 import { providersApi, settingsApi, type AppId } from "@/lib/api";
+import { generateUUID } from "@/utils/uuid";
 import type {
   ProviderCategory,
   ProviderMeta,
@@ -16,32 +20,16 @@ import type {
   ClaudeApiFormat,
   ClaudeApiKeyField,
 } from "@/types";
+import type { ProviderPreset } from "@/config/claudeProviderPresets";
+import type { CodexProviderPreset } from "@/config/codexProviderPresets";
+import type { GeminiProviderPreset } from "@/config/geminiProviderPresets";
+import type { OpenCodeProviderPreset } from "@/config/opencodeProviderPresets";
 import {
-  providerPresets,
-  type ProviderPreset,
-} from "@/config/claudeProviderPresets";
-import {
-  codexProviderPresets,
-  type CodexProviderPreset,
-} from "@/config/codexProviderPresets";
-import {
-  geminiProviderPresets,
-  type GeminiProviderPreset,
-} from "@/config/geminiProviderPresets";
-import {
-  opencodeProviderPresets,
-  type OpenCodeProviderPreset,
-} from "@/config/opencodeProviderPresets";
-import {
-  openclawProviderPresets,
   rebaseOpenClawSuggestedDefaults,
   type OpenClawProviderPreset,
   type OpenClawSuggestedDefaults,
 } from "@/config/openclawProviderPresets";
-import {
-  hermesProviderPresets,
-  type HermesProviderPreset,
-} from "@/config/hermesProviderPresets";
+import type { HermesProviderPreset } from "@/config/hermesProviderPresets";
 import { OpenCodeFormFields } from "./OpenCodeFormFields";
 import { OpenClawFormFields } from "./OpenClawFormFields";
 import { HermesFormFields } from "./HermesFormFields";
@@ -101,20 +89,11 @@ import {
   normalizePricingSource,
 } from "./helpers/opencodeFormUtils";
 import { HERMES_DEFAULT_CONFIG } from "./hooks/useHermesFormState";
+import { assembleSettingsConfig } from "./helpers/assembleSettingsConfig";
+import { buildPresetEntries } from "./helpers/presetEntries";
 import { resolveManagedAccountId } from "@/lib/authBinding";
 import { useOpenClawLiveProviderIds } from "@/hooks/useOpenClaw";
 import { useHermesLiveProviderIds } from "@/hooks/useHermes";
-
-type PresetEntry = {
-  id: string;
-  preset:
-    | ProviderPreset
-    | CodexProviderPreset
-    | GeminiProviderPreset
-    | OpenCodeProviderPreset
-    | OpenClawProviderPreset
-    | HermesProviderPreset;
-};
 
 interface ProviderFormProps {
   appId: AppId;
@@ -273,7 +252,7 @@ export function ProviderForm({
   );
 
   const form = useForm<ProviderFormData>({
-    resolver: zodResolver(providerSchema),
+    resolver: zodResolver(providerFormSchema),
     defaultValues,
     mode: "onSubmit",
   });
@@ -290,6 +269,10 @@ export function ProviderForm({
   const [softIssues, setSoftIssues] = useState<string[] | null>(null);
   const [pendingFormValues, setPendingFormValues] =
     useState<ProviderFormData | null>(null);
+  // 与 pendingFormValues 配套：缓存“真正要提交”的 settingsConfig（已重建+校验）
+  const [pendingSettingsConfig, setPendingSettingsConfig] = useState<
+    string | null
+  >(null);
   // 确认框走的提交路径绕过了 react-hook-form 的 isSubmitting，单独追踪
   const [isConfirmSubmitting, setIsConfirmSubmitting] = useState(false);
 
@@ -450,40 +433,7 @@ export function ProviderForm({
     [t],
   );
 
-  const presetEntries = useMemo(() => {
-    if (appId === "codex") {
-      return codexProviderPresets.map<PresetEntry>((preset, index) => ({
-        id: `codex-${index}`,
-        preset,
-      }));
-    } else if (appId === "gemini") {
-      return geminiProviderPresets.map<PresetEntry>((preset, index) => ({
-        id: `gemini-${index}`,
-        preset,
-      }));
-    } else if (appId === "opencode") {
-      return opencodeProviderPresets.map<PresetEntry>((preset, index) => ({
-        id: `opencode-${index}`,
-        preset,
-      }));
-    } else if (appId === "openclaw") {
-      return openclawProviderPresets.map<PresetEntry>((preset, index) => ({
-        id: `openclaw-${index}`,
-        preset,
-      }));
-    } else if (appId === "hermes") {
-      return hermesProviderPresets.map<PresetEntry>((preset, index) => ({
-        id: `hermes-${index}`,
-        preset,
-      }));
-    }
-    return providerPresets
-      .filter((p) => !p.hidden)
-      .map<PresetEntry>((preset, index) => ({
-        id: `claude-${index}`,
-        preset,
-      }));
-  }, [appId]);
+  const presetEntries = useMemo(() => buildPresetEntries(appId), [appId]);
 
   const {
     templateValues,
@@ -1000,17 +950,53 @@ export function ProviderForm({
       }
     }
 
+    // M40：校验“真正要提交的配置”。codex/gemini/OMO 提交时会用各自的 hook 状态
+    // 重建 settingsConfig，与 zod 校验过的 textarea 不是同一份；这里对重建后的
+    // 结果走同样的 schema 校验，确保“校验的就是保存的”。非法 JSON 属 B 类，
+    // 直接硬拒绝、绝不静默保存（与 codex authError 等保持一致）。
+    const assembled = assembleSettingsConfig({
+      appId,
+      category,
+      isAnyOmoCategory,
+      name: values.name,
+      textareaSettingsConfig: values.settingsConfig,
+      codexAuth,
+      codexConfig,
+      geminiEnv,
+      geminiConfig,
+      envStringToObj,
+      omoAgents: omoDraft.omoAgents,
+      omoCategories: omoDraft.omoCategories,
+      omoOtherFieldsStr: omoDraft.omoOtherFieldsStr,
+    });
+    if (!assembled.ok) {
+      toast.error(
+        assembled.error === "codexAuthInvalid"
+          ? t("providerForm.authJsonError", {
+              defaultValue: "auth.json 格式错误，请检查JSON语法",
+            })
+          : t("providerForm.configJsonError", {
+              defaultValue: "配置JSON格式错误，请检查语法",
+            }),
+      );
+      return;
+    }
+
     if (issues.length > 0) {
       // 弹确认框让用户决定是否仍要保存
       setSoftIssues(issues);
       setPendingFormValues(values);
+      setPendingSettingsConfig(assembled.settingsConfig);
       return;
     }
 
-    await performSubmit(values);
+    await performSubmit(values, assembled.settingsConfig);
   };
 
-  const performSubmit = async (values: ProviderFormData) => {
+  const performSubmit = async (
+    values: ProviderFormData,
+    settingsConfig: string,
+  ) => {
     // OAuth / 其它身份识别（与 handleSubmit 保持一致）
     const isCopilotProvider =
       templatePreset?.providerType === "github_copilot" ||
@@ -1020,69 +1006,10 @@ export function ProviderForm({
       templatePreset?.providerType === "codex_oauth" ||
       initialData?.meta?.providerType === "codex_oauth";
 
-    let settingsConfig: string;
-
-    if (appId === "codex") {
-      try {
-        const authJson = JSON.parse(codexAuth);
-        const configObj = {
-          auth: authJson,
-          config: codexConfig ?? "",
-        };
-        settingsConfig = JSON.stringify(configObj);
-      } catch (err) {
-        // codexAuth 语法错误：回退到 values.settingsConfig 会静默丢弃用户编辑，
-        // 明确报错并中止，避免“提示成功却未保存”
-        toast.error(t("providerForm.authJsonError"));
-        return;
-      }
-    } else if (appId === "gemini") {
-      try {
-        const envObj = envStringToObj(geminiEnv);
-        const configObj = geminiConfig.trim() ? JSON.parse(geminiConfig) : {};
-        const combined = {
-          env: envObj,
-          config: configObj,
-        };
-        settingsConfig = JSON.stringify(combined);
-      } catch (err) {
-        settingsConfig = values.settingsConfig.trim();
-      }
-    } else if (
-      appId === "opencode" &&
-      (category === "omo" || category === "omo-slim")
-    ) {
-      const omoConfig: Record<string, unknown> = {};
-      if (Object.keys(omoDraft.omoAgents).length > 0) {
-        omoConfig.agents = omoDraft.omoAgents;
-      }
-      if (
-        category === "omo" &&
-        Object.keys(omoDraft.omoCategories).length > 0
-      ) {
-        omoConfig.categories = omoDraft.omoCategories;
-      }
-      if (omoDraft.omoOtherFieldsStr.trim()) {
-        // 格式已在 handleSubmit 前置校验中验证过，此处可以安全解析
-        const otherFields = parseOmoOtherFieldsObject(
-          omoDraft.omoOtherFieldsStr,
-        );
-        if (otherFields) {
-          omoConfig.otherFields = otherFields;
-        }
-      }
-      settingsConfig = JSON.stringify(omoConfig);
-    } else {
-      settingsConfig = values.settingsConfig.trim();
-    }
-
+    // M40：settingsConfig 由 handleSubmit 经 assembleSettingsConfig 统一重建、
+    // 校验并同步好供应商名称后传入，这里直接使用，确保“校验的就是保存的”，
+    // 不再按各 CLI 重新派生（那会与 zod 校验过的值产生分叉、静默丢弃用户编辑）。
     const normalizedName = values.name.trim();
-    settingsConfig = syncProviderNameIntoSettingsConfig(
-      appId,
-      settingsConfig,
-      normalizedName,
-      isAnyOmoCategory,
-    );
 
     const payload: ProviderFormValues = {
       ...values,
@@ -1095,7 +1022,7 @@ export function ProviderForm({
       if (isAnyOmoCategory) {
         if (!isEditMode) {
           const prefix = category === "omo" ? "omo" : "omo-slim";
-          payload.providerKey = `${prefix}-${crypto.randomUUID().slice(0, 8)}`;
+          payload.providerKey = `${prefix}-${generateUUID().slice(0, 8)}`;
         }
       } else {
         payload.providerKey = opencodeForm.opencodeProviderKey;
@@ -2167,15 +2094,19 @@ export function ProviderForm({
         onConfirm={async () => {
           if (isConfirmSubmitting) return;
           const values = pendingFormValues;
-          if (!values) {
+          const settingsConfig = pendingSettingsConfig;
+          if (!values || settingsConfig === null) {
             setSoftIssues(null);
+            setPendingFormValues(null);
+            setPendingSettingsConfig(null);
             return;
           }
           setIsConfirmSubmitting(true);
           try {
-            await performSubmit(values);
+            await performSubmit(values, settingsConfig);
             setSoftIssues(null);
             setPendingFormValues(null);
+            setPendingSettingsConfig(null);
           } catch (error) {
             console.error("[ProviderForm] soft-confirm submit failed:", error);
             // 保留确认框和 pending values，让用户可以重试或取消
@@ -2187,6 +2118,7 @@ export function ProviderForm({
           if (isConfirmSubmitting) return;
           setSoftIssues(null);
           setPendingFormValues(null);
+          setPendingSettingsConfig(null);
         }}
       />
     </>
@@ -2201,44 +2133,3 @@ export type ProviderFormValues = ProviderFormData & {
   providerKey?: string; // OpenCode/OpenClaw: user-defined provider key
   suggestedDefaults?: OpenClawSuggestedDefaults; // OpenClaw: suggested default model configuration
 };
-
-function syncProviderNameIntoSettingsConfig(
-  appId: AppId,
-  settingsConfig: string,
-  providerName: string,
-  isOmoCategory: boolean,
-): string {
-  if (!providerName) {
-    return settingsConfig;
-  }
-
-  if (appId !== "claude" && appId !== "opencode") {
-    return settingsConfig;
-  }
-
-  if (appId === "opencode" && isOmoCategory) {
-    return settingsConfig;
-  }
-
-  try {
-    const parsed = JSON.parse(settingsConfig) as Record<string, unknown>;
-    if (!parsed || Array.isArray(parsed)) {
-      return settingsConfig;
-    }
-
-    if (appId === "claude") {
-      const ui =
-        parsed.ui && typeof parsed.ui === "object" && !Array.isArray(parsed.ui)
-          ? { ...(parsed.ui as Record<string, unknown>) }
-          : {};
-      ui.displayName = providerName;
-      parsed.ui = ui;
-    } else {
-      parsed.name = providerName;
-    }
-
-    return JSON.stringify(parsed, null, 2);
-  } catch {
-    return settingsConfig;
-  }
-}

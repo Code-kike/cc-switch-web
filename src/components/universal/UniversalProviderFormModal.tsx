@@ -9,6 +9,7 @@ import { FullScreenPanel } from "@/components/common/FullScreenPanel";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import JsonEditor from "@/components/JsonEditor";
+import { generateUUID } from "@/utils/uuid";
 import type { UniversalProvider, UniversalProviderModels } from "@/types";
 import {
   universalProviderPresets,
@@ -209,7 +210,7 @@ requires_openai_auth = true`;
         }
       : createUniversalProviderFromPreset(
           selectedPreset || universalProviderPresets[0],
-          crypto.randomUUID(),
+          generateUUID(),
           baseUrl.trim(),
           apiKey.trim(),
           name.trim(),
@@ -270,7 +271,7 @@ requires_openai_auth = true`;
         }
       : createUniversalProviderFromPreset(
           selectedPreset || universalProviderPresets[0],
-          crypto.randomUUID(),
+          generateUUID(),
           baseUrl.trim(),
           apiKey.trim(),
           name.trim(),

@@ -33,6 +33,7 @@ import type { EnvConflict } from "@/types/env";
 import { invoke, isWebMode } from "@/lib/api/adapter";
 import { listen } from "@/lib/api/event-adapter";
 import { useProvidersQuery, useSettingsQuery } from "@/lib/query";
+import { universalProviderKeys } from "@/lib/query/universal";
 import {
   providersApi,
   settingsApi,
@@ -73,10 +74,19 @@ import { EnvWarningBanner } from "@/components/env/EnvWarningBanner";
 import { ProxyToggle } from "@/components/proxy/ProxyToggle";
 import { FailoverToggle } from "@/components/proxy/FailoverToggle";
 import UsageScriptModal from "@/components/UsageScriptModal";
-import UnifiedMcpPanel from "@/components/mcp/UnifiedMcpPanel";
-import PromptPanel from "@/components/prompts/PromptPanel";
-import { SkillsPage } from "@/components/skills/SkillsPage";
-import UnifiedSkillsPanel from "@/components/skills/UnifiedSkillsPanel";
+import UnifiedMcpPanel, {
+  type UnifiedMcpPanelHandle,
+} from "@/components/mcp/UnifiedMcpPanel";
+import PromptPanel, {
+  type PromptPanelHandle,
+} from "@/components/prompts/PromptPanel";
+import {
+  SkillsPage,
+  type SkillsPageHandle,
+} from "@/components/skills/SkillsPage";
+import UnifiedSkillsPanel, {
+  type UnifiedSkillsPanelHandle,
+} from "@/components/skills/UnifiedSkillsPanel";
 import {
   DeepLinkImportDialog,
   type DeepLinkImportDialogHandle,
@@ -98,22 +108,14 @@ import AgentsDefaultsPanel from "@/components/openclaw/AgentsDefaultsPanel";
 import OpenClawHealthBanner from "@/components/openclaw/OpenClawHealthBanner";
 import HermesMemoryPanel from "@/components/hermes/HermesMemoryPanel";
 import { importCurrentProviderConfig } from "@/lib/providers/import-current-config";
-
-type View =
-  | "providers"
-  | "settings"
-  | "prompts"
-  | "skills"
-  | "skillsDiscovery"
-  | "mcp"
-  | "agents"
-  | "universal"
-  | "sessions"
-  | "workspace"
-  | "openclawEnv"
-  | "openclawTools"
-  | "openclawAgents"
-  | "hermesMemory";
+import { generateUniqueProviderCopyKey } from "@/lib/providers/providerCopyKey";
+import {
+  type View,
+  VIEW_STORAGE_KEY,
+  getInitialApp,
+  getInitialView,
+  isViewAllowedForApp,
+} from "./App.navigation";
 
 interface WebDavSyncStatusUpdatedPayload {
   source?: string;
@@ -123,50 +125,6 @@ interface WebDavSyncStatusUpdatedPayload {
 
 const DEFAULT_DRAG_BAR_HEIGHT = isWindows() || isLinux() ? 0 : 28; // px
 const HEADER_HEIGHT = 64; // px
-
-const STORAGE_KEY = "cc-switch-last-app";
-const VALID_APPS: AppId[] = [
-  "claude",
-  "codex",
-  "gemini",
-  "opencode",
-  "openclaw",
-  "hermes",
-];
-
-const getInitialApp = (): AppId => {
-  const saved = localStorage.getItem(STORAGE_KEY) as AppId | null;
-  if (saved && VALID_APPS.includes(saved)) {
-    return saved;
-  }
-  return "claude";
-};
-
-const VIEW_STORAGE_KEY = "cc-switch-last-view";
-const VALID_VIEWS: View[] = [
-  "providers",
-  "settings",
-  "prompts",
-  "skills",
-  "skillsDiscovery",
-  "mcp",
-  "agents",
-  "universal",
-  "sessions",
-  "workspace",
-  "openclawEnv",
-  "openclawTools",
-  "openclawAgents",
-  "hermesMemory",
-];
-
-const getInitialView = (): View => {
-  const saved = localStorage.getItem(VIEW_STORAGE_KEY) as View | null;
-  if (saved && VALID_VIEWS.includes(saved)) {
-    return saved;
-  }
-  return "providers";
-};
 
 const getDesktopCurrentWindow = async () => {
   const tauriWindow = await import("@tauri-apps/api/window");
@@ -179,7 +137,9 @@ function App() {
   const webMode = isWebMode();
 
   const [activeApp, setActiveApp] = useState<AppId>(getInitialApp);
-  const [currentView, setCurrentView] = useState<View>(getInitialView);
+  const [currentView, setCurrentView] = useState<View>(() =>
+    getInitialView(getInitialApp()),
+  );
   const [settingsDefaultTab, setSettingsDefaultTab] = useState("general");
   const [isAddOpen, setIsAddOpen] = useState(false);
   const [isWindowMaximized, setIsWindowMaximized] = useState(false);
@@ -224,17 +184,13 @@ function App() {
     }
   }, [visibleApps, activeApp]);
 
-  // Fallback from sessions view when switching to an app without session support
+  // Keep the active view consistent with the active app. When `activeApp`
+  // changes (initial restore, or the visibility effect above switching away
+  // from a hidden app), clamp any view that is not reachable for the new app
+  // back to the providers list, so an app-specific panel never renders under a
+  // mismatched app (L32).
   useEffect(() => {
-    if (
-      currentView === "sessions" &&
-      activeApp !== "claude" &&
-      activeApp !== "codex" &&
-      activeApp !== "opencode" &&
-      activeApp !== "openclaw" &&
-      activeApp !== "gemini" &&
-      activeApp !== "hermes"
-    ) {
+    if (!isViewAllowedForApp(currentView, activeApp)) {
       setCurrentView("providers");
     }
   }, [activeApp, currentView]);
@@ -257,10 +213,10 @@ function App() {
   useUsageCacheBridge();
   useLaggedRecovery();
 
-  const promptPanelRef = useRef<any>(null);
-  const mcpPanelRef = useRef<any>(null);
-  const skillsPageRef = useRef<any>(null);
-  const unifiedSkillsPanelRef = useRef<any>(null);
+  const promptPanelRef = useRef<PromptPanelHandle>(null);
+  const mcpPanelRef = useRef<UnifiedMcpPanelHandle>(null);
+  const skillsPageRef = useRef<SkillsPageHandle>(null);
+  const unifiedSkillsPanelRef = useRef<UnifiedSkillsPanelHandle>(null);
   const deepLinkImportDialogRef = useRef<DeepLinkImportDialogHandle>(null);
   const addActionButtonClass =
     "bg-orange-500 hover:bg-orange-600 dark:bg-orange-500 dark:hover:bg-orange-600 text-white shadow-lg shadow-orange-500/30 dark:shadow-orange-500/40 rounded-full w-8 h-8";
@@ -413,6 +369,10 @@ function App() {
       try {
         const off = await listen("universal-provider-synced", async () => {
           await queryClient.invalidateQueries({ queryKey: ["providers"] });
+          // 让 UniversalProviderPanel 的 React Query 同步刷新（M42）
+          await queryClient.invalidateQueries({
+            queryKey: universalProviderKeys.all,
+          });
           try {
             await providersApi.updateTrayMenu();
           } catch (error) {
@@ -763,23 +723,6 @@ function App() {
       await deleteProvider(provider.id);
     }
     setConfirmAction(null);
-  };
-
-  const generateUniqueProviderCopyKey = (
-    originalKey: string,
-    existingKeys: string[],
-  ): string => {
-    const baseKey = `${originalKey}-copy`;
-
-    if (!existingKeys.includes(baseKey)) {
-      return baseKey;
-    }
-
-    let counter = 2;
-    while (existingKeys.includes(`${baseKey}-${counter}`)) {
-      counter++;
-    }
-    return `${baseKey}-${counter}`;
   };
 
   const handleDuplicateProvider = async (provider: Provider) => {
@@ -1312,7 +1255,8 @@ function App() {
           </div>
 
           <div className="flex flex-1 min-w-0 items-center justify-end gap-1.5">
-            {currentView === "providers" &&
+            {!webMode &&
+              currentView === "providers" &&
               activeApp !== "opencode" &&
               activeApp !== "openclaw" &&
               activeApp !== "hermes" && (

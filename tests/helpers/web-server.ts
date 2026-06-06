@@ -137,6 +137,14 @@ export async function startTestWebServer(
         CC_SWITCH_DATA_DIR: dataDir,
         CC_SWITCH_TEST_HOME: homeDir,
         CC_SWITCH_WEB_DIST_DIR: distWebDir,
+        // The integration suites stand up mock upstreams (model-fetch endpoints,
+        // endpoint-speed-test targets, etc.) on 127.0.0.1, which the production
+        // SSRF guard (validate_outbound_url) blocks as an internal address. This
+        // env var is the guard's existing operator allow-list bypass; setting it
+        // here is TEST-INFRA ONLY so the mocked localhost upstreams are reachable
+        // in tests. Production behavior is unchanged — the guard still blocks
+        // loopback/private targets unless an operator opts in.
+        CC_SWITCH_WEB_SSRF_ALLOW: "127.0.0.1,localhost,[::1]",
         ...(options.env ?? {}),
       },
       stdio: ["ignore", "pipe", "pipe"],

@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import "@/lib/api/web-commands";
@@ -10,6 +11,26 @@ import {
   startTestWebServer,
   type TestWebServer,
 } from "../helpers/web-server";
+
+// `Provider.settingsConfig` is `Record<string, unknown>` (heterogeneous per-CLI
+// shape). These integration assertions know the concrete Claude/Codex/Gemini
+// shape, so narrow the nested string maps (env/auth) at the boundary.
+const nestedStringRecord = (
+  config: Record<string, unknown> | undefined,
+  key: string,
+): Record<string, string> | undefined =>
+  config?.[key] as Record<string, string> | undefined;
+
+const renderPanel = () => {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  return render(
+    <QueryClientProvider client={client}>
+      <UniversalProviderPanel />
+    </QueryClientProvider>,
+  );
+};
 
 const toastSuccessMock = vi.fn();
 const toastErrorMock = vi.fn();
@@ -122,7 +143,7 @@ describe.sequential("UniversalProviderPanel against real web server", () => {
   it(
     "creates, edits, syncs, and deletes universal providers through the rendered panel UI",
     async () => {
-      render(<UniversalProviderPanel />);
+      renderPanel();
 
       await waitFor(async () => {
         expect(await universalProvidersApi.getAll()).toEqual({});
@@ -159,10 +180,12 @@ describe.sequential("UniversalProviderPanel against real web server", () => {
         const claudeProviders = await providersApi.getAll("claude");
         const claudeProvider = claudeProviders[`universal-claude-${universalId}`];
         expect(
-          claudeProvider?.settingsConfig?.env?.ANTHROPIC_BASE_URL,
+          nestedStringRecord(claudeProvider?.settingsConfig, "env")
+            ?.ANTHROPIC_BASE_URL,
         ).toBe("https://universal-smoke.example.com");
         expect(
-          claudeProvider?.settingsConfig?.env?.ANTHROPIC_AUTH_TOKEN,
+          nestedStringRecord(claudeProvider?.settingsConfig, "env")
+            ?.ANTHROPIC_AUTH_TOKEN,
         ).toBe("universal-secret");
 
         const codexProviders = await providersApi.getAll("codex");
@@ -172,13 +195,15 @@ describe.sequential("UniversalProviderPanel against real web server", () => {
           codexProvider?.settingsConfig?.config,
         ).toContain('base_url = "https://universal-smoke.example.com/v1"');
         expect(
-          codexProvider?.settingsConfig?.auth?.OPENAI_API_KEY,
+          nestedStringRecord(codexProvider?.settingsConfig, "auth")
+            ?.OPENAI_API_KEY,
         ).toBe("universal-secret");
 
         const geminiProviders = await providersApi.getAll("gemini");
         const geminiProvider = geminiProviders[`universal-gemini-${universalId}`];
         expect(
-          geminiProvider?.settingsConfig?.env?.GOOGLE_GEMINI_BASE_URL,
+          nestedStringRecord(geminiProvider?.settingsConfig, "env")
+            ?.GOOGLE_GEMINI_BASE_URL,
         ).toBe("https://universal-smoke.example.com");
       });
 
@@ -215,8 +240,10 @@ describe.sequential("UniversalProviderPanel against real web server", () => {
       await waitFor(async () => {
         const claudeProviders = await providersApi.getAll("claude");
         expect(
-          claudeProviders[`universal-claude-${universalId}`]?.settingsConfig?.env
-            ?.ANTHROPIC_BASE_URL,
+          nestedStringRecord(
+            claudeProviders[`universal-claude-${universalId}`]?.settingsConfig,
+            "env",
+          )?.ANTHROPIC_BASE_URL,
         ).toBe("https://universal-smoke.example.com");
 
         const geminiProviders = await providersApi.getAll("gemini");
@@ -230,8 +257,10 @@ describe.sequential("UniversalProviderPanel against real web server", () => {
       await waitFor(async () => {
         const claudeProviders = await providersApi.getAll("claude");
         expect(
-          claudeProviders[`universal-claude-${universalId}`]?.settingsConfig?.env
-            ?.ANTHROPIC_BASE_URL,
+          nestedStringRecord(
+            claudeProviders[`universal-claude-${universalId}`]?.settingsConfig,
+            "env",
+          )?.ANTHROPIC_BASE_URL,
         ).toBe("https://universal-edited.example.com");
 
         const codexProviders = await providersApi.getAll("codex");

@@ -11,7 +11,7 @@ export type ProviderCategory =
 export interface Provider {
   id: string;
   name: string;
-  settingsConfig: Record<string, any>; // 应用配置对象：Claude 为 settings.json；Codex 为 { auth, config }
+  settingsConfig: Record<string, unknown>; // 应用配置对象：Claude 为 settings.json；Codex 为 { auth, config }
   websiteUrl?: string;
   // 新增：供应商分类（用于差异化提示/能力开关）
   category?: ProviderCategory;
@@ -70,7 +70,7 @@ export interface UsageScript {
     url?: string; // 请求 URL
     method?: string; // HTTP 方法
     headers?: Record<string, string>; // 请求头
-    body?: any; // 请求体
+    body?: unknown; // 请求体
   };
 }
 
@@ -367,7 +367,7 @@ export interface McpServerSpec {
   url?: string;
   headers?: Record<string, string>;
   // 通用字段
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
 // v3.7.0: MCP 服务器应用启用状态
@@ -393,7 +393,7 @@ export interface McpServer {
   // 兼容旧字段（v3.6.x 及以前）
   enabled?: boolean; // 已废弃，v3.7.0 使用 apps 字段
   source?: string;
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
 // MCP 服务器映射（id -> McpServer）

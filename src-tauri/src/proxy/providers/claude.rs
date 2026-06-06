@@ -647,30 +647,36 @@ impl ProviderAdapter for ClaudeAdapter {
 
         match provider_type {
             ProviderType::GeminiCli => {
-                // Parse stored OAuth JSON and only attach access_token when
-                // it's actually usable. `parse_oauth_credentials` accepts
-                // refresh-token-only JSON (which is legitimate before the
-                // first refresh) and also surfaces `{"access_token": "", ...}`
-                // for expired credentials. In both cases we would otherwise
-                // send `Authorization: Bearer ` to upstream and get a 401.
-                //
-                // CC Switch does not currently exchange the refresh_token for
-                // a fresh access_token. Until that path exists, degrade to
-                // plain GoogleOAuth strategy (which still sends the raw key
-                // as a fallback) and log loudly so users know to refresh
-                // their `~/.gemini/oauth_creds.json`.
+                // Parse the stored Google OAuth blob and route GeminiCli through
+                // the GoogleOAuth strategy. The proxy forwarder now exchanges the
+                // stored `refresh_token` for a fresh access_token when the current
+                // one is missing or expiring (M31, via `gemini_oauth::manager`),
+                // so we hand it whatever token we have and let the forwarder
+                // refresh as needed. `parse_oauth_credentials` accepts
+                // refresh-token-only JSON (legitimate before the first refresh)
+                // and surfaces `{"access_token": "", ...}` for expired creds.
                 match super::gemini::GeminiAdapter::new().parse_oauth_credentials(&key) {
                     Some(creds) if !creds.access_token.is_empty() => {
                         Some(AuthInfo::with_access_token(key, creds.access_token))
                     }
-                    Some(_) => {
-                        log::warn!(
-                            "[Gemini OAuth] access_token missing or empty for provider `{}`; \
-                             bearer auth will likely fail with 401. Refresh \
-                             ~/.gemini/oauth_creds.json via the gemini CLI to obtain a new token.",
-                            provider.id
-                        );
-                        Some(AuthInfo::new(key, AuthStrategy::GoogleOAuth))
+                    Some(creds) => {
+                        if creds
+                            .refresh_token
+                            .as_deref()
+                            .is_some_and(|t| !t.trim().is_empty())
+                        {
+                            // No usable access_token yet, but the forwarder can
+                            // mint one from the refresh_token.
+                            Some(AuthInfo::new(key, AuthStrategy::GoogleOAuth))
+                        } else {
+                            log::warn!(
+                                "[Gemini OAuth] no access_token or refresh_token for provider `{}`; \
+                                 bearer auth will likely fail with 401. Re-export \
+                                 ~/.gemini/oauth_creds.json via the gemini CLI.",
+                                provider.id
+                            );
+                            Some(AuthInfo::new(key, AuthStrategy::GoogleOAuth))
+                        }
                     }
                     None => Some(AuthInfo::new(key, AuthStrategy::GoogleOAuth)),
                 }
@@ -848,11 +854,39 @@ impl ProviderAdapter for ClaudeAdapter {
     }
 
     fn transform_response(&self, body: serde_json::Value) -> Result<serde_json::Value, ProxyError> {
+        // SCOPE (L28 deep-read, L27 here): this trait method is NOT on the proxy
+        // hot path. The live forwarder reverse-transforms upstream responses with
+        // the *known* `api_format` resolved from the request route — see
+        // `proxy::handlers` (selects responses_to_anthropic / gemini_to_anthropic /
+        // openai_to_anthropic by `api_format`) and the streaming modules — and
+        // non-2xx upstreams are surfaced as `ProxyError::UpstreamError` before any
+        // transform runs (`forwarder::forward` only transforms `status.is_success()`
+        // bodies). So error bodies never reach this code in production.
+        //
+        // The `ProviderAdapter` trait signature carries no Provider/api_format, so
+        // threading the known format here would require a trait-wide refactor for a
+        // method with zero runtime callers (kept `#[allow(dead_code)]` for trait
+        // completeness / tests). Rather than that churn we keep the success-marker
+        // sniff but guard the one shape it used to misroute: an error-shaped or
+        // already-Anthropic body that lacks `candidates`/`output`/`choices` would
+        // fall through to `openai_to_anthropic` and fail with a misleading
+        // "No choices in response", masking the real upstream error.
+        let body_type = body.get("type").and_then(Value::as_str);
+        let already_anthropic = matches!(body_type, Some("message") | Some("error"));
+        let error_without_success_markers = body.get("error").is_some()
+            && body.get("choices").is_none()
+            && body.get("output").is_none()
+            && body.get("candidates").is_none();
+        if already_anthropic || error_without_success_markers {
+            // Preserve the body verbatim so the caller sees the upstream error /
+            // native-Anthropic payload instead of a spurious transform failure.
+            return Ok(body);
+        }
+
         // Heuristic: detect response format by presence of top-level fields.
-        // The ProviderAdapter trait's transform_response doesn't receive the Provider
-        // config, so we can't check api_format here. Instead we rely on the fact that
-        // Responses API always returns "output" while Chat Completions returns "choices".
-        // This is safe because the two formats are structurally disjoint.
+        // Responses API always returns "output"; Chat Completions returns
+        // "choices"; Gemini returns "candidates"/"promptFeedback". The three
+        // success shapes are structurally disjoint.
         if body.get("candidates").is_some() || body.get("promptFeedback").is_some() {
             super::transform_gemini::gemini_to_anthropic(body)
         } else if body.get("output").is_some() {
@@ -2094,5 +2128,94 @@ mod tests {
 
         assert!(!changed);
         assert_eq!(body, original);
+    }
+
+    // ── transform_response heuristic guard tests (L27) ──
+    //
+    // These exercise the dead-code-at-runtime trait method directly (the live
+    // path uses the known api_format in handlers/streaming). They pin both the
+    // new error/native-body guard and the unchanged success-marker routing.
+
+    #[test]
+    fn transform_response_passes_through_openai_shaped_error_body() {
+        // Regression for L27: an upstream error body that lacks success markers
+        // (no choices/output/candidates) must NOT be force-fed to
+        // openai_to_anthropic — that masked the real error with the misleading
+        // "No choices in response" TransformError.
+        let adapter = ClaudeAdapter::new();
+        let err = json!({
+            "error": {"message": "rate limited", "type": "rate_limit_error", "code": "429"}
+        });
+        let out = adapter.transform_response(err.clone()).unwrap();
+        assert_eq!(out, err);
+    }
+
+    #[test]
+    fn transform_response_passes_through_native_anthropic_error_body() {
+        let adapter = ClaudeAdapter::new();
+        let err = json!({
+            "type": "error",
+            "error": {"type": "overloaded_error", "message": "overloaded"}
+        });
+        let out = adapter.transform_response(err.clone()).unwrap();
+        assert_eq!(out, err);
+    }
+
+    #[test]
+    fn transform_response_passes_through_native_anthropic_message_body() {
+        let adapter = ClaudeAdapter::new();
+        let msg = json!({
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "hi"}],
+            "model": "claude-sonnet-4-5"
+        });
+        let out = adapter.transform_response(msg.clone()).unwrap();
+        assert_eq!(out, msg);
+    }
+
+    #[test]
+    fn transform_response_still_routes_chat_completions_by_choices() {
+        let adapter = ClaudeAdapter::new();
+        let chat = json!({
+            "id": "chatcmpl-1",
+            "model": "gpt-4o",
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "hello"},
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1}
+        });
+        let out = adapter.transform_response(chat).unwrap();
+        assert_eq!(out["type"], "message");
+        assert_eq!(out["content"][0]["text"], "hello");
+    }
+
+    #[test]
+    fn transform_response_still_routes_responses_by_output() {
+        let adapter = ClaudeAdapter::new();
+        let responses = json!({
+            "id": "resp_1",
+            "object": "response",
+            "output": [{
+                "type": "message",
+                "content": [{"type": "output_text", "text": "hi from responses"}]
+            }]
+        });
+        let out = adapter.transform_response(responses).unwrap();
+        assert_eq!(out["type"], "message");
+        assert_eq!(out["content"][0]["text"], "hi from responses");
+    }
+
+    #[test]
+    fn transform_response_still_routes_gemini_by_prompt_feedback() {
+        let adapter = ClaudeAdapter::new();
+        let gemini_blocked = json!({
+            "promptFeedback": {"blockReason": "SAFETY"}
+        });
+        let out = adapter.transform_response(gemini_blocked).unwrap();
+        assert_eq!(out["type"], "message");
+        assert_eq!(out["stop_reason"], "refusal");
     }
 }

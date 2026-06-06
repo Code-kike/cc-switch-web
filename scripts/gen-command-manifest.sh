@@ -18,4 +18,6 @@ cargo run \
     --release \
     --bin gen-command-manifest \
     --no-default-features \
+    --features manifest \
+    --locked \
     -- "$@"

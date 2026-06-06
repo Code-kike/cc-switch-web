@@ -3,6 +3,57 @@
 //! Uses raw TCP/TLS writes to preserve exact original header name casing.
 //! Supports HTTP CONNECT tunneling through upstream proxies.
 //! Falls back to hyper-util Client (title-case headers) when raw write is not feasible.
+//!
+//! ## Why the raw write + `WriteFilter`/dummy-request technique exists (M3)
+//!
+//! Native Claude (and other upstreams that fingerprint clients) compare the
+//! **exact byte casing and ordering** of request headers against the official
+//! CLI. Any normalization — title-casing `anthropic-version`, reordering
+//! headers, collapsing duplicates — can change the upstream's behavior or trip
+//! anti-abuse heuristics. The proxy must therefore replay the client's headers
+//! verbatim on the wire.
+//!
+//! No HTTP client in our stack can do this:
+//! - `reqwest` always normalizes header casing.
+//! - hyper *can* preserve casing via its internal `HeaderCaseMap` request
+//!   extension, but that type is `pub(crate)` — there is **no public API to
+//!   construct one** and attach arbitrary original casings to an outgoing
+//!   request. (Our [`OriginalHeaderCases`] is a parallel, externally-built
+//!   case map precisely because hyper's own one is inaccessible.)
+//!
+//! So [`send_raw_request`] writes the request bytes by hand (exact casing +
+//! original order, see [`build_raw_request`]) over a TLS stream we own. The
+//! remaining problem is *parsing the response*: re-implementing an HTTP/1.1
+//! response reader (chunked transfer-encoding, content-length framing,
+//! connection-close framing, HEAD special-casing, SSE streaming) is exactly the
+//! kind of subtle, security-relevant code we do not want to own. Instead we
+//! reuse hyper's battle-tested response parser on a connection where the
+//! request was already written manually: [`WriteFilter`] swallows hyper's own
+//! request encoding (sending it to `/dev/null`) while passing reads through, and
+//! a throwaway "dummy" request drives hyper into response-reading mode. See
+//! [`do_hyper_response`].
+//!
+//! ### Fragility / why it is documented rather than rewritten
+//!
+//! - **hyper-version coupling.** The dummy-request trick relies on hyper's
+//!   `client::conn::http1` sender encoding+writing the request *before* reading
+//!   the response, and on it tolerating a connection whose writes are silently
+//!   dropped. This is observed behavior, not a documented contract; a hyper
+//!   upgrade could change request/response interleaving and break it. The
+//!   `do_hyper_response` path must be re-validated on every hyper bump.
+//! - **No connection pooling.** Each native-Claude request opens a fresh
+//!   TCP+TLS connection. Pooling is fundamentally incompatible with "write the
+//!   raw bytes, *then* hand the socket to hyper" — a pooled sender would try to
+//!   encode subsequent requests itself (which `WriteFilter` discards), so the
+//!   real bytes would never reach the wire. Reuse would require owning the
+//!   HTTP/1 writer too, i.e. the response-reader rewrite above.
+//!
+//! **Proper fix (follow-up, out of scope here):** either upstream a public
+//! hyper API to inject a `HeaderCaseMap` on outgoing requests (removing the need
+//! for raw writes entirely), or own a small, well-tested HTTP/1 response reader
+//! so the `WriteFilter`/dummy-request coupling to hyper internals can be
+//! dropped. Both are sizeable, regression-prone changes; until then this module
+//! is intentionally left as-is and guarded by the docs above.
 
 use super::ProxyError;
 use bytes::Bytes;

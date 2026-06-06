@@ -36,25 +36,55 @@ function parseJsonError(error: unknown): string {
 }
 
 export const providerSchema = z.object({
-  name: z.string(), // 必填校验移至 handleSubmit 中用 toast 提示
+  // 规范 schema：供应商名称必填（去除首尾空白后非空）。
+  // 注意：react-hook-form 解析器使用下方的 providerFormSchema（name 放宽为软校验），
+  // 空/纯空白名称不在解析器层硬拒绝，而是交由 handleSubmit 的确认框处理，
+  // 用户可在确认后保存暂时为空的名称（见 ProviderFormSoftValidation 测试）。
+  name: z
+    .string()
+    .refine((value) => value.trim().length > 0, "请填写供应商名称"),
   websiteUrl: z.string().url("请输入有效的网址").optional().or(z.literal("")),
   notes: z.string().optional(),
   settingsConfig: z
     .string()
     .min(1, "请填写配置内容")
     .superRefine((value, ctx) => {
+      let parsed: unknown;
       try {
-        JSON.parse(value);
+        parsed = JSON.parse(value);
       } catch (error) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           message: parseJsonError(error),
+        });
+        return;
+      }
+      // 顶层配置必须是 JSON 对象（与 codex/gemini hook 内部校验一致），
+      // 避免把合法 JSON 但非对象（数组 / 字面量）误存为有效配置。
+      if (
+        typeof parsed !== "object" ||
+        parsed === null ||
+        Array.isArray(parsed)
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "配置必须是 JSON 对象",
         });
       }
     }),
   // 图标配置
   icon: z.string().optional(),
   iconColor: z.string().optional(),
+});
+
+/**
+ * react-hook-form 解析器专用的 schema：
+ * 将 name 放宽为软校验（不在解析器层硬拒绝空/纯空白名称），
+ * 空名称由 handleSubmit 的确认框（软校验）处理，保持既有交互不变。
+ * 其余规则（settingsConfig 等）与 providerSchema 完全一致。
+ */
+export const providerFormSchema = providerSchema.extend({
+  name: z.string(),
 });
 
 export type ProviderFormData = z.infer<typeof providerSchema>;

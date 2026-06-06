@@ -42,6 +42,8 @@ web-server = [
     "nix",
 ]
 test-hooks = []
+# Build-only feature for the `gen-command-manifest` AST tool (pulls syn/walkdir).
+manifest = ["dep:syn", "dep:walkdir", "dep:proc-macro2"]
 
 [[bin]]
 name = "cc-switch"
@@ -51,7 +53,7 @@ required-features = ["desktop"]
 [[bin]]
 name = "gen-command-manifest"
 path = "src/bin/gen-command-manifest.rs"
-required-features = []
+required-features = ["manifest"]
 
 [[example]]
 name = "server"
@@ -104,7 +106,13 @@ rquickjs = { version = "0.8", features = ["array-buffer", "classes"] }
 thiserror = "2.0"
 anyhow = "1.0"
 zip = "2.2"
-serde_yaml = "0.9"
+# serde_yaml (dtolnay) is archived/unmaintained (0.9.34+deprecated).
+# serde_yaml_ng is the maintained drop-in fork: identical API and the SAME
+# unsafe-libyaml parser/emitter backend, so YAML behavior is unchanged — the
+# swap only replaces the deprecated wrapper. Package-renamed so all
+# `serde_yaml::` paths keep working with zero code changes. Used by
+# hermes_config.rs, mcp/hermes.rs, services/skill.rs. (M34)
+serde_yaml = { package = "serde_yaml_ng", version = "0.10" }
 tempfile = "3"
 url = "2.5"
 auto-launch = "0.5"
@@ -125,10 +133,11 @@ mime_guess = { version = "2", optional = true }
 rand = { version = "0.8", optional = true }
 fs2 = { version = "0.4", optional = true }
 
-# Command manifest binary dependencies (Task 0 generates AST manifest)
-syn = { version = "2", features = ["full", "extra-traits", "parsing", "visit"] }
-walkdir = "2"
-proc-macro2 = "1"
+# Command manifest binary dependencies (Task 0 generates AST manifest) —
+# gated behind the `manifest` feature so default + web builds skip them.
+syn = { version = "2", features = ["full", "extra-traits", "parsing", "visit"], optional = true }
+walkdir = { version = "2", optional = true }
+proc-macro2 = { version = "1", optional = true }
 
 # Linux-only filesystem detection (mount type check) — gated by web-server
 [target.'cfg(target_os = "linux")'.dependencies]

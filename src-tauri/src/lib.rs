@@ -1,7 +1,7 @@
 // Layer 1 / Task 2 (partial): the entire crate body is currently desktop-only.
 // Web-mode bootstrap (RuntimeMode + UiEventSink + sessions schema) lives in
-// dedicated modules and will pull selected functions out of this gate.
-// See `.claude/team-plan/upgrade-fork-to-v3.14.1-with-web-mode.md`.
+// dedicated modules (`bootstrap`, `runtime`) that the web-server example
+// re-includes directly via `#[path]` instead of through this gate.
 #![cfg(feature = "desktop")]
 
 pub mod bootstrap;
@@ -22,6 +22,7 @@ mod gemini_config;
 mod gemini_mcp;
 pub mod hermes_config;
 mod init_status;
+mod json5_doc;
 mod lightweight;
 #[cfg(target_os = "linux")]
 mod linux_fix;

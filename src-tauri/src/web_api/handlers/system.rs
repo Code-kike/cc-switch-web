@@ -238,7 +238,9 @@ async fn reset_circuit_breaker(
     state
         .app_state
         .proxy_service
-        .reset_provider_circuit_breaker(&request.app_type, &request.provider_id)
+        // Arg order is (provider_id, app_type) — matches the desktop
+        // ProxyService convention; see proxy_web.rs for why this is pinned.
+        .reset_provider_circuit_breaker(&request.provider_id, &request.app_type)
         .await
         .map_err(ApiError::from_service_message)?;
 
@@ -248,9 +250,11 @@ async fn reset_circuit_breaker(
 async fn get_circuit_breaker_stats(
     Json(_request): Json<CircuitBreakerActionRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    Err(ApiError::not_supported(
-        "Circuit breaker runtime stats are unavailable in web-server mode",
-    ))
+    // The local proxy (and its circuit breakers) does not run in web-server mode,
+    // so there are no runtime stats to report. Return `null` — mirroring the
+    // desktop command's `None` when the proxy is stopped — so the frontend's
+    // `CircuitBreakerStats | null` consumer renders gracefully instead of erroring.
+    Ok(Json(serde_json::Value::Null))
 }
 
 async fn enter_lightweight_mode() -> Result<Json<serde_json::Value>, ApiError> {

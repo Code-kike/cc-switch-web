@@ -97,11 +97,19 @@ pub fn should_rectify_thinking_signature(
         return true;
     }
 
-    // 场景7: 非法请求（与 CCH 对齐，按 invalid request 统一兜底）
-    if lower.contains("非法请求")
+    // 场景7（收窄，M8 修复）: "非法请求 / invalid request" 这类宽泛错误，
+    // 仅当**同时**提及 thinking / signature 上下文时才兜底触发。
+    //
+    // 此前任意 "invalid request" 子串都会触发破坏性的 thinking/signature 剥离
+    // + 整条重试。malformed JSON、无效 model、内容策略拒绝等与 thinking 无关的
+    // 客户端错误会被误判，白白消耗一次上游（premium）配额并静默降级请求体。
+    // 收窄后这些无关错误不再触发；而真正夹带 thinking/signature 关键字、但措辞
+    // 未命中上面 1–6 精确模式的非法请求，仍可由本兜底分支捕获。
+    let mentions_generic_invalid_request = lower.contains("非法请求")
         || lower.contains("illegal request")
-        || lower.contains("invalid request")
-    {
+        || lower.contains("invalid request");
+    let mentions_thinking_or_signature = lower.contains("thinking") || lower.contains("signature");
+    if mentions_generic_invalid_request && mentions_thinking_or_signature {
         return true;
     }
 
@@ -166,6 +174,18 @@ pub fn rectify_anthropic_request(body: &mut Value) -> RectifyResult {
         }
 
         if content_modified {
+            // M9：整流后不能把消息 content 留成空数组。Anthropic 会拒绝空 content，
+            // OpenAI 兼容端点的转换器更会直接丢弃整条消息、破坏 user/assistant 交替；
+            // 二者都会让"整流后重试"必定再次失败（甚至再触发整流形成无谓重试）。
+            // 若该消息原本全是 thinking/redacted_thinking，剥完只剩空数组，补一个
+            // 最小有效 text block 占位。占位文本须为**非空白**字符：本函数走错误
+            // 恢复重试路径，整流后的 body 可能直接回 Anthropic 上游；若该消息恰为
+            // 末条 assistant（prefill），纯空白 " " 会再触发
+            // "final assistant content cannot end with trailing whitespace" 而把
+            // 可恢复错误又变成 400。用 "." 既非空也无尾随空白。
+            if new_content.is_empty() {
+                new_content.push(serde_json::json!({"type": "text", "text": "."}));
+            }
             result.applied = true;
             *content = new_content;
         }
@@ -189,6 +209,23 @@ pub fn rectify_anthropic_request(body: &mut Value) -> RectifyResult {
 }
 
 /// 判断是否需要删除顶层 thinking 字段
+///
+/// M10 评估（DESCOPE-with-evidence）：deep-read 建议"工具续写里合法启用的
+/// thinking 不应被静默删除"。但本函数只在**错误恢复路径**里被调用
+/// （`rectify_anthropic_request` 仅在上游已返回 thinking/signature 错误后才执行，
+/// 见 `forwarder.rs`），且调用前已无条件剥掉了所有 thinking/redacted_thinking block。
+///
+/// 删除顶层 thinking 是整流器**核心用途**（跨渠道 thinking 签名不匹配恢复）所
+/// 必需的：当 Claude Code 把"启用了 thinking 的工具续写"路由到会拒绝该签名的
+/// 渠道时，整流器剥掉带坏签名的 thinking block 后，若仍保留 `thinking:enabled`，
+/// 上游会再次以"assistant message must start with a thinking block"拒绝整条重试。
+/// 因此**保留**顶层 thinking（M10 的字面修复）会把这一最常见的跨渠道可恢复错误
+/// 变成硬失败——得不偿失。我们也无法伪造合法的 thinking 签名前缀来两全。
+///
+/// 取舍：在错误恢复路径上"成功但本回合关闭扩展思考" > "直接报错"，这是 failover
+/// 代理的合理选择。这里以 `test_rectify_*_top_level_thinking*` 钉死该既定行为。
+/// 后续（更大改造）可考虑解析错误里的 block 索引做**外科式**剥离，只移除被点名的
+/// block，从而保住其余合法 thinking 前缀——超出本批次（行为批）安全范围。
 fn should_remove_top_level_thinking(body: &Value, messages: &[Value]) -> bool {
     // 检查 thinking 是否启用
     let thinking_type = body
@@ -465,14 +502,18 @@ mod tests {
     }
 
     #[test]
-    fn test_rectify_preserves_thinking_when_prefix_exists() {
+    fn test_rectify_cross_provider_signature_recovery_removes_top_level_thinking() {
+        // M10 钉死（DESCOPE-with-evidence）：跨渠道 thinking 签名不匹配的恢复路径上，
+        // 剥掉带（坏）签名的 thinking block 后，必须同时删除顶层 thinking，
+        // 否则上游会以 "must start with a thinking block" 再次拒绝整条重试。
+        // 这是整流器的核心用途，保留顶层 thinking 会把可恢复错误变成硬失败。
         let mut body = json!({
             "model": "claude-test",
             "thinking": { "type": "enabled" },
             "messages": [{
                 "role": "assistant",
                 "content": [
-                    { "type": "thinking", "thinking": "some thought" },
+                    { "type": "thinking", "thinking": "some thought", "signature": "cross-provider-sig" },
                     { "type": "tool_use", "id": "toolu_1", "name": "Test", "input": {} }
                 ]
             }]
@@ -480,12 +521,46 @@ mod tests {
 
         let result = rectify_anthropic_request(&mut body);
 
-        // thinking block 被移除，但顶层 thinking 不应被移除（因为原本有 thinking 前缀）
         assert!(result.applied);
         assert_eq!(result.removed_thinking_blocks, 1);
-        // 注意：由于 thinking block 被移除后，首块变成了 tool_use，
-        // 此时会触发删除顶层 thinking 的逻辑
-        // 这是预期行为：整流后如果仍然不符合要求，就删除顶层 thinking
+        // 顶层 thinking 被删除 —— 这是预期的恢复行为（见 should_remove_top_level_thinking 文档）
+        assert!(body.get("thinking").is_none());
+    }
+
+    #[test]
+    fn test_rectify_never_leaves_empty_content_array() {
+        // M9：仅含 thinking 的 assistant 消息整流后不能留下 content:[]，
+        // 否则重试必定再次失败（空 content 被上游拒绝/被转换器丢弃）。
+        let mut body = json!({
+            "model": "claude-test",
+            "messages": [{
+                "role": "assistant",
+                "content": [
+                    { "type": "thinking", "thinking": "solo", "signature": "s" }
+                ]
+            }]
+        });
+
+        let result = rectify_anthropic_request(&mut body);
+
+        assert!(result.applied);
+        let content = body["messages"][0]["content"].as_array().unwrap();
+        assert_eq!(content.len(), 1, "不应留下空 content 数组");
+        assert_eq!(content[0]["type"], "text");
+    }
+
+    #[test]
+    fn test_rectify_does_not_touch_originally_empty_content() {
+        // 原本就是空数组的消息不被整流（content_modified=false），不补占位
+        let mut body = json!({
+            "model": "claude-test",
+            "messages": [{ "role": "assistant", "content": [] }]
+        });
+
+        let result = rectify_anthropic_request(&mut body);
+
+        assert!(!result.applied);
+        assert_eq!(body["messages"][0]["content"].as_array().unwrap().len(), 0);
     }
 
     // ==================== 新增错误场景检测测试 ====================
@@ -509,18 +584,35 @@ mod tests {
     }
 
     #[test]
-    fn test_detect_invalid_request() {
-        // 场景7: 非法请求（与 CCH 对齐，统一触发）
+    fn test_detect_invalid_request_with_thinking_context() {
+        // 场景7（收窄）: 夹带 thinking/signature 上下文的非法请求仍兜底触发
         assert!(should_rectify_thinking_signature(
             Some("非法请求：thinking signature 不合法"),
             &enabled_config()
         ));
         assert!(should_rectify_thinking_signature(
+            Some("invalid request: thinking signature mismatch"),
+            &enabled_config()
+        ));
+    }
+
+    #[test]
+    fn test_no_detect_generic_invalid_request_without_thinking_context() {
+        // M8 修复：与 thinking/signature 无关的"非法请求"不再触发破坏性整流+重试
+        assert!(!should_rectify_thinking_signature(
+            Some("invalid request: malformed JSON"),
+            &enabled_config()
+        ));
+        assert!(!should_rectify_thinking_signature(
             Some("illegal request: tool_use block mismatch"),
             &enabled_config()
         ));
-        assert!(should_rectify_thinking_signature(
-            Some("invalid request: malformed JSON"),
+        assert!(!should_rectify_thinking_signature(
+            Some("invalid_request_error: model `foo` not found"),
+            &enabled_config()
+        ));
+        assert!(!should_rectify_thinking_signature(
+            Some("非法请求：内容违反使用策略"),
             &enabled_config()
         ));
     }
