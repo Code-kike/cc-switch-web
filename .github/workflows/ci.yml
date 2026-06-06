@@ -212,21 +212,12 @@ jobs:
       - name: Build web-server example
         run: cargo build --no-default-features --features web-server --example server --locked --manifest-path src-tauri/Cargo.toml
 
-      # smoke + integration are wired but currently NON-BLOCKING
-      # (continue-on-error). They surface PRE-EXISTING failures owned by other
-      # batches, not by this CI wiring:
-      #   - smoke: POST /api/system/get_circuit_breaker_stats returns 200 null,
-      #     but the smoke expects 501 WEB_NOT_SUPPORTED (L31 contract).
-      #   - integration: model-fetch / endpoint-speedtest cases hit the
-      #     web-server SSRF guard ("Refusing to reach internal address
-      #     127.0.0.1") because tests/helpers/web-server.ts does not set
-      #     CC_SWITCH_WEB_SSRF_ALLOW; a few panel cases (live Claude edit,
-      #     WebDAV, MCP) fail for reasons tied to other batches.
-      # TODO: drop continue-on-error once those land so this becomes a hard gate.
+      # smoke + integration are HARD gates (the B7c fixes landed: smoke L31
+      # contract aligned to 200 null; integration SSRF-allow set in the test
+      # harness, suites run sequentially, and the Claude-rename common-config
+      # revert bug fixed). Verified locally: smoke exit 0, integration 50/50.
       - name: Web server smoke test
-        continue-on-error: true
         run: pnpm smoke:web-server
 
       - name: Web server integration tests
-        continue-on-error: true
         run: pnpm test:integration

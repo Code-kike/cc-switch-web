@@ -2629,7 +2629,7 @@ const probes = [
     },
   },
   {
-    name: "failover-runtime-stats-web-not-supported",
+    name: "failover-runtime-stats-null-in-web",
     method: "POST",
     path: "/api/system/get_circuit_breaker_stats",
     async send(baseUrl, artifacts) {
@@ -2653,8 +2653,13 @@ const probes = [
       return { response, payload };
     },
     validate(response, payload) {
-      if (response.status !== 501 || payload?.code !== "WEB_NOT_SUPPORTED") {
-        throw new Error(`expected circuit breaker runtime stats to be unavailable in web mode, got ${response.status} ${JSON.stringify(payload)}`);
+      // L31 (B5b): the local proxy / circuit breakers do not run in web-server
+      // mode, so there are no runtime stats. The handler returns `200 null`
+      // (mirroring the desktop command's `None` when the proxy is stopped) so the
+      // FE's `CircuitBreakerStats | null` query renders gracefully — a 501 error
+      // here wedged that 5s polling query. Assert the deliberate null contract.
+      if (!response.ok || payload !== null) {
+        throw new Error(`expected circuit breaker runtime stats to be null in web mode, got ${response.status} ${JSON.stringify(payload)}`);
       }
     },
   },
