@@ -67,6 +67,20 @@ impl ApiError {
         Self::internal(error.to_string())
     }
 
+    /// Map an axum multipart error to the status it actually warrants instead of
+    /// a blanket 500. Critically this preserves `413 Payload Too Large` when a
+    /// body exceeds the configured `DefaultBodyLimit` (item 12) — `from_anyhow`
+    /// would otherwise flatten an over-limit upload into an opaque 500.
+    pub fn from_multipart(error: axum::extract::multipart::MultipartError) -> Self {
+        let status = error.status();
+        let code = if status == StatusCode::PAYLOAD_TOO_LARGE {
+            "WEB_PAYLOAD_TOO_LARGE"
+        } else {
+            "WEB_MULTIPART_ERROR"
+        };
+        Self::new(status, code, error.body_text())
+    }
+
     pub fn from_service_message(message: String) -> Self {
         if message.contains("unavailable in web-server mode")
             || message.contains("not supported in this runtime")
@@ -233,4 +247,74 @@ pub fn validate_outbound_url(raw: &str) -> Result<(), ApiError> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{
+        body::Body,
+        extract::{DefaultBodyLimit, Multipart},
+        routing::post,
+        Router,
+    };
+    use http::{header::CONTENT_TYPE, Request};
+    use tower::ServiceExt;
+
+    // Mirrors the production multipart handlers (config/prompts/skills): read
+    // fields, mapping errors via ApiError::from_multipart. An over-DefaultBodyLimit
+    // body must surface as 413, not the opaque 500 that from_anyhow produced (item 12).
+    async fn read_all(mut mp: Multipart) -> Result<StatusCode, ApiError> {
+        while let Some(field) = mp.next_field().await.map_err(ApiError::from_multipart)? {
+            let _ = field.bytes().await.map_err(ApiError::from_multipart)?;
+        }
+        Ok(StatusCode::OK)
+    }
+
+    fn multipart_body(boundary: &str, payload_len: usize) -> Vec<u8> {
+        let mut body = Vec::new();
+        body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        body.extend_from_slice(
+            b"Content-Disposition: form-data; name=\"file\"; filename=\"x.bin\"\r\n\r\n",
+        );
+        body.extend(std::iter::repeat(b'x').take(payload_len));
+        body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+        body
+    }
+
+    async fn upload(limit: usize, payload_len: usize) -> StatusCode {
+        let boundary = "ccswMultipartBoundaryTest";
+        let app = Router::new()
+            .route("/u", post(read_all))
+            .layer(DefaultBodyLimit::max(limit));
+        let body = multipart_body(boundary, payload_len);
+        app.oneshot(
+            Request::post("/u")
+                .header(
+                    CONTENT_TYPE,
+                    format!("multipart/form-data; boundary={boundary}"),
+                )
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .status()
+    }
+
+    #[tokio::test]
+    async fn oversized_multipart_upload_maps_to_413_not_500() {
+        // Production handlers used ApiError::from_anyhow → 500 on overflow; the
+        // from_multipart helper must preserve MultipartError::status() == 413.
+        assert_eq!(upload(1024, 1024 * 8).await, StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[tokio::test]
+    async fn under_limit_multipart_upload_succeeds() {
+        // The raised ceiling must let realistic (> axum's 2 MiB default) uploads through.
+        assert_eq!(
+            upload(64 * 1024 * 1024, 4 * 1024 * 1024).await,
+            StatusCode::OK
+        );
+    }
 }

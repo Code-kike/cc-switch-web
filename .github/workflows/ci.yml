@@ -217,6 +217,19 @@ jobs:
       - name: Build web-server example
         run: cargo build --no-default-features --features web-server --example server --locked --manifest-path src-tauri/Cargo.toml
 
+      # Run the web-runtime-specific Rust tests that NO other job covers: the
+      # web_api unit tests (routes body-limit + SPA fallback) and the dual-runtime
+      # module-list parity guard. They live in the `--example server` target and
+      # are skipped by the desktop `cargo test` (lib.rs is `#![cfg(feature =
+      # "desktop")]`, so web_api never compiles there). Scoped via filters on
+      # purpose: the example binary ALSO compiles every other src module's
+      # #[cfg(test)] tests, but those are already run by the desktop job and only
+      # collide under the example binary's parallelism — re-running them here adds
+      # flakiness, not coverage. (item 13)
+      - name: Web server Rust tests
+        run: |
+          cargo test --no-default-features --features web-server --example server --locked --manifest-path src-tauri/Cargo.toml -- web_api:: dual_runtime_parity::
+
       # smoke + integration are HARD gates (the B7c fixes landed: smoke L31
       # contract aligned to 200 null; integration SSRF-allow set in the test
       # harness, suites run sequentially, and the Claude-rename common-config

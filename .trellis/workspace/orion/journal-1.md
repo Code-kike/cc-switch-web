@@ -399,3 +399,36 @@ Upgraded outdated GitHub Actions workflow action majors to avoid Node.js 20 acti
 ### Next Steps
 
 - None - task complete
+
+
+## Session 12: Round 2: fix cross-validated non-security findings (Claude x Codex)
+
+**Date**: 2026-06-10
+**Task**: Round 2: fix cross-validated non-security findings (Claude x Codex)
+**Branch**: `fix/non-security-findings-round-2`
+
+### Summary
+
+Fresh full review (17-agent Workflow + independent Codex gpt-5.5) + 2-round Claude-Codex debate converged on a fix plan; implemented the 8 NON-SECURITY items (7,10,11,12,13,14,15,16) inline (gateway down for sub-agents). Codex review approved 7/8 + scope; item 12 (multipart oversize -> opaque 500) fixed per Codex's exact prescription (ApiError::from_multipart preserving status()->413). All gates green (cargo fmt/clippy --all-targets/test 1272, web example 9, typecheck, test:unit 578, route+locale parity, test:integration 50/50). Security items left untouched per personal-use scope. Committed 51261807.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `51261807` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

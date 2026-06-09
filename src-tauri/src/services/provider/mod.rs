@@ -465,6 +465,11 @@ base_url = "http://localhost:8080"
         );
     }
 
+    // Desktop-only: the setup starts the proxy data plane (`proxy_service.start()`)
+    // to simulate a live takeover, which is unavailable in web-server mode. The
+    // production update path guards on `proxy_service.is_running()` so web mode is
+    // unaffected; only this test's setup is desktop-specific. (surfaced by item 13)
+    #[cfg(feature = "desktop")]
     #[tokio::test]
     #[serial]
     async fn update_current_claude_provider_syncs_live_when_proxy_takeover_detected_without_backup()

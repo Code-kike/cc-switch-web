@@ -112,11 +112,11 @@ async fn import_prompt_upload(
     while let Some(field) = multipart
         .next_field()
         .await
-        .map_err(ApiError::from_anyhow)?
+        .map_err(ApiError::from_multipart)?
     {
         if field.name() == Some("file") {
             filename = field.file_name().map(ToString::to_string);
-            let bytes = field.bytes().await.map_err(ApiError::from_anyhow)?;
+            let bytes = field.bytes().await.map_err(ApiError::from_multipart)?;
             let text = String::from_utf8(bytes.to_vec()).map_err(|err| {
                 ApiError::bad_request(format!("Invalid UTF-8 prompt upload: {err}"))
             })?;

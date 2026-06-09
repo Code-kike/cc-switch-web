@@ -1332,7 +1332,10 @@
   "errors": {
     "usage_query_failed": "利用状況の取得に失敗しました",
     "configLoadFailedTitle": "設定の読み込みに失敗しました",
-    "configLoadFailedMessage": "設定ファイルを読み込めません:\n{{path}}\n\nエラー詳細:\n{{detail}}\n\nJSON が正しいか確認するか、同じディレクトリのバックアップファイル（config.json.bak など）から復元してください。\n\nアプリを終了して修正してください。"
+    "configLoadFailedMessage": "設定ファイルを読み込めません:\n{{path}}\n\nエラー詳細:\n{{detail}}\n\nJSON が正しいか確認するか、同じディレクトリのバックアップファイル（config.json.bak など）から復元してください。\n\nアプリを終了して修正してください。",
+    "renderCrashTitle": "問題が発生しました",
+    "renderCrashMessage": "予期しないエラーが発生し、続行できませんでした。再読み込みでほとんどの場合は解決します。",
+    "renderCrashReload": "再読み込み"
   },
   "presetSelector": {
     "title": "設定タイプを選択",

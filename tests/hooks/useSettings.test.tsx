@@ -6,6 +6,7 @@ import type { Settings } from "@/types";
 const mutateAsyncMock = vi.fn();
 const useSettingsQueryMock = vi.fn();
 const setAppConfigDirOverrideMock = vi.fn();
+const setAutoLaunchMock = vi.fn();
 const applyClaudePluginConfigMock = vi.fn();
 const applyClaudeOnboardingSkipMock = vi.fn();
 const clearClaudeOnboardingSkipMock = vi.fn();
@@ -65,6 +66,7 @@ vi.mock("@/lib/api", () => ({
   settingsApi: {
     setAppConfigDirOverride: (...args: unknown[]) =>
       setAppConfigDirOverrideMock(...args),
+    setAutoLaunch: (...args: unknown[]) => setAutoLaunchMock(...args),
     applyClaudePluginConfig: (...args: unknown[]) =>
       applyClaudePluginConfigMock(...args),
     applyClaudeOnboardingSkip: (...args: unknown[]) =>
@@ -140,6 +142,7 @@ describe("useSettings hook", () => {
     mutateAsyncMock.mockReset();
     useSettingsQueryMock.mockReset();
     setAppConfigDirOverrideMock.mockReset();
+    setAutoLaunchMock.mockReset();
     applyClaudePluginConfigMock.mockReset();
     applyClaudeOnboardingSkipMock.mockReset();
     clearClaudeOnboardingSkipMock.mockReset();
@@ -180,6 +183,7 @@ describe("useSettings hook", () => {
 
     mutateAsyncMock.mockResolvedValue(true);
     setAppConfigDirOverrideMock.mockResolvedValue(true);
+    setAutoLaunchMock.mockResolvedValue(true);
     applyClaudePluginConfigMock.mockResolvedValue(true);
     applyClaudeOnboardingSkipMock.mockResolvedValue(true);
     clearClaudeOnboardingSkipMock.mockResolvedValue(true);
@@ -422,6 +426,48 @@ describe("useSettings hook", () => {
     // 修复生效：读的是缓存实时值 true，payload=false，差异触发 clear_claude_config
     expect(applyClaudePluginConfigMock).toHaveBeenCalledWith({ official: true });
     expect(syncCurrentProvidersLiveMock).toHaveBeenCalled();
+  });
+
+  it("applies launchOnStartup + skipClaudeOnboarding side effects via live cache when closure data is stale (item 7)", async () => {
+    // 快速连切 race：closure data 停留在「上上次」值，但 queryClient 缓存已是上次
+    // 真正持久化的值。用户这次把两个开关都切回 false，payload 与 closure data 看似
+    // 相等（旧实现据此跳过副作用），但与缓存里的真实上次值(true)不同 → 必须触发。
+    serverSettings = {
+      ...serverSettings,
+      launchOnStartup: false,
+      skipClaudeOnboarding: false,
+    };
+    useSettingsQueryMock.mockReturnValue({
+      data: serverSettings,
+      isLoading: false,
+    });
+    settingsFormMock = createSettingsFormMock({
+      settings: {
+        ...serverSettings,
+        launchOnStartup: false,
+        skipClaudeOnboarding: false,
+        language: "zh",
+      },
+    });
+    directorySettingsMock = createDirectorySettingsMock();
+
+    // 缓存里的真实上次值：两者都为 true（与 closure data=false 有时序差）。
+    getQueryDataMock.mockImplementation(() => ({
+      ...serverSettings,
+      launchOnStartup: true,
+      skipClaudeOnboarding: true,
+    }));
+
+    const { result } = renderHook(() => useSettings());
+
+    await act(async () => {
+      await result.current.saveSettings(undefined, { silent: true });
+    });
+
+    // 读缓存实时值 true、payload=false → 差异触发：关闭自启 + 清除 onboarding skip。
+    expect(setAutoLaunchMock).toHaveBeenCalledWith(false);
+    expect(clearClaudeOnboardingSkipMock).toHaveBeenCalledTimes(1);
+    expect(applyClaudeOnboardingSkipMock).not.toHaveBeenCalled();
   });
 
   it("resets form, language and directories using server data", () => {

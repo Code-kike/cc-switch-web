@@ -1687,8 +1687,11 @@ fn strip_bedrock_region_prefix(id: &str) -> Option<String> {
 /// （历史上会话日志路径未做 `.`→`-`/小写归一，导致 `claude-sonnet-4.6` 等
 /// 点号写法漏命中横线形 seed → 成本记 0）。
 ///
-/// 候选顺序（前 4 个为既有基础候选，永远排在最前，确保兜底归一不越过更精确的匹配）：
-/// (i) 清洗后原样；(ii) 小写；(iii) 小写后点号转横线；(iv) 去掉尾部 1M 标记。
+/// 候选顺序（基础候选永远排在最前，确保兜底归一不越过更精确的匹配）：
+/// (i) 清洗后原样；(ii) 小写；(iii) 小写后点号转横线；
+/// (iv) 去掉尾部 1M 标记——分别对「清洗原样 / 小写 / 小写+点号转横线」三种形式
+/// 剥离，使带 `[1M]` 标记又需大小写/点号归一的 id（如 `Claude-Sonnet-4.6[1M]`）
+/// 也能命中归一后的 seed（item 11，否则会漏过全部候选 → 成本静默记 0）。
 /// 注意：'.'→'-' 必须在 1M 处理之前且不能更早，否则会破坏
 /// gpt-5.5 / minimax-m2.7 / glm-5.1 等点号小写 id；去重后保持首次出现顺序。
 ///
@@ -1706,9 +1709,22 @@ pub(crate) fn pricing_lookup_candidates(model_id: &str) -> Vec<String> {
     // Claude Code 接管会回写 `claude-opus-4-8[1M]` 等带标记 id。
     let one_m_stripped =
         crate::proxy::model_mapper::strip_one_m_suffix_for_upstream(&cleaned).to_string();
+    // 也对「小写」「小写+点号转横线」形剥离 1M 标记：否则带 `[1M]` 又需大小写/点号
+    // 归一的 id（如 `Claude-Sonnet-4.6[1M]`）会漏过全部候选 → 成本静默记 0（item 11）。
+    let one_m_stripped_lower =
+        crate::proxy::model_mapper::strip_one_m_suffix_for_upstream(&lower).to_string();
+    let one_m_stripped_dot_dash =
+        crate::proxy::model_mapper::strip_one_m_suffix_for_upstream(&dot_dash).to_string();
 
     // 基础候选优先。
-    let mut raw: Vec<String> = vec![cleaned.clone(), lower, dot_dash.clone(), one_m_stripped];
+    let mut raw: Vec<String> = vec![
+        cleaned.clone(),
+        lower,
+        dot_dash.clone(),
+        one_m_stripped,
+        one_m_stripped_lower,
+        one_m_stripped_dot_dash,
+    ];
 
     // ---- 兜底归一（追加在基础候选之后，永不越过更精确的命中） ----
 
@@ -2943,6 +2959,13 @@ mod tests {
             result.is_some(),
             "claude-opus-4-8[1m]（小写标记）也应剥离后命中"
         );
+        // item 11：带 [1M] 标记 + 点号/大小写/前缀 的组合 id 也应命中 dash 形 seed
+        // （此前 1M 剥离只作用于清洗原样形，组合 id 会漏过全部候选 → 成本静默记 0）。
+        let result = find_model_pricing_row(&conn, "anthropic/Claude-Opus-4.8[1M]")?;
+        assert!(
+            result.is_some(),
+            "anthropic/Claude-Opus-4.8[1M] 应经 1M 剥离 + 小写 + '.'→'-' 命中 claude-opus-4-8"
+        );
         // 1M 剥离不得误伤点号小写 id（trailing-ws-safe + 大小写不敏感仅匹配 [1m]）
         let result = find_model_pricing_row(&conn, "gpt-5.5")?;
         assert!(result.is_some(), "gpt-5.5 不应被 1M 剥离逻辑影响");
@@ -3046,6 +3069,13 @@ mod tests {
         assert!(
             candidates.contains(&"claude-opus-4-8".to_string()),
             "应包含剥离 1M 标记后的候选: {candidates:?}"
+        );
+
+        // item 11：[1M] 标记须与小写/点号归一组合，组合 id 才能命中 dash 形 seed。
+        let candidates = pricing_lookup_candidates("anthropic/Claude-Sonnet-4.6[1M]");
+        assert!(
+            candidates.contains(&"claude-sonnet-4-6".to_string()),
+            "应包含剥离 1M + 小写 + '.'→'-' 后的候选: {candidates:?}"
         );
 
         // 点号小写 id 不应被 '.'→'-' 之外的步骤破坏，且无重复项

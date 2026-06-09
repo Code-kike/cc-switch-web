@@ -34,7 +34,6 @@ desktop = [
     "webkit2gtk",
 ]
 web-server = [
-    "rust-embed",
     "env_logger",
     "mime_guess",
     "rand",
@@ -127,7 +126,6 @@ json5 = "0.4"
 json-five = "0.3.1"
 
 # Web-server feature dependencies (Layer 1 / Task 1)
-rust-embed = { version = "8", features = ["compression"], optional = true }
 env_logger = { version = "0.11", optional = true }
 mime_guess = { version = "2", optional = true }
 rand = { version = "0.8", optional = true }

@@ -1,0 +1,1 @@
+{"file": ".trellis/tasks/06-08-fix-cross-validated-non-security-findings-round-2/research/fix-plan.md", "reason": "Acceptance criteria + the non-security-only scope boundary to verify each fix against; confirms no out-of-scope security item was touched."}

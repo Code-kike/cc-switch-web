@@ -1332,7 +1332,10 @@
   "errors": {
     "usage_query_failed": "Usage query failed",
     "configLoadFailedTitle": "Configuration Load Failed",
-    "configLoadFailedMessage": "Unable to read configuration file:\n{{path}}\n\nError details:\n{{detail}}\n\nPlease check if the JSON is valid, or restore from a backup file (e.g., config.json.bak) in the same directory.\n\nThe app will exit so you can fix this."
+    "configLoadFailedMessage": "Unable to read configuration file:\n{{path}}\n\nError details:\n{{detail}}\n\nPlease check if the JSON is valid, or restore from a backup file (e.g., config.json.bak) in the same directory.\n\nThe app will exit so you can fix this.",
+    "renderCrashTitle": "Something went wrong",
+    "renderCrashMessage": "The interface hit an unexpected error and couldn't continue. Reloading usually fixes it.",
+    "renderCrashReload": "Reload"
   },
   "presetSelector": {
     "title": "Select Configuration Type",

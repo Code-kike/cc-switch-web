@@ -214,11 +214,11 @@ export function useSettings(): UseSettingsResult {
           language: mergedSettings.language,
         };
 
-        // 在 mutate 之前从实时缓存捕获上一次持久化的插件集成状态，
-        // 避免 closure 里的 data 因 React 尚未 re-render 而滞后
-        const prevPluginEnabled = queryClient.getQueryData<Settings>([
-          "settings",
-        ])?.enableClaudePluginIntegration;
+        // 在 mutate 之前从实时缓存捕获上一次持久化的设置（不止插件集成状态），
+        // 避免 closure 里的 data 因 React 尚未 re-render 而滞后——快速连续切换时
+        // launchOnStartup / skipClaudeOnboarding 等副作用会比对过期值而漏触发。item 7
+        const prevSettings = queryClient.getQueryData<Settings>(["settings"]);
+        const prevPluginEnabled = prevSettings?.enableClaudePluginIntegration;
 
         // 保存到配置文件
         await saveMutation.mutateAsync(payload);
@@ -226,7 +226,7 @@ export function useSettings(): UseSettingsResult {
         // 如果开机自启状态改变，调用系统 API
         if (
           payload.launchOnStartup !== undefined &&
-          payload.launchOnStartup !== data?.launchOnStartup
+          payload.launchOnStartup !== prevSettings?.launchOnStartup
         ) {
           try {
             await settingsApi.setAutoLaunch(payload.launchOnStartup);
@@ -245,7 +245,8 @@ export function useSettings(): UseSettingsResult {
         const nextSkipClaudeOnboarding = updates.skipClaudeOnboarding;
         if (
           nextSkipClaudeOnboarding !== undefined &&
-          nextSkipClaudeOnboarding !== (data?.skipClaudeOnboarding ?? false)
+          nextSkipClaudeOnboarding !==
+            (prevSettings?.skipClaudeOnboarding ?? false)
         ) {
           try {
             if (nextSkipClaudeOnboarding) {
@@ -351,11 +352,11 @@ export function useSettings(): UseSettingsResult {
           language: mergedSettings.language,
         };
 
-        // 在 mutate 之前从实时缓存捕获上一次持久化的插件集成状态，
-        // 避免 closure 里的 data 因 React 尚未 re-render 而滞后
-        const prevPluginEnabled = queryClient.getQueryData<Settings>([
-          "settings",
-        ])?.enableClaudePluginIntegration;
+        // 在 mutate 之前从实时缓存捕获上一次持久化的设置（不止插件集成状态），
+        // 避免 closure 里的 data 因 React 尚未 re-render 而滞后——快速连续切换时
+        // launchOnStartup / skipClaudeOnboarding 等副作用会比对过期值而漏触发。item 7
+        const prevSettings = queryClient.getQueryData<Settings>(["settings"]);
+        const prevPluginEnabled = prevSettings?.enableClaudePluginIntegration;
 
         await saveMutation.mutateAsync(payload);
 
@@ -364,7 +365,7 @@ export function useSettings(): UseSettingsResult {
         // 只在开机自启状态真正改变时调用系统 API
         if (
           payload.launchOnStartup !== undefined &&
-          payload.launchOnStartup !== data?.launchOnStartup
+          payload.launchOnStartup !== prevSettings?.launchOnStartup
         ) {
           try {
             await settingsApi.setAutoLaunch(payload.launchOnStartup);
@@ -379,7 +380,8 @@ export function useSettings(): UseSettingsResult {
         }
 
         // Claude Code 初次安装确认：开=写入 hasCompletedOnboarding=true；关=删除该字段
-        const prevSkipClaudeOnboarding = data?.skipClaudeOnboarding ?? false;
+        const prevSkipClaudeOnboarding =
+          prevSettings?.skipClaudeOnboarding ?? false;
         const nextSkipClaudeOnboarding = payload.skipClaudeOnboarding ?? false;
         if (nextSkipClaudeOnboarding !== prevSkipClaudeOnboarding) {
           try {
