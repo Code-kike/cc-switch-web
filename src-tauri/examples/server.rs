@@ -343,3 +343,134 @@ async fn shutdown_signal() {
     // Allow workers a brief moment to drain (Round 2 P1-3).
     tokio::time::sleep(Duration::from_millis(50)).await;
 }
+
+/// Dual-runtime module-list drift guard (item 15).
+///
+/// The web runtime re-includes a HAND-MAINTAINED subset of `src/` modules via
+/// `#[path]` shims (`web_proxy.rs`, `web_services.rs`, and this file). Nothing in
+/// the compiler enforces that those lists stay in sync with the real `mod.rs`
+/// files, so a module added to `src/` can silently go missing from the web build.
+///
+/// These tests pin the parts of that contract that have a machine-readable signal
+/// WITHOUT false positives:
+///   * every service module the real `mod.rs` gates into the web runtime
+///     (`#[cfg(not(feature = "desktop"))]` / `#[cfg(feature = "web-server")]`)
+///     MUST be in the services shim, and `#[cfg(feature = "desktop")]`-only ones
+///     MUST NOT be;
+///   * every `#[path]` the shims reference MUST resolve to an existing source file.
+/// The proxy shim is an intentional curated subset with no cfg signal, so its
+/// web-relevance is a judgment call and is only checked for dangling paths.
+#[cfg(test)]
+mod dual_runtime_parity {
+    use std::collections::BTreeSet;
+    use std::path::PathBuf;
+
+    fn manifest() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    }
+
+    fn read(rel: &str) -> String {
+        let p = manifest().join(rel);
+        std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()))
+    }
+
+    /// Top-level source stems referenced by `#[path = "../src/<subdir>/<stem>(/mod)?.rs"]`
+    /// lines in an example shim file.
+    fn shim_stems(shim_src: &str, subdir: &str) -> BTreeSet<String> {
+        let needle = format!("../src/{subdir}/");
+        let mut out = BTreeSet::new();
+        for line in shim_src.lines() {
+            let line = line.trim();
+            if !line.starts_with("#[path") {
+                continue;
+            }
+            let Some(start) = line.find(&needle) else {
+                continue;
+            };
+            let rest = &line[start + needle.len()..];
+            let Some(end) = rest.find(".rs\"") else {
+                continue;
+            };
+            let stem = rest[..end].strip_suffix("/mod").unwrap_or(&rest[..end]);
+            let top = stem.split('/').next().unwrap_or(stem);
+            out.insert(top.to_string());
+        }
+        out
+    }
+
+    /// `(module_name, cfg_tag)` for each `mod`/`pub mod`/`pub(crate) mod NAME;`
+    /// declaration in a real `mod.rs`; cfg_tag reflects the immediately preceding
+    /// `#[cfg(...)]` line.
+    fn mod_decls(mod_src: &str) -> Vec<(String, Option<&'static str>)> {
+        let mut out = Vec::new();
+        let mut pending: Option<&'static str> = None;
+        for line in mod_src.lines() {
+            let t = line.trim();
+            if t.starts_with("#[cfg(") {
+                pending = Some(if t.contains("not(feature = \"desktop\")") {
+                    "not-desktop"
+                } else if t.contains("feature = \"web-server\"") {
+                    "web-server"
+                } else if t.contains("feature = \"desktop\"") {
+                    "desktop"
+                } else {
+                    "other"
+                });
+                continue;
+            }
+            let decl = t
+                .strip_prefix("pub(crate) mod ")
+                .or_else(|| t.strip_prefix("pub mod "))
+                .or_else(|| t.strip_prefix("mod "));
+            if let Some(rest) = decl {
+                let taken = pending.take();
+                if let Some(name) = rest.strip_suffix(';') {
+                    out.push((name.trim().to_string(), taken));
+                }
+                continue;
+            }
+            if !t.is_empty() && !t.starts_with("#[") && !t.starts_with("//") {
+                pending = None;
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn web_services_shim_covers_web_cfg_gated_service_modules() {
+        let modrs = read("src/services/mod.rs");
+        let included = shim_stems(&read("examples/web_services.rs"), "services");
+        for (name, cfg) in mod_decls(&modrs) {
+            match cfg {
+                Some("not-desktop") | Some("web-server") => assert!(
+                    included.contains(&name),
+                    "src/services/mod.rs gates web-runtime module `{name}` (cfg {cfg:?}) but \
+                     examples/web_services.rs does not #[path]-include it — dual-runtime drift (item 15)"
+                ),
+                Some("desktop") => assert!(
+                    !included.contains(&name),
+                    "examples/web_services.rs includes desktop-only module `{name}` — must not be in the web shim (item 15)"
+                ),
+                _ => {} // unconditional modules: web inclusion is a curated judgment call
+            }
+        }
+    }
+
+    #[test]
+    fn shim_path_includes_resolve_to_existing_sources() {
+        for (subdir, shim) in [
+            ("proxy", "examples/web_proxy.rs"),
+            ("services", "examples/web_services.rs"),
+        ] {
+            let base = manifest().join("src").join(subdir);
+            for stem in shim_stems(&read(shim), subdir) {
+                assert!(
+                    base.join(format!("{stem}.rs")).is_file()
+                        || base.join(&stem).join("mod.rs").is_file(),
+                    "{shim} includes `{stem}` but neither src/{subdir}/{stem}.rs nor \
+                     src/{subdir}/{stem}/mod.rs exists — dual-runtime drift (item 15)"
+                );
+            }
+        }
+    }
+}

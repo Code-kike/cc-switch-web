@@ -1097,7 +1097,7 @@ pub(crate) fn build_anthropic_usage(usage: Option<&Value>) -> Value {
         });
     };
 
-    let input_tokens = usage
+    let prompt_tokens = usage
         .get("promptTokenCount")
         .and_then(|value| value.as_u64())
         .unwrap_or(0);
@@ -1105,18 +1105,29 @@ pub(crate) fn build_anthropic_usage(usage: Option<&Value>) -> Value {
         .get("totalTokenCount")
         .and_then(|value| value.as_u64())
         .unwrap_or(0);
-    let output_tokens = total_tokens.saturating_sub(input_tokens);
+    // output 按完整 prompt 计算（promptTokenCount 含缓存命中部分）。
+    let output_tokens = total_tokens.saturating_sub(prompt_tokens);
+
+    // Gemini 的 promptTokenCount 含缓存命中；Anthropic 语义里 input_tokens 是不含
+    // 缓存的 fresh input，且成本计算器对 app_type=="claude"（gemini_native 经
+    // Claude 路由计费）不再扣减缓存（calculator.rs 仅对 codex/gemini 扣）。若原样
+    // 照搬 promptTokenCount 到 input_tokens 再单独发出 cache_read_input_tokens，
+    // 缓存命中部分会被「按 input 价 + 按 cache_read 价」重复计费两次。与兄弟转换
+    // transform.rs::openai_to_anthropic、streaming.rs::build_anthropic_usage_json
+    // 对齐：input_tokens = prompt - cached。
+    let cached_tokens = usage
+        .get("cachedContentTokenCount")
+        .and_then(|value| value.as_u64())
+        .unwrap_or(0);
+    let input_tokens = prompt_tokens.saturating_sub(cached_tokens);
 
     let mut result = json!({
         "input_tokens": input_tokens,
         "output_tokens": output_tokens
     });
 
-    if let Some(cached) = usage
-        .get("cachedContentTokenCount")
-        .and_then(|value| value.as_u64())
-    {
-        result["cache_read_input_tokens"] = json!(cached);
+    if cached_tokens > 0 {
+        result["cache_read_input_tokens"] = json!(cached_tokens);
     }
 
     result
@@ -1431,7 +1442,9 @@ mod tests {
         assert_eq!(result["content"][0]["type"], "text");
         assert_eq!(result["content"][0]["text"], "Hello from Gemini");
         assert_eq!(result["stop_reason"], "end_turn");
-        assert_eq!(result["usage"]["input_tokens"], 12);
+        // input_tokens 扣除缓存命中（promptTokenCount 12 - cachedContentTokenCount 3 = 9），
+        // 避免缓存部分被 input 价 + cache_read 价重复计费；output 仍按完整 prompt 计算。
+        assert_eq!(result["usage"]["input_tokens"], 9);
         assert_eq!(result["usage"]["output_tokens"], 8);
         assert_eq!(result["usage"]["cache_read_input_tokens"], 3);
     }

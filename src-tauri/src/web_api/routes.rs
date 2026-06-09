@@ -2,6 +2,7 @@
 
 use axum::{
     body::Body,
+    extract::DefaultBodyLimit,
     http::{header, HeaderValue, Method, StatusCode, Uri},
     middleware::from_fn,
     response::{IntoResponse, Response},
@@ -12,6 +13,12 @@ use tower::ServiceBuilder;
 use tower_http::trace::TraceLayer;
 
 use super::{handlers, middleware as mw, ApiState};
+
+/// Generous request-body ceiling for the JSON/multipart API (item 12). axum's
+/// 2 MiB default rejected realistic SQLite config exports / skill / prompt
+/// uploads with an opaque 500; raising the ceiling lets legit uploads succeed
+/// while genuinely-oversized requests get a clean 413 from the body-limit layer.
+const MAX_API_BODY_BYTES: usize = 64 * 1024 * 1024;
 
 pub fn build_router(state: ApiState) -> Router {
     let api = api_router(state);
@@ -57,6 +64,9 @@ fn api_router(state: ApiState) -> Router {
         .merge(handlers::webdav::router(state.clone()))
         .merge(handlers::workspace::router(state.clone()))
         .layer(mw::cors::layer())
+        // Raise the body ceiling above axum's 2 MiB default so real config /
+        // skill / prompt uploads succeed; oversized requests get a clean 413 (item 12).
+        .layer(DefaultBodyLimit::max(MAX_API_BODY_BYTES))
         .fallback(api_404)
 }
 
@@ -75,8 +85,8 @@ async fn api_404(uri: Uri) -> Response {
 /// SPA fallback: every non-API GET returns index.html so client-side routing
 /// works on direct URL hits / refreshes (Round 5 P0-3).
 ///
-/// Layer 2 / Task 4 — placeholder; rust-embed integration happens once
-/// `dist-web/` is built.
+/// Assets are served from disk (`dist-web/`, see `read_dist_web_file`); the
+/// previously-planned rust-embed integration was dropped and the dep removed (item 16).
 async fn serve_spa_fallback(method: Method, uri: Uri) -> Response {
     if method != Method::GET && method != Method::HEAD {
         return (StatusCode::METHOD_NOT_ALLOWED, "method not allowed").into_response();
@@ -251,5 +261,51 @@ mod tests {
 
         std::env::remove_var("CC_SWITCH_WEB_DIST_DIR");
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn body_limit_rejects_oversize_with_413_and_allows_under_limit() {
+        use axum::{body::Bytes, routing::post};
+        use http::Request;
+        use tower::ServiceExt;
+
+        // Mirror the production api_router body-limit layer with a small cap so the
+        // boundary is cheap to exercise; the handler consumes the full body.
+        const LIMIT: usize = 1024;
+        let app = Router::new()
+            .route("/u", post(|_b: Bytes| async { StatusCode::OK }))
+            .layer(DefaultBodyLimit::max(LIMIT));
+
+        let under = app
+            .clone()
+            .oneshot(
+                Request::post("/u")
+                    .header(header::CONTENT_LENGTH, "16")
+                    .body(Body::from(vec![b'x'; 16]))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(under.status(), StatusCode::OK);
+
+        let too_big = vec![b'x'; LIMIT + 1];
+        let over = app
+            .oneshot(
+                Request::post("/u")
+                    .header(header::CONTENT_LENGTH, too_big.len().to_string())
+                    .body(Body::from(too_big))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        // Clean 413 from the body-limit layer, not an opaque 500 (item 12).
+        assert_eq!(over.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[test]
+    fn api_body_ceiling_exceeds_axum_default() {
+        // Regression guard: the ceiling must exceed axum's 2 MiB default — the bug
+        // was real config exports (> 2 MiB) failing with an opaque 500 (item 12).
+        assert!(MAX_API_BODY_BYTES > 2 * 1024 * 1024);
     }
 }

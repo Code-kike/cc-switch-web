@@ -387,14 +387,14 @@ async fn install_skills_upload(
     while let Some(field) = multipart
         .next_field()
         .await
-        .map_err(ApiError::from_anyhow)?
+        .map_err(ApiError::from_multipart)?
     {
         if field.name() == Some("file") {
             let file_name = field
                 .file_name()
                 .map(ToString::to_string)
                 .unwrap_or_else(|| "skills.zip".to_string());
-            let bytes = field.bytes().await.map_err(ApiError::from_anyhow)?;
+            let bytes = field.bytes().await.map_err(ApiError::from_multipart)?;
             upload = Some((file_name, bytes));
             break;
         }

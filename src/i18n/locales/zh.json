@@ -1332,7 +1332,10 @@
   "errors": {
     "usage_query_failed": "用量查询失败",
     "configLoadFailedTitle": "配置加载失败",
-    "configLoadFailedMessage": "无法读取配置文件：\n{{path}}\n\n错误详情：\n{{detail}}\n\n请手动检查 JSON 是否有效，或从同目录的备份文件（如 config.json.bak）恢复。\n\n应用将退出以便您进行修复。"
+    "configLoadFailedMessage": "无法读取配置文件：\n{{path}}\n\n错误详情：\n{{detail}}\n\n请手动检查 JSON 是否有效，或从同目录的备份文件（如 config.json.bak）恢复。\n\n应用将退出以便您进行修复。",
+    "renderCrashTitle": "出错了",
+    "renderCrashMessage": "界面遇到意外错误，无法继续。重新加载通常即可恢复。",
+    "renderCrashReload": "重新加载"
   },
   "presetSelector": {
     "title": "选择配置类型",
