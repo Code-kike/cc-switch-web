@@ -227,7 +227,8 @@ jobs:
       # collide under the example binary's parallelism — re-running them here adds
       # flakiness, not coverage. (item 13)
       - name: Web server Rust tests
-        run: cargo test --no-default-features --features web-server --example server --locked --manifest-path src-tauri/Cargo.toml -- web_api:: dual_runtime_parity::
+        run: |
+          cargo test --no-default-features --features web-server --example server --locked --manifest-path src-tauri/Cargo.toml -- web_api:: dual_runtime_parity::
 
       # smoke + integration are HARD gates (the B7c fixes landed: smoke L31
       # contract aligned to 200 null; integration SSRF-allow set in the test
