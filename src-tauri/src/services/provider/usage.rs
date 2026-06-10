@@ -158,6 +158,7 @@ fn extract_provider_usage_credentials(provider: &Provider, app_type: &AppType) -
             setting_string(settings, &["env", "ANTHROPIC_AUTH_TOKEN"])
                 .or_else(|| setting_string(settings, &["env", "ANTHROPIC_API_KEY"]))
                 .or_else(|| setting_string(settings, &["env", "OPENROUTER_API_KEY"]))
+                .or_else(|| setting_string(settings, &["env", "GOOGLE_API_KEY"]))
                 .or_else(|| setting_string(settings, &["env", "OPENAI_API_KEY"]))
                 .or_else(|| setting_string(settings, &["apiKey"]))
                 .or_else(|| setting_string(settings, &["api_key"])),
@@ -169,6 +170,16 @@ fn extract_provider_usage_credentials(provider: &Provider, app_type: &AppType) -
         AppType::Codex => (
             setting_string(settings, &["env", "OPENAI_API_KEY"])
                 .or_else(|| setting_string(settings, &["auth", "OPENAI_API_KEY"]))
+                // Config-only installs keep the key in config.toml's
+                // experimental_bearer_token; mirror the frontend fallback
+                // (getProviderCredentials: auth.OPENAI_API_KEY else bearer token)
+                // so the saved-card refresh path resolves the same key as "Test".
+                .or_else(|| {
+                    settings
+                        .get("config")
+                        .and_then(|v| v.as_str())
+                        .and_then(crate::codex_config::extract_codex_experimental_bearer_token)
+                })
                 .or_else(|| setting_string(settings, &["apiKey"]))
                 .or_else(|| setting_string(settings, &["api_key"]))
                 .or_else(|| setting_string(settings, &["config", "apiKey"]))
@@ -809,6 +820,85 @@ base_url = "https://azure.example/openai/"
 
         assert_eq!(credentials.api_key, "codex-key");
         assert_eq!(credentials.base_url, "https://azure.example/openai");
+    }
+
+    #[test]
+    fn claude_key_fallback_skips_empty_primary_fields() {
+        // Presets seed ANTHROPIC_AUTH_TOKEN / ANTHROPIC_API_KEY as
+        // present-but-empty placeholders; the fallback chain must skip empty
+        // values (matching the frontend `a || b` semantics), not just absent
+        // keys, so the key stored in OPENROUTER_API_KEY is still found.
+        let provider = provider_with_config(json!({
+            "env": {
+                "ANTHROPIC_BASE_URL": "https://openrouter.ai/api/v1/",
+                "ANTHROPIC_AUTH_TOKEN": "",
+                "ANTHROPIC_API_KEY": "",
+                "OPENROUTER_API_KEY": "sk-or",
+            }
+        }));
+
+        let credentials = resolve_usage_credentials(&provider, &AppType::Claude, &usage_script());
+
+        assert_eq!(credentials.api_key, "sk-or");
+        assert_eq!(credentials.base_url, "https://openrouter.ai/api/v1");
+    }
+
+    #[test]
+    fn claude_key_falls_back_to_google_api_key() {
+        let provider = provider_with_config(json!({
+            "env": {
+                "ANTHROPIC_BASE_URL": "https://gateway.example/v1",
+                "ANTHROPIC_AUTH_TOKEN": "",
+                "GOOGLE_API_KEY": "g-real",
+            }
+        }));
+
+        let credentials = resolve_usage_credentials(&provider, &AppType::Claude, &usage_script());
+
+        assert_eq!(credentials.api_key, "g-real");
+    }
+
+    #[test]
+    fn gemini_key_skips_empty_primary_and_uses_google_fallback() {
+        let provider = provider_with_config(json!({
+            "env": {
+                "GOOGLE_GEMINI_BASE_URL": "https://generativelanguage.googleapis.com",
+                "GEMINI_API_KEY": "",
+                "GOOGLE_API_KEY": "g-legacy",
+            }
+        }));
+
+        let credentials = resolve_usage_credentials(&provider, &AppType::Gemini, &usage_script());
+
+        assert_eq!(credentials.api_key, "g-legacy");
+        assert_eq!(
+            credentials.base_url,
+            "https://generativelanguage.googleapis.com"
+        );
+    }
+
+    #[test]
+    fn codex_key_falls_back_to_experimental_bearer_token() {
+        // Config-only Codex installs keep the key in config.toml's
+        // experimental_bearer_token (no auth.OPENAI_API_KEY). The backend
+        // resolver must mirror the frontend fallback or the saved-card refresh
+        // path resolves empty credentials while "Test" works.
+        let provider = provider_with_config(json!({
+            "auth": {},
+            "config": r#"
+model_provider = "packycode"
+
+[model_providers.packycode]
+name = "PackyCode"
+base_url = "https://api.packycode.com/v1"
+experimental_bearer_token = "sk-bearer"
+"#
+        }));
+
+        let credentials = resolve_usage_credentials(&provider, &AppType::Codex, &usage_script());
+
+        assert_eq!(credentials.api_key, "sk-bearer");
+        assert_eq!(credentials.base_url, "https://api.packycode.com/v1");
     }
 
     #[test]
