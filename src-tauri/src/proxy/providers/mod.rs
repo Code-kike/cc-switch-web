@@ -43,7 +43,7 @@ pub use adapter::ProviderAdapter;
 pub use auth::{AuthInfo, AuthStrategy};
 #[cfg(feature = "desktop")]
 pub use claude::{
-    claude_api_format_needs_transform, normalize_anthropic_tool_thinking_history_for_provider,
+    claude_api_format_needs_transform, normalize_anthropic_messages_for_provider,
     transform_claude_request_for_api_format,
 };
 pub use claude::{get_claude_api_format, ClaudeAdapter};
