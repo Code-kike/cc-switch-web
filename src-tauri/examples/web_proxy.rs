@@ -25,6 +25,9 @@ pub mod session;
 #[path = "../src/proxy/sse.rs"]
 pub mod sse;
 
+#[path = "../src/proxy/switch_lock.rs"]
+pub(crate) mod switch_lock;
+
 #[path = "../src/proxy/usage/mod.rs"]
 pub mod usage;
 
