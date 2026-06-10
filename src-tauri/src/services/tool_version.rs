@@ -313,6 +313,83 @@ fn extract_version(raw: &str) -> String {
         .unwrap_or_else(|| raw.to_string())
 }
 
+/// 解码子进程输出：Windows 上 cmd 的报错走 OEM/ANSI 代码页（如 zh-CN 的 GBK），
+/// 直接按 UTF-8 lossy 解码会变成乱码；其余平台保持 UTF-8 lossy。
+pub(crate) fn decode_command_output(bytes: &[u8]) -> String {
+    #[cfg(target_os = "windows")]
+    {
+        decode_windows_command_output(bytes)
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        String::from_utf8_lossy(bytes).into_owned()
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn decode_windows_command_output(bytes: &[u8]) -> String {
+    if bytes.is_empty() {
+        return String::new();
+    }
+
+    if let Ok(text) = std::str::from_utf8(bytes) {
+        return text.to_string();
+    }
+
+    use windows_sys::Win32::Globalization::{GetACP, GetOEMCP, MultiByteToWideChar};
+
+    fn decode_codepage(bytes: &[u8], codepage: u32) -> Option<String> {
+        if codepage == 0 {
+            return None;
+        }
+
+        let input_len = i32::try_from(bytes.len()).ok()?;
+        unsafe {
+            let wide_len = MultiByteToWideChar(
+                codepage,
+                0,
+                bytes.as_ptr(),
+                input_len,
+                std::ptr::null_mut(),
+                0,
+            );
+            if wide_len <= 0 {
+                return None;
+            }
+
+            let mut wide = vec![0u16; wide_len as usize];
+            let written = MultiByteToWideChar(
+                codepage,
+                0,
+                bytes.as_ptr(),
+                input_len,
+                wide.as_mut_ptr(),
+                wide_len,
+            );
+            if written <= 0 {
+                return None;
+            }
+
+            Some(String::from_utf16_lossy(&wide[..written as usize]))
+        }
+    }
+
+    let oem_cp = unsafe { GetOEMCP() };
+    if let Some(decoded) = decode_codepage(bytes, oem_cp) {
+        return decoded;
+    }
+
+    let ansi_cp = unsafe { GetACP() };
+    if ansi_cp != oem_cp {
+        if let Some(decoded) = decode_codepage(bytes, ansi_cp) {
+            return decoded;
+        }
+    }
+
+    String::from_utf8_lossy(bytes).into_owned()
+}
+
 fn try_get_version(tool: &str) -> (Option<String>, Option<String>) {
     use std::process::Command;
 
@@ -337,8 +414,8 @@ fn try_get_version(tool: &str) -> (Option<String>, Option<String>) {
 
     match output {
         Ok(out) => {
-            let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            let stdout = decode_command_output(&out.stdout).trim().to_string();
+            let stderr = decode_command_output(&out.stderr).trim().to_string();
             if out.status.success() {
                 let raw = if stdout.is_empty() { &stderr } else { &stdout };
                 if raw.is_empty() {
@@ -452,8 +529,8 @@ fn try_get_version_wsl(
 
     match output {
         Ok(out) => {
-            let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            let stdout = decode_command_output(&out.stdout).trim().to_string();
+            let stderr = decode_command_output(&out.stderr).trim().to_string();
             if out.status.success() {
                 let raw = if stdout.is_empty() { &stderr } else { &stdout };
                 if raw.is_empty() {
@@ -583,7 +660,70 @@ fn tool_executable_candidates(tool: &str, dir: &Path) -> Vec<PathBuf> {
     }
 }
 
+/// Windows 双引号包裹基础原语：无条件加引号 + 内部 `"` 转义为 `\"`。
+#[cfg(target_os = "windows")]
+fn win_double_quote(value: &str) -> String {
+    format!("\"{}\"", value.replace('"', "\\\""))
+}
+
+/// 给 batch/`call` 用的路径引用：`%` 经历 batch parser + `call` 两轮 expansion，
+/// 要让 call 最终看到字面 `%` 需要 4 个 → `%%%%`。`needs_quote` 基于原路径判断。
+#[cfg(target_os = "windows")]
+fn win_quote_path_for_batch(p: &str) -> String {
+    let escaped = if p.contains('%') {
+        p.replace('%', "%%%%")
+    } else {
+        p.to_string()
+    };
+    let needs_quote = p
+        .chars()
+        .any(|c| matches!(c, ' ' | '&' | '(' | ')' | '^' | ';' | '<' | '>' | '|' | ','));
+    if needs_quote {
+        win_double_quote(&escaped)
+    } else {
+        escaped
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn is_windows_command_script(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.eq_ignore_ascii_case("cmd") || ext.eq_ignore_ascii_case("bat"))
+        .unwrap_or(false)
+}
+
+/// Windows 版本探测：.exe 直接执行（绕开 cmd 的嵌套引号误解析）；.cmd/.bat 走
+/// `cmd /D /S /C call <quoted> --version`，用 raw_arg 绕过 Rust 的参数引用，
+/// 保证 cmd 看到确定的引号形态。
+#[cfg(target_os = "windows")]
+fn run_windows_tool_version_command(
+    tool_path: &Path,
+    new_path: &str,
+) -> std::io::Result<std::process::Output> {
+    use std::process::Command;
+
+    if is_windows_command_script(tool_path) {
+        let path = tool_path.to_string_lossy();
+        let command = format!("call {} --version", win_quote_path_for_batch(&path));
+        let mut cmd = Command::new("cmd");
+        return cmd
+            .args(["/D", "/S", "/C"])
+            .raw_arg(&command)
+            .env("PATH", new_path)
+            .creation_flags(CREATE_NO_WINDOW)
+            .output();
+    }
+
+    Command::new(tool_path)
+        .arg("--version")
+        .env("PATH", new_path)
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+}
+
 fn scan_cli_version(tool: &str) -> (Option<String>, Option<String>) {
+    #[cfg(not(target_os = "windows"))]
     use std::process::Command;
 
     let home = dirs::home_dir().unwrap_or_default();
@@ -669,11 +809,7 @@ fn scan_cli_version(tool: &str) -> (Option<String>, Option<String>) {
             }
 
             #[cfg(target_os = "windows")]
-            let output = Command::new("cmd")
-                .args(["/C", &format!("\"{}\" --version", tool_path.display())])
-                .env("PATH", &new_path)
-                .creation_flags(CREATE_NO_WINDOW)
-                .output();
+            let output = run_windows_tool_version_command(&tool_path, &new_path);
 
             #[cfg(not(target_os = "windows"))]
             let output = Command::new(&tool_path)
@@ -682,8 +818,8 @@ fn scan_cli_version(tool: &str) -> (Option<String>, Option<String>) {
                 .output();
 
             if let Ok(out) = output {
-                let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                let stdout = decode_command_output(&out.stdout).trim().to_string();
+                let stderr = decode_command_output(&out.stderr).trim().to_string();
                 if out.status.success() {
                     let raw = if stdout.is_empty() { &stderr } else { &stdout };
                     if !raw.is_empty() {

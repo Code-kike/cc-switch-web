@@ -221,15 +221,16 @@ export function useProviderActions(
 
         // 若已弹过 proxyRequired 警告则不再弹 success
         if (!proxyRequiredReason) {
-          // OpenCode/OpenClaw: show "added to config" message instead of "switched"
-          const isMultiProviderApp =
-            activeApp === "opencode" || activeApp === "openclaw";
-          const messageKey = isMultiProviderApp
-            ? "notifications.addToConfigSuccess"
-            : "notifications.switchSuccess";
-          const defaultMessage = isMultiProviderApp
-            ? "已添加到配置"
-            : "切换成功！";
+          let messageKey = "notifications.switchSuccess";
+          let defaultMessage = "切换成功！";
+          if (activeApp === "codex") {
+            messageKey = "notifications.codexRestartRequired";
+            defaultMessage = "切换成功，请重启客户端以生效";
+          } else if (activeApp === "opencode" || activeApp === "openclaw") {
+            // OpenCode/OpenClaw: show "added to config" message instead of "switched"
+            messageKey = "notifications.addToConfigSuccess";
+            defaultMessage = "已添加到配置";
+          }
 
           toast.success(t(messageKey, { defaultValue: defaultMessage }), {
             closeButton: true,
