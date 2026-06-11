@@ -21,6 +21,7 @@ pub mod parity;
 pub mod prompts;
 pub mod providers;
 pub mod proxy;
+pub mod s3;
 pub mod sessions;
 pub mod settings;
 pub mod skills;

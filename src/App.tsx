@@ -117,7 +117,7 @@ import {
   isViewAllowedForApp,
 } from "./App.navigation";
 
-interface WebDavSyncStatusUpdatedPayload {
+interface SyncStatusUpdatedPayload {
   source?: string;
   status?: string;
   error?: string;
@@ -408,8 +408,7 @@ function App() {
         const off = await listen(
           "webdav-sync-status-updated",
           async (event) => {
-            const payload = (event.payload ??
-              {}) as WebDavSyncStatusUpdatedPayload;
+            const payload = (event.payload ?? {}) as SyncStatusUpdatedPayload;
             await queryClient.invalidateQueries({ queryKey: ["settings"] });
 
             if (payload.source !== "auto" || payload.status !== "error") {
@@ -431,6 +430,46 @@ function App() {
       } catch (error) {
         console.error(
           "[App] Failed to subscribe webdav-sync-status-updated event",
+          error,
+        );
+      }
+    };
+
+    void setupListener();
+    return () => {
+      active = false;
+      unsubscribe?.();
+    };
+  }, [queryClient, t]);
+
+  useEffect(() => {
+    let unsubscribe: (() => void) | undefined;
+    let active = true;
+
+    const setupListener = async () => {
+      try {
+        const off = await listen("s3-sync-status-updated", async (event) => {
+          const payload = (event.payload ?? {}) as SyncStatusUpdatedPayload;
+          await queryClient.invalidateQueries({ queryKey: ["settings"] });
+
+          if (payload.source !== "auto" || payload.status !== "error") {
+            return;
+          }
+
+          toast.error(
+            t("settings.s3Sync.autoSyncFailedToast", {
+              error: payload.error || t("common.unknown"),
+            }),
+          );
+        });
+        if (!active) {
+          off();
+          return;
+        }
+        unsubscribe = off;
+      } catch (error) {
+        console.error(
+          "[App] Failed to subscribe s3-sync-status-updated event",
           error,
         );
       }

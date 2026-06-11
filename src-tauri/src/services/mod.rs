@@ -13,6 +13,12 @@ pub mod provider;
 pub mod proxy;
 #[cfg(not(feature = "desktop"))]
 pub mod proxy_web;
+pub mod s3;
+#[cfg(feature = "desktop")]
+pub mod s3_auto_sync;
+#[cfg(not(feature = "desktop"))]
+pub mod s3_auto_sync_web;
+pub mod s3_sync;
 pub mod session_usage;
 pub mod session_usage_codex;
 pub mod session_usage_gemini;
@@ -20,6 +26,7 @@ pub mod skill;
 pub mod speedtest;
 pub mod stream_check;
 pub mod subscription;
+pub mod sync_protocol;
 pub mod tool_version;
 pub mod usage_cache;
 pub mod usage_stats;
@@ -41,6 +48,8 @@ pub use provider::{ProviderService, ProviderSortUpdate, SwitchResult};
 pub use proxy::ProxyService;
 #[cfg(not(feature = "desktop"))]
 pub use proxy_web::ProxyService;
+#[cfg(not(feature = "desktop"))]
+pub use s3_auto_sync_web as s3_auto_sync;
 #[allow(unused_imports)]
 pub use skill::{DiscoverableSkill, Skill, SkillRepo, SkillService};
 pub use speedtest::{EndpointLatency, SpeedtestService};

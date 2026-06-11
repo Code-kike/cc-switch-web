@@ -332,6 +332,13 @@ fn build_owner_map() -> OwnerMap {
     m.insert("import_export", ("config", "Task 5"));
     m.insert("backup", ("backups", "Task 7"));
     m.insert("webdav", ("webdav", "Task 7"));
+    // S3 sync commands route to the dedicated s3 handler, except
+    // s3_sync_save_settings which lives under the settings handler and is
+    // matched by the "setting" keyword below.
+    m.insert("s3_test_connection", ("s3", "Task 7"));
+    m.insert("s3_sync_upload", ("s3", "Task 7"));
+    m.insert("s3_sync_download", ("s3", "Task 7"));
+    m.insert("s3_sync_fetch_remote_info", ("s3", "Task 7"));
     m.insert("proxy", ("proxy", "Task 6"));
     m.insert("global_proxy", ("global_proxy", "Task 6"));
     m.insert("failover", ("failover", "Task 6"));
