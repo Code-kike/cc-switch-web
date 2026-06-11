@@ -136,7 +136,7 @@ export interface UsageRangeSelection {
   customEndDate?: number;
 }
 
-export type AppType = "claude" | "codex" | "gemini";
+export type AppType = "claude" | "codex" | "gemini" | "opencode";
 
 export type AppTypeFilter = "all" | AppType;
 
@@ -144,6 +144,7 @@ export const KNOWN_APP_TYPES: ReadonlyArray<AppType> = [
   "claude",
   "codex",
   "gemini",
+  "opencode",
 ];
 
 export const CACHE_INCLUSIVE_APP_TYPES: ReadonlySet<string> = new Set([

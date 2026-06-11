@@ -4,6 +4,7 @@
 
 use crate::database::{lock_conn, Database};
 use crate::error::AppError;
+use crate::proxy::usage::calculator::ModelPricing;
 use chrono::{Local, NaiveDate, TimeZone, Timelike};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -127,14 +128,16 @@ pub struct RequestLogDetail {
 }
 
 /// SQL fragment: resolve provider_name with fallback for session-based entries.
-/// Session logs use placeholder provider_ids (_session, _codex_session, _gemini_session)
-/// that don't exist in the providers table — this COALESCE gives them readable names.
+/// Session logs use placeholder provider_ids (_session, _codex_session,
+/// _gemini_session, _opencode_session) that don't exist in the providers table
+/// — this COALESCE gives them readable names.
 fn provider_name_coalesce(log_alias: &str, provider_alias: &str) -> String {
     format!(
         "COALESCE({provider_alias}.name, CASE {log_alias}.provider_id \
          WHEN '_session' THEN 'Claude (Session)' \
          WHEN '_codex_session' THEN 'Codex (Session)' \
          WHEN '_gemini_session' THEN 'Gemini (Session)' \
+         WHEN '_opencode_session' THEN 'OpenCode (Session)' \
          ELSE {log_alias}.provider_id END)"
     )
 }
@@ -192,7 +195,7 @@ pub(crate) fn effective_usage_log_filter(log_alias: &str) -> String {
     let proxy_data_source = data_source_expr("proxy_dedup");
     format!(
         "NOT (
-            {data_source} IN ('session_log', 'codex_session', 'gemini_session')
+            {data_source} IN ('session_log', 'codex_session', 'gemini_session', 'opencode_session')
             AND EXISTS (
                 SELECT 1
                 FROM proxy_request_logs proxy_dedup
@@ -207,7 +210,7 @@ pub(crate) fn effective_usage_log_filter(log_alias: &str) -> String {
                       proxy_dedup.cache_creation_tokens = {log_alias}.cache_creation_tokens
                       OR (
                           {log_alias}.cache_creation_tokens = 0
-                          AND {data_source} IN ('codex_session', 'gemini_session')
+                          AND {data_source} IN ('codex_session', 'gemini_session', 'opencode_session')
                       )
                   )
                   AND proxy_dedup.created_at BETWEEN
@@ -259,7 +262,7 @@ pub(crate) fn has_matching_proxy_usage_log(
     key: &DedupKey,
 ) -> Result<bool, AppError> {
     let allow_missing_cache_creation =
-        matches!(key.app_type, "codex" | "gemini") && key.cache_creation_tokens == 0;
+        matches!(key.app_type, "codex" | "gemini" | "opencode") && key.cache_creation_tokens == 0;
 
     let l_data_source = data_source_expr("l");
     let sql = format!(
@@ -1764,6 +1767,17 @@ pub(crate) fn pricing_lookup_candidates(model_id: &str) -> Vec<String> {
     candidates
 }
 
+/// 查找模型定价并解析为 [`ModelPricing`]（上游 v3.16.2 共享查找入口；
+/// OpenCode 会话同步等调用方使用）。查询失败或解析失败时返回 `None`。
+pub(crate) fn find_model_pricing(conn: &Connection, model_id: &str) -> Option<ModelPricing> {
+    find_model_pricing_row(conn, model_id)
+        .ok()
+        .flatten()
+        .and_then(|(input, output, cache_read, cache_creation)| {
+            ModelPricing::from_strings(&input, &output, &cache_read, &cache_creation).ok()
+        })
+}
+
 pub(crate) fn find_model_pricing_row(
     conn: &Connection,
     model_id: &str,
@@ -2486,6 +2500,37 @@ mod tests {
         assert_eq!(stats.len(), 1);
         assert_eq!(stats[0].model, "claude-3-sonnet");
         assert_eq!(stats[0].request_count, 1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_provider_stats_labels_opencode_session_provider() -> Result<(), AppError> {
+        let db = Database::memory()?;
+
+        {
+            let conn = lock_conn!(db.conn);
+            insert_usage_log(
+                &conn,
+                "opencode-session",
+                "opencode",
+                "_opencode_session",
+                "opencode-model",
+                "opencode_session",
+                1000,
+                100,
+                50,
+                0,
+                0,
+                200,
+                "0.01",
+            )?;
+        }
+
+        let stats = db.get_provider_stats(None, None, Some("opencode"))?;
+        assert_eq!(stats.len(), 1);
+        assert_eq!(stats[0].provider_id, "_opencode_session");
+        assert_eq!(stats[0].provider_name, "OpenCode (Session)");
 
         Ok(())
     }

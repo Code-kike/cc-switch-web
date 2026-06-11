@@ -49,6 +49,9 @@ pub mod session_usage_codex;
 #[path = "../src/services/session_usage_gemini.rs"]
 pub mod session_usage_gemini;
 
+#[path = "../src/services/session_usage_opencode.rs"]
+pub mod session_usage_opencode;
+
 #[path = "../src/services/skill.rs"]
 pub mod skill;
 

@@ -982,6 +982,13 @@ pub fn run() {
                     {
                         log::warn!("Gemini usage initial sync failed: {e}");
                     }
+                    if let Err(e) =
+                        crate::services::session_usage_opencode::sync_opencode_usage(
+                            &db_for_session_sync,
+                        )
+                    {
+                        log::warn!("OpenCode usage initial sync failed: {e}");
+                    }
 
                     // 定期同步
                     let mut interval = tokio::time::interval(std::time::Duration::from_secs(
@@ -1010,6 +1017,13 @@ pub fn run() {
                             )
                         {
                             log::warn!("Gemini usage periodic sync failed: {e}");
+                        }
+                        if let Err(e) =
+                            crate::services::session_usage_opencode::sync_opencode_usage(
+                                &db_for_session_sync,
+                            )
+                        {
+                            log::warn!("OpenCode usage periodic sync failed: {e}");
                         }
                     }
                 });
