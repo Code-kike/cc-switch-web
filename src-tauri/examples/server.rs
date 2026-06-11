@@ -99,35 +99,18 @@ mod app_store {
         PathBuf::from(raw)
     }
 
-    fn load_from_disk() -> Option<PathBuf> {
-        let path = store_path();
-        let content = std::fs::read_to_string(&path).ok()?;
-        let value: serde_json::Value = serde_json::from_str(&content).ok()?;
-        let raw = value.get(STORE_KEY_APP_CONFIG_DIR)?.as_str()?.trim();
-        if raw.is_empty() {
-            return None;
-        }
-        let resolved = resolve_path(raw);
-        if !resolved.exists() {
-            log::warn!(
-                "Stored app_config_dir override no longer exists: {}",
-                resolved.display()
-            );
-            return None;
-        }
-        Some(resolved)
-    }
-
+    /// Cache-only read, mirroring the desktop `src/app_store.rs` semantics: the
+    /// cache is seeded explicitly at startup (`main()` always calls
+    /// `set_app_config_dir_override_web` before the router is built), never
+    /// lazily from disk. A lazy disk fallback here would let the EXAMPLE TEST
+    /// binary read the developer's real `~/.cc-switch/app_paths.json` the first
+    /// time any test calls it under the real `$HOME`, cache that override
+    /// process-wide, and silently redirect every subsequent test's
+    /// `get_app_config_dir()` out of its isolated temp HOME (observed:
+    /// `openclaw_config` backup-count tests failing against, and leaking backup
+    /// files into, the real `~/.cc-switch`).
     pub fn get_app_config_dir_override() -> Option<PathBuf> {
-        if let Ok(guard) = override_cache().read() {
-            if let Some(value) = guard.clone() {
-                return Some(value);
-            }
-        }
-
-        let loaded = load_from_disk();
-        update_cached_override(loaded.clone());
-        loaded
+        override_cache().read().ok()?.clone()
     }
 
     pub fn set_app_config_dir_override_web(path: Option<&str>) -> Result<(), AppError> {

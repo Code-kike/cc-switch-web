@@ -674,7 +674,7 @@ async fn update_circuit_breaker_config(
     state
         .app_state
         .proxy_service
-        .update_circuit_breaker_configs(&request.config)
+        .update_circuit_breaker_configs(request.config)
         .await
         .map_err(ApiError::from_service_message)?;
     Ok(json_ok(()))
