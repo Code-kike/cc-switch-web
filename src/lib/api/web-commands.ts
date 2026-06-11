@@ -652,6 +652,26 @@ const cmds = defineCommands({
     method: "POST",
     path: "/api/backups/restore-skill-backup",
   },
+  s3_sync_download: {
+    method: "POST",
+    path: "/api/s3/s3-sync-download",
+  },
+  s3_sync_fetch_remote_info: {
+    method: "POST",
+    path: "/api/s3/s3-sync-fetch-remote-info",
+  },
+  s3_sync_save_settings: {
+    method: "POST",
+    path: "/api/settings/s3-sync-save-settings",
+  },
+  s3_sync_upload: {
+    method: "POST",
+    path: "/api/s3/s3-sync-upload",
+  },
+  s3_test_connection: {
+    method: "POST",
+    path: "/api/s3/s3-test-connection",
+  },
   save_file_dialog: {
     method: "POST",
     path: "/api/system/save_file_dialog",

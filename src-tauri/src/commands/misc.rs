@@ -361,7 +361,7 @@ end tell"#,
         .map_err(|e| format!("执行 osascript 失败: {e}"))?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = crate::services::tool_version::decode_command_output(&output.stderr);
         return Err(format!(
             "Terminal.app 执行失败 (exit code: {:?}): {}",
             output.status.code(),
@@ -422,7 +422,7 @@ fn launch_macos_iterm2(script_file: &std::path::Path) -> Result<(), String> {
         .map_err(|e| format!("执行 osascript 失败: {e}"))?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = crate::services::tool_version::decode_command_output(&output.stderr);
         return Err(format!(
             "iTerm2 执行失败 (exit code: {:?}): {}",
             output.status.code(),
@@ -452,7 +452,7 @@ fn launch_macos_ghostty(script_file: &std::path::Path) -> Result<(), String> {
         .map_err(|e| format!("启动 Ghostty 失败: {e}"))?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = crate::services::tool_version::decode_command_output(&output.stderr);
         return Err(format!(
             "Ghostty 启动失败 (exit code: {:?}): {}",
             output.status.code(),
@@ -485,7 +485,7 @@ fn launch_macos_open_app(
         .map_err(|e| format!("启动 {app_name} 失败: {e}"))?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = crate::services::tool_version::decode_command_output(&output.stderr);
         return Err(format!(
             "{} 启动失败 (exit code: {:?}): {}",
             app_name,
@@ -729,7 +729,7 @@ fn run_windows_start_command(args: &[&str], terminal_name: &str) -> Result<(), S
         .map_err(|e| format!("启动 {} 失败: {e}", terminal_name))?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = crate::services::tool_version::decode_command_output(&output.stderr);
         return Err(format!(
             "{} 启动失败 (exit code: {:?}): {}",
             terminal_name,

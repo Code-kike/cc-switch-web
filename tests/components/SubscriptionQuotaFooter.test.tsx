@@ -94,7 +94,14 @@ describe("SubscriptionQuota surfaces", () => {
     const { container: wrapperContainer } = render(
       <SubscriptionQuotaFooter appId="claude" isCurrent={false} />,
     );
-    expect(useSubscriptionQuotaMock).toHaveBeenCalledWith("claude", false, false);
+    // autoQueryInterval (4th arg) defaults to 5; autoQuery (3rd arg) only
+    // turns on when the card is current AND the interval is positive.
+    expect(useSubscriptionQuotaMock).toHaveBeenCalledWith(
+      "claude",
+      false,
+      false,
+      5,
+    );
     expect(wrapperContainer).toBeEmptyDOMElement();
   });
 

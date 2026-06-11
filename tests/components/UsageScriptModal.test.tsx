@@ -128,7 +128,15 @@ function renderModal(
   const provider: Provider = {
     id: "provider-1",
     name: "Test Provider",
-    settingsConfig: {},
+    // A third-party base URL keeps the official-subscription auto-detection
+    // (isOfficialSubscriptionProvider) from hijacking custom-script fixtures:
+    // credential-less Claude providers now default to the official template.
+    settingsConfig: {
+      env: {
+        ANTHROPIC_BASE_URL: "https://api.example.com",
+        ANTHROPIC_AUTH_TOKEN: "key",
+      },
+    },
     meta: {
       usage_script: {
         enabled: true,

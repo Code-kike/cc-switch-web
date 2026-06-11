@@ -190,6 +190,15 @@ async fn sync_session_usage(
             }
             Err(err) => result.errors.push(format!("Gemini sync failed: {err}")),
         }
+        match crate::services::session_usage_opencode::sync_opencode_usage(&db) {
+            Ok(opencode) => {
+                result.imported += opencode.imported;
+                result.skipped += opencode.skipped;
+                result.files_scanned += opencode.files_scanned;
+                result.errors.extend(opencode.errors);
+            }
+            Err(err) => result.errors.push(format!("OpenCode sync failed: {err}")),
+        }
         Ok::<_, crate::error::AppError>(result)
     })
     .await

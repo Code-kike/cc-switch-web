@@ -2,6 +2,7 @@ use crate::app_config::AppType;
 use crate::database::Database;
 use crate::provider::Provider;
 use crate::proxy::circuit_breaker::CircuitBreakerConfig;
+use crate::proxy::switch_lock::SwitchLockManager;
 use crate::proxy::types::{ProxyConfig, ProxyServerInfo, ProxyStatus, ProxyTakeoverStatus};
 use std::sync::Arc;
 
@@ -9,6 +10,10 @@ use std::sync::Arc;
 pub struct ProxyService {
     #[allow(dead_code)]
     db: Arc<Database>,
+    /// Web 模式没有本地代理，但 provider 切换路径仍依赖 per-app 切换锁
+    /// 串行化（与桌面端 `lock_switch_for_app` 同一契约），因此这里持有
+    /// 一把真实的（轻量）锁，而不是空实现。
+    switch_locks: SwitchLockManager,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -18,7 +23,19 @@ pub struct HotSwitchOutcome {
 
 impl ProxyService {
     pub fn new(db: Arc<Database>) -> Self {
-        Self { db }
+        Self {
+            db,
+            switch_locks: SwitchLockManager::new(),
+        }
+    }
+
+    /// Real (trivial) serialization guard: provider switches in web mode still
+    /// serialize per app, mirroring the desktop ProxyService contract.
+    pub(crate) async fn lock_switch_for_app(
+        &self,
+        app_type: &str,
+    ) -> tokio::sync::OwnedMutexGuard<()> {
+        self.switch_locks.lock_for_app(app_type).await
     }
 
     pub fn cleanup_claude_model_overrides_in_live(&self) -> Result<(), String> {
@@ -89,6 +106,18 @@ impl ProxyService {
     }
 
     pub async fn hot_switch_provider(
+        &self,
+        _app_type: &str,
+        _id: &str,
+    ) -> Result<HotSwitchOutcome, String> {
+        Ok(HotSwitchOutcome::default())
+    }
+
+    /// Silent no-op like `hot_switch_provider`: there is no local proxy in
+    /// web-server mode, so the takeover hot-switch refresh is fire-and-forget.
+    /// The caller (dual-compiled provider switch path) already holds the
+    /// per-app switch lock from `lock_switch_for_app`.
+    pub(crate) async fn hot_switch_provider_inner(
         &self,
         _app_type: &str,
         _id: &str,

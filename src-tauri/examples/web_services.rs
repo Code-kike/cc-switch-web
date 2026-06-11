@@ -31,6 +31,15 @@ mod proxy_web;
 #[path = "../src/services/provider/mod.rs"]
 pub mod provider;
 
+#[path = "../src/services/s3.rs"]
+pub mod s3;
+
+#[path = "../src/services/s3_auto_sync_web.rs"]
+pub mod s3_auto_sync;
+
+#[path = "../src/services/s3_sync.rs"]
+pub mod s3_sync;
+
 #[path = "../src/services/session_usage.rs"]
 pub mod session_usage;
 
@@ -39,6 +48,9 @@ pub mod session_usage_codex;
 
 #[path = "../src/services/session_usage_gemini.rs"]
 pub mod session_usage_gemini;
+
+#[path = "../src/services/session_usage_opencode.rs"]
+pub mod session_usage_opencode;
 
 #[path = "../src/services/skill.rs"]
 pub mod skill;
@@ -51,6 +63,9 @@ pub mod stream_check;
 
 #[path = "../src/services/subscription.rs"]
 pub mod subscription;
+
+#[path = "../src/services/sync_protocol.rs"]
+pub mod sync_protocol;
 
 #[path = "../src/services/tool_version.rs"]
 pub mod tool_version;

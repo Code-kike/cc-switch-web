@@ -223,8 +223,14 @@ for key in [cleaned.clone(), cleaned.to_lowercase(), cleaned.to_lowercase().repl
 - `UsageData` fields are optional. Display code must handle rows that include
   only `used`/`total`, only `remaining`, only `extra`, or invalid-state fields
   without rendering `undefined`/`NaN`.
-- Built-in templates are `github_copilot`, `token_plan`, and `balance`.
-- Built-in template tests must go through `usageApi.testScript`, not lower-level subscription or Copilot APIs.
+- Built-in templates are `github_copilot`, `token_plan`, `balance`, and
+  `official_subscription` (v3.16.2 sync; explicit opt-in, default off, with a
+  configurable refresh interval).
+- Built-in template tests must go through `usageApi.testScript`, not lower-level subscription or Copilot APIs — EXCEPT `official_subscription`, whose test button calls `subscriptionApi.getQuota(appId)` directly (upstream-verbatim): it queries via CLI/OAuth credentials with no provider secret, and `getQuota` IS the production path the saved card uses (web route `GET /api/subscription/get-subscription-quota`; both paths converge on `get_subscription_quota`).
+- `token_plan` providers with paired script credentials (zenmux): credentials
+  resolve as a pair (script apiKey+baseUrl together → native pair fallback →
+  partial script); non-zenmux keeps per-field script-over-provider resolution
+  (`resolve_coding_plan_credentials` in `services/provider/usage.rs`).
 - Saved provider-card refresh must go through `usageApi.query`, which reaches `query_usage_with_templates`.
 - Frontend API wrappers should normalize transport/API errors into `UsageResult { success: false, error }` so the provider UI can show actionable failures.
 - `UsageScriptModal` success toasts should format rows through
@@ -245,9 +251,9 @@ for key in [cleaned.clone(), cleaned.to_lowercase(), cleaned.to_lowercase().repl
 
 #### 5. Good/Base/Bad Cases
 
-- Good: Balance, Token Plan, and GitHub Copilot template test buttons call `usageApi.testScript(..., templateType)`, then write the returned `UsageResult` into `["usage", provider.id, appId]`.
+- Good: Balance, Token Plan, and GitHub Copilot template test buttons call `usageApi.testScript(..., templateType)`, then write the returned `UsageResult` into `["usage", provider.id, appId]`; the Official Subscription test button calls `subscriptionApi.getQuota(appId)`.
 - Base: custom/general/newapi scripts call `usageApi.testScript` with script code and explicit credential overrides.
-- Bad: testing Balance via `subscriptionApi.getBalance`, Token Plan via `subscriptionApi.getCodingPlanQuota`, or Copilot via `copilot_get_usage*` from `UsageScriptModal`.
+- Bad: testing Balance via `subscriptionApi.getBalance`, Token Plan via `subscriptionApi.getCodingPlanQuota`, or Copilot via `copilot_get_usage*` from `UsageScriptModal` (the `official_subscription`→`getQuota` exception above is the only sanctioned direct subscription call).
 - Bad: formatting custom-script test output by directly interpolating
   `plan.remaining` and `plan.unit`; sparse rows can omit both fields.
 
@@ -324,9 +330,15 @@ The same pattern applies to `token_plan` and `github_copilot`.
 
 #### 3. Contracts
 
+- **Preservation is gated (v3.16.1 sync)**: the contracts below apply only when
+  the device setting `preserve_codex_official_auth_on_switch` (settings.json,
+  default **false**) is enabled — FE toggle in Settings → "Codex App
+  Enhancements" (`CodexAuthSettings.tsx`). With the gate OFF (default,
+  upstream parity), third-party Codex switches overwrite `auth.json` via the
+  legacy write path (`should_write_auth` in `codex_config.rs` decides).
 - Stored third-party Codex providers keep their canonical token in
   `settings_config.auth.OPENAI_API_KEY`.
-- Live third-party Codex switches write that token into `config.toml` as
+- Live third-party Codex switches (gate ON) write that token into `config.toml` as
   `experimental_bearer_token`, preferably under the active
   `[model_providers.<id>]` table. They must not overwrite a user's OAuth
   `auth.json` login cache.
@@ -336,12 +348,16 @@ The same pattern applies to `token_plan` and `github_copilot`.
 - Config-only live installs are valid import sources: the UI and backend must
   read `experimental_bearer_token` as the Codex API key fallback.
 - Proxy takeover and cleanup must check both `auth.OPENAI_API_KEY` and
-  `experimental_bearer_token` for the proxy placeholder token.
+  `experimental_bearer_token` for the proxy placeholder token. In
+  preserve-mode takeover, OAuth `auth.json` stays untouched and cleanup
+  removes the placeholder via `remove_codex_experimental_bearer_token_if`
+  without touching OAuth material.
 
 #### 4. Validation & Error Matrix
 
-- Third-party switch rewrites OAuth `auth.json` -> reject; user is logged out
-  of ChatGPT-backed Codex.
+- Gate ON + third-party switch rewrites OAuth `auth.json` -> reject; user is
+  logged out of ChatGPT-backed Codex. (Gate OFF: overwriting `auth.json` is
+  the intended upstream-parity behavior, not a defect.)
 - API key exists only in `experimental_bearer_token` but UI shows blank ->
   reject; config-only installs become uneditable.
 - Backfill copies an OAuth-only access/refresh/id token into
@@ -351,7 +367,7 @@ The same pattern applies to `token_plan` and `github_copilot`.
 
 #### 5. Good/Base/Bad Cases
 
-- Good: a third-party provider with `auth.OPENAI_API_KEY = "sk-live"` and an
+- Good: with the gate enabled, a third-party provider with `auth.OPENAI_API_KEY = "sk-live"` and an
   existing OAuth `auth.json` switches live by preserving `auth.json` and adding
   `experimental_bearer_token = "sk-live"` to `config.toml`.
 - Base: a config-only Codex install imports with empty `auth` and
@@ -659,6 +675,61 @@ pub(crate) mod json_canonical;
 // src-tauri/examples/web_proxy.rs
 #[path = "../src/proxy/json_canonical.rs"]
 pub(crate) mod json_canonical;
+```
+
+---
+
+### Scenario: Desktop-Only Service Worker Twin Stubs
+
+#### 1. Scope / Trigger
+
+- Trigger: adding a `services/` background worker that depends on `tauri::AppHandle`/`Emitter` (auto-sync loops, tray refreshers) while its API is called from dual-compiled code (e.g. the database update-hook).
+- Applies when changing `src-tauri/src/services/mod.rs`, `src-tauri/examples/web_services.rs`, or adding `services/*_web.rs` stubs. Established by `webdav_auto_sync`/`webdav_auto_sync_web`; repeated by `s3_auto_sync`/`s3_auto_sync_web` (v3.16.2 sync).
+
+#### 2. Signatures
+
+- Desktop worker: `services/<name>.rs` (may use `tauri::{AppHandle, Emitter}`, `app.emit("<event>", …)`).
+- Web stub twin: `services/<name>_web.rs` — mirrors the *called-from-shared-code* surface only: `AutoSyncSuppressionGuard::new()`, `is_auto_sync_suppressed()`, no-op `notify_db_changed(_table: &str)`.
+
+#### 3. Contracts
+
+- `services/mod.rs` cfg-pair:
+  `#[cfg(feature = "desktop")] pub mod <name>; #[cfg(not(feature = "desktop"))] pub mod <name>_web; #[cfg(not(feature = "desktop"))] pub use <name>_web as <name>;`
+- `examples/web_services.rs` includes the stub via `#[path = "../src/services/<name>_web.rs"]` so the web example resolves `services::<name>::…` call sites unchanged.
+- The stub MUST stay tauri-free; the desktop worker is the only emitter of its status event (web mode simply never fires it — FE listens runtime-neutrally via `event-adapter`).
+
+#### 4. Validation & Error Matrix
+
+- Shared call site (e.g. `database/mod.rs` update-hook) references `services::<name>` but no stub/cfg-pair -> web example compile fails.
+- Stub added but `web_services.rs` include missing -> web example compile fails; `dual_runtime_parity::web_services_shim_covers_web_cfg_gated_service_modules` also fails.
+- Stub grows real behavior that emits Tauri events -> reject (web build must not depend on tauri).
+
+#### 5. Good/Base/Bad Cases
+
+- Good: `s3_auto_sync.rs` (desktop worker, emits `s3-sync-status-updated`) + `s3_auto_sync_web.rs` no-op twin + cfg-pair + shim include.
+- Base: a worker with no shared-code callers needs no twin — gate the whole module `#[cfg(feature = "desktop")]`.
+- Bad: making the shared caller itself cfg-gated to dodge the stub (forks the call-site logic between runtimes).
+
+#### 6. Tests Required
+
+- `cargo check --manifest-path src-tauri/Cargo.toml --no-default-features --features web-server --example server`
+- `cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features web-server --example server -- dual_runtime_parity::`
+
+#### 7. Wrong vs Correct
+
+##### Wrong
+
+```rust
+// database/mod.rs — runtime fork at the call site
+#[cfg(feature = "desktop")]
+crate::services::s3_auto_sync::notify_db_changed(table);
+```
+
+##### Correct
+
+```rust
+// services/mod.rs cfg-pair + no-op stub twin; call site stays unconditional:
+crate::services::s3_auto_sync::notify_db_changed(table);
 ```
 
 ---

@@ -54,6 +54,7 @@ fn api_router(state: ApiState) -> Router {
         .merge(handlers::prompts::router(state.clone()))
         .merge(handlers::providers::router(state.clone()))
         .merge(handlers::proxy::router(state.clone()))
+        .merge(handlers::s3::router(state.clone()))
         .merge(handlers::sessions::router(state.clone()))
         .merge(handlers::settings::router(state.clone()))
         .merge(handlers::skills::router(state.clone()))

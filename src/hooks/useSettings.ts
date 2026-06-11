@@ -201,8 +201,11 @@ export function useSettings(): UseSettingsResult {
         const sanitizedOpenclawDir = sanitizeDir(
           mergedSettings.openclawConfigDir,
         );
-        const { webdavSync: _ignoredWebdavSync, ...restSettings } =
-          mergedSettings;
+        const {
+          webdavSync: _ignoredWebdavSync,
+          s3Sync: _ignoredS3Sync,
+          ...restSettings
+        } = mergedSettings;
 
         const payload: Settings = {
           ...restSettings,
@@ -339,8 +342,11 @@ export function useSettings(): UseSettingsResult {
         const previousGeminiDir = sanitizeDir(data?.geminiConfigDir);
         const previousOpencodeDir = sanitizeDir(data?.opencodeConfigDir);
         const previousOpenclawDir = sanitizeDir(data?.openclawConfigDir);
-        const { webdavSync: _ignoredWebdavSync, ...restSettings } =
-          mergedSettings;
+        const {
+          webdavSync: _ignoredWebdavSync,
+          s3Sync: _ignoredS3Sync,
+          ...restSettings
+        } = mergedSettings;
 
         const payload: Settings = {
           ...restSettings,

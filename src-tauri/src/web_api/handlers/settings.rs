@@ -22,6 +22,13 @@ struct SaveWebDavSyncSettingsRequest {
     password_touched: Option<bool>,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SaveS3SyncSettingsRequest {
+    settings: crate::settings::S3SyncSettings,
+    password_touched: Option<bool>,
+}
+
 fn merge_settings_for_save(
     mut incoming: crate::settings::AppSettings,
     existing: &crate::settings::AppSettings,
@@ -37,6 +44,18 @@ fn merge_settings_for_save(
         }
         _ => {}
     }
+    match (&mut incoming.s3_sync, &existing.s3_sync) {
+        (None, _) => {
+            incoming.s3_sync = existing.s3_sync.clone();
+        }
+        (Some(incoming_sync), Some(existing_sync))
+            if incoming_sync.secret_access_key.is_empty()
+                && !existing_sync.secret_access_key.is_empty() =>
+        {
+            incoming_sync.secret_access_key = existing_sync.secret_access_key.clone();
+        }
+        _ => {}
+    }
     incoming
 }
 
@@ -47,6 +66,10 @@ pub fn router(state: ApiState) -> Router {
         .route(
             "/settings/webdav-sync-save-settings",
             post(save_webdav_sync_settings),
+        )
+        .route(
+            "/settings/s3-sync-save-settings",
+            post(save_s3_sync_settings),
         )
         .with_state(state)
 }
@@ -84,5 +107,26 @@ async fn save_webdav_sync_settings(
     sync_settings.validate().map_err(ApiError::from_anyhow)?;
     crate::settings::set_webdav_sync_settings(Some(sync_settings))
         .map_err(ApiError::from_anyhow)?;
+    Ok(json_ok(json!({ "success": true })))
+}
+
+async fn save_s3_sync_settings(
+    State(_state): State<ApiState>,
+    Json(request): Json<SaveS3SyncSettingsRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let password_touched = request.password_touched.unwrap_or(false);
+    let existing = crate::settings::get_s3_sync_settings();
+    let mut sync_settings = request.settings;
+
+    if let Some(existing_settings) = existing.clone() {
+        if !password_touched && sync_settings.secret_access_key.is_empty() {
+            sync_settings.secret_access_key = existing_settings.secret_access_key;
+        }
+        sync_settings.status = existing_settings.status;
+    }
+
+    sync_settings.normalize();
+    sync_settings.validate().map_err(ApiError::from_anyhow)?;
+    crate::settings::set_s3_sync_settings(Some(sync_settings)).map_err(ApiError::from_anyhow)?;
     Ok(json_ok(json!({ "success": true })))
 }

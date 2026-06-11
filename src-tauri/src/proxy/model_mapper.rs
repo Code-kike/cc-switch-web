@@ -5,7 +5,7 @@
 use crate::provider::Provider;
 use serde_json::Value;
 
-const ONE_M_CONTEXT_MARKER: &str = "[1m]";
+pub(crate) const ONE_M_CONTEXT_MARKER: &str = "[1m]";
 
 /// 模型映射配置
 pub struct ModelMapping {

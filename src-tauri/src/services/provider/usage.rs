@@ -15,6 +15,7 @@ use tokio::sync::RwLock;
 pub(crate) const TEMPLATE_TYPE_GITHUB_COPILOT: &str = "github_copilot";
 pub(crate) const TEMPLATE_TYPE_TOKEN_PLAN: &str = "token_plan";
 pub(crate) const TEMPLATE_TYPE_BALANCE: &str = "balance";
+pub(crate) const TEMPLATE_TYPE_OFFICIAL_SUBSCRIPTION: &str = "official_subscription";
 const COPILOT_UNIT_PREMIUM: &str = "requests";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -158,6 +159,7 @@ fn extract_provider_usage_credentials(provider: &Provider, app_type: &AppType) -
             setting_string(settings, &["env", "ANTHROPIC_AUTH_TOKEN"])
                 .or_else(|| setting_string(settings, &["env", "ANTHROPIC_API_KEY"]))
                 .or_else(|| setting_string(settings, &["env", "OPENROUTER_API_KEY"]))
+                .or_else(|| setting_string(settings, &["env", "GOOGLE_API_KEY"]))
                 .or_else(|| setting_string(settings, &["env", "OPENAI_API_KEY"]))
                 .or_else(|| setting_string(settings, &["apiKey"]))
                 .or_else(|| setting_string(settings, &["api_key"])),
@@ -169,6 +171,16 @@ fn extract_provider_usage_credentials(provider: &Provider, app_type: &AppType) -
         AppType::Codex => (
             setting_string(settings, &["env", "OPENAI_API_KEY"])
                 .or_else(|| setting_string(settings, &["auth", "OPENAI_API_KEY"]))
+                // Config-only installs keep the key in config.toml's
+                // experimental_bearer_token; mirror the frontend fallback
+                // (getProviderCredentials: auth.OPENAI_API_KEY else bearer token)
+                // so the saved-card refresh path resolves the same key as "Test".
+                .or_else(|| {
+                    settings
+                        .get("config")
+                        .and_then(|v| v.as_str())
+                        .and_then(crate::codex_config::extract_codex_experimental_bearer_token)
+                })
                 .or_else(|| setting_string(settings, &["apiKey"]))
                 .or_else(|| setting_string(settings, &["api_key"]))
                 .or_else(|| setting_string(settings, &["config", "apiKey"]))
@@ -264,6 +276,131 @@ fn resolve_usage_credentials(
             .unwrap_or(provider_credentials.base_url),
         access_token: non_empty_opt_string(usage_script.access_token.as_ref()),
         user_id: non_empty_opt_string(usage_script.user_id.as_ref()),
+    }
+}
+
+/// Resolve credentials for the Token Plan (coding plan) path.
+///
+/// ZenMux quota queries hit a user-supplied full quota URL, so the manually
+/// configured script credentials take precedence as a pair; mixing a script
+/// base URL with a provider API key (or vice versa) is avoided, mirroring
+/// upstream `resolve_coding_plan_credentials` semantics. Other coding-plan
+/// providers keep the fork's standard per-field script-over-provider
+/// resolution.
+fn resolve_coding_plan_credentials(
+    provider: &Provider,
+    app_type: &AppType,
+    usage_script: &UsageScript,
+) -> UsageCredentials {
+    let is_zenmux = usage_script
+        .coding_plan_provider
+        .as_deref()
+        .map(|p| p.eq_ignore_ascii_case("zenmux"))
+        .unwrap_or(false);
+
+    if !is_zenmux {
+        return resolve_usage_credentials(provider, app_type, usage_script);
+    }
+
+    let script_base_url = non_empty_opt_base_url(usage_script.base_url.as_ref());
+    let script_api_key = non_empty_opt_string(usage_script.api_key.as_ref());
+
+    if let (Some(base_url), Some(api_key)) = (script_base_url.as_ref(), script_api_key.as_ref()) {
+        return UsageCredentials {
+            api_key: api_key.clone(),
+            base_url: base_url.clone(),
+            access_token: None,
+            user_id: None,
+        };
+    }
+
+    let native = extract_provider_usage_credentials(provider, app_type);
+    if !native.api_key.is_empty() && !native.base_url.is_empty() {
+        native
+    } else {
+        UsageCredentials {
+            api_key: script_api_key.unwrap_or_default(),
+            base_url: script_base_url.unwrap_or_default(),
+            access_token: None,
+            user_id: None,
+        }
+    }
+}
+
+/// Flatten a coding-plan `SubscriptionQuota` into the shared `UsageResult`
+/// shape used by both the saved-query and test-query paths.
+///
+/// ZenMux tiers carry USD quota info, which is encoded as a JSON `extra`
+/// payload (`resetsAt`/`usedValueUsd`/`maxValueUsd`/`planLabel`) for the
+/// frontend's rich display; other providers keep the plain resets_at string.
+fn coding_plan_quota_to_usage_result(
+    quota: &crate::services::subscription::SubscriptionQuota,
+) -> UsageResult {
+    if !quota.success {
+        return UsageResult {
+            success: false,
+            data: None,
+            error: quota.error.clone(),
+        };
+    }
+
+    // ZenMux 的 tier 携带 USD 额度信息，需要编码为 JSON extra
+    let has_usd = quota
+        .tiers
+        .first()
+        .map(|t| t.used_value_usd.is_some())
+        .unwrap_or(false);
+    let plan_label = quota
+        .credential_message
+        .as_deref()
+        .and_then(|msg| msg.split(' ').next())
+        .map(|tier| format!("ZenMux·{}", tier.to_uppercase()));
+    let mut first_tier = true;
+
+    let data: Vec<UsageData> = quota
+        .tiers
+        .iter()
+        .map(|tier| {
+            let total = 100.0;
+            let used = tier.utilization;
+            let remaining = total - used;
+            let extra = if has_usd {
+                let mut extra_json = serde_json::json!({
+                    "resetsAt": tier.resets_at,
+                });
+                if let Some(v) = tier.used_value_usd {
+                    extra_json["usedValueUsd"] = serde_json::json!(v);
+                }
+                if let Some(v) = tier.max_value_usd {
+                    extra_json["maxValueUsd"] = serde_json::json!(v);
+                }
+                if first_tier {
+                    if let Some(ref label) = plan_label {
+                        extra_json["planLabel"] = serde_json::json!(label);
+                    }
+                    first_tier = false;
+                }
+                Some(extra_json.to_string())
+            } else {
+                tier.resets_at.clone()
+            };
+            UsageData {
+                plan_name: Some(tier.name.clone()),
+                remaining: Some(remaining),
+                total: Some(total),
+                used: Some(used),
+                unit: Some("%".to_string()),
+                is_valid: Some(true),
+                invalid_message: None,
+                extra,
+            }
+        })
+        .collect();
+
+    UsageResult {
+        success: true,
+        data: if data.is_empty() { None } else { Some(data) },
+        error: None,
     }
 }
 
@@ -456,9 +593,17 @@ pub async fn query_usage_with_templates(
             ));
         }
 
+        let template_type = usage_script.template_type.clone().unwrap_or_default();
+        // ZenMux Token Plan 的脚本凭证按"成对优先"解析，与上游语义一致
+        let credentials = if template_type == TEMPLATE_TYPE_TOKEN_PLAN {
+            resolve_coding_plan_credentials(provider, &app_type, usage_script)
+        } else {
+            resolve_usage_credentials(provider, &app_type, usage_script)
+        };
+
         (
-            usage_script.template_type.clone().unwrap_or_default(),
-            resolve_usage_credentials(provider, &app_type, usage_script),
+            template_type,
+            credentials,
             provider
                 .meta
                 .as_ref()
@@ -478,31 +623,43 @@ pub async fn query_usage_with_templates(
             .await
             .map_err(|e| AppError::Message(format!("Failed to query coding plan: {e}")))?;
 
+            Ok(coding_plan_quota_to_usage_result(&quota))
+        }
+        TEMPLATE_TYPE_BALANCE => {
+            crate::services::balance::get_balance(&credentials.base_url, &credentials.api_key)
+                .await
+                .map_err(|e| AppError::Message(format!("Failed to query balance: {e}")))
+        }
+        // ── 官方订阅额度查询路径 ──
+        // enabled 已在上方统一校验（禁用脚本直接返回 usage disabled），
+        // 与上游 query_provider_usage_inner 的深度防护等效。
+        TEMPLATE_TYPE_OFFICIAL_SUBSCRIPTION => {
+            let quota = crate::services::subscription::get_subscription_quota(app_type.as_str())
+                .await
+                .map_err(|e| {
+                    AppError::Message(format!("Failed to query subscription quota: {e}"))
+                })?;
+
             if !quota.success {
                 return Ok(UsageResult {
                     success: false,
                     data: None,
-                    error: quota.error,
+                    error: quota.error.or(quota.credential_message),
                 });
             }
 
             let data: Vec<UsageData> = quota
                 .tiers
                 .iter()
-                .map(|tier| {
-                    let total = 100.0;
-                    let used = tier.utilization;
-                    let remaining = total - used;
-                    UsageData {
-                        plan_name: Some(tier.name.clone()),
-                        remaining: Some(remaining),
-                        total: Some(total),
-                        used: Some(used),
-                        unit: Some("%".to_string()),
-                        is_valid: Some(true),
-                        invalid_message: None,
-                        extra: tier.resets_at.clone(),
-                    }
+                .map(|tier| UsageData {
+                    plan_name: Some(tier.name.clone()),
+                    remaining: Some(100.0 - tier.utilization),
+                    total: Some(100.0),
+                    used: Some(tier.utilization),
+                    unit: Some("%".to_string()),
+                    is_valid: Some(true),
+                    invalid_message: None,
+                    extra: tier.resets_at.clone(),
                 })
                 .collect();
 
@@ -511,11 +668,6 @@ pub async fn query_usage_with_templates(
                 data: if data.is_empty() { None } else { Some(data) },
                 error: None,
             })
-        }
-        TEMPLATE_TYPE_BALANCE => {
-            crate::services::balance::get_balance(&credentials.base_url, &credentials.api_key)
-                .await
-                .map_err(|e| AppError::Message(format!("Failed to query balance: {e}")))
         }
         _ => query_usage(state, app_type, provider_id).await,
     }
@@ -599,7 +751,12 @@ pub async fn test_usage_script(
             test_script.user_id = Some(value.to_string());
         }
 
-        let credentials = resolve_usage_credentials(provider, &app_type, &test_script);
+        // ZenMux Token Plan 的脚本凭证按"成对优先"解析，与上游语义一致
+        let credentials = if matches!(template_type, Some(TEMPLATE_TYPE_TOKEN_PLAN)) {
+            resolve_coding_plan_credentials(provider, &app_type, &test_script)
+        } else {
+            resolve_usage_credentials(provider, &app_type, &test_script)
+        };
         return match template_type {
             Some(TEMPLATE_TYPE_TOKEN_PLAN) => {
                 let quota = crate::services::coding_plan::get_coding_plan_quota(
@@ -609,38 +766,7 @@ pub async fn test_usage_script(
                 .await
                 .map_err(|e| AppError::Message(format!("Failed to query coding plan: {e}")))?;
 
-                if !quota.success {
-                    return Ok(UsageResult {
-                        success: false,
-                        data: None,
-                        error: quota.error,
-                    });
-                }
-
-                let data: Vec<UsageData> = quota
-                    .tiers
-                    .iter()
-                    .map(|tier| {
-                        let total = 100.0;
-                        let used = tier.utilization;
-                        UsageData {
-                            plan_name: Some(tier.name.clone()),
-                            remaining: Some(total - used),
-                            total: Some(total),
-                            used: Some(used),
-                            unit: Some("%".to_string()),
-                            is_valid: Some(true),
-                            invalid_message: None,
-                            extra: tier.resets_at.clone(),
-                        }
-                    })
-                    .collect();
-
-                Ok(UsageResult {
-                    success: true,
-                    data: if data.is_empty() { None } else { Some(data) },
-                    error: None,
-                })
+                Ok(coding_plan_quota_to_usage_result(&quota))
             }
             Some(TEMPLATE_TYPE_BALANCE) => {
                 crate::services::balance::get_balance(&credentials.base_url, &credentials.api_key)
@@ -665,14 +791,16 @@ pub async fn test_usage_script(
 }
 
 /// True when the template type routes through the JS-script execution path.
-/// Built-in templates (`balance` / `token_plan` / `github_copilot`) ignore the
-/// JS body, so save-time URL validation does not apply to them.
+/// Built-in templates (`balance` / `token_plan` / `github_copilot` /
+/// `official_subscription`) ignore the JS body, so save-time URL validation
+/// does not apply to them.
 fn template_uses_js_path(template_type: Option<&str>) -> bool {
     !matches!(
         template_type,
         Some(TEMPLATE_TYPE_GITHUB_COPILOT)
             | Some(TEMPLATE_TYPE_TOKEN_PLAN)
             | Some(TEMPLATE_TYPE_BALANCE)
+            | Some(TEMPLATE_TYPE_OFFICIAL_SUBSCRIPTION)
     )
 }
 
@@ -720,7 +848,11 @@ pub(crate) fn validate_usage_script(script: &UsageScript) -> Result<(), AppError
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_usage_credentials, validate_usage_script, TEMPLATE_TYPE_BALANCE};
+    use super::{
+        coding_plan_quota_to_usage_result, resolve_coding_plan_credentials,
+        resolve_usage_credentials, validate_usage_script, TEMPLATE_TYPE_BALANCE,
+        TEMPLATE_TYPE_OFFICIAL_SUBSCRIPTION,
+    };
     use crate::app_config::AppType;
     use crate::provider::{Provider, ProviderMeta, UsageScript};
     use serde_json::{json, Value};
@@ -748,6 +880,143 @@ mod tests {
             auto_query_interval: None,
             coding_plan_provider: None,
         }
+    }
+
+    #[test]
+    fn zenmux_coding_plan_uses_script_credentials_first() {
+        let provider = provider_with_config(json!({
+            "env": {
+                "ANTHROPIC_BASE_URL": "https://provider.zenmux.example/v1",
+                "ANTHROPIC_AUTH_TOKEN": "sk-provider"
+            }
+        }));
+        let mut script = usage_script();
+        script.template_type = Some("token_plan".to_string());
+        script.coding_plan_provider = Some("zenmux".to_string());
+        script.api_key = Some("sk-script".to_string());
+        script.base_url = Some("https://script.zenmux.example/api/usage/".to_string());
+
+        let credentials = resolve_coding_plan_credentials(&provider, &AppType::Claude, &script);
+
+        assert_eq!(
+            credentials.base_url,
+            "https://script.zenmux.example/api/usage"
+        );
+        assert_eq!(credentials.api_key, "sk-script");
+    }
+
+    #[test]
+    fn zenmux_coding_plan_falls_back_to_provider_credentials() {
+        let provider = provider_with_config(json!({
+            "env": {
+                "ANTHROPIC_BASE_URL": "https://provider.zenmux.example/v1",
+                "ANTHROPIC_AUTH_TOKEN": "sk-provider"
+            }
+        }));
+        let mut script = usage_script();
+        script.template_type = Some("token_plan".to_string());
+        script.coding_plan_provider = Some("zenmux".to_string());
+        script.base_url = Some("https://script.zenmux.example".to_string());
+
+        let credentials = resolve_coding_plan_credentials(&provider, &AppType::Claude, &script);
+
+        assert_eq!(credentials.base_url, "https://provider.zenmux.example/v1");
+        assert_eq!(credentials.api_key, "sk-provider");
+    }
+
+    #[test]
+    fn non_zenmux_coding_plan_keeps_per_field_script_overrides() {
+        let provider = provider_with_config(json!({
+            "env": {
+                "ANTHROPIC_BASE_URL": "https://api.minimaxi.com/v1",
+                "ANTHROPIC_AUTH_TOKEN": "sk-provider"
+            }
+        }));
+        let mut script = usage_script();
+        script.template_type = Some("token_plan".to_string());
+        script.coding_plan_provider = Some("minimax".to_string());
+        script.api_key = Some("sk-script".to_string());
+
+        let credentials = resolve_coding_plan_credentials(&provider, &AppType::Claude, &script);
+
+        assert_eq!(credentials.base_url, "https://api.minimaxi.com/v1");
+        assert_eq!(credentials.api_key, "sk-script");
+    }
+
+    #[test]
+    fn zenmux_quota_encodes_usd_extra_with_plan_label_on_first_tier() {
+        use crate::services::subscription::{CredentialStatus, QuotaTier, SubscriptionQuota};
+
+        let quota = SubscriptionQuota {
+            tool: "coding_plan".to_string(),
+            credential_status: CredentialStatus::Valid,
+            credential_message: Some("pro (active)".to_string()),
+            success: true,
+            tiers: vec![
+                QuotaTier {
+                    name: "five_hour".to_string(),
+                    utilization: 25.0,
+                    resets_at: Some("2026-06-11T00:00:00Z".to_string()),
+                    used_value_usd: Some(1.25),
+                    max_value_usd: Some(5.0),
+                },
+                QuotaTier {
+                    name: "weekly_limit".to_string(),
+                    utilization: 10.0,
+                    resets_at: None,
+                    used_value_usd: Some(3.0),
+                    max_value_usd: Some(30.0),
+                },
+            ],
+            extra_usage: None,
+            error: None,
+            queried_at: Some(0),
+        };
+
+        let result = coding_plan_quota_to_usage_result(&quota);
+        assert!(result.success);
+        let data = result.data.expect("tiers should map to usage data");
+        assert_eq!(data.len(), 2);
+
+        let first: serde_json::Value =
+            serde_json::from_str(data[0].extra.as_deref().expect("first tier JSON extra"))
+                .expect("first tier extra parses as JSON");
+        assert_eq!(first["usedValueUsd"], json!(1.25));
+        assert_eq!(first["maxValueUsd"], json!(5.0));
+        assert_eq!(first["planLabel"], json!("ZenMux·PRO"));
+        assert_eq!(first["resetsAt"], json!("2026-06-11T00:00:00Z"));
+
+        let second: serde_json::Value =
+            serde_json::from_str(data[1].extra.as_deref().expect("second tier JSON extra"))
+                .expect("second tier extra parses as JSON");
+        assert_eq!(second["planLabel"], json!(null));
+        assert_eq!(second["usedValueUsd"], json!(3.0));
+    }
+
+    #[test]
+    fn non_usd_quota_keeps_plain_resets_at_extra() {
+        use crate::services::subscription::{CredentialStatus, QuotaTier, SubscriptionQuota};
+
+        let quota = SubscriptionQuota {
+            tool: "coding_plan".to_string(),
+            credential_status: CredentialStatus::Valid,
+            credential_message: None,
+            success: true,
+            tiers: vec![QuotaTier {
+                name: "five_hour".to_string(),
+                utilization: 40.0,
+                resets_at: Some("2026-06-11T00:00:00Z".to_string()),
+                used_value_usd: None,
+                max_value_usd: None,
+            }],
+            extra_usage: None,
+            error: None,
+            queried_at: Some(0),
+        };
+
+        let result = coding_plan_quota_to_usage_result(&quota);
+        let data = result.data.expect("tier should map to usage data");
+        assert_eq!(data[0].extra.as_deref(), Some("2026-06-11T00:00:00Z"));
     }
 
     #[test]
@@ -809,6 +1078,85 @@ base_url = "https://azure.example/openai/"
 
         assert_eq!(credentials.api_key, "codex-key");
         assert_eq!(credentials.base_url, "https://azure.example/openai");
+    }
+
+    #[test]
+    fn claude_key_fallback_skips_empty_primary_fields() {
+        // Presets seed ANTHROPIC_AUTH_TOKEN / ANTHROPIC_API_KEY as
+        // present-but-empty placeholders; the fallback chain must skip empty
+        // values (matching the frontend `a || b` semantics), not just absent
+        // keys, so the key stored in OPENROUTER_API_KEY is still found.
+        let provider = provider_with_config(json!({
+            "env": {
+                "ANTHROPIC_BASE_URL": "https://openrouter.ai/api/v1/",
+                "ANTHROPIC_AUTH_TOKEN": "",
+                "ANTHROPIC_API_KEY": "",
+                "OPENROUTER_API_KEY": "sk-or",
+            }
+        }));
+
+        let credentials = resolve_usage_credentials(&provider, &AppType::Claude, &usage_script());
+
+        assert_eq!(credentials.api_key, "sk-or");
+        assert_eq!(credentials.base_url, "https://openrouter.ai/api/v1");
+    }
+
+    #[test]
+    fn claude_key_falls_back_to_google_api_key() {
+        let provider = provider_with_config(json!({
+            "env": {
+                "ANTHROPIC_BASE_URL": "https://gateway.example/v1",
+                "ANTHROPIC_AUTH_TOKEN": "",
+                "GOOGLE_API_KEY": "g-real",
+            }
+        }));
+
+        let credentials = resolve_usage_credentials(&provider, &AppType::Claude, &usage_script());
+
+        assert_eq!(credentials.api_key, "g-real");
+    }
+
+    #[test]
+    fn gemini_key_skips_empty_primary_and_uses_google_fallback() {
+        let provider = provider_with_config(json!({
+            "env": {
+                "GOOGLE_GEMINI_BASE_URL": "https://generativelanguage.googleapis.com",
+                "GEMINI_API_KEY": "",
+                "GOOGLE_API_KEY": "g-legacy",
+            }
+        }));
+
+        let credentials = resolve_usage_credentials(&provider, &AppType::Gemini, &usage_script());
+
+        assert_eq!(credentials.api_key, "g-legacy");
+        assert_eq!(
+            credentials.base_url,
+            "https://generativelanguage.googleapis.com"
+        );
+    }
+
+    #[test]
+    fn codex_key_falls_back_to_experimental_bearer_token() {
+        // Config-only Codex installs keep the key in config.toml's
+        // experimental_bearer_token (no auth.OPENAI_API_KEY). The backend
+        // resolver must mirror the frontend fallback or the saved-card refresh
+        // path resolves empty credentials while "Test" works.
+        let provider = provider_with_config(json!({
+            "auth": {},
+            "config": r#"
+model_provider = "packycode"
+
+[model_providers.packycode]
+name = "PackyCode"
+base_url = "https://api.packycode.com/v1"
+experimental_bearer_token = "sk-bearer"
+"#
+        }));
+
+        let credentials = resolve_usage_credentials(&provider, &AppType::Codex, &usage_script());
+
+        assert_eq!(credentials.api_key, "sk-bearer");
+        assert_eq!(credentials.base_url, "https://api.packycode.com/v1");
     }
 
     #[test]
@@ -940,6 +1288,19 @@ base_url = "https://azure.example/openai/"
         script.code = js_script_with_url("");
 
         validate_usage_script(&script).expect("balance template should bypass url check");
+    }
+
+    #[test]
+    fn validate_usage_script_skips_check_for_official_subscription_template() {
+        // official_subscription has no JS body at all (code is ""): the save
+        // path must not run the JS request.url validation against it.
+        let mut script = usage_script();
+        script.enabled = true;
+        script.template_type = Some(TEMPLATE_TYPE_OFFICIAL_SUBSCRIPTION.to_string());
+        script.code = String::new();
+
+        validate_usage_script(&script)
+            .expect("official_subscription template should bypass url check");
     }
 
     #[test]

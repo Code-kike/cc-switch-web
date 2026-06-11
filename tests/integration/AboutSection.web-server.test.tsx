@@ -67,15 +67,15 @@ type FakeToolBin = {
 };
 
 const currentRelease: LatestReleaseFixture = {
-  tag_name: "v3.16.0",
+  tag_name: "v3.16.2",
   body: "Current release notes",
-  html_url: "https://github.com/farion1231/cc-switch/releases/tag/v3.16.0",
+  html_url: "https://github.com/farion1231/cc-switch/releases/tag/v3.16.2",
 };
 
 const newerRelease: LatestReleaseFixture = {
-  tag_name: "v3.16.1",
+  tag_name: "v3.16.3",
   body: "Newer release notes from test server",
-  html_url: "https://github.com/farion1231/cc-switch/releases/tag/v3.16.1",
+  html_url: "https://github.com/farion1231/cc-switch/releases/tag/v3.16.3",
 };
 
 const latestToolVersions: Record<ToolName, string> = {
@@ -341,7 +341,7 @@ describe.sequential("AboutSection against real web server", () => {
     async () => {
       renderAboutSection();
 
-      await expectVersionBadge("v3.16.0");
+      await expectVersionBadge("v3.16.2");
       await waitFor(
         () => {
           expect(screen.getByText("1.0.0")).toBeInTheDocument();
@@ -378,7 +378,7 @@ describe.sequential("AboutSection against real web server", () => {
       renderAboutSection();
 
       expect(await screen.findByText("CC Switch")).toBeInTheDocument();
-      await expectVersionBadge("v3.16.0");
+      await expectVersionBadge("v3.16.2");
       expect(
         await screen.findByText(
           /^(settings\.serverEnvCheck|服务端环境检查|Server Environment Check)$/,
@@ -433,7 +433,7 @@ describe.sequential("AboutSection against real web server", () => {
 
     renderAboutSection();
 
-    await expectVersionBadge("v3.16.0");
+    await expectVersionBadge("v3.16.2");
 
     const updateButton = await screen.findByRole("button", {
       name: /^(settings\.updateTo|Update to|更新到)/,

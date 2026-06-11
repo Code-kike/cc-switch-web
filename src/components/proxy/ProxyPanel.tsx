@@ -29,6 +29,7 @@ import {
 import type { ProxyStatus } from "@/types/proxy";
 import { useTranslation } from "react-i18next";
 import { AnimatePresence, motion } from "framer-motion";
+import { extractErrorMessage } from "@/utils/errorUtils";
 
 interface ProxyPanelProps {
   enableLocalProxy: boolean;
@@ -118,8 +119,12 @@ export function ProxyPanel({
         { closeButton: true },
       );
     } catch (error) {
+      const detail =
+        extractErrorMessage(error) ||
+        t("common.unknown", { defaultValue: "未知错误" });
       toast.error(
         t("proxy.takeover.failed", {
+          detail,
           defaultValue: "切换接管状态失败",
         }),
       );
@@ -160,6 +165,8 @@ export function ProxyPanel({
       );
       return;
     }
+    const normalizedAddress =
+      addressTrimmed === "localhost" ? "127.0.0.1" : addressTrimmed;
 
     // 严格校验端口：必须是纯数字
     const portTrimmed = listenPort.trim();
@@ -183,7 +190,7 @@ export function ProxyPanel({
     try {
       await updateGlobalConfig.mutateAsync({
         ...globalConfig,
-        listenAddress: addressTrimmed,
+        listenAddress: normalizedAddress,
         listenPort: port,
       });
       toast.success(
