@@ -279,6 +279,9 @@ export function useProviderActions(
         await queryClient.invalidateQueries({
           queryKey: usageKeys.script(provider.id, activeApp),
         });
+        await queryClient.invalidateQueries({
+          queryKey: ["subscription", "quota", activeApp],
+        });
         toast.success(
           t("provider.usageSaved", {
             defaultValue: "用量查询配置已保存",

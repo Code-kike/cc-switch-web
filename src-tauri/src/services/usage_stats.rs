@@ -2920,6 +2920,16 @@ mod tests {
             "ZhipuAI/GLM-5.1 应清洗后小写匹配到 glm-5.1"
         );
 
+        // v3.16.2 同步新增 seed 行 minimax-m3：裸 id 精确命中 +
+        // 聚合商前缀/大小写形式经清洗后命中（否则 MiniMax M3 成本静默记 0）
+        let result = find_model_pricing_row(&conn, "minimax-m3")?;
+        assert!(result.is_some(), "裸 id minimax-m3 应精确匹配到 seed 行");
+        let result = find_model_pricing_row(&conn, "MiniMaxAI/MiniMax-M3")?;
+        assert!(
+            result.is_some(),
+            "MiniMaxAI/MiniMax-M3 应清洗后小写匹配到 minimax-m3"
+        );
+
         // 裸 id 精确命中新增的 seed 行
         let result = find_model_pricing_row(&conn, "claude-sonnet-4-6")?;
         assert!(
