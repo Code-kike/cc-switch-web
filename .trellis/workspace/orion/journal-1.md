@@ -432,3 +432,48 @@ Fresh full review (17-agent Workflow + independent Codex gpt-5.5) + 2-round Clau
 ### Next Steps
 
 - None - task complete
+
+
+## Session 13: Sync upstream cc-switch v3.16.1+v3.16.2 into web fork
+
+**Date**: 2026-06-11
+**Task**: Sync upstream cc-switch v3.16.1+v3.16.2 into web fork
+**Branch**: `main`
+
+### Summary
+
+Ported the shared-code surface of upstream v3.16.1+v3.16.2 in 12 batched sync commits adapted to the dual-runtime fork (S3 cloud sync, OpenCode usage sync, official-subscription quota templates, media image-fallback rectifier, Codex auth-preservation toggle + takeover hardening, /v1/models probe, ZenMux+CherryIN providers, MiniMax pricing). Version bumped to 3.16.2. Deferred per decision: Codex Chat routing stack + model-catalog (follow-up task created), ClaudeDesktop app, Windows desktop polish. trellis-check SHIP, all 14 gates green. Merged to main (6f472ace), pushed to origin, redeployed the systemd web service (now serving 3.16.2 on 0.0.0.0:3010).
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `f48138c0` | (see git log) |
+| `d5cc0039` | (see git log) |
+| `b8f6dbe2` | (see git log) |
+| `50dc1e9d` | (see git log) |
+| `34cf2330` | (see git log) |
+| `886186d3` | (see git log) |
+| `e6f42a01` | (see git log) |
+| `a82a0367` | (see git log) |
+| `b55e2f18` | (see git log) |
+| `ca797628` | (see git log) |
+| `91c1b55c` | (see git log) |
+| `ddfa61cb` | (see git log) |
+| `6f472ace` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
