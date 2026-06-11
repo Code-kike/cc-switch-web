@@ -9,9 +9,8 @@ const setRectifierConfigMock = vi.fn();
 const getOptimizerConfigMock = vi.fn();
 const setOptimizerConfigMock = vi.fn();
 const toastErrorMock = vi.fn();
-const translateMock = vi.fn(
-  (key: string, options?: { error?: string }) =>
-    options?.error ? `${key}: ${options.error}` : key,
+const translateMock = vi.fn((key: string, options?: { error?: string }) =>
+  options?.error ? `${key}: ${options.error}` : key,
 );
 
 vi.mock("react-i18next", () => ({
@@ -61,7 +60,10 @@ vi.mock("@/components/ui/alert", () => ({
   Alert: ({ children }: { children: ReactNode }) => (
     <div role="alert">{children}</div>
   ),
-  AlertDescription: ({ children, className }: HTMLAttributes<HTMLDivElement>) => (
+  AlertDescription: ({
+    children,
+    className,
+  }: HTMLAttributes<HTMLDivElement>) => (
     <div className={className}>{children}</div>
   ),
 }));
@@ -70,6 +72,8 @@ const defaultRectifierConfig = {
   enabled: true,
   requestThinkingSignature: true,
   requestThinkingBudget: true,
+  requestMediaFallback: true,
+  requestMediaHeuristic: true,
 };
 
 const defaultOptimizerConfig = {
@@ -125,6 +129,8 @@ describe("RectifierConfigPanel", () => {
         enabled: false,
         requestThinkingSignature: true,
         requestThinkingBudget: true,
+        requestMediaFallback: true,
+        requestMediaHeuristic: true,
       }),
     );
     await waitFor(() =>
@@ -146,7 +152,9 @@ describe("RectifierConfigPanel", () => {
 
     await screen.findByText("settings.advanced.rectifier.enabled");
 
-    const optimizerEnabledSwitch = screen.getAllByRole("switch")[3];
+    // 整流器组共 5 个开关（总开关 + signature + budget + mediaFallback + mediaHeuristic），
+    // 优化器总开关位于其后。
+    const optimizerEnabledSwitch = screen.getAllByRole("switch")[5];
     fireEvent.click(optimizerEnabledSwitch);
 
     await waitFor(() =>
