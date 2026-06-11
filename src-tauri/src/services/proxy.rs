@@ -375,8 +375,48 @@ impl ProxyService {
         self.switch_locks.lock_for_app(app_type).await
     }
 
+    /// D4（PRD 06-11）：Web 运行时强制代理监听 loopback。
+    ///
+    /// Web 构建（无 `desktop` feature）中，本地代理是第二个无认证监听器，
+    /// 且转发请求时携带真实供应商 Token；MVP 明确不允许将代理端口暴露到
+    /// loopback 之外（CLI 与代理同机运行，loopback 足够）。桌面构建行为
+    /// 不变（编译期常量直接放行）。
+    ///
+    /// 放置在 `start()`（所有启动路径的唯一汇聚点：手动启动、接管自启、
+    /// 启动恢复、临时端口预启动）与 `update_config()`（持久化 + 热重启路径）
+    /// 两个 choke point —— 即 `ProxyServer::new` 的全部调用入口，任何 web
+    /// 路由都无法绕过。`update_global_proxy_config` 等 db 直写路由可以落库
+    /// 非 loopback 地址，但下次 `start()` 会以清晰错误拒绝，监听器永远不会
+    /// 绑定到非 loopback 地址。
+    fn ensure_loopback_listen_address_for_web(config: &ProxyConfig) -> Result<(), String> {
+        if cfg!(feature = "desktop") {
+            return Ok(());
+        }
+
+        let addr = config.listen_address.trim();
+        let is_loopback = match addr.parse::<std::net::IpAddr>() {
+            Ok(ip) => ip.is_loopback(),
+            Err(_) => addr.eq_ignore_ascii_case("localhost"),
+        };
+        if is_loopback {
+            Ok(())
+        } else {
+            Err(format!(
+                "Web 运行时仅允许代理监听 loopback 地址（当前配置: {addr}）。请将监听地址改为 127.0.0.1（代理端口不对外暴露，PRD D4）"
+            ))
+        }
+    }
+
     /// 启动代理服务器
     pub async fn start(&self) -> Result<ProxyServerInfo, String> {
+        // 0. 获取配置并校验监听地址（先于任何状态写入，拒绝时不留副作用）
+        let config = self
+            .db
+            .get_proxy_config()
+            .await
+            .map_err(|e| format!("获取代理配置失败: {e}"))?;
+        Self::ensure_loopback_listen_address_for_web(&config)?;
+
         // 1. 启动时自动设置 proxy_enabled = true
         let mut global_config = self
             .db
@@ -392,14 +432,7 @@ impl ProxyService {
                 .map_err(|e| format!("更新代理总开关失败: {e}"))?;
         }
 
-        // 2. 获取配置
-        let config = self
-            .db
-            .get_proxy_config()
-            .await
-            .map_err(|e| format!("获取代理配置失败: {e}"))?;
-
-        // 3. 若已在运行：确保持久化状态（如需要）并返回当前信息
+        // 2. 若已在运行：确保持久化状态（如需要）并返回当前信息
         if let Some(server) = self.server.read().await.as_ref() {
             let status = server.get_status().await;
             return Ok(ProxyServerInfo {
@@ -410,7 +443,7 @@ impl ProxyService {
             });
         }
 
-        // 4. 创建并启动服务器
+        // 3. 创建并启动服务器
         let runtime_ctx = self.runtime_ctx.read().await.clone();
         let server = ProxyServer::new(config.clone(), self.db.clone(), runtime_ctx);
         let info = server
@@ -425,7 +458,7 @@ impl ProxyService {
             return Err(e);
         }
 
-        // 5. 保存服务器实例
+        // 4. 保存服务器实例
         *self.server.write().await = Some(server);
 
         log::info!("代理服务器已启动: {}:{}", info.address, info.port);
@@ -2487,6 +2520,10 @@ impl ProxyService {
 
     /// 更新代理配置
     pub async fn update_config(&self, config: &ProxyConfig) -> Result<(), String> {
+        // D4：持久化之前拒绝非 loopback 监听地址（仅 web 运行时生效），
+        // 保证数据库与热重启路径都不会出现违规地址。
+        Self::ensure_loopback_listen_address_for_web(config)?;
+
         // 记录旧配置用于判定是否需要重启
         let previous = self
             .db
@@ -2699,6 +2736,101 @@ mod tests {
     async fn running_codex_base_url(service: &ProxyService) -> String {
         let status = service.get_status().await.expect("get proxy status");
         format!("http://127.0.0.1:{}/v1", status.port)
+    }
+
+    /// D4 回归（仅 web 构建运行）：桌面构建中 `ensure_loopback_listen_address_for_web`
+    /// 是编译期放行的 no-op，下列断言只在 `--features web-server` 的 example
+    /// 测试套件里成立。
+    #[cfg(not(feature = "desktop"))]
+    mod web_loopback_enforcement {
+        use super::*;
+
+        #[test]
+        fn validation_accepts_loopback_and_rejects_public_addresses() {
+            for addr in ["127.0.0.1", "127.0.0.2", "::1", "localhost", " 127.0.0.1 "] {
+                let config = ProxyConfig {
+                    listen_address: addr.to_string(),
+                    ..Default::default()
+                };
+                assert!(
+                    ProxyService::ensure_loopback_listen_address_for_web(&config).is_ok(),
+                    "loopback address {addr:?} must pass web listen-address validation"
+                );
+            }
+
+            for addr in [
+                "0.0.0.0",
+                "::",
+                "192.168.1.10",
+                "100.64.0.7",
+                "example.com",
+                "",
+            ] {
+                let config = ProxyConfig {
+                    listen_address: addr.to_string(),
+                    ..Default::default()
+                };
+                let err = ProxyService::ensure_loopback_listen_address_for_web(&config)
+                    .expect_err("non-loopback address must be rejected in web runtime");
+                assert!(
+                    err.contains("loopback"),
+                    "rejection message should mention loopback, got: {err}"
+                );
+            }
+        }
+
+        #[tokio::test]
+        #[serial]
+        async fn start_rejects_non_loopback_listen_address_without_side_effects() {
+            let db = Arc::new(Database::memory().expect("init db"));
+            let mut config = db.get_proxy_config().await.expect("get proxy config");
+            config.listen_address = "0.0.0.0".to_string();
+            db.update_proxy_config(config)
+                .await
+                .expect("persist non-loopback listen address");
+
+            let service = ProxyService::new(db.clone());
+            let err = service
+                .start()
+                .await
+                .expect_err("start() must reject a non-loopback listen address in web runtime");
+            assert!(err.contains("loopback"), "unexpected error: {err}");
+            assert!(!service.is_running().await, "server must not be created");
+
+            // 拒绝必须无副作用：代理总开关不能被置为 true。
+            let global = db
+                .get_global_proxy_config()
+                .await
+                .expect("get global proxy config");
+            assert!(
+                !global.proxy_enabled,
+                "rejected start must not flip proxy_enabled"
+            );
+        }
+
+        #[tokio::test]
+        #[serial]
+        async fn update_config_rejects_non_loopback_listen_address_before_persisting() {
+            let db = Arc::new(Database::memory().expect("init db"));
+            let service = ProxyService::new(db.clone());
+
+            let mut config = db.get_proxy_config().await.expect("get proxy config");
+            let original_address = config.listen_address.clone();
+            let original_port = config.listen_port;
+            config.listen_address = "0.0.0.0".to_string();
+            config.listen_port = 25721;
+
+            let err = service
+                .update_config(&config)
+                .await
+                .expect_err("update_config() must reject a non-loopback listen address");
+            assert!(err.contains("loopback"), "unexpected error: {err}");
+
+            // 拒绝发生在持久化之前：数据库中的监听配置保持不变。
+            let stored = db.get_proxy_config().await.expect("re-read proxy config");
+            assert_eq!(stored.listen_address, original_address);
+            assert_eq!(stored.listen_port, original_port);
+        }
     }
 
     #[test]

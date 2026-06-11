@@ -7,6 +7,12 @@ Type=simple
 ExecStart=%h/.local/bin/cc-switch-web
 Restart=on-failure
 RestartSec=3
+# Graceful stop restores the live CLI configs taken over by the routing proxy
+# (removes PROXY_MANAGED placeholders). Must comfortably exceed the proxy stop
+# timeout (5s) plus the live-config restore writes; only after this window does
+# systemd escalate to SIGKILL (which would leave placeholders until the next
+# boot's crash recovery).
+TimeoutStopSec=30
 Environment=HOST=0.0.0.0
 Environment=PORT=3010
 Environment=ENABLE_HSTS=false
