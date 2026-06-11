@@ -222,7 +222,7 @@ impl RequestContext {
             state.current_providers.clone(),
             state.gemini_shadow.clone(),
             state.failover_manager.clone(),
-            state.app_handle.clone(),
+            state.runtime_ctx.clone(),
             self.current_provider_id.clone(),
             self.session_id.clone(),
             self.session_client_provided,

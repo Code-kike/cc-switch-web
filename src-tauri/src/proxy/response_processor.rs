@@ -951,7 +951,7 @@ mod tests {
             current_providers: Arc::new(RwLock::new(HashMap::new())),
             provider_router: Arc::new(ProviderRouter::new(db.clone())),
             gemini_shadow: Arc::new(GeminiShadowStore::default()),
-            app_handle: None,
+            runtime_ctx: None,
             failover_manager: Arc::new(FailoverSwitchManager::new(db)),
         }
     }

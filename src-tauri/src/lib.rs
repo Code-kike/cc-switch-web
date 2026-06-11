@@ -435,8 +435,9 @@ pub fn run() {
 
             let app_state = AppState::new(db);
 
-            // 设置 AppHandle 用于代理故障转移时的 UI 更新
-            app_state.proxy_service.set_app_handle(app.handle().clone());
+            // 代理运行时上下文（事件 sink + OAuth 管理器 + 热切换句柄）在
+            // CopilotAuthManager / CodexOAuthManager 初始化完成后注入，
+            // 见下方 set_runtime_ctx 调用（取代旧的 set_app_handle）。
 
             // ============================================================
             // 按表独立判断的导入逻辑（各类数据独立检查，互不影响）
@@ -871,6 +872,23 @@ pub fn run() {
                 let codex_oauth_manager = CodexOAuthManager::new(app_config_dir);
                 app.manage(CodexOAuthState(Arc::new(RwLock::new(codex_oauth_manager))));
                 log::info!("✓ CodexOAuthManager initialized");
+            }
+
+            // 注入代理运行时上下文（取代旧的 set_app_handle）：
+            // 事件/托盘走 TauriEventSink，OAuth 管理器直接注入（与
+            // app.manage 的 CopilotAuthState/CodexOAuthState 共享同一 Arc），
+            // 故障转移热切换句柄由 set_runtime_ctx 自动填入。
+            // 代理服务器只会在 setup 之后启动（startup 恢复任务或前端命令），
+            // 因此此处注入时机与旧 set_app_handle 等效。
+            {
+                let app_state = app.state::<AppState>();
+                let copilot_auth = app.state::<commands::CopilotAuthState>().0.clone();
+                let codex_oauth = app.state::<commands::CodexOAuthState>().0.clone();
+                app_state.proxy_service.set_runtime_ctx(
+                    Arc::new(crate::runtime::TauriEventSink::new(app.handle().clone())),
+                    copilot_auth,
+                    codex_oauth,
+                );
             }
 
             // 初始化全局出站代理 HTTP 客户端

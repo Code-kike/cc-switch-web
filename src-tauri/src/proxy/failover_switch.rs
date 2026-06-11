@@ -2,14 +2,14 @@
 //!
 //! 处理故障转移成功后的供应商切换逻辑，包括：
 //! - 去重控制（避免多个请求同时触发）
-//! - 托盘菜单更新
-//! - 前端事件发射
+//! - 托盘菜单更新（经 `ProxyRuntimeCtx::refresh_tray`，桌面端实现，Web 端 no-op）
+//! - 前端事件发射（经 `ProxyRuntimeCtx::emit_json`，桌面 = Tauri 事件总线，Web = SSE）
 
 use crate::database::Database;
 use crate::error::AppError;
+use crate::proxy::runtime_ctx::ProxyRuntimeCtx;
 use std::collections::HashSet;
 use std::sync::Arc;
-use tauri::{Emitter, Manager};
 use tokio::sync::RwLock;
 
 /// 故障转移切换管理器
@@ -40,7 +40,7 @@ impl FailoverSwitchManager {
     /// - `Err(e)` - 切换过程中发生错误
     pub async fn try_switch(
         &self,
-        app_handle: Option<&tauri::AppHandle>,
+        ctx: Option<&ProxyRuntimeCtx>,
         app_type: &str,
         provider_id: &str,
         provider_name: &str,
@@ -59,7 +59,7 @@ impl FailoverSwitchManager {
 
         // 执行切换（确保最后清理 pending 标记）
         let result = self
-            .do_switch(app_handle, app_type, provider_id, provider_name)
+            .do_switch(ctx, app_type, provider_id, provider_name)
             .await;
 
         // 清理 pending 标记
@@ -73,7 +73,7 @@ impl FailoverSwitchManager {
 
     async fn do_switch(
         &self,
-        app_handle: Option<&tauri::AppHandle>,
+        ctx: Option<&ProxyRuntimeCtx>,
         app_type: &str,
         provider_id: &str,
         provider_name: &str,
@@ -97,27 +97,20 @@ impl FailoverSwitchManager {
 
         let mut switched = false;
 
-        if let Some(app) = app_handle {
-            if let Some(app_state) = app.try_state::<crate::store::AppState>() {
-                switched = app_state
-                    .proxy_service
-                    .hot_switch_provider(app_type, provider_id)
-                    .await
-                    .map_err(AppError::Message)?
-                    .logical_target_changed;
+        if let Some(ctx) = ctx {
+            switched = ctx
+                .hot_switch
+                .hot_switch_provider(app_type, provider_id)
+                .await
+                .map_err(AppError::Message)?
+                .logical_target_changed;
 
-                if !switched {
-                    return Ok(false);
-                }
-
-                if let Ok(new_menu) = crate::tray::create_tray_menu(app, app_state.inner()) {
-                    if let Some(tray) = app.tray_by_id(crate::tray::TRAY_ID) {
-                        if let Err(e) = tray.set_menu(Some(new_menu)) {
-                            log::error!("[Failover] 更新托盘菜单失败: {e}");
-                        }
-                    }
-                }
+            if !switched {
+                return Ok(false);
             }
+
+            // 刷新托盘菜单（桌面端 TauriEventSink 覆写；其他运行时 no-op）
+            ctx.refresh_tray();
 
             // 发射事件到前端
             let event_data = serde_json::json!({
@@ -125,9 +118,7 @@ impl FailoverSwitchManager {
                 "providerId": provider_id,
                 "source": "failover"  // 标识来源是故障转移
             });
-            if let Err(e) = app.emit("provider-switched", event_data) {
-                log::error!("[Failover] 发射事件失败: {e}");
-            }
+            ctx.emit_json("provider-switched", event_data);
         }
 
         Ok(switched)

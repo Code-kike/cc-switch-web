@@ -14,6 +14,7 @@ use super::{
         gemini_shadow::GeminiShadowStore, get_adapter, AuthInfo, AuthStrategy, ProviderAdapter,
         ProviderType,
     },
+    runtime_ctx::ProxyRuntimeCtx,
     thinking_budget_rectifier::{rectify_thinking_budget, should_rectify_thinking_budget},
     thinking_rectifier::{
         normalize_thinking_type, rectify_anthropic_request, should_rectify_thinking_signature,
@@ -21,7 +22,6 @@ use super::{
     types::{CopilotOptimizerConfig, OptimizerConfig, ProxyStatus, RectifierConfig},
     ProxyError,
 };
-use crate::commands::{CodexOAuthState, CopilotAuthState};
 use crate::proxy::providers::codex_oauth_auth::CodexOAuthManager;
 use crate::proxy::providers::copilot_auth::CopilotAuthManager;
 use crate::{app_config::AppType, provider::Provider};
@@ -29,7 +29,6 @@ use futures::StreamExt;
 use http::Extensions;
 use serde_json::Value;
 use std::sync::Arc;
-use tauri::Manager;
 use tokio::sync::RwLock;
 
 pub struct ForwardResult {
@@ -91,8 +90,8 @@ pub struct RequestForwarder {
     gemini_shadow: Arc<GeminiShadowStore>,
     /// 故障转移切换管理器
     failover_manager: Arc<FailoverSwitchManager>,
-    /// AppHandle，用于发射事件和更新托盘
-    app_handle: Option<tauri::AppHandle>,
+    /// 运行时上下文，用于发射事件、更新托盘和获取 OAuth 管理器
+    runtime_ctx: Option<ProxyRuntimeCtx>,
     /// 请求开始时的"当前供应商 ID"（用于判断是否需要同步 UI/托盘）
     current_provider_id_at_start: String,
     /// 代理会话 ID（用于 Gemini Native shadow replay）
@@ -170,7 +169,7 @@ impl RequestForwarder {
         current_providers: Arc<RwLock<std::collections::HashMap<String, (String, String)>>>,
         gemini_shadow: Arc<GeminiShadowStore>,
         failover_manager: Arc<FailoverSwitchManager>,
-        app_handle: Option<tauri::AppHandle>,
+        runtime_ctx: Option<ProxyRuntimeCtx>,
         current_provider_id_at_start: String,
         session_id: String,
         session_client_provided: bool,
@@ -188,7 +187,7 @@ impl RequestForwarder {
             current_providers,
             gemini_shadow,
             failover_manager,
-            app_handle,
+            runtime_ctx,
             current_provider_id_at_start,
             session_id,
             session_client_provided,
@@ -278,13 +277,13 @@ impl RequestForwarder {
 
                 // 异步触发供应商切换，更新 UI/托盘，并把“当前供应商”同步为实际使用的 provider
                 let fm = self.failover_manager.clone();
-                let ah = self.app_handle.clone();
+                let ctx = self.runtime_ctx.clone();
                 let pid = provider.id.clone();
                 let pname = provider.name.clone();
                 let at = app_type_str.to_string();
 
                 tokio::spawn(async move {
-                    let _ = fm.try_switch(ah.as_ref(), &at, &pid, &pname).await;
+                    let _ = fm.try_switch(ctx.as_ref(), &at, &pid, &pname).await;
                 });
             }
             // 重新计算成功率
@@ -1142,9 +1141,8 @@ impl RequestForwarder {
         // GitHub Copilot 动态 endpoint 路由
         // 从 CopilotAuthManager 获取缓存的 API endpoint（支持企业版等非默认 endpoint）
         if is_copilot && !is_full_url {
-            if let Some(app_handle) = &self.app_handle {
-                let copilot_state = app_handle.state::<CopilotAuthState>();
-                let copilot_auth = copilot_state.0.read().await;
+            if let Some(ctx) = &self.runtime_ctx {
+                let copilot_auth = ctx.copilot_auth.read().await;
 
                 // 从 provider.meta 获取关联的 GitHub 账号 ID
                 let account_id = provider
@@ -1261,10 +1259,9 @@ impl RequestForwarder {
         let mut auth_headers = if let Some(mut auth) = adapter.extract_auth(provider) {
             // GitHub Copilot 特殊处理：从 CopilotAuthManager 获取真实 token
             if auth.strategy == AuthStrategy::GitHubCopilot {
-                if let Some(app_handle) = &self.app_handle {
-                    let copilot_state = app_handle.state::<CopilotAuthState>();
+                if let Some(ctx) = &self.runtime_ctx {
                     let copilot_auth: tokio::sync::RwLockReadGuard<'_, CopilotAuthManager> =
-                        copilot_state.0.read().await;
+                        ctx.copilot_auth.read().await;
 
                     // 从 provider.meta 获取关联的 GitHub 账号 ID（多账号支持）
                     let account_id = provider
@@ -1303,19 +1300,18 @@ impl RequestForwarder {
                         }
                     }
                 } else {
-                    log::error!("[Copilot] AppHandle 不可用");
+                    log::error!("[Copilot] 运行时上下文不可用");
                     return Err(ProxyError::AuthError(
-                        "GitHub Copilot 认证不可用（无 AppHandle）".to_string(),
+                        "GitHub Copilot 认证不可用（无运行时上下文）".to_string(),
                     ));
                 }
             }
 
             // Codex OAuth 特殊处理：从 CodexOAuthManager 获取真实 access_token
             if auth.strategy == AuthStrategy::CodexOAuth {
-                if let Some(app_handle) = &self.app_handle {
-                    let codex_state = app_handle.state::<CodexOAuthState>();
+                if let Some(ctx) = &self.runtime_ctx {
                     let codex_auth: tokio::sync::RwLockReadGuard<'_, CodexOAuthManager> =
-                        codex_state.0.read().await;
+                        ctx.codex_oauth.read().await;
 
                     // 从 provider.meta 获取关联的 ChatGPT 账号 ID
                     let account_id = provider
@@ -1356,9 +1352,9 @@ impl RequestForwarder {
                         }
                     }
                 } else {
-                    log::error!("[CodexOAuth] AppHandle 不可用");
+                    log::error!("[CodexOAuth] 运行时上下文不可用");
                     return Err(ProxyError::AuthError(
-                        "Codex OAuth 认证不可用（无 AppHandle）".to_string(),
+                        "Codex OAuth 认证不可用（无运行时上下文）".to_string(),
                     ));
                 }
             }
@@ -1366,8 +1362,8 @@ impl RequestForwarder {
             // Gemini (Google) OAuth: refresh the access token from the stored
             // refresh_token when it is missing/expiring, so an expired ~1h
             // `ya29.` token no longer degrades to a 401 (M31). The manager is a
-            // process-global singleton (no AppHandle needed) and falls back to
-            // the stored token if a refresh isn't possible.
+            // process-global singleton (no runtime context needed) and falls
+            // back to the stored token if a refresh isn't possible.
             if auth.strategy == AuthStrategy::GoogleOAuth {
                 if let Some(creds) =
                     super::providers::GeminiAdapter::new().parse_oauth_credentials(&auth.api_key)
@@ -1888,13 +1884,12 @@ impl RequestForwarder {
             return;
         };
 
-        let Some(app_handle) = &self.app_handle else {
-            log::debug!("[Copilot] AppHandle unavailable, skip live model resolution");
+        let Some(ctx) = &self.runtime_ctx else {
+            log::debug!("[Copilot] runtime context unavailable, skip live model resolution");
             return;
         };
 
-        let copilot_state = app_handle.state::<CopilotAuthState>();
-        let copilot_auth = copilot_state.0.read().await;
+        let copilot_auth = ctx.copilot_auth.read().await;
         let account_id = provider
             .meta
             .as_ref()
@@ -1922,13 +1917,12 @@ impl RequestForwarder {
     }
 
     async fn is_copilot_openai_vendor_model(&self, provider: &Provider, model_id: &str) -> bool {
-        let Some(app_handle) = &self.app_handle else {
-            log::debug!("[Copilot] AppHandle unavailable, fallback to chat/completions");
+        let Some(ctx) = &self.runtime_ctx else {
+            log::debug!("[Copilot] runtime context unavailable, fallback to chat/completions");
             return false;
         };
 
-        let copilot_state = app_handle.state::<CopilotAuthState>();
-        let copilot_auth = copilot_state.0.read().await;
+        let copilot_auth = ctx.copilot_auth.read().await;
         let account_id = provider
             .meta
             .as_ref()
@@ -2461,7 +2455,7 @@ mod tests {
             current_providers: Arc::new(RwLock::new(HashMap::new())),
             gemini_shadow: Arc::new(GeminiShadowStore::new()),
             failover_manager: Arc::new(FailoverSwitchManager::new(db)),
-            app_handle: None,
+            runtime_ctx: None,
             current_provider_id_at_start: current_provider_id_at_start.to_string(),
             session_id: String::new(),
             session_client_provided: false,

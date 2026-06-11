@@ -6,16 +6,19 @@ use crate::app_config::AppType;
 use crate::config::{get_claude_settings_path, read_json_file, write_json_file};
 use crate::database::Database;
 use crate::provider::Provider;
+use crate::proxy::providers::codex_oauth_auth::CodexOAuthManager;
+use crate::proxy::providers::copilot_auth::CopilotAuthManager;
+use crate::proxy::runtime_ctx::ProxyRuntimeCtx;
 use crate::proxy::server::ProxyServer;
 use crate::proxy::switch_lock::SwitchLockManager;
 use crate::proxy::types::*;
+use crate::runtime::UiEventSink;
 use crate::services::provider::{
     build_effective_settings_with_common_config, write_live_with_common_config,
 };
 use serde_json::{json, Map, Value};
 use std::str::FromStr;
 use std::sync::Arc;
-use tauri::Emitter;
 use tokio::sync::RwLock;
 
 /// 用于接管 Live 配置时的占位符（避免客户端提示缺少 key，同时不泄露真实 Token）
@@ -54,8 +57,9 @@ enum ClaudeTakeoverAuthPolicy {
 pub struct ProxyService {
     db: Arc<Database>,
     server: Arc<RwLock<Option<ProxyServer>>>,
-    /// AppHandle，用于传递给 ProxyServer 以支持故障转移时的 UI 更新
-    app_handle: Arc<RwLock<Option<tauri::AppHandle>>>,
+    /// 运行时上下文（事件 sink + OAuth 管理器 + 热切换句柄），
+    /// 传递给 ProxyServer 以支持故障转移时的 UI 更新
+    runtime_ctx: Arc<RwLock<Option<ProxyRuntimeCtx>>>,
     switch_locks: SwitchLockManager,
 }
 
@@ -69,7 +73,7 @@ impl ProxyService {
         Self {
             db,
             server: Arc::new(RwLock::new(None)),
-            app_handle: Arc::new(RwLock::new(None)),
+            runtime_ctx: Arc::new(RwLock::new(None)),
             switch_locks: SwitchLockManager::new(),
         }
     }
@@ -337,11 +341,31 @@ impl ProxyService {
         Ok(())
     }
 
-    /// 设置 AppHandle（在应用初始化时调用）
-    pub fn set_app_handle(&self, handle: tauri::AppHandle) {
+    /// 设置运行时上下文（在应用初始化时调用，取代旧的 `set_app_handle`）。
+    ///
+    /// 桌面端传入 `TauriEventSink` + `app.manage()` 的同一对 OAuth 管理器 Arc；
+    /// Web 端（S3）传入 `ChannelEventSink` + `examples/server.rs` 构建的管理器。
+    /// 热切换句柄由本方法自动填入（`self.clone()`，Arc 字段共享同一实例）。
+    pub fn set_runtime_ctx(
+        &self,
+        sink: Arc<dyn UiEventSink>,
+        copilot_auth: Arc<RwLock<CopilotAuthManager>>,
+        codex_oauth: Arc<RwLock<CodexOAuthManager>>,
+    ) {
+        let ctx = ProxyRuntimeCtx {
+            sink,
+            copilot_auth,
+            codex_oauth,
+            hot_switch: self.clone(),
+        };
         futures::executor::block_on(async {
-            *self.app_handle.write().await = Some(handle);
+            *self.runtime_ctx.write().await = Some(ctx);
         });
+    }
+
+    /// 获取运行时上下文（供 commands 层在熔断器恢复切换时复用）。
+    pub async fn runtime_ctx(&self) -> Option<ProxyRuntimeCtx> {
+        self.runtime_ctx.read().await.clone()
     }
 
     pub(crate) async fn lock_switch_for_app(
@@ -387,8 +411,8 @@ impl ProxyService {
         }
 
         // 4. 创建并启动服务器
-        let app_handle = self.app_handle.read().await.clone();
-        let server = ProxyServer::new(config.clone(), self.db.clone(), app_handle);
+        let runtime_ctx = self.runtime_ctx.read().await.clone();
+        let server = ProxyServer::new(config.clone(), self.db.clone(), runtime_ctx);
         let info = server
             .start()
             .await
@@ -659,8 +683,8 @@ impl ProxyService {
             {
                 if let Ok(Some(provider)) = self.db.get_provider_by_id(&current_id, app_type_str) {
                     if provider.category.as_deref() == Some("official") {
-                        if let Some(handle) = self.app_handle.read().await.as_ref() {
-                            let _ = handle.emit(
+                        if let Some(ctx) = self.runtime_ctx.read().await.as_ref() {
+                            ctx.emit_json(
                                 "proxy-official-warning",
                                 serde_json::json!({
                                     "appType": app_type_str,
@@ -2497,8 +2521,8 @@ impl ProxyService {
                     .map_err(|e| format!("重启前停止代理服务器失败: {e}"))?;
             }
 
-            let app_handle = self.app_handle.read().await.clone();
-            let new_server = ProxyServer::new(new_config.clone(), self.db.clone(), app_handle);
+            let runtime_ctx = self.runtime_ctx.read().await.clone();
+            let new_server = ProxyServer::new(new_config.clone(), self.db.clone(), runtime_ctx);
             let info = new_server
                 .start()
                 .await
