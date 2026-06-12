@@ -1,0 +1,2 @@
+{"file": ".trellis/tasks/06-12-fix-web-global-proxy-init/prd.md", "reason": "Diagnosis with exact file:line evidence, desktop mirror source (lib.rs:895-922), lifecycle placement contract, acceptance criteria."}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "Web Server Proxy Module Wiring scenario: headless lifecycle order contract this fix extends; mirror-not-share precedent for desktop-gated lib.rs code."}
