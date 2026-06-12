@@ -27,6 +27,10 @@ class MockEventSource {
   emitError(): void {
     this.onerror?.(new Event("error"));
   }
+
+  emitMessage(data: unknown): void {
+    this.onmessage?.({ data: JSON.stringify(data) } as MessageEvent);
+  }
 }
 
 describe("web event adapter SSE reconnect", () => {
@@ -108,5 +112,42 @@ describe("web event adapter SSE reconnect", () => {
 
     expect(MockEventSource.instances).toHaveLength(2);
     unlisten();
+  });
+
+  it("delivers proxy failover SSE events to their subscribers", async () => {
+    // S4 (06-11 web proxy port): the web proxy runtime emits
+    // `provider-switched` (failover hot-switch) and `proxy-official-warning`
+    // (takeover targets an official provider) through the SSE bridge; the
+    // adapter must route each envelope to the matching subscriber only.
+    const onSwitched = vi.fn();
+    const onWarning = vi.fn();
+    const offSwitched = await listen("provider-switched", onSwitched);
+    const offWarning = await listen("proxy-official-warning", onWarning);
+
+    expect(MockEventSource.instances).toHaveLength(1);
+    const source = MockEventSource.instances[0];
+
+    source.emitMessage({
+      event: "provider-switched",
+      payload: { appType: "claude", providerId: "p-2", source: "failover" },
+    });
+    source.emitMessage({
+      event: "proxy-official-warning",
+      payload: { appType: "codex", providerName: "Official Codex" },
+    });
+
+    expect(onSwitched).toHaveBeenCalledTimes(1);
+    expect(onSwitched).toHaveBeenCalledWith({
+      event: "provider-switched",
+      payload: { appType: "claude", providerId: "p-2", source: "failover" },
+    });
+    expect(onWarning).toHaveBeenCalledTimes(1);
+    expect(onWarning).toHaveBeenCalledWith({
+      event: "proxy-official-warning",
+      payload: { appType: "codex", providerName: "Official Codex" },
+    });
+
+    offSwitched();
+    offWarning();
   });
 });

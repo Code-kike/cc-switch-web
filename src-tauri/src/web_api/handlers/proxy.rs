@@ -210,12 +210,15 @@ async fn update_proxy_config(
     State(state): State<ApiState>,
     Json(request): Json<UpdateProxyConfigRequest>,
 ) -> ApiResult<()> {
+    // Route through ProxyService (same path as the desktop `update_proxy_config`
+    // command): persists to the database AND hot-applies/restarts a running
+    // proxy server, instead of a db-only write the server never sees.
     state
         .app_state
-        .db
-        .update_proxy_config(request.config)
+        .proxy_service
+        .update_config(&request.config)
         .await
-        .map_err(ApiError::from_anyhow)?;
+        .map_err(ApiError::from_service_message)?;
     Ok(json_ok(()))
 }
 

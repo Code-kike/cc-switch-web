@@ -99,35 +99,18 @@ mod app_store {
         PathBuf::from(raw)
     }
 
-    fn load_from_disk() -> Option<PathBuf> {
-        let path = store_path();
-        let content = std::fs::read_to_string(&path).ok()?;
-        let value: serde_json::Value = serde_json::from_str(&content).ok()?;
-        let raw = value.get(STORE_KEY_APP_CONFIG_DIR)?.as_str()?.trim();
-        if raw.is_empty() {
-            return None;
-        }
-        let resolved = resolve_path(raw);
-        if !resolved.exists() {
-            log::warn!(
-                "Stored app_config_dir override no longer exists: {}",
-                resolved.display()
-            );
-            return None;
-        }
-        Some(resolved)
-    }
-
+    /// Cache-only read, mirroring the desktop `src/app_store.rs` semantics: the
+    /// cache is seeded explicitly at startup (`main()` always calls
+    /// `set_app_config_dir_override_web` before the router is built), never
+    /// lazily from disk. A lazy disk fallback here would let the EXAMPLE TEST
+    /// binary read the developer's real `~/.cc-switch/app_paths.json` the first
+    /// time any test calls it under the real `$HOME`, cache that override
+    /// process-wide, and silently redirect every subsequent test's
+    /// `get_app_config_dir()` out of its isolated temp HOME (observed:
+    /// `openclaw_config` backup-count tests failing against, and leaking backup
+    /// files into, the real `~/.cc-switch`).
     pub fn get_app_config_dir_override() -> Option<PathBuf> {
-        if let Ok(guard) = override_cache().read() {
-            if let Some(value) = guard.clone() {
-                return Some(value);
-            }
-        }
-
-        let loaded = load_from_disk();
-        update_cached_override(loaded.clone());
-        loaded
+        override_cache().read().ok()?.clone()
     }
 
     pub fn set_app_config_dir_override_web(path: Option<&str>) -> Result<(), AppError> {
@@ -284,7 +267,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // emit `usage-log-recorded`. In web-server mode this fans out over
     // broadcast -> `GET /api/events` SSE.
     usage_events::init(Arc::clone(&sink));
-    let state = ApiState::new(app_state, copilot_auth, codex_oauth, sink, events);
+    let state = ApiState::new(
+        Arc::clone(&app_state),
+        Arc::clone(&copilot_auth),
+        Arc::clone(&codex_oauth),
+        Arc::clone(&sink),
+        events,
+    );
+
+    // ── Proxy lifecycle, step 1/4: runtime ctx injection ─────────────────
+    // 注入代理运行时上下文（S3 契约：必须在任何 recovery/restore 之前）。
+    // 与 ApiState 共享同一组 Arc：事件经 ChannelEventSink → broadcast →
+    // `GET /api/events` SSE；OAuth 管理器与 web_api 处理器共享 token 缓存。
+    // 热切换句柄由 set_runtime_ctx 内部自动填入。
+    app_state
+        .proxy_service
+        .set_runtime_ctx(sink, copilot_auth, codex_oauth);
+
+    // ── Proxy lifecycle, step 2/4: crash recovery ────────────────────────
+    // 异常退出恢复（镜像桌面 lib.rs setup 的恢复任务，顺序同桌面：
+    // recovery → snippets → restore）。systemd 随时可能 SIGKILL/重启本进程，
+    // 接管残留（占位符 Live + 备份）必须在对外服务前恢复；recover_from_crash
+    // 幂等（无备份时 restore 为 no-op，标志/备份清理可重复执行）。
+    recover_proxy_from_crash_residue(app_state.as_ref()).await;
 
     // Startup parity with the desktop `initialize_common_config_snippets`
     // hook: auto-extract common config snippets from clean live files, run the
@@ -292,18 +297,69 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // `_cc_source` / `provider_key` markers that older
     // `import_hermes_providers_from_live` baked into provider records. All steps
     // are idempotent and gated by their own settings flags, so a successful run
-    // never repeats. See
-    // `ProviderService::initialize_common_config_snippets`.
+    // never repeats. Must run AFTER crash recovery (so it reads the user's real
+    // live configs, not proxy placeholders) and BEFORE takeover restore. See
+    // `ProviderService::initialize_common_config_snippets` and lib.rs ordering.
     crate::services::ProviderService::initialize_common_config_snippets(state.app_state.as_ref());
+
+    // ── Proxy lifecycle, step 3/4: takeover restore ──────────────────────
+    // 镜像桌面 lib.rs::restore_proxy_state_on_startup：proxy_config.enabled
+    // 为 true 的应用重新接管（set_takeover_for_app 内部会自动启动代理）。
+    // 与桌面的 spawn 异步不同，这里在监听前内联执行：headless 服务器上
+    // 本机 CLI 依赖代理端口，先恢复再 serve 才是确定性顺序。
+    restore_proxy_state_on_startup(app_state.as_ref()).await;
 
     // Build router and bind.
     let app = build_router(state);
     let listener = TcpListener::bind(addr).await?;
     log::info!("cc-switch-web listening on http://{addr}");
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    // Graceful shutdown with a BOUNDED connection-drain window.
+    //
+    // `axum::serve(..).with_graceful_shutdown(..)` waits for ALL in-flight
+    // connections to finish — but `GET /api/events` is an infinite SSE stream
+    // (its broadcast senders live for the whole process), so any open web-UI
+    // tab keeps `serve` alive forever after SIGTERM. Verified empirically:
+    // with one `curl -N /api/events` attached, SIGTERM left the old
+    // `serve(...).await?` hanging until the client disconnected — under
+    // systemd that means TimeoutStopSec → SIGKILL and `cleanup_proxy_before_exit`
+    // NEVER runs, leaving PROXY_MANAGED placeholders in the live CLI configs
+    // (the exact failure S3 exists to prevent). So: after the shutdown signal
+    // fires, give in-flight requests SHUTDOWN_CONNECTION_GRACE to finish, then
+    // proceed to cleanup regardless. Lingering connection tasks die with the
+    // process; browsers' EventSource auto-reconnects on the next boot.
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    tokio::spawn(async move {
+        shutdown_signal().await;
+        let _ = shutdown_tx.send(true);
+    });
+    let serve_future = axum::serve(listener, app).with_graceful_shutdown({
+        let mut rx = shutdown_rx.clone();
+        async move {
+            let _ = rx.changed().await;
+        }
+    });
+    tokio::select! {
+        result = serve_future => result?,
+        _ = async {
+            let mut rx = shutdown_rx.clone();
+            let _ = rx.changed().await;
+            tokio::time::sleep(SHUTDOWN_CONNECTION_GRACE).await;
+        } => {
+            log::warn!(
+                "graceful shutdown grace ({SHUTDOWN_CONNECTION_GRACE:?}) elapsed with connections \
+                 still open (long-lived SSE clients); proceeding to proxy cleanup"
+            );
+        }
+    }
+
+    // ── Proxy lifecycle, step 4/4: graceful shutdown ─────────────────────
+    // 镜像桌面 lib.rs::cleanup_before_exit：接管残留 → stop_with_restore_keep_state
+    //（恢复 Live、保留 enabled 供下次启动自动恢复）；仅运行 → stop()。
+    // 必须在 axum::serve 返回之后（或宽限期到期后）、释放数据目录 flock 之前
+    // 执行，确保 systemd stop/restart 不会把 PROXY_MANAGED 占位符留在 Live
+    // CLI 配置里。
+    cleanup_proxy_before_exit(app_state.as_ref()).await;
 
     log::info!("cc-switch-web stopped cleanly");
     drop(_data_lock); // explicit for clarity
@@ -314,6 +370,135 @@ fn init_logging() {
     let env = env_logger::Env::default().filter_or("RUST_LOG", "info,cc_switch=debug");
     let _ = env_logger::Builder::from_env(env).try_init();
 }
+
+// ============================================================
+// Headless proxy lifecycle (S3) — mirrors desktop `lib.rs`
+// ============================================================
+//
+// The three helpers below are deliberate line-for-line mirrors of the
+// desktop lifecycle in `src/lib.rs` (crash-recovery block in `setup()`,
+// `restore_proxy_state_on_startup`, `cleanup_before_exit`). They are
+// duplicated here rather than shared because the desktop originals live in
+// the fully `desktop`-gated `lib.rs` (and `cleanup_before_exit` is
+// `AppHandle`-coupled); moving them would create upstream-sync diff noise.
+// Keep semantics in lockstep when syncing upstream changes to `lib.rs`.
+
+/// 异常退出恢复（镜像 `lib.rs` setup 内的恢复任务）。
+///
+/// 存在 Live 备份或 Live 配置仍含接管占位符 ⇒ 上次未走正常退出路径
+/// （SIGKILL/OOM/断电），恢复 Live 配置并清理标志与备份。幂等：干净状态下
+/// 两个检查均为 false，直接跳过；残留状态下 `recover_from_crash` 收敛到
+/// 干净状态（恢复 → 清标志 → 删备份），重复执行无副作用。
+async fn recover_proxy_from_crash_residue(state: &store::AppState) {
+    let has_backups = match state.db.has_any_live_backup().await {
+        Ok(v) => v,
+        Err(e) => {
+            log::error!("检查 Live 备份失败: {e}");
+            false
+        }
+    };
+    let live_taken_over = state.proxy_service.detect_takeover_in_live_configs();
+
+    if has_backups || live_taken_over {
+        log::warn!("检测到上次异常退出（存在接管残留），正在恢复 Live 配置...");
+        if let Err(e) = state.proxy_service.recover_from_crash().await {
+            log::error!("恢复 Live 配置失败: {e}");
+        } else {
+            log::info!("Live 配置已恢复");
+        }
+    }
+}
+
+/// 启动时根据 proxy_config 表中的代理状态自动恢复代理服务
+/// （镜像 `lib.rs::restore_proxy_state_on_startup`）。
+///
+/// 检查 `proxy_config.enabled` 字段，如果有任一应用的状态为 `true`，
+/// 则自动启动代理服务并接管对应应用的 Live 配置；失败时清除该应用的
+/// 状态，避免下次启动反复尝试。
+async fn restore_proxy_state_on_startup(state: &store::AppState) {
+    let mut apps_to_restore = Vec::new();
+    for app_type in ["claude", "codex", "gemini"] {
+        if let Ok(config) = state.db.get_proxy_config_for_app(app_type).await {
+            if config.enabled {
+                apps_to_restore.push(app_type);
+            }
+        }
+    }
+
+    if apps_to_restore.is_empty() {
+        log::debug!("启动时无需恢复代理状态");
+        return;
+    }
+
+    log::info!("检测到上次代理状态需要恢复，应用列表: {apps_to_restore:?}");
+
+    for app_type in apps_to_restore {
+        match state
+            .proxy_service
+            .set_takeover_for_app(app_type, true)
+            .await
+        {
+            Ok(()) => {
+                log::info!("✓ 已恢复 {app_type} 的代理接管状态");
+            }
+            Err(e) => {
+                log::error!("✗ 恢复 {app_type} 的代理接管状态失败: {e}");
+                if let Err(clear_err) = state
+                    .proxy_service
+                    .set_takeover_for_app(app_type, false)
+                    .await
+                {
+                    log::error!("清除 {app_type} 代理状态失败: {clear_err}");
+                }
+            }
+        }
+    }
+}
+
+/// 退出前清理（镜像 `lib.rs::cleanup_before_exit`，不含 AppHandle）。
+///
+/// 接管残留（备份或占位符）⇒ `stop_with_restore_keep_state`：恢复 Live、
+/// 删除备份，但保留 `proxy_config.enabled`，下次启动自动重新接管；
+/// 无接管但代理在运行 ⇒ 仅 `stop()`。保证 systemd stop/restart 后
+/// 本机 CLI 的 Live 配置不会残留 `PROXY_MANAGED` 占位符。
+async fn cleanup_proxy_before_exit(state: &store::AppState) {
+    let proxy_service = &state.proxy_service;
+
+    let has_backups = match state.db.has_any_live_backup().await {
+        Ok(v) => v,
+        Err(e) => {
+            log::error!("退出时检查 Live 备份失败: {e}");
+            false
+        }
+    };
+    let live_taken_over = proxy_service.detect_takeover_in_live_configs();
+
+    if has_backups || live_taken_over {
+        log::info!("检测到接管残留，开始恢复 Live 配置（保留代理状态）...");
+        if let Err(e) = proxy_service.stop_with_restore_keep_state().await {
+            log::error!("退出时恢复 Live 配置失败: {e}");
+        } else {
+            log::info!("已恢复 Live 配置（代理状态已保留，下次启动将自动恢复）");
+        }
+        return;
+    }
+
+    if proxy_service.is_running().await {
+        log::info!("检测到代理服务器正在运行，开始停止...");
+        if let Err(e) = proxy_service.stop().await {
+            log::error!("退出时停止代理失败: {e}");
+        }
+        log::info!("代理服务器清理完成");
+    }
+}
+
+/// Maximum time to wait for in-flight HTTP connections after the shutdown
+/// signal before proceeding to proxy cleanup anyway. Long-lived SSE clients
+/// (`GET /api/events`) never finish on their own, so an unbounded graceful
+/// wait would block `cleanup_proxy_before_exit` until systemd SIGKILLs us.
+/// Must stay comfortably below the systemd unit's `TimeoutStopSec` (30s)
+/// minus the proxy stop timeout (5s) and live-config restore writes.
+const SHUTDOWN_CONNECTION_GRACE: Duration = Duration::from_secs(5);
 
 async fn shutdown_signal() {
     let ctrl_c = async {
@@ -357,9 +542,12 @@ async fn shutdown_signal() {
 ///     (`#[cfg(not(feature = "desktop"))]` / `#[cfg(feature = "web-server")]`)
 ///     MUST be in the services shim, and `#[cfg(feature = "desktop")]`-only ones
 ///     MUST NOT be;
-///   * every `#[path]` the shims reference MUST resolve to an existing source file.
-/// The proxy shim is an intentional curated subset with no cfg signal, so its
-/// web-relevance is a judgment call and is only checked for dangling paths.
+///   * every `#[path]` the shims reference MUST resolve to an existing source file;
+///   * since the 06-11 web proxy port, `examples/web_proxy.rs` is a 1:1 mirror
+///     of `src/proxy/mod.rs` (the web runtime compiles the SAME proxy hot path
+///     as desktop), so its module list is pinned to set-equality — the inline
+///     `CircuitBreakerConfig` duplicate this replaced was a silent-divergence
+///     hazard, and a partial shim would be the same hazard again.
 #[cfg(test)]
 mod dual_runtime_parity {
     use std::collections::BTreeSet;
@@ -472,5 +660,383 @@ mod dual_runtime_parity {
                 );
             }
         }
+    }
+
+    /// 06-11 web proxy port: `examples/web_proxy.rs` mirrors `src/proxy/mod.rs`
+    /// 1:1 (the web runtime compiles the SAME proxy hot path + failover engine
+    /// as desktop). Pin the module lists to set-equality so a module added to
+    /// `src/proxy/mod.rs` can never silently go missing from the web build
+    /// (and a future desktop-only proxy module must be cfg-gated, which this
+    /// test then excludes from the mirror requirement).
+    #[test]
+    fn web_proxy_shim_mirrors_proxy_mod_modules() {
+        let included = shim_stems(&read("examples/web_proxy.rs"), "proxy");
+        let mut expected = BTreeSet::new();
+        for (name, cfg) in mod_decls(&read("src/proxy/mod.rs")) {
+            match cfg {
+                Some("desktop") => assert!(
+                    !included.contains(&name),
+                    "examples/web_proxy.rs includes desktop-only proxy module `{name}` — \
+                     must not be in the web shim (item 15)"
+                ),
+                _ => {
+                    expected.insert(name);
+                }
+            }
+        }
+        assert_eq!(
+            included, expected,
+            "examples/web_proxy.rs must #[path]-include exactly the modules declared in \
+             src/proxy/mod.rs (web runtime compiles the full proxy tree since 06-11) — \
+             dual-runtime drift (item 15)"
+        );
+    }
+}
+
+/// Headless proxy lifecycle tests (S3).
+///
+/// Covers the parts of the S3 contract that are unit-testable inside the
+/// example test binary:
+///   * the `main()` startup/shutdown ordering pin (ctx injection BEFORE
+///     recovery, recovery BEFORE snippets BEFORE restore, cleanup AFTER
+///     `axum::serve` returns) — textual, since `main()` cannot run in tests;
+///   * crash recovery converging (and staying converged) from takeover residue;
+///   * graceful-shutdown cleanup restoring live configs while keeping
+///     `proxy_config.enabled`, and the follow-up boot re-takeover;
+///   * cleanup stopping a running proxy that has no takeover.
+/// What only `pnpm smoke:web-server` / integration can cover: real
+/// SIGINT/SIGTERM delivery through `shutdown_signal()` and the flock-held
+/// process-exit path.
+#[cfg(test)]
+mod web_proxy_lifecycle {
+    use std::env;
+    use std::sync::Arc;
+
+    use serde_json::json;
+    use serial_test::serial;
+    use tempfile::TempDir;
+
+    use crate::app_config::AppType;
+    use crate::database::Database;
+    use crate::provider::Provider;
+
+    /// HOME/CC_SWITCH_TEST_HOME swap, mirroring `services/proxy.rs` tests
+    /// (same `#[serial]` key keeps env mutation race-free across the binary).
+    struct TempHome {
+        #[allow(dead_code)]
+        dir: TempDir,
+        original_home: Option<String>,
+        original_userprofile: Option<String>,
+        original_test_home: Option<String>,
+    }
+
+    impl TempHome {
+        fn new() -> Self {
+            let dir = TempDir::new().expect("failed to create temp home");
+            let original_home = env::var("HOME").ok();
+            let original_userprofile = env::var("USERPROFILE").ok();
+            let original_test_home = env::var("CC_SWITCH_TEST_HOME").ok();
+
+            env::set_var("HOME", dir.path());
+            env::set_var("USERPROFILE", dir.path());
+            env::set_var("CC_SWITCH_TEST_HOME", dir.path());
+
+            Self {
+                dir,
+                original_home,
+                original_userprofile,
+                original_test_home,
+            }
+        }
+    }
+
+    impl Drop for TempHome {
+        fn drop(&mut self) {
+            match &self.original_home {
+                Some(value) => env::set_var("HOME", value),
+                None => env::remove_var("HOME"),
+            }
+            match &self.original_userprofile {
+                Some(value) => env::set_var("USERPROFILE", value),
+                None => env::remove_var("USERPROFILE"),
+            }
+            match &self.original_test_home {
+                Some(value) => env::set_var("CC_SWITCH_TEST_HOME", value),
+                None => env::remove_var("CC_SWITCH_TEST_HOME"),
+            }
+        }
+    }
+
+    fn read_server_source() -> String {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/server.rs");
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+    }
+
+    async fn fresh_state() -> (Arc<crate::store::AppState>, Arc<Database>) {
+        let db = Arc::new(Database::memory().expect("init db"));
+        // Ephemeral port: lifecycle tests start a real proxy listener and must
+        // not collide on the default 15721 (or with a developer's instance).
+        let mut proxy_config = db.get_proxy_config().await.expect("get proxy config");
+        proxy_config.listen_port = 0;
+        db.update_proxy_config(proxy_config)
+            .await
+            .expect("set ephemeral proxy port");
+        let state = Arc::new(crate::store::AppState::new(db.clone()));
+        (state, db)
+    }
+
+    fn seed_claude_provider_and_live(db: &Arc<Database>) {
+        let provider = Provider::with_id(
+            "p1".to_string(),
+            "P1".to_string(),
+            json!({
+                "env": {
+                    "ANTHROPIC_API_KEY": "provider-key",
+                    "ANTHROPIC_BASE_URL": "https://api.anthropic.com"
+                }
+            }),
+            None,
+        );
+        db.save_provider("claude", &provider)
+            .expect("save provider");
+        db.set_current_provider("claude", "p1")
+            .expect("set db current provider");
+        crate::settings::set_current_provider(&AppType::Claude, Some("p1"))
+            .expect("set local current provider");
+        crate::config::write_json_file(
+            &crate::config::get_claude_settings_path(),
+            &json!({
+                "env": {
+                    "ANTHROPIC_API_KEY": "live-key",
+                    "ANTHROPIC_BASE_URL": "https://api.anthropic.com"
+                }
+            }),
+        )
+        .expect("seed claude live config");
+    }
+
+    fn claude_live_env_value(key: &str) -> Option<String> {
+        let live: serde_json::Value =
+            crate::config::read_json_file(&crate::config::get_claude_settings_path())
+                .expect("read claude live config");
+        live.get("env")
+            .and_then(|env| env.get(key))
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+    }
+
+    /// S3 contract pin: `main()` cannot run under the test harness, so the
+    /// startup/shutdown ordering is pinned textually (same spirit as
+    /// `dual_runtime_parity`): ctx injection → crash recovery → common-config
+    /// snippets → takeover restore → serve → shutdown cleanup.
+    #[test]
+    fn main_pins_proxy_lifecycle_ordering() {
+        let source = read_server_source();
+        let main_start = source
+            .find("async fn main")
+            .expect("examples/server.rs must define async fn main");
+        let main_end = source
+            .find("\nfn init_logging")
+            .expect("examples/server.rs must define fn init_logging after main");
+        let main_body = &source[main_start..main_end];
+
+        let markers = [
+            ".set_runtime_ctx(",
+            "recover_proxy_from_crash_residue(",
+            "initialize_common_config_snippets(",
+            "restore_proxy_state_on_startup(",
+            "axum::serve(",
+            "cleanup_proxy_before_exit(",
+        ];
+        let mut last = 0usize;
+        for marker in markers {
+            let idx = main_body.find(marker).unwrap_or_else(|| {
+                panic!("main() must call `{marker}…` (S3 proxy lifecycle contract)")
+            });
+            assert!(
+                idx > last,
+                "S3 lifecycle ordering violated: `{marker}` must come after the previous step in main()"
+            );
+            last = idx;
+        }
+    }
+
+    /// S3 contract pin: the graceful-shutdown wait must be BOUNDED.
+    ///
+    /// `GET /api/events` SSE streams never finish (their broadcast senders are
+    /// process-lifetime), so an unbounded `with_graceful_shutdown(..).await`
+    /// hangs forever while a web-UI tab is open — empirically verified: SIGTERM
+    /// with one attached SSE client never reached `cleanup_proxy_before_exit`,
+    /// which under systemd means TimeoutStopSec → SIGKILL with PROXY_MANAGED
+    /// placeholders left in the live CLI configs. Pin that main() races serve
+    /// against the shutdown signal + SHUTDOWN_CONNECTION_GRACE timer.
+    #[test]
+    fn main_bounds_graceful_shutdown_with_connection_grace() {
+        let source = read_server_source();
+        let main_start = source
+            .find("async fn main")
+            .expect("examples/server.rs must define async fn main");
+        let main_end = source
+            .find("\nfn init_logging")
+            .expect("examples/server.rs must define fn init_logging after main");
+        let main_body = &source[main_start..main_end];
+
+        let serve_idx = main_body
+            .find("axum::serve(")
+            .expect("main() must call axum::serve");
+        let tail = &main_body[serve_idx..];
+        assert!(
+            tail.contains("tokio::select!"),
+            "main() must race axum::serve against a bounded shutdown branch \
+             (SSE connections never finish; cleanup must still run)"
+        );
+        assert!(
+            tail.contains("SHUTDOWN_CONNECTION_GRACE"),
+            "the shutdown branch must bound the connection drain with \
+             SHUTDOWN_CONNECTION_GRACE before running cleanup_proxy_before_exit"
+        );
+        assert!(
+            crate::SHUTDOWN_CONNECTION_GRACE < std::time::Duration::from_secs(20),
+            "SHUTDOWN_CONNECTION_GRACE must leave headroom below the systemd \
+             TimeoutStopSec=30 window (proxy stop timeout 5s + restore writes)"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn crash_recovery_restores_live_and_is_idempotent() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+        let (state, db) = fresh_state().await;
+
+        // Simulate a SIGKILL'd takeover: live config holds the proxy
+        // placeholder, db still holds the pre-takeover backup.
+        crate::config::write_json_file(
+            &crate::config::get_claude_settings_path(),
+            &json!({
+                "env": {
+                    "ANTHROPIC_AUTH_TOKEN": "PROXY_MANAGED",
+                    "ANTHROPIC_BASE_URL": "http://127.0.0.1:15721"
+                }
+            }),
+        )
+        .expect("seed taken-over claude live config");
+        let original = json!({
+            "env": {
+                "ANTHROPIC_AUTH_TOKEN": "real-token",
+                "ANTHROPIC_BASE_URL": "https://api.anthropic.com"
+            }
+        });
+        db.save_live_backup("claude", &original.to_string())
+            .await
+            .expect("seed live backup");
+
+        super::recover_proxy_from_crash_residue(state.as_ref()).await;
+
+        assert_eq!(
+            claude_live_env_value("ANTHROPIC_AUTH_TOKEN").as_deref(),
+            Some("real-token"),
+            "crash recovery must restore the backed-up live config"
+        );
+        assert!(
+            !db.has_any_live_backup().await.expect("check backups"),
+            "crash recovery must delete consumed backups"
+        );
+        assert!(
+            !state.proxy_service.detect_takeover_in_live_configs(),
+            "no takeover residue may remain after recovery"
+        );
+
+        // Idempotency (systemd restarts run this on every boot): a second run
+        // on the converged state must be a no-op.
+        super::recover_proxy_from_crash_residue(state.as_ref()).await;
+        assert_eq!(
+            claude_live_env_value("ANTHROPIC_AUTH_TOKEN").as_deref(),
+            Some("real-token"),
+            "re-running crash recovery on a clean state must not alter live configs"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn cleanup_before_exit_restores_live_keeps_enabled_and_next_boot_retakes_over() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+        let (state, db) = fresh_state().await;
+        seed_claude_provider_and_live(&db);
+
+        // Takeover (auto-starts the proxy server on the ephemeral port).
+        state
+            .proxy_service
+            .set_takeover_for_app("claude", true)
+            .await
+            .expect("enable claude takeover");
+        assert!(state.proxy_service.is_running().await);
+        assert!(state.proxy_service.detect_takeover_in_live_configs());
+
+        // Graceful shutdown path: restore live, keep enabled flag.
+        super::cleanup_proxy_before_exit(state.as_ref()).await;
+
+        assert!(
+            !state.proxy_service.is_running().await,
+            "cleanup must stop the proxy server"
+        );
+        assert!(
+            !state.proxy_service.detect_takeover_in_live_configs(),
+            "cleanup must not leave PROXY_MANAGED placeholders in live configs"
+        );
+        assert_eq!(
+            claude_live_env_value("ANTHROPIC_API_KEY").as_deref(),
+            Some("live-key"),
+            "cleanup must restore the original live config"
+        );
+        assert!(
+            !db.has_any_live_backup().await.expect("check backups"),
+            "cleanup must delete consumed backups"
+        );
+        let claude_config = db
+            .get_proxy_config_for_app("claude")
+            .await
+            .expect("get claude proxy config");
+        assert!(
+            claude_config.enabled,
+            "cleanup must KEEP proxy_config.enabled so the next boot auto-restores"
+        );
+
+        // Next boot: restore_proxy_state_on_startup re-takes over claude.
+        super::restore_proxy_state_on_startup(state.as_ref()).await;
+        assert!(
+            state.proxy_service.is_running().await,
+            "startup restore must auto-start the proxy for enabled apps"
+        );
+        assert!(
+            state.proxy_service.detect_takeover_in_live_configs(),
+            "startup restore must re-take over the live config"
+        );
+
+        // Leave the temp home clean for the other serial tests.
+        super::cleanup_proxy_before_exit(state.as_ref()).await;
+        assert!(!state.proxy_service.detect_takeover_in_live_configs());
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn cleanup_before_exit_stops_running_proxy_without_takeover() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+        let (state, _db) = fresh_state().await;
+
+        state
+            .proxy_service
+            .start()
+            .await
+            .expect("start proxy without takeover");
+        assert!(state.proxy_service.is_running().await);
+
+        super::cleanup_proxy_before_exit(state.as_ref()).await;
+        assert!(
+            !state.proxy_service.is_running().await,
+            "cleanup must stop a takeover-less running proxy"
+        );
     }
 }

@@ -9,10 +9,7 @@ pub mod model_fetch;
 pub mod omo;
 pub mod prompt;
 pub mod provider;
-#[cfg(feature = "desktop")]
 pub mod proxy;
-#[cfg(not(feature = "desktop"))]
-pub mod proxy_web;
 pub mod s3;
 #[cfg(feature = "desktop")]
 pub mod s3_auto_sync;
@@ -45,10 +42,7 @@ pub use mcp::McpService;
 pub use omo::OmoService;
 pub use prompt::PromptService;
 pub use provider::{ProviderService, ProviderSortUpdate, SwitchResult};
-#[cfg(feature = "desktop")]
 pub use proxy::ProxyService;
-#[cfg(not(feature = "desktop"))]
-pub use proxy_web::ProxyService;
 #[cfg(not(feature = "desktop"))]
 pub use s3_auto_sync_web as s3_auto_sync;
 #[allow(unused_imports)]

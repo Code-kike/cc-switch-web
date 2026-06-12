@@ -99,6 +99,24 @@ impl UiEventSink for TauriEventSink {
         }
     }
 
+    /// 重建托盘菜单（故障转移切换后让托盘立即反映新的当前供应商）。
+    ///
+    /// 行为与旧 `failover_switch.rs` 内联实现一致：AppState 不可用或菜单
+    /// 创建失败时静默跳过，仅 `set_menu` 失败时记录错误。
+    fn refresh_tray(&self) {
+        use tauri::Manager;
+        let Some(app_state) = self.handle.try_state::<crate::store::AppState>() else {
+            return;
+        };
+        if let Ok(new_menu) = crate::tray::create_tray_menu(&self.handle, app_state.inner()) {
+            if let Some(tray) = self.handle.tray_by_id(crate::tray::TRAY_ID) {
+                if let Err(e) = tray.set_menu(Some(new_menu)) {
+                    log::error!("[Failover] 更新托盘菜单失败: {e}");
+                }
+            }
+        }
+    }
+
     fn open_url(&self, url: &str) -> Result<(), String> {
         use tauri_plugin_opener::OpenerExt;
         self.handle

@@ -2445,6 +2445,9 @@ const probes = [
         payload?.appType !== "claude" ||
         typeof payload?.enabled !== "boolean" ||
         typeof payload?.autoFailoverEnabled !== "boolean" ||
+        // S5 (06-11): failover selection strategy defaults to upstream
+        // sequential semantics on a fresh database.
+        payload?.failoverStrategy !== "sequential" ||
         typeof payload?.maxRetries !== "number" ||
         typeof payload?.circuitFailureThreshold !== "number"
       ) {
@@ -2653,13 +2656,15 @@ const probes = [
       return { response, payload };
     },
     validate(response, payload) {
-      // L31 (B5b): the local proxy / circuit breakers do not run in web-server
-      // mode, so there are no runtime stats. The handler returns `200 null`
-      // (mirroring the desktop command's `None` when the proxy is stopped) so the
-      // FE's `CircuitBreakerStats | null` query renders gracefully — a 501 error
-      // here wedged that 5s polling query. Assert the deliberate null contract.
+      // L31 (B5b), updated for S2/S3 (06-11 web proxy port): the real proxy +
+      // circuit breakers DO compile and run in web-server mode now, but this
+      // smoke run never starts the proxy server, so there is no breaker
+      // instance and `get_circuit_breaker_stats` returns `200 null` (same as
+      // the desktop command's `None` while the proxy is stopped). The FE's
+      // `CircuitBreakerStats | null` query renders that gracefully — a 501
+      // error here wedged that 5s polling query. Assert the null contract.
       if (!response.ok || payload !== null) {
-        throw new Error(`expected circuit breaker runtime stats to be null in web mode, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(`expected circuit breaker runtime stats to be null while the proxy is stopped, got ${response.status} ${JSON.stringify(payload)}`);
       }
     },
   },

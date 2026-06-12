@@ -1,6 +1,20 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 
 import "@/lib/api/web-commands";
 import { ProxyTabContent } from "@/components/settings/ProxyTabContent";
@@ -8,6 +22,7 @@ import { setCsrfToken } from "@/lib/api/adapter";
 import { providersApi } from "@/lib/api/providers";
 import { server } from "../msw/server";
 import {
+  getFreePort,
   startTestWebServer,
   type TestWebServer,
 } from "../helpers/web-server";
@@ -231,143 +246,182 @@ describe.sequential("ProxyTabContent against real web server", () => {
     });
   });
 
-  it(
-    "manages failover queue, auto switch, and app config through the rendered page",
-    async () => {
-      const primaryProvider = buildClaudeProvider(
-        "proxy-page-primary",
-        "Proxy Page Primary",
-        "proxy-page-primary-token",
-        "https://primary.example.com",
-        1,
-      );
-      const backupProvider = buildClaudeProvider(
-        "proxy-page-backup",
-        "Proxy Page Backup",
-        "proxy-page-backup-token",
-        "https://backup.example.com",
-        2,
-      );
+  it("starts the proxy runtime, manages failover queue, strategy, and app config through the rendered page", async () => {
+    const primaryProvider = buildClaudeProvider(
+      "proxy-page-primary",
+      "Proxy Page Primary",
+      "proxy-page-primary-token",
+      "https://primary.example.com",
+      1,
+    );
+    const backupProvider = buildClaudeProvider(
+      "proxy-page-backup",
+      "Proxy Page Backup",
+      "proxy-page-backup-token",
+      "https://backup.example.com",
+      2,
+    );
 
-      await providersApi.add(primaryProvider, "claude", false);
-      await providersApi.add(backupProvider, "claude", false);
+    await providersApi.add(primaryProvider, "claude", false);
+    await providersApi.add(backupProvider, "claude", false);
 
-      renderPanel();
-
-      fireEvent.click(screen.getByText("settings.advanced.proxy.title"));
-      expect(
-        await screen.findByText("Web mode does not expose proxy runtime control"),
-      ).toBeInTheDocument();
-      expect(
-        screen.getByText(
-          "You can still edit proxy and failover settings here, but starting the local proxy runtime and app takeover stays desktop-only for now.",
-        ),
-      ).toBeInTheDocument();
-
-      fireEvent.click(screen.getByText("settings.advanced.failover.title"));
-
-      expect(
-        await screen.findByText(
-          "proxy.failover.runtimeStatsUnavailableTitle",
-        ),
-      ).toBeInTheDocument();
-      expect(
-        screen.getByText("proxy.failover.runtimeStatsUnavailableDescription"),
-      ).toBeInTheDocument();
-      expect(
-        screen.getByText(
-          "Web mode keeps failover in configuration-only mode",
-        ),
-      ).toBeInTheDocument();
-      expect(
-        screen.getByText(
-          "Queue order and thresholds can still be edited remotely. Runtime counters and local proxy execution remain unavailable in web-server mode.",
-        ),
-      ).toBeInTheDocument();
-
-      expect(
-        await screen.findByText(
-          "队列顺序与首页供应商列表顺序一致。当请求失败时，系统会按顺序依次尝试队列中的供应商。",
-        ),
-      ).toBeInTheDocument();
-
-      const providerSelect = getSelectTrigger();
-      providerSelect.focus();
-      fireEvent.keyDown(providerSelect, { key: "ArrowDown" });
-      await waitFor(() =>
-        expect(providerSelect).toHaveAttribute("aria-expanded", "true"),
-      );
-      const backupOption = await screen.findByRole("option", {
-        name: "Proxy Page Backup",
-      });
-      fireEvent.click(backupOption);
-      fireEvent.click(getQueueActionButton("add"));
-
-      await expectSuccessToast(
-        /^(proxy\.failoverQueue\.addSuccess|已添加到故障转移队列)$/,
-      );
-      expect(await screen.findByText("Proxy Page Backup")).toBeInTheDocument();
-      await waitFor(async () => {
-        const queue = await getFailoverQueue(webServer.baseUrl, "claude");
-        expect(queue.map((item) => item.providerId)).toContain(backupProvider.id);
-      });
-
-      fireEvent.click(
-        getNearestSwitch(/^(proxy\.failover\.autoSwitch|自动故障转移)$/),
-      );
-
-      await expectSuccessToast(
-        /^(failover\.enabled|Claude 故障转移已启用)$/,
-      );
-      await waitFor(async () => {
-        expect(await getAutoFailoverEnabled(webServer.baseUrl, "claude")).toBe(
-          true,
-        );
-      });
-
-      fireEvent.change(
-        screen.getByLabelText(/^(proxy\.autoFailover\.maxRetries|最大重试次数)$/),
-        {
-          target: { value: "4" },
-        },
-      );
-      fireEvent.click(getConfigSaveButton());
-
-      await expectSuccessToast(
-        /^(proxy\.autoFailover\.configSaved|自动故障转移配置已保存)$/,
-      );
-      await waitFor(async () => {
-        expect((await getAppProxyConfig(webServer.baseUrl, "claude")).maxRetries).toBe(4);
-      });
-
-      fireEvent.click(
-        getNearestSwitch(/^(proxy\.failover\.autoSwitch|自动故障转移)$/),
-      );
-
-      await expectSuccessToast(
-        /^(failover\.disabled|Claude 故障转移已关闭)$/,
-      );
-      await waitFor(async () => {
-        expect(await getAutoFailoverEnabled(webServer.baseUrl, "claude")).toBe(
-          false,
-        );
-      });
-
-      fireEvent.click(
-        within(getProviderRow("Proxy Page Backup")).getByRole("button", {
-          name: /^(common\.delete|删除)$/,
+    // S4 (06-11 web proxy port): the proxy runtime is real in web-server
+    // mode now. Point it at a free loopback port before starting so the
+    // test never collides with a developer's desktop proxy on 15721.
+    const proxyPort = await getFreePort();
+    const proxyConfig = await requestJson<Record<string, unknown>>(
+      new URL("/api/config/get-proxy-config", webServer.baseUrl),
+    );
+    const updateResponse = await fetch(
+      new URL("/api/config/update-proxy-config", webServer.baseUrl),
+      {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          config: { ...proxyConfig, listen_port: proxyPort },
         }),
-      );
+      },
+    );
+    expect(updateResponse.ok).toBe(true);
 
+    renderPanel();
+
+    fireEvent.click(screen.getByText("settings.advanced.proxy.title"));
+
+    // The desktop-only notices are gone: runtime controls work in web mode.
+    expect(
+      screen.queryByText("Web mode does not expose proxy runtime control"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Web mode keeps failover in configuration-only mode"),
+    ).not.toBeInTheDocument();
+
+    // Start the routing proxy through the rendered master switch.
+    fireEvent.click(getNearestSwitch(/^(proxyConfig\.proxyEnabled|代理服务)$/));
+    await expectSuccessToast(/^(proxy\.server\.started|代理服务已启动)/);
+    expect(
+      await screen.findByText(/^(proxy\.panel\.serviceAddress|服务地址)$/),
+    ).toBeInTheDocument();
+    expect(screen.getByText(new RegExp(`:${proxyPort}`))).toBeInTheDocument();
+
+    // Collapse the proxy section: the running ProxyPanel mirrors the
+    // failover queue, which would duplicate provider-name matches below.
+    fireEvent.click(screen.getByText("settings.advanced.proxy.title"));
+    await waitFor(() =>
       expect(
-        await screen.findByText(
-          /^(proxy\.failoverQueue\.empty|故障转移队列为空。添加供应商以启用自动故障转移。)$/,
-        ),
-      ).toBeInTheDocument();
-      await waitFor(async () => {
-        expect(await getFailoverQueue(webServer.baseUrl, "claude")).toHaveLength(0);
-      });
-    },
-    180_000,
-  );
+        screen.queryByText(/^(proxy\.panel\.serviceAddress|服务地址)$/),
+      ).not.toBeInTheDocument(),
+    );
+
+    fireEvent.click(screen.getByText("settings.advanced.failover.title"));
+
+    expect(
+      await screen.findByText(
+        "队列顺序与首页供应商列表顺序一致。当请求失败时，系统会按顺序依次尝试队列中的供应商。",
+      ),
+    ).toBeInTheDocument();
+    // Failover editors are live because the proxy is running.
+    expect(
+      screen.queryByText(
+        /^(proxy\.failover\.proxyRequired|需要先启动代理服务才能配置故障转移)$/,
+      ),
+    ).not.toBeInTheDocument();
+
+    const providerSelect = getSelectTrigger();
+    // The trigger stays disabled until the available-providers query settles.
+    await waitFor(() => expect(providerSelect).toBeEnabled());
+    providerSelect.focus();
+    fireEvent.keyDown(providerSelect, { key: "ArrowDown" });
+    await waitFor(() =>
+      expect(providerSelect).toHaveAttribute("aria-expanded", "true"),
+    );
+    const backupOption = await screen.findByRole("option", {
+      name: "Proxy Page Backup",
+    });
+    fireEvent.click(backupOption);
+    fireEvent.click(getQueueActionButton("add"));
+
+    await expectSuccessToast(
+      /^(proxy\.failoverQueue\.addSuccess|已添加到故障转移队列)$/,
+    );
+    expect(await screen.findByText("Proxy Page Backup")).toBeInTheDocument();
+    await waitFor(async () => {
+      const queue = await getFailoverQueue(webServer.baseUrl, "claude");
+      expect(queue.map((item) => item.providerId)).toContain(backupProvider.id);
+    });
+
+    fireEvent.click(
+      getNearestSwitch(/^(proxy\.failover\.autoSwitch|自动故障转移)$/),
+    );
+
+    await expectSuccessToast(/^(failover\.enabled|Claude 故障转移已启用)$/);
+    await waitFor(async () => {
+      expect(await getAutoFailoverEnabled(webServer.baseUrl, "claude")).toBe(
+        true,
+      );
+    });
+
+    fireEvent.change(
+      screen.getByLabelText(/^(proxy\.autoFailover\.maxRetries|最大重试次数)$/),
+      {
+        target: { value: "4" },
+      },
+    );
+    // S5 (06-11 random failover strategy): pick the random strategy and
+    // verify it persists through the same app-config save round-trip.
+    fireEvent.click(
+      screen.getByRole("radio", {
+        name: /^(proxy\.autoFailover\.strategyRandom|随机（粘性直到失败）)$/,
+      }),
+    );
+    fireEvent.click(getConfigSaveButton());
+
+    await expectSuccessToast(
+      /^(proxy\.autoFailover\.configSaved|自动故障转移配置已保存)$/,
+    );
+    await waitFor(async () => {
+      const appConfig = await getAppProxyConfig(webServer.baseUrl, "claude");
+      expect(appConfig.maxRetries).toBe(4);
+      expect(appConfig.failoverStrategy).toBe("random");
+    });
+
+    fireEvent.click(
+      getNearestSwitch(/^(proxy\.failover\.autoSwitch|自动故障转移)$/),
+    );
+
+    await expectSuccessToast(/^(failover\.disabled|Claude 故障转移已关闭)$/);
+    await waitFor(async () => {
+      expect(await getAutoFailoverEnabled(webServer.baseUrl, "claude")).toBe(
+        false,
+      );
+    });
+
+    fireEvent.click(
+      within(getProviderRow("Proxy Page Backup")).getByRole("button", {
+        name: /^(common\.delete|删除)$/,
+      }),
+    );
+
+    expect(
+      await screen.findByText(
+        /^(proxy\.failoverQueue\.empty|故障转移队列为空。添加供应商以启用自动故障转移。)$/,
+      ),
+    ).toBeInTheDocument();
+    await waitFor(async () => {
+      expect(await getFailoverQueue(webServer.baseUrl, "claude")).toHaveLength(
+        0,
+      );
+    });
+
+    // Stop the proxy through the same master switch (stop_with_restore).
+    fireEvent.click(screen.getByText("settings.advanced.proxy.title"));
+    await screen.findByText(/^(proxyConfig\.proxyEnabled|代理服务)$/);
+    fireEvent.click(getNearestSwitch(/^(proxyConfig\.proxyEnabled|代理服务)$/));
+    await expectSuccessToast(
+      /^(proxy\.stoppedWithRestore|代理服务已关闭，已恢复所有接管配置)$/,
+    );
+    expect(
+      await screen.findByText(/^(proxy\.panel\.stoppedTitle|代理服务已停止)$/),
+    ).toBeInTheDocument();
+  }, 180_000);
 });

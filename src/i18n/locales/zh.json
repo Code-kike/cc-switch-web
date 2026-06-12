@@ -2249,7 +2249,8 @@
         "listenAddress": {
           "label": "监听地址",
           "placeholder": "127.0.0.1",
-          "description": "路由服务器监听的 IP 地址（推荐 127.0.0.1）"
+          "description": "路由服务器监听的 IP 地址（推荐 127.0.0.1）",
+          "webLoopbackHint": "Web 模式仅允许回环地址（127.0.0.1 / ::1）：代理端口不对外暴露"
         },
         "listenPort": {
           "label": "监听端口",
@@ -2306,7 +2307,8 @@
       "invalidAddress": "地址无效，请输入 IPv4（如 127.0.0.1）、IPv6（如 ::1）或 localhost",
       "configSaved": "路由配置已保存",
       "configSaveFailed": "保存配置失败",
-      "restartRequired": "修改地址或端口后需要重启路由服务才能生效"
+      "restartRequired": "修改地址或端口后需要重启路由服务才能生效",
+      "webLoopbackOnly": "Web 模式下路由代理仅允许监听回环地址（如 127.0.0.1），代理端口不对外暴露"
     },
     "switchFailed": "切换失败: {{error}}",
     "takeover": {
@@ -2323,9 +2325,7 @@
     "failover": {
       "proxyRequired": "需要先启动路由服务才能配置故障转移",
       "autoSwitch": "自动故障转移",
-      "autoSwitchDescription": "开启后将立即切换到队列 P1，并在请求失败时自动切换到队列中的下一个供应商",
-      "runtimeStatsUnavailableTitle": "Web Server 模式暂不提供熔断器运行时统计",
-      "runtimeStatsUnavailableDescription": "可通过上方队列中的健康状态徽记和 Reset Circuit 操作查看与恢复故障转移状态；实时熔断计数仍需桌面版提供。"
+      "autoSwitchDescription": "开启后将立即切换到队列 P1，并在请求失败时自动切换到队列中的下一个供应商"
     },
     "failoverQueue": {
       "title": "故障转移队列",
@@ -2379,7 +2379,12 @@
       "maxRetriesHint": "请求失败时的重试次数（0-10）",
       "streamingFirstByteHint": "等待首个数据块的最大时间，范围 1-120 秒，默认 60 秒",
       "streamingIdleHint": "数据块之间的最大间隔，范围 60-600 秒，填 0 禁用（防止中途卡住）",
-      "nonStreamingHint": "非流式请求的总超时时间，范围 60-1200 秒，默认 600 秒（10 分钟）"
+      "nonStreamingHint": "非流式请求的总超时时间，范围 60-1200 秒，默认 600 秒（10 分钟）",
+      "strategySettings": "故障转移策略",
+      "strategySequential": "顺序（队列优先级）",
+      "strategySequentialHint": "按队列顺序 P1→P2→… 依次尝试（上游默认行为）",
+      "strategyRandom": "随机（粘性直到失败）",
+      "strategyRandomHint": "保持当前供应商；请求失败时在剩余可用供应商中随机重选"
     },
     "logging": {
       "enabled": "日志记录已启用",
