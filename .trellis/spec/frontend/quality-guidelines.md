@@ -634,7 +634,31 @@ const sourceFile = ts.createSourceFile(
 #### 3. Contracts
 
 - `examples/server.rs` mounts proxy code through `#[path = "web_proxy.rs"] mod proxy;`.
-- `examples/web_proxy.rs` manually re-exports only the proxy modules needed in Web-server mode.
+- `examples/web_proxy.rs` is a **1:1 mirror** of `src/proxy/mod.rs` (module set, visibility,
+  re-exports) since the web-proxy port — enforced by the example test
+  `web_proxy_shim_mirrors_proxy_mod_modules` (desktop-cfg'd modules excluded). Adding a module to
+  `src/proxy/mod.rs` without the matching `#[path]` entry fails that test, not just the compile.
+- The proxy tree and `services/proxy.rs` must stay tauri-free: runtime needs (event emission, tray
+  refresh, OAuth manager access, hot-switch handle) go through `proxy/runtime_ctx.rs::ProxyRuntimeCtx`,
+  injected via `ProxyService::set_runtime_ctx` (desktop: `lib.rs` setup after auth managers are
+  managed; web: `examples/server.rs` before crash recovery).
+- Web runtime proxy listener is loopback-only: `ensure_loopback_listen_address_for_web` rejects
+  non-loopback `listen_address` at `ProxyService::start()` AND `update_config()` (cfg!-gated,
+  desktop unaffected). Known residual: `update_global_proxy_config` is db-direct and can persist a
+  bad address, but every bind funnels through the two enforced entry points.
+- Headless lifecycle order in `examples/server.rs` (mirrors desktop `lib.rs`): set_runtime_ctx →
+  crash recovery → common-config snippets → takeover restore → serve → cleanup. Graceful shutdown
+  must stay BOUNDED: infinite SSE connections (`GET /api/events`) block axum's
+  `with_graceful_shutdown` forever — the watch-channel + 5s connection-grace race in `main()` is
+  load-bearing; removing it re-introduces SIGKILL-with-PROXY_MANAGED-placeholders under systemd.
+- Failover strategy is a cross-layer contract: `FailoverStrategy { Sequential (default), Random }`
+  in `proxy/types.rs` (serde lowercase, `#[serde(default)]` on `AppProxyConfig.failoverStrategy`),
+  DB column `proxy_config.failover_strategy TEXT NOT NULL DEFAULT 'sequential'` (unknown values →
+  Sequential via `from_db_str`), FE mirror in `src/types/proxy.ts`. Sequential must stay
+  byte-identical to upstream queue order (sync-conflict surface); Random = current-provider-first
+  (sticky until failure) + Fisher-Yates shuffle of the remaining circuit-closed pool, implemented
+  ONLY in `provider_router.rs::select_providers()` — forwarder/breaker/failover_switch stay
+  strategy-agnostic.
 - If a provider module imports `crate::proxy::<module_name>`, the module must be available in both:
   - `src-tauri/src/proxy/mod.rs`
   - `src-tauri/examples/web_proxy.rs`
@@ -648,7 +672,7 @@ const sourceFile = ts.createSourceFile(
 #### 5. Good/Base/Bad Cases
 
 - Good: add `src-tauri/src/proxy/json_canonical.rs`, add `pub(crate) mod json_canonical;` in `src-tauri/src/proxy/mod.rs`, add the matching `#[path = "../src/proxy/json_canonical.rs"] pub(crate) mod json_canonical;` in `examples/web_proxy.rs`, then run Web server cargo check.
-- Base: modules used only by desktop-only proxy code do not need to be exposed through Web if no Web-compiled module imports them.
+- Base: modules gated `#[cfg(feature = "desktop")]` in `src/proxy/mod.rs` are the ONLY ones omitted from the shim (the mirror test excludes them); an ungated module must always appear in both.
 - Bad: only updating `src-tauri/src/proxy/mod.rs` and assuming `examples/server.rs` sees the same module tree.
 
 #### 6. Tests Required
