@@ -165,6 +165,38 @@ pub struct GlobalProxyConfig {
     pub enable_logging: bool,
 }
 
+/// 故障转移供应商选择策略（D1，PRD 06-11）
+///
+/// - `Sequential`：上游默认语义，严格按故障转移队列顺序（P1 → P2 → …）依次尝试。
+/// - `Random`：claude-code-hub 风格随机选择（D2 粘性直到失败语义）：
+///   当前供应商排在候选首位；其余熔断可用的队列成员经 Fisher-Yates 洗牌，
+///   失败时即在剩余可用供应商中"随机重选"。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FailoverStrategy {
+    #[default]
+    Sequential,
+    Random,
+}
+
+impl FailoverStrategy {
+    /// 数据库 TEXT 列存储值
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            FailoverStrategy::Sequential => "sequential",
+            FailoverStrategy::Random => "random",
+        }
+    }
+
+    /// 从数据库 TEXT 列解析；未知值回退 Sequential（向前兼容）
+    pub fn from_db_str(value: &str) -> Self {
+        match value {
+            "random" => FailoverStrategy::Random,
+            _ => FailoverStrategy::Sequential,
+        }
+    }
+}
+
 /// 应用级代理配置（每个 app 独立）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -175,6 +207,9 @@ pub struct AppProxyConfig {
     pub enabled: bool,
     /// 该 app 自动故障转移开关
     pub auto_failover_enabled: bool,
+    /// 故障转移供应商选择策略（缺省 Sequential，向后兼容旧配置载荷）
+    #[serde(default)]
+    pub failover_strategy: FailoverStrategy,
     /// 最大重试次数
     pub max_retries: u32,
     /// 流式首字超时（秒）
@@ -388,6 +423,71 @@ impl LogConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_failover_strategy_default_is_sequential() {
+        assert_eq!(FailoverStrategy::default(), FailoverStrategy::Sequential);
+    }
+
+    #[test]
+    fn test_failover_strategy_serde_roundtrip() {
+        assert_eq!(
+            serde_json::to_string(&FailoverStrategy::Sequential).unwrap(),
+            "\"sequential\""
+        );
+        assert_eq!(
+            serde_json::to_string(&FailoverStrategy::Random).unwrap(),
+            "\"random\""
+        );
+        assert_eq!(
+            serde_json::from_str::<FailoverStrategy>("\"random\"").unwrap(),
+            FailoverStrategy::Random
+        );
+    }
+
+    #[test]
+    fn test_failover_strategy_db_str_roundtrip_and_unknown_fallback() {
+        assert_eq!(FailoverStrategy::Sequential.as_str(), "sequential");
+        assert_eq!(FailoverStrategy::Random.as_str(), "random");
+        assert_eq!(
+            FailoverStrategy::from_db_str("random"),
+            FailoverStrategy::Random
+        );
+        assert_eq!(
+            FailoverStrategy::from_db_str("sequential"),
+            FailoverStrategy::Sequential
+        );
+        // 未知值（如未来新增策略被旧版本读到）回退 Sequential
+        assert_eq!(
+            FailoverStrategy::from_db_str("weighted"),
+            FailoverStrategy::Sequential
+        );
+    }
+
+    #[test]
+    fn test_app_proxy_config_deserializes_without_failover_strategy() {
+        // 旧前端/旧配置载荷不带 failoverStrategy 字段 → 默认 Sequential
+        let json = r#"{
+            "appType": "claude",
+            "enabled": false,
+            "autoFailoverEnabled": false,
+            "maxRetries": 3,
+            "streamingFirstByteTimeout": 60,
+            "streamingIdleTimeout": 120,
+            "nonStreamingTimeout": 600,
+            "circuitFailureThreshold": 4,
+            "circuitSuccessThreshold": 2,
+            "circuitTimeoutSeconds": 60,
+            "circuitErrorRateThreshold": 0.6,
+            "circuitMinRequests": 10
+        }"#;
+        let config: AppProxyConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.failover_strategy, FailoverStrategy::Sequential);
+
+        // 序列化输出包含 camelCase 字段，供前端读取
+        let serialized = serde_json::to_string(&config).unwrap();
+        assert!(serialized.contains("\"failoverStrategy\":\"sequential\""));
+    }
 
     #[test]
     fn test_rectifier_config_default_enabled() {

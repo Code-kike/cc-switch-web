@@ -8,6 +8,7 @@ import { Save, Loader2, Info } from "lucide-react";
 import { toast } from "sonner";
 import { useAppProxyConfig, useUpdateAppProxyConfig } from "@/lib/query/proxy";
 import { extractErrorMessage } from "@/utils/errorUtils";
+import type { FailoverStrategy } from "@/types/proxy";
 
 export interface AutoFailoverConfigPanelProps {
   appType: string;
@@ -25,6 +26,7 @@ export function AutoFailoverConfigPanel({
   // 使用字符串状态以支持完全清空数字输入框
   const [formData, setFormData] = useState({
     autoFailoverEnabled: false,
+    failoverStrategy: "sequential" as FailoverStrategy,
     maxRetries: "3",
     streamingFirstByteTimeout: "60",
     streamingIdleTimeout: "120",
@@ -40,6 +42,7 @@ export function AutoFailoverConfigPanel({
     if (config) {
       setFormData({
         autoFailoverEnabled: config.autoFailoverEnabled,
+        failoverStrategy: config.failoverStrategy ?? "sequential",
         maxRetries: String(config.maxRetries),
         streamingFirstByteTimeout: String(config.streamingFirstByteTimeout),
         streamingIdleTimeout: String(config.streamingIdleTimeout),
@@ -164,6 +167,7 @@ export function AutoFailoverConfigPanel({
         appType,
         enabled: config.enabled,
         autoFailoverEnabled: formData.autoFailoverEnabled,
+        failoverStrategy: formData.failoverStrategy,
         maxRetries: raw.maxRetries,
         streamingFirstByteTimeout: raw.streamingFirstByteTimeout,
         streamingIdleTimeout: raw.streamingIdleTimeout,
@@ -195,6 +199,7 @@ export function AutoFailoverConfigPanel({
     if (config) {
       setFormData({
         autoFailoverEnabled: config.autoFailoverEnabled,
+        failoverStrategy: config.failoverStrategy ?? "sequential",
         maxRetries: String(config.maxRetries),
         streamingFirstByteTimeout: String(config.streamingFirstByteTimeout),
         streamingIdleTimeout: String(config.streamingIdleTimeout),
@@ -245,6 +250,83 @@ export function AutoFailoverConfigPanel({
             )}
           </AlertDescription>
         </Alert>
+
+        {/* 故障转移策略（D1：sequential 保持上游队列顺序语义；random = 随机+粘性直到失败） */}
+        <div className="space-y-4 rounded-lg border border-white/10 bg-muted/30 p-4">
+          <h4 className="text-sm font-semibold">
+            {t("proxy.autoFailover.strategySettings", "故障转移策略")}
+          </h4>
+
+          <div
+            role="radiogroup"
+            aria-label={t(
+              "proxy.autoFailover.strategySettings",
+              "故障转移策略",
+            )}
+            className="grid grid-cols-1 md:grid-cols-2 gap-3"
+          >
+            {(
+              [
+                {
+                  value: "sequential" as FailoverStrategy,
+                  title: t(
+                    "proxy.autoFailover.strategySequential",
+                    "顺序（队列优先级）",
+                  ),
+                  hint: t(
+                    "proxy.autoFailover.strategySequentialHint",
+                    "按队列顺序 P1→P2→… 依次尝试（上游默认行为）",
+                  ),
+                },
+                {
+                  value: "random" as FailoverStrategy,
+                  title: t(
+                    "proxy.autoFailover.strategyRandom",
+                    "随机（粘性直到失败）",
+                  ),
+                  hint: t(
+                    "proxy.autoFailover.strategyRandomHint",
+                    "保持当前供应商；请求失败时在剩余可用供应商中随机重选",
+                  ),
+                },
+              ] as const
+            ).map((option) => {
+              const selected = formData.failoverStrategy === option.value;
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  role="radio"
+                  aria-checked={selected}
+                  aria-label={option.title}
+                  disabled={isDisabled}
+                  onClick={() =>
+                    setFormData({
+                      ...formData,
+                      failoverStrategy: option.value,
+                    })
+                  }
+                  className={`rounded-lg border p-3 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                    selected
+                      ? "border-primary/60 bg-primary/10"
+                      : "border-border bg-background/60 hover:bg-muted/50"
+                  }`}
+                >
+                  <p
+                    className={`text-sm font-medium ${
+                      selected ? "text-primary" : "text-foreground"
+                    }`}
+                  >
+                    {option.title}
+                  </p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {option.hint}
+                  </p>
+                </button>
+              );
+            })}
+          </div>
+        </div>
 
         {/* 重试与超时配置 */}
         <div className="space-y-4 rounded-lg border border-white/10 bg-muted/30 p-4">

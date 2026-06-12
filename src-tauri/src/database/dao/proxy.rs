@@ -226,7 +226,7 @@ impl Database {
                 "SELECT app_type, enabled, auto_failover_enabled,
                         max_retries, streaming_first_byte_timeout, streaming_idle_timeout, non_streaming_timeout,
                         circuit_failure_threshold, circuit_success_threshold, circuit_timeout_seconds,
-                        circuit_error_rate_threshold, circuit_min_requests
+                        circuit_error_rate_threshold, circuit_min_requests, failover_strategy
                  FROM proxy_config WHERE app_type = ?1",
                 [app_type],
                 |row| {
@@ -234,6 +234,9 @@ impl Database {
                         app_type: row.get(0)?,
                         enabled: row.get::<_, i32>(1)? != 0,
                         auto_failover_enabled: row.get::<_, i32>(2)? != 0,
+                        failover_strategy: FailoverStrategy::from_db_str(
+                            &row.get::<_, String>(12)?,
+                        ),
                         max_retries: row.get::<_, i32>(3)? as u32,
                         streaming_first_byte_timeout: row.get::<_, i32>(4)? as u32,
                         streaming_idle_timeout: row.get::<_, i32>(5)? as u32,
@@ -258,6 +261,7 @@ impl Database {
                     app_type: app_type_owned,
                     enabled: false,
                     auto_failover_enabled: false,
+                    failover_strategy: FailoverStrategy::Sequential,
                     max_retries: 3,
                     streaming_first_byte_timeout: 60,
                     streaming_idle_timeout: 120,
@@ -284,6 +288,7 @@ impl Database {
             "UPDATE proxy_config SET
                 enabled = ?2,
                 auto_failover_enabled = ?3,
+                failover_strategy = ?13,
                 max_retries = ?4,
                 streaming_first_byte_timeout = ?5,
                 streaming_idle_timeout = ?6,
@@ -308,6 +313,7 @@ impl Database {
                 config.circuit_timeout_seconds as i32,
                 config.circuit_error_rate_threshold,
                 config.circuit_min_requests as i32,
+                config.failover_strategy.as_str(),
             ],
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
@@ -878,6 +884,30 @@ impl Database {
 mod tests {
     use crate::database::Database;
     use crate::error::AppError;
+    use crate::proxy::types::FailoverStrategy;
+
+    #[tokio::test]
+    async fn test_failover_strategy_defaults_sequential_and_round_trips() -> Result<(), AppError> {
+        let db = Database::memory()?;
+
+        // 旧库/新库默认值都必须是 sequential（上游语义保持不变）
+        let config = db.get_proxy_config_for_app("claude").await?;
+        assert_eq!(config.failover_strategy, FailoverStrategy::Sequential);
+
+        // 写入 random 并读回
+        let mut updated = config.clone();
+        updated.failover_strategy = FailoverStrategy::Random;
+        db.update_proxy_config_for_app(updated).await?;
+
+        let reloaded = db.get_proxy_config_for_app("claude").await?;
+        assert_eq!(reloaded.failover_strategy, FailoverStrategy::Random);
+
+        // 其他 app 行不受影响
+        let codex = db.get_proxy_config_for_app("codex").await?;
+        assert_eq!(codex.failover_strategy, FailoverStrategy::Sequential);
+
+        Ok(())
+    }
 
     #[tokio::test]
     async fn test_default_cost_multiplier_round_trip() -> Result<(), AppError> {

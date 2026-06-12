@@ -58,17 +58,31 @@ vi.mock("@/hooks/useProxyStatus", () => ({
 }));
 
 vi.mock("@/components/ui/accordion", () => ({
-  Accordion: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-  AccordionItem: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-  AccordionTrigger: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-  AccordionContent: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  Accordion: ({ children }: { children: React.ReactNode }) => (
+    <div>{children}</div>
+  ),
+  AccordionItem: ({ children }: { children: React.ReactNode }) => (
+    <div>{children}</div>
+  ),
+  AccordionTrigger: ({ children }: { children: React.ReactNode }) => (
+    <div>{children}</div>
+  ),
+  AccordionContent: ({ children }: { children: React.ReactNode }) => (
+    <div>{children}</div>
+  ),
 }));
 
 vi.mock("@/components/ui/tabs", () => ({
   Tabs: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-  TabsList: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-  TabsTrigger: ({ children }: { children: React.ReactNode }) => <button>{children}</button>,
-  TabsContent: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  TabsList: ({ children }: { children: React.ReactNode }) => (
+    <div>{children}</div>
+  ),
+  TabsTrigger: ({ children }: { children: React.ReactNode }) => (
+    <button>{children}</button>
+  ),
+  TabsContent: ({ children }: { children: React.ReactNode }) => (
+    <div>{children}</div>
+  ),
 }));
 
 vi.mock("@/components/ui/toggle-row", () => ({
@@ -81,7 +95,11 @@ vi.mock("@/components/ui/toggle-row", () => ({
     checked: boolean;
     onCheckedChange: (checked: boolean) => void;
   }) => (
-    <button type="button" aria-label={title} onClick={() => onCheckedChange(!checked)}>
+    <button
+      type="button"
+      aria-label={title}
+      onClick={() => onCheckedChange(!checked)}
+    >
       {title}
     </button>
   ),
@@ -96,15 +114,17 @@ vi.mock("@/components/proxy", () => ({
     disableRuntimeControls?: boolean;
   }) => (
     proxyPanelPropsSpy({ disableRuntimeControls }),
-    <button
-      type="button"
-      onClick={() => {
-        proxyPanelToggleSpy(true);
-        void onToggleProxy(true);
-      }}
-    >
-      proxy-panel-toggle
-    </button>
+    (
+      <button
+        type="button"
+        onClick={() => {
+          proxyPanelToggleSpy(true);
+          void onToggleProxy(true);
+        }}
+      >
+        proxy-panel-toggle
+      </button>
+    )
   ),
 }));
 
@@ -201,7 +221,9 @@ describe("ProxyTabContent", () => {
     expect(startProxyServerMock).not.toHaveBeenCalled();
     expect(screen.getByText("confirm.proxy.title")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "confirm.proxy.confirm" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "confirm.proxy.confirm" }),
+    );
 
     await waitFor(() =>
       expect(onAutoSave).toHaveBeenCalledWith({ proxyConfirmed: true }),
@@ -245,7 +267,48 @@ describe("ProxyTabContent", () => {
     );
   });
 
-  it("keeps failover editors available in Web mode and shows explicit runtime-only notices", () => {
+  it("exposes full runtime controls in Web mode without desktop-only notices", () => {
+    render(
+      <ProxyTabContent
+        settings={createSettings({
+          proxyConfirmed: true,
+          failoverConfirmed: true,
+        })}
+        onAutoSave={vi.fn()}
+      />,
+    );
+
+    // S4 (06-11 web proxy port): the proxy runtime now runs in web-server
+    // mode, so the configuration-only / runtime-unavailable notices are gone.
+    expect(
+      screen.queryByText("proxy.failover.webConfigOnlyTitle"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("proxy.failover.runtimeStatsUnavailableTitle"),
+    ).not.toBeInTheDocument();
+    // ProxyPanel no longer receives a disableRuntimeControls prop.
+    expect(proxyPanelPropsSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ disableRuntimeControls: undefined }),
+    );
+    // Desktop parity: failover editors are disabled while the proxy is
+    // stopped (isRunning=false) — same rule in both runtimes now.
+    expect(
+      screen.getByText("proxy.failover.proxyRequired"),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("failover-queue-claude")).toHaveTextContent(
+      "claude:true",
+    );
+    expect(screen.getByTestId("auto-failover-claude")).toHaveTextContent(
+      "claude:true",
+    );
+  });
+
+  it("enables failover editors once the proxy is running", () => {
+    proxyStatusFixture = {
+      ...proxyStatusFixture,
+      isRunning: true,
+    };
+
     render(
       <ProxyTabContent
         settings={createSettings({
@@ -257,31 +320,13 @@ describe("ProxyTabContent", () => {
     );
 
     expect(
-      screen.getByText("proxy.failover.webConfigOnlyTitle"),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText("proxy.failover.webConfigOnlyDescription"),
-    ).toBeInTheDocument();
+      screen.queryByText("proxy.failover.proxyRequired"),
+    ).not.toBeInTheDocument();
     expect(screen.getByTestId("failover-queue-claude")).toHaveTextContent(
       "claude:false",
     );
     expect(screen.getByTestId("auto-failover-claude")).toHaveTextContent(
       "claude:false",
-    );
-    expect(
-      screen.getByText("proxy.failover.runtimeStatsUnavailableTitle"),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText("proxy.failover.runtimeStatsUnavailableDescription"),
-    ).toBeInTheDocument();
-    expect(proxyPanelPropsSpy).toHaveBeenCalledWith(
-      expect.objectContaining({ disableRuntimeControls: true }),
-    );
-    expect(failoverQueuePropsSpy).toHaveBeenCalledWith(
-      expect.objectContaining({ appType: "claude", disabled: false }),
-    );
-    expect(autoFailoverConfigPropsSpy).toHaveBeenCalledWith(
-      expect.objectContaining({ appType: "claude", disabled: false }),
     );
   });
 });

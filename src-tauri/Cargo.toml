@@ -36,7 +36,6 @@ desktop = [
 web-server = [
     "env_logger",
     "mime_guess",
-    "rand",
     "fs2",
     "nix",
 ]
@@ -129,7 +128,9 @@ json-five = "0.3.1"
 # Web-server feature dependencies (Layer 1 / Task 1)
 env_logger = { version = "0.11", optional = true }
 mime_guess = { version = "2", optional = true }
-rand = { version = "0.8", optional = true }
+# rand 自 06-11（S5 随机故障转移策略）起为常规依赖：
+# proxy/provider_router.rs 在桌面与 Web 两个运行时都编译。
+rand = "0.8"
 fs2 = { version = "0.4", optional = true }
 
 # Command manifest binary dependencies (Task 0 generates AST manifest) —

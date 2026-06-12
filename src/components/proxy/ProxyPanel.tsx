@@ -27,6 +27,7 @@ import {
   useUpdateGlobalProxyConfig,
 } from "@/lib/query/proxy";
 import type { ProxyStatus } from "@/types/proxy";
+import { isWebMode } from "@/lib/api/adapter";
 import { useTranslation } from "react-i18next";
 import { AnimatePresence, motion } from "framer-motion";
 import { extractErrorMessage } from "@/utils/errorUtils";
@@ -36,7 +37,6 @@ interface ProxyPanelProps {
   onEnableLocalProxyChange: (checked: boolean) => void;
   onToggleProxy: (checked: boolean) => Promise<void>;
   isProxyPending: boolean;
-  disableRuntimeControls?: boolean;
 }
 
 export function isValidListenAddress(address: string): boolean {
@@ -66,14 +66,32 @@ export function isValidListenAddress(address: string): boolean {
   );
 }
 
+/**
+ * Web 运行时（PRD D4）仅允许代理监听 loopback 地址：
+ * 127.0.0.0/8、::1 或 localhost。与后端
+ * `ProxyService::ensure_loopback_listen_address_for_web` 保持一致。
+ */
+export function isLoopbackAddress(address: string): boolean {
+  const addressTrimmed = address.trim();
+  if (addressTrimmed === "localhost") return true;
+  if (addressTrimmed === "::1") return true;
+  const ipv4Match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(
+    addressTrimmed,
+  );
+  if (ipv4Match) {
+    return parseInt(ipv4Match[1], 10) === 127;
+  }
+  return false;
+}
+
 export function ProxyPanel({
   enableLocalProxy,
   onEnableLocalProxyChange,
   onToggleProxy,
   isProxyPending,
-  disableRuntimeControls = false,
 }: ProxyPanelProps) {
   const { t } = useTranslation();
+  const webMode = isWebMode();
   // 接管状态由 canonical useProxyStatus 统一持有（M37）：避免与 lib/query/proxy
   // 的重复查询共用同一 query key 却各自轮询。
   const { status, isRunning, takeoverStatus } = useProxyStatus();
@@ -168,6 +186,18 @@ export function ProxyPanel({
     const normalizedAddress =
       addressTrimmed === "localhost" ? "127.0.0.1" : addressTrimmed;
 
+    // Web 运行时（PRD D4）：代理仅允许监听 loopback，提前在前端拦截，
+    // 与后端 start()/update_config 的 400 拒绝保持一致。
+    if (webMode && !isLoopbackAddress(normalizedAddress)) {
+      toast.error(
+        t("proxy.settings.webLoopbackOnly", {
+          defaultValue:
+            "Web 模式下代理仅允许监听回环地址（如 127.0.0.1），代理端口不对外暴露",
+        }),
+      );
+      return;
+    }
+
     // 严格校验端口：必须是纯数字
     const portTrimmed = listenPort.trim();
     if (!/^\d+$/.test(portTrimmed)) {
@@ -198,8 +228,12 @@ export function ProxyPanel({
         { closeButton: true },
       );
     } catch (error) {
+      const detail = extractErrorMessage(error);
       toast.error(
-        t("proxy.settings.configSaveFailed", { defaultValue: "保存配置失败" }),
+        detail ||
+          t("proxy.settings.configSaveFailed", {
+            defaultValue: "保存配置失败",
+          }),
       );
     }
   };
@@ -259,25 +293,9 @@ export function ProxyPanel({
           <Switch
             checked={isRunning}
             onCheckedChange={onToggleProxy}
-            disabled={isProxyPending || disableRuntimeControls}
+            disabled={isProxyPending}
           />
         </div>
-
-        {disableRuntimeControls ? (
-          <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-4">
-            <p className="text-sm font-medium">
-              {t("proxy.runtimeUnavailableTitle", {
-                defaultValue: "Web mode does not expose proxy runtime control",
-              })}
-            </p>
-            <p className="mt-1 text-xs text-muted-foreground">
-              {t("proxy.runtimeUnavailableDescription", {
-                defaultValue:
-                  "You can still edit proxy and failover settings here, but starting the local proxy runtime and app takeover stays desktop-only for now.",
-              })}
-            </p>
-          </div>
-        ) : null}
 
         {/* [3] App takeover switches — animated, visible only when proxy is running */}
         <AnimatePresence>
@@ -567,6 +585,17 @@ export function ProxyPanel({
                         "代理服务器监听的 IP 地址（推荐 127.0.0.1）",
                     })}
                   </p>
+                  {webMode && (
+                    <p className="text-xs text-amber-600 dark:text-amber-400">
+                      {t(
+                        "proxy.settings.fields.listenAddress.webLoopbackHint",
+                        {
+                          defaultValue:
+                            "Web 模式仅允许回环地址（127.0.0.1 / ::1）：代理端口不对外暴露",
+                        },
+                      )}
+                    </p>
+                  )}
                 </div>
 
                 <div className="space-y-2">

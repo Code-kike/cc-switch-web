@@ -28,7 +28,7 @@ async function ensureDistWeb(): Promise<void> {
   await fs.access(path.join(distWebDir, "index.html"));
 }
 
-async function getFreePort(): Promise<number> {
+export async function getFreePort(): Promise<number> {
   return await new Promise((resolve, reject) => {
     const server = net.createServer();
     server.unref();

@@ -122,11 +122,16 @@ export interface GlobalProxyConfig {
   enableLogging: boolean;
 }
 
+// 故障转移供应商选择策略（D1，PRD 06-11）
+// sequential = 上游默认队列顺序；random = 随机选择（粘性直到失败）
+export type FailoverStrategy = "sequential" | "random";
+
 // 应用级代理配置（每个 app 独立）
 export interface AppProxyConfig {
   appType: string;
   enabled: boolean;
   autoFailoverEnabled: boolean;
+  failoverStrategy: FailoverStrategy;
   maxRetries: number;
   streamingFirstByteTimeout: number;
   streamingIdleTimeout: number;

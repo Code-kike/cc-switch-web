@@ -7,6 +7,7 @@ use crate::database::Database;
 use crate::error::AppError;
 use crate::provider::Provider;
 use crate::proxy::circuit_breaker::{AllowResult, CircuitBreaker, CircuitBreakerConfig};
+use crate::proxy::types::FailoverStrategy;
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -33,23 +34,27 @@ impl ProviderRouter {
     ///
     /// 返回按优先级排序的可用供应商列表：
     /// - 故障转移关闭时：仅返回当前供应商
-    /// - 故障转移开启时：仅使用故障转移队列，按队列顺序依次尝试（P1 → P2 → ...）
+    /// - 故障转移开启时：仅使用故障转移队列
+    ///   - `Sequential`（默认，上游语义）：按队列顺序依次尝试（P1 → P2 → ...）
+    ///   - `Random`（D1/D2，PRD 06-11）：当前供应商优先（粘性直到失败），
+    ///     其余熔断可用的队列成员随机洗牌——失败后即随机重选下一个
     pub async fn select_providers(&self, app_type: &str) -> Result<Vec<Provider>, AppError> {
         let mut result = Vec::new();
         let mut total_providers = 0usize;
         let mut circuit_open_count = 0usize;
 
-        // 检查该应用的自动故障转移开关是否开启（从 proxy_config 表读取）
-        let auto_failover_enabled = match self.db.get_proxy_config_for_app(app_type).await {
-            Ok(config) => config.auto_failover_enabled,
-            Err(e) => {
-                log::error!("[{app_type}] 读取 proxy_config 失败: {e}，默认禁用故障转移");
-                false
-            }
-        };
+        // 检查该应用的自动故障转移开关与选择策略（从 proxy_config 表读取）
+        let (auto_failover_enabled, failover_strategy) =
+            match self.db.get_proxy_config_for_app(app_type).await {
+                Ok(config) => (config.auto_failover_enabled, config.failover_strategy),
+                Err(e) => {
+                    log::error!("[{app_type}] 读取 proxy_config 失败: {e}，默认禁用故障转移");
+                    (false, FailoverStrategy::Sequential)
+                }
+            };
 
         if auto_failover_enabled {
-            // 故障转移开启：仅按队列顺序依次尝试（P1 → P2 → ...）
+            // 故障转移开启：仅使用故障转移队列（基准顺序 = 队列顺序 P1 → P2 → ...）
             let all_providers = self.db.get_all_providers(app_type)?;
 
             // 使用 DAO 返回的排序结果，确保和前端展示一致
@@ -76,16 +81,20 @@ impl ProviderRouter {
                     circuit_open_count += 1;
                 }
             }
+
+            // Random 策略（D2 粘性直到失败）：当前供应商排首位，其余洗牌。
+            // Sequential 路径不做任何重排——与上游行为逐字节一致。
+            if failover_strategy == FailoverStrategy::Random && result.len() > 1 {
+                let current_id = self.effective_current_provider_id(app_type);
+                Self::apply_random_strategy(
+                    &mut result,
+                    current_id.as_deref(),
+                    &mut rand::thread_rng(),
+                );
+            }
         } else {
             // 故障转移关闭：仅使用当前供应商，跳过熔断器检查
-            let current_id = AppType::from_str(app_type)
-                .ok()
-                .and_then(|app_enum| {
-                    crate::settings::get_effective_current_provider(&self.db, &app_enum)
-                        .ok()
-                        .flatten()
-                })
-                .or_else(|| self.db.get_current_provider(app_type).ok().flatten());
+            let current_id = self.effective_current_provider_id(app_type);
 
             if let Some(current_id) = current_id {
                 if let Some(current) = self.db.get_provider_by_id(&current_id, app_type)? {
@@ -106,6 +115,44 @@ impl ProviderRouter {
         }
 
         Ok(result)
+    }
+
+    /// 解析该应用"当前供应商" ID（settings 生效值优先，回退数据库 current 指针）
+    fn effective_current_provider_id(&self, app_type: &str) -> Option<String> {
+        AppType::from_str(app_type)
+            .ok()
+            .and_then(|app_enum| {
+                crate::settings::get_effective_current_provider(&self.db, &app_enum)
+                    .ok()
+                    .flatten()
+            })
+            .or_else(|| self.db.get_current_provider(app_type).ok().flatten())
+    }
+
+    /// Random 策略排序（D2）：当前供应商置于候选首位（粘性），
+    /// 其余可用供应商 Fisher-Yates 洗牌（失败时按洗牌顺序"随机重选"）。
+    ///
+    /// 当前供应商不在候选列表（不在队列或已熔断）时，整个列表洗牌；
+    /// 候选集合本身不变——只改变顺序。
+    /// RNG 由调用方注入，便于测试以固定种子复现。
+    fn apply_random_strategy<R: rand::Rng + ?Sized>(
+        providers: &mut [Provider],
+        current_id: Option<&str>,
+        rng: &mut R,
+    ) {
+        use rand::seq::SliceRandom;
+
+        let shuffle_from = match current_id
+            .and_then(|id| providers.iter().position(|provider| provider.id == id))
+        {
+            Some(pos) => {
+                providers.swap(0, pos);
+                1
+            }
+            None => 0,
+        };
+
+        providers[shuffle_from..].shuffle(rng);
     }
 
     /// 请求执行前获取熔断器“放行许可”
@@ -577,6 +624,204 @@ mod tests {
                 .state,
             CircuitState::HalfOpen
         );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_random_strategy_keeps_current_first_and_membership() {
+        use crate::proxy::types::FailoverStrategy;
+
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory().unwrap());
+
+        for (id, sort) in [("a", 1), ("b", 2), ("c", 3), ("d", 4)] {
+            let mut provider = Provider::with_id(
+                id.to_string(),
+                format!("Provider {id}"),
+                serde_json::json!({}),
+                None,
+            );
+            provider.sort_index = Some(sort);
+            db.save_provider("claude", &provider).unwrap();
+            db.add_to_failover_queue("claude", id).unwrap();
+        }
+        db.set_current_provider("claude", "c").unwrap();
+
+        let mut config = db.get_proxy_config_for_app("claude").await.unwrap();
+        config.auto_failover_enabled = true;
+        config.failover_strategy = FailoverStrategy::Random;
+        db.update_proxy_config_for_app(config).await.unwrap();
+
+        let router = ProviderRouter::new(db.clone());
+
+        // D2 粘性：当前供应商必须始终排在候选首位；候选集合 = 整个队列
+        for _ in 0..20 {
+            let providers = router.select_providers("claude").await.unwrap();
+            assert_eq!(providers.len(), 4);
+            assert_eq!(providers[0].id, "c", "当前供应商必须排首位（粘性）");
+
+            let mut ids: Vec<&str> = providers.iter().map(|p| p.id.as_str()).collect();
+            ids.sort_unstable();
+            assert_eq!(ids, vec!["a", "b", "c", "d"], "随机策略不得增删候选集合");
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_random_strategy_shuffles_tail_and_handles_current_outside_queue() {
+        use crate::proxy::types::FailoverStrategy;
+
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory().unwrap());
+
+        for (id, sort) in [("a", 1), ("b", 2), ("c", 3), ("d", 4)] {
+            let mut provider = Provider::with_id(
+                id.to_string(),
+                format!("Provider {id}"),
+                serde_json::json!({}),
+                None,
+            );
+            provider.sort_index = Some(sort);
+            db.save_provider("claude", &provider).unwrap();
+            db.add_to_failover_queue("claude", id).unwrap();
+        }
+        // 当前供应商不在故障转移队列里（常见配置）
+        let outside = Provider::with_id(
+            "x".to_string(),
+            "Outside".to_string(),
+            serde_json::json!({}),
+            None,
+        );
+        db.save_provider("claude", &outside).unwrap();
+        db.set_current_provider("claude", "x").unwrap();
+
+        let mut config = db.get_proxy_config_for_app("claude").await.unwrap();
+        config.auto_failover_enabled = true;
+        config.failover_strategy = FailoverStrategy::Random;
+        db.update_proxy_config_for_app(config).await.unwrap();
+
+        let router = ProviderRouter::new(db.clone());
+
+        let mut seen_orders = std::collections::HashSet::new();
+        for _ in 0..100 {
+            let providers = router.select_providers("claude").await.unwrap();
+            // 队列仍是唯一候选来源：不得把队列外的当前供应商插进来
+            assert_eq!(providers.len(), 4);
+            assert!(providers.iter().all(|p| p.id != "x"));
+            seen_orders.insert(
+                providers
+                    .iter()
+                    .map(|p| p.id.clone())
+                    .collect::<Vec<_>>()
+                    .join(","),
+            );
+        }
+        // 4 个候选全洗牌共 24 种排列，100 次只看到 1 种的概率 ≈ (1/24)^99 ≈ 0
+        assert!(
+            seen_orders.len() > 1,
+            "随机策略应产生不同顺序，实际只看到: {seen_orders:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_random_strategy_excludes_unavailable_circuit_open_providers() {
+        use crate::proxy::types::FailoverStrategy;
+
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory().unwrap());
+
+        // 1 次失败即熔断；冷却 60 秒 → Open 状态在测试窗口内不可用
+        db.update_circuit_breaker_config(&CircuitBreakerConfig {
+            failure_threshold: 1,
+            timeout_seconds: 60,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        for id in ["a", "b", "c"] {
+            let provider = Provider::with_id(
+                id.to_string(),
+                format!("Provider {id}"),
+                serde_json::json!({}),
+                None,
+            );
+            db.save_provider("claude", &provider).unwrap();
+            db.add_to_failover_queue("claude", id).unwrap();
+        }
+        db.set_current_provider("claude", "a").unwrap();
+
+        let mut config = db.get_proxy_config_for_app("claude").await.unwrap();
+        config.auto_failover_enabled = true;
+        config.failover_strategy = FailoverStrategy::Random;
+        config.circuit_failure_threshold = 1;
+        config.circuit_timeout_seconds = 60;
+        db.update_proxy_config_for_app(config).await.unwrap();
+
+        let router = ProviderRouter::new(db.clone());
+
+        // b 熔断（Open，冷却未到）→ 不进入随机候选池
+        router
+            .record_result("b", "claude", false, false, Some("fail".to_string()))
+            .await
+            .unwrap();
+
+        for _ in 0..20 {
+            let providers = router.select_providers("claude").await.unwrap();
+            let ids: Vec<&str> = providers.iter().map(|p| p.id.as_str()).collect();
+            assert!(!ids.contains(&"b"), "熔断中的供应商不得进入随机候选池");
+            assert_eq!(providers.len(), 2);
+            assert_eq!(providers[0].id, "a", "当前供应商仍排首位");
+        }
+    }
+
+    #[test]
+    fn test_apply_random_strategy_is_deterministic_with_seeded_rng() {
+        use rand::rngs::StdRng;
+        use rand::SeedableRng;
+
+        let build = || -> Vec<Provider> {
+            ["a", "b", "c", "d", "e"]
+                .iter()
+                .map(|id| {
+                    Provider::with_id(
+                        id.to_string(),
+                        format!("Provider {id}"),
+                        serde_json::json!({}),
+                        None,
+                    )
+                })
+                .collect()
+        };
+
+        // 同种子 → 同顺序（确定性）
+        let mut first = build();
+        let mut second = build();
+        ProviderRouter::apply_random_strategy(
+            &mut first,
+            Some("c"),
+            &mut StdRng::seed_from_u64(42),
+        );
+        ProviderRouter::apply_random_strategy(
+            &mut second,
+            Some("c"),
+            &mut StdRng::seed_from_u64(42),
+        );
+        let order = |list: &[Provider]| list.iter().map(|p| p.id.clone()).collect::<Vec<_>>();
+        assert_eq!(order(&first), order(&second));
+        assert_eq!(first[0].id, "c", "当前供应商必须排首位");
+
+        // 当前供应商缺失 → 整个列表参与洗牌，集合不变
+        let mut third = build();
+        ProviderRouter::apply_random_strategy(
+            &mut third,
+            Some("missing"),
+            &mut StdRng::seed_from_u64(7),
+        );
+        let mut ids = order(&third);
+        ids.sort_unstable();
+        assert_eq!(ids, vec!["a", "b", "c", "d", "e"]);
     }
 
     #[tokio::test]

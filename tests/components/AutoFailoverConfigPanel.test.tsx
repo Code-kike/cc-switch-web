@@ -12,6 +12,7 @@ const proxyState = vi.hoisted(() => ({
     appType: "claude",
     enabled: true,
     autoFailoverEnabled: true,
+    failoverStrategy: "sequential" as "sequential" | "random",
     maxRetries: 4,
     streamingFirstByteTimeout: 60,
     streamingIdleTimeout: 120,
@@ -105,6 +106,7 @@ describe("AutoFailoverConfigPanel", () => {
       appType: "claude",
       enabled: true,
       autoFailoverEnabled: true,
+      failoverStrategy: "sequential",
       maxRetries: 4,
       streamingFirstByteTimeout: 60,
       streamingIdleTimeout: 120,
@@ -147,6 +149,7 @@ describe("AutoFailoverConfigPanel", () => {
         appType: "claude",
         enabled: true,
         autoFailoverEnabled: true,
+        failoverStrategy: "sequential",
         maxRetries: 4,
         streamingFirstByteTimeout: 60,
         streamingIdleTimeout: 120,
@@ -179,10 +182,47 @@ describe("AutoFailoverConfigPanel", () => {
     expect(updateAppProxyConfigMutateAsyncMock).not.toHaveBeenCalled();
   });
 
+  it("selects the random failover strategy, saves it, and resets back", async () => {
+    render(<AutoFailoverConfigPanel appType="claude" />);
+
+    const sequentialOption = screen.getByRole("radio", {
+      name: "顺序（队列优先级）",
+    });
+    const randomOption = screen.getByRole("radio", {
+      name: "随机（粘性直到失败）",
+    });
+
+    expect(sequentialOption).toHaveAttribute("aria-checked", "true");
+    expect(randomOption).toHaveAttribute("aria-checked", "false");
+
+    fireEvent.click(randomOption);
+    expect(randomOption).toHaveAttribute("aria-checked", "true");
+
+    // Reset 回到已加载配置（sequential）
+    fireEvent.click(screen.getByRole("button", { name: "重置" }));
+    expect(sequentialOption).toHaveAttribute("aria-checked", "true");
+
+    // 再次选择 random 并保存
+    fireEvent.click(randomOption);
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+
+    await waitFor(() =>
+      expect(updateAppProxyConfigMutateAsyncMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          appType: "claude",
+          failoverStrategy: "random",
+        }),
+      ),
+    );
+  });
+
   it("disables inputs and actions when the panel is disabled", () => {
     render(<AutoFailoverConfigPanel appType="claude" disabled />);
 
     expect(screen.getByLabelText("最大重试次数")).toBeDisabled();
+    expect(
+      screen.getByRole("radio", { name: "随机（粘性直到失败）" }),
+    ).toBeDisabled();
     expect(screen.getByRole("button", { name: "重置" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "保存" })).toBeDisabled();
   });

@@ -126,6 +126,7 @@ impl Database {
             proxy_enabled INTEGER NOT NULL DEFAULT 0, listen_address TEXT NOT NULL DEFAULT '127.0.0.1',
             listen_port INTEGER NOT NULL DEFAULT 15721, enable_logging INTEGER NOT NULL DEFAULT 1,
             enabled INTEGER NOT NULL DEFAULT 0, auto_failover_enabled INTEGER NOT NULL DEFAULT 0,
+            failover_strategy TEXT NOT NULL DEFAULT 'sequential',
             max_retries INTEGER NOT NULL DEFAULT 3, streaming_first_byte_timeout INTEGER NOT NULL DEFAULT 60,
             streaming_idle_timeout INTEGER NOT NULL DEFAULT 120, non_streaming_timeout INTEGER NOT NULL DEFAULT 600,
             circuit_failure_threshold INTEGER NOT NULL DEFAULT 4, circuit_success_threshold INTEGER NOT NULL DEFAULT 2,
@@ -322,6 +323,12 @@ impl Database {
         );
         let _ = conn.execute(
             "ALTER TABLE proxy_config ADD COLUMN non_streaming_timeout INTEGER NOT NULL DEFAULT 600",
+            [],
+        );
+
+        // 尝试添加故障转移策略列（D1，PRD 06-11：sequential | random，默认保持上游顺序语义）
+        let _ = conn.execute(
+            "ALTER TABLE proxy_config ADD COLUMN failover_strategy TEXT NOT NULL DEFAULT 'sequential'",
             [],
         );
 
@@ -581,6 +588,12 @@ impl Database {
                 "non_streaming_timeout",
                 "INTEGER NOT NULL DEFAULT 600",
             )?;
+            Self::add_column_if_missing(
+                conn,
+                "proxy_config",
+                "failover_strategy",
+                "TEXT NOT NULL DEFAULT 'sequential'",
+            )?;
         }
 
         // 删除旧的 failover_queue 表（如果存在）
@@ -752,6 +765,7 @@ impl Database {
             proxy_enabled INTEGER NOT NULL DEFAULT 0, listen_address TEXT NOT NULL DEFAULT '127.0.0.1',
             listen_port INTEGER NOT NULL DEFAULT 15721, enable_logging INTEGER NOT NULL DEFAULT 1,
             enabled INTEGER NOT NULL DEFAULT 0, auto_failover_enabled INTEGER NOT NULL DEFAULT 0,
+            failover_strategy TEXT NOT NULL DEFAULT 'sequential',
             max_retries INTEGER NOT NULL DEFAULT 3, streaming_first_byte_timeout INTEGER NOT NULL DEFAULT 60,
             streaming_idle_timeout INTEGER NOT NULL DEFAULT 120, non_streaming_timeout INTEGER NOT NULL DEFAULT 600,
             circuit_failure_threshold INTEGER NOT NULL DEFAULT 4, circuit_success_threshold INTEGER NOT NULL DEFAULT 2,

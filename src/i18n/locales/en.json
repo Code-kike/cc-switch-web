@@ -2249,7 +2249,8 @@
         "listenAddress": {
           "label": "Listen Address",
           "placeholder": "127.0.0.1",
-          "description": "IP address the routing server listens on (recommended: 127.0.0.1)"
+          "description": "IP address the routing server listens on (recommended: 127.0.0.1)",
+          "webLoopbackHint": "Web mode accepts loopback addresses only (127.0.0.1 / ::1): the proxy port is not exposed externally"
         },
         "listenPort": {
           "label": "Listen Port",
@@ -2306,7 +2307,8 @@
       "invalidAddress": "Invalid address. Enter an IPv4 (e.g. 127.0.0.1), IPv6 (e.g. ::1), or localhost",
       "configSaved": "Routing configuration saved",
       "configSaveFailed": "Failed to save configuration",
-      "restartRequired": "Restart routing service for address or port changes to take effect"
+      "restartRequired": "Restart routing service for address or port changes to take effect",
+      "webLoopbackOnly": "In web mode the routing proxy may only listen on a loopback address (e.g. 127.0.0.1); the proxy port is never exposed externally"
     },
     "switchFailed": "Switch failed: {{error}}",
     "takeover": {
@@ -2323,9 +2325,7 @@
     "failover": {
       "proxyRequired": "Routing service must be started to configure failover",
       "autoSwitch": "Auto Failover",
-      "autoSwitchDescription": "When enabled, switches to queue P1 immediately and automatically tries the next provider in the queue on failures",
-      "runtimeStatsUnavailableTitle": "Runtime circuit breaker stats are unavailable in web-server mode",
-      "runtimeStatsUnavailableDescription": "Use the queue health badges and Reset Circuit actions above to inspect and recover failover state. The desktop app is still required for live breaker counters."
+      "autoSwitchDescription": "When enabled, switches to queue P1 immediately and automatically tries the next provider in the queue on failures"
     },
     "failoverQueue": {
       "title": "Failover Queue",
@@ -2379,7 +2379,12 @@
       "maxRetriesHint": "Number of retries on request failure (0-10)",
       "streamingFirstByteHint": "Max time to wait for first data chunk, range 1-120s, default 60s",
       "streamingIdleHint": "Max interval between data chunks, range 60-600s, 0 to disable (prevents mid-stream stalls)",
-      "nonStreamingHint": "Total timeout for non-streaming requests, range 60-1200s, default 600s (10 min)"
+      "nonStreamingHint": "Total timeout for non-streaming requests, range 60-1200s, default 600s (10 min)",
+      "strategySettings": "Failover Strategy",
+      "strategySequential": "Sequential (queue priority)",
+      "strategySequentialHint": "Try providers strictly in queue order P1→P2→… (upstream default behavior)",
+      "strategyRandom": "Random (sticky until failure)",
+      "strategyRandomHint": "Stick with the current provider; on failure re-pick randomly among the remaining available providers"
     },
     "logging": {
       "enabled": "Logging enabled",

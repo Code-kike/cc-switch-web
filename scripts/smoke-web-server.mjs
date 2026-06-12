@@ -2445,6 +2445,9 @@ const probes = [
         payload?.appType !== "claude" ||
         typeof payload?.enabled !== "boolean" ||
         typeof payload?.autoFailoverEnabled !== "boolean" ||
+        // S5 (06-11): failover selection strategy defaults to upstream
+        // sequential semantics on a fresh database.
+        payload?.failoverStrategy !== "sequential" ||
         typeof payload?.maxRetries !== "number" ||
         typeof payload?.circuitFailureThreshold !== "number"
       ) {

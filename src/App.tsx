@@ -1294,8 +1294,7 @@ function App() {
           </div>
 
           <div className="flex flex-1 min-w-0 items-center justify-end gap-1.5">
-            {!webMode &&
-              currentView === "providers" &&
+            {currentView === "providers" &&
               activeApp !== "opencode" &&
               activeApp !== "openclaw" &&
               activeApp !== "hermes" && (

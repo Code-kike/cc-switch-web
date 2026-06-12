@@ -302,6 +302,7 @@ mod tests {
             app_type: "claude".to_string(),
             enabled: true,
             auto_failover_enabled,
+            failover_strategy: Default::default(),
             max_retries: 3,
             streaming_first_byte_timeout: 60,
             streaming_idle_timeout: 120,
