@@ -516,3 +516,37 @@ Ported the desktop-only routing proxy to the web-server runtime in 5 slices: Pro
 ### Next Steps
 
 - None - task complete
+
+
+## Session 15: Fix web runtime global outbound proxy init (failover unreachable relays)
+
+**Date**: 2026-06-12
+**Task**: Fix web runtime global outbound proxy init (failover unreachable relays)
+**Branch**: `main`
+
+### Summary
+
+User-reported bug: codex auto-failover failed while single-account direct calls worked. Root cause: examples/server.rs never called http_client::init, so the forwarder hit the GP-004 fallback and made direct outbound connections, ignoring any saved global proxy URL — relay providers requiring the user's outbound proxy were unreachable from the local routing proxy. Fixed by mirroring desktop lib.rs:895-922 as lifecycle step 2/5 (before takeover restore) with identical GP-005..GP-008 semantics; lifecycle pin test extended + functional test added (web example suite 1373/0). Merged a4b9bcee, deployed, boot log confirms init runs. Second finding: the user had no global proxy URL saved in cc-switch at all (GET returns null) — instructed to set it in the web UI (hot-applies via the existing handler and now survives restarts).
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `74635c8f` | (see git log) |
+| `a4b9bcee` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
