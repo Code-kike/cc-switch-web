@@ -275,7 +275,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         events,
     );
 
-    // ── Proxy lifecycle, step 1/4: runtime ctx injection ─────────────────
+    // ── Proxy lifecycle, step 1/5: runtime ctx injection ─────────────────
     // 注入代理运行时上下文（S3 契约：必须在任何 recovery/restore 之前）。
     // 与 ApiState 共享同一组 Arc：事件经 ChannelEventSink → broadcast →
     // `GET /api/events` SSE；OAuth 管理器与 web_api 处理器共享 token 缓存。
@@ -284,7 +284,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .proxy_service
         .set_runtime_ctx(sink, copilot_auth, codex_oauth);
 
-    // ── Proxy lifecycle, step 2/4: crash recovery ────────────────────────
+    // ── Proxy lifecycle, step 2/5: global outbound proxy client init ─────
+    // 镜像桌面 lib.rs setup 的「初始化全局出站代理 HTTP 客户端」块：从数据库
+    // 读取已保存的全局代理 URL 并初始化 http_client。必须在接管恢复
+    //（takeover restore）之前——恢复出来的代理要立即按用户的出站代理转发；
+    // 缺了这一步 forwarder 走 GP-004 直连回退，依赖本地出站代理（如 Clash）
+    // 的中转商全部不可达，每个故障转移候选都会失败。
+    init_global_proxy_http_client(app_state.as_ref());
+
+    // ── Proxy lifecycle, step 3/5: crash recovery ────────────────────────
     // 异常退出恢复（镜像桌面 lib.rs setup 的恢复任务，顺序同桌面：
     // recovery → snippets → restore）。systemd 随时可能 SIGKILL/重启本进程，
     // 接管残留（占位符 Live + 备份）必须在对外服务前恢复；recover_from_crash
@@ -302,7 +310,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // `ProviderService::initialize_common_config_snippets` and lib.rs ordering.
     crate::services::ProviderService::initialize_common_config_snippets(state.app_state.as_ref());
 
-    // ── Proxy lifecycle, step 3/4: takeover restore ──────────────────────
+    // ── Proxy lifecycle, step 4/5: takeover restore ──────────────────────
     // 镜像桌面 lib.rs::restore_proxy_state_on_startup：proxy_config.enabled
     // 为 true 的应用重新接管（set_takeover_for_app 内部会自动启动代理）。
     // 与桌面的 spawn 异步不同，这里在监听前内联执行：headless 服务器上
@@ -353,7 +361,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     }
 
-    // ── Proxy lifecycle, step 4/4: graceful shutdown ─────────────────────
+    // ── Proxy lifecycle, step 5/5: graceful shutdown ─────────────────────
     // 镜像桌面 lib.rs::cleanup_before_exit：接管残留 → stop_with_restore_keep_state
     //（恢复 Live、保留 enabled 供下次启动自动恢复）；仅运行 → stop()。
     // 必须在 axum::serve 返回之后（或宽限期到期后）、释放数据目录 flock 之前
@@ -375,13 +383,43 @@ fn init_logging() {
 // Headless proxy lifecycle (S3) — mirrors desktop `lib.rs`
 // ============================================================
 //
-// The three helpers below are deliberate line-for-line mirrors of the
-// desktop lifecycle in `src/lib.rs` (crash-recovery block in `setup()`,
-// `restore_proxy_state_on_startup`, `cleanup_before_exit`). They are
-// duplicated here rather than shared because the desktop originals live in
-// the fully `desktop`-gated `lib.rs` (and `cleanup_before_exit` is
-// `AppHandle`-coupled); moving them would create upstream-sync diff noise.
-// Keep semantics in lockstep when syncing upstream changes to `lib.rs`.
+// The four helpers below are deliberate line-for-line mirrors of the
+// desktop lifecycle in `src/lib.rs` (global-proxy init block and
+// crash-recovery block in `setup()`, `restore_proxy_state_on_startup`,
+// `cleanup_before_exit`). They are duplicated here rather than shared
+// because the desktop originals live in the fully `desktop`-gated `lib.rs`
+// (and `cleanup_before_exit` is `AppHandle`-coupled); moving them would
+// create upstream-sync diff noise. Keep semantics in lockstep when syncing
+// upstream changes to `lib.rs`.
+
+/// 初始化全局出站代理 HTTP 客户端
+/// （镜像 `lib.rs` setup 内的同名块，GP-00x 日志码一致）。
+///
+/// 从数据库读取已保存的全局代理 URL 并初始化 `http_client`；保存的配置
+/// 无效时（GP-005）清除数据库中的无效配置（GP-006/GP-007）并以直连模式
+/// 重新初始化（GP-008）。
+fn init_global_proxy_http_client(state: &store::AppState) {
+    let proxy_url = state.db.get_global_proxy_url().ok().flatten();
+
+    if let Err(e) = crate::proxy::http_client::init(proxy_url.as_deref()) {
+        log::error!("[GlobalProxy] [GP-005] Failed to initialize with saved config: {e}");
+
+        // 清除无效的代理配置
+        if proxy_url.is_some() {
+            log::warn!("[GlobalProxy] [GP-006] Clearing invalid proxy config from database");
+            if let Err(clear_err) = state.db.set_global_proxy_url(None) {
+                log::error!("[GlobalProxy] [GP-007] Failed to clear invalid config: {clear_err}");
+            }
+        }
+
+        // 使用直连模式重新初始化
+        if let Err(fallback_err) = crate::proxy::http_client::init(None) {
+            log::error!(
+                "[GlobalProxy] [GP-008] Failed to initialize direct connection: {fallback_err}"
+            );
+        }
+    }
+}
 
 /// 异常退出恢复（镜像 `lib.rs` setup 内的恢复任务）。
 ///
@@ -698,8 +736,11 @@ mod dual_runtime_parity {
 /// Covers the parts of the S3 contract that are unit-testable inside the
 /// example test binary:
 ///   * the `main()` startup/shutdown ordering pin (ctx injection BEFORE
-///     recovery, recovery BEFORE snippets BEFORE restore, cleanup AFTER
-///     `axum::serve` returns) — textual, since `main()` cannot run in tests;
+///     global-proxy init, init BEFORE recovery, recovery BEFORE snippets
+///     BEFORE restore, cleanup AFTER `axum::serve` returns) — textual, since
+///     `main()` cannot run in tests;
+///   * startup global-proxy init loading the saved DB proxy URL into
+///     `http_client` (and the invalid-config clear + direct fallback);
 ///   * crash recovery converging (and staying converged) from takeover residue;
 ///   * graceful-shutdown cleanup restoring live configs while keeping
 ///     `proxy_config.enabled`, and the follow-up boot re-takeover;
@@ -827,8 +868,12 @@ mod web_proxy_lifecycle {
 
     /// S3 contract pin: `main()` cannot run under the test harness, so the
     /// startup/shutdown ordering is pinned textually (same spirit as
-    /// `dual_runtime_parity`): ctx injection → crash recovery → common-config
-    /// snippets → takeover restore → serve → shutdown cleanup.
+    /// `dual_runtime_parity`): ctx injection → global-proxy init → crash
+    /// recovery → common-config snippets → takeover restore → serve →
+    /// shutdown cleanup. Global-proxy init must precede takeover restore:
+    /// a restored proxy must forward through the user's saved outbound
+    /// proxy immediately (the missing init was the GP-004-at-forward-time
+    /// regression that made every relay failover candidate fail).
     #[test]
     fn main_pins_proxy_lifecycle_ordering() {
         let source = read_server_source();
@@ -842,6 +887,7 @@ mod web_proxy_lifecycle {
 
         let markers = [
             ".set_runtime_ctx(",
+            "init_global_proxy_http_client(",
             "recover_proxy_from_crash_residue(",
             "initialize_common_config_snippets(",
             "restore_proxy_state_on_startup(",
@@ -899,6 +945,53 @@ mod web_proxy_lifecycle {
             crate::SHUTDOWN_CONNECTION_GRACE < std::time::Duration::from_secs(20),
             "SHUTDOWN_CONNECTION_GRACE must leave headroom below the systemd \
              TimeoutStopSec=30 window (proxy stop timeout 5s + restore writes)"
+        );
+    }
+
+    /// Startup global-proxy init: a saved DB proxy URL must be loaded into
+    /// the process-wide `http_client` (this is exactly the missing-init gap
+    /// behind the GP-004-at-forward-time regression: the web runtime never
+    /// initialized the client, so forwarding silently ignored the user's
+    /// saved outbound proxy), and an invalid saved config must be cleared
+    /// from the DB with a direct-connection re-init (lib.rs GP-005..GP-008
+    /// mirror).
+    ///
+    /// `http_client` state is process-global (`OnceCell`), so this test is
+    /// `#[serial]` like the other lifecycle tests and converges the global
+    /// state back to direct connection before returning (the invalid-config
+    /// leg ends on the GP-008 direct fallback).
+    #[tokio::test]
+    #[serial]
+    async fn global_proxy_init_loads_saved_url_and_clears_invalid_config() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+        let (state, db) = fresh_state().await;
+
+        // Valid saved config: init must surface it process-wide so the
+        // forwarder's `get_current_proxy_url()` sees it on the first request.
+        db.set_global_proxy_url(Some("http://127.0.0.1:7890"))
+            .expect("save global proxy url");
+        super::init_global_proxy_http_client(state.as_ref());
+        assert_eq!(
+            crate::proxy::http_client::get_current_proxy_url().as_deref(),
+            Some("http://127.0.0.1:7890"),
+            "startup init must load the saved global proxy URL into http_client"
+        );
+
+        // Invalid saved config: GP-005 path must clear the DB row (GP-006)
+        // and re-init direct (GP-008) instead of leaving a stale proxy.
+        db.set_global_proxy_url(Some("invalid-scheme://127.0.0.1:7890"))
+            .expect("save invalid global proxy url");
+        super::init_global_proxy_http_client(state.as_ref());
+        assert_eq!(
+            db.get_global_proxy_url().expect("read global proxy url"),
+            None,
+            "invalid saved proxy config must be cleared from the database"
+        );
+        assert_eq!(
+            crate::proxy::http_client::get_current_proxy_url(),
+            None,
+            "after clearing an invalid config the client must fall back to direct connection"
         );
     }
 
