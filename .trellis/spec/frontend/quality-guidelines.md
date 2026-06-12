@@ -647,6 +647,9 @@ const sourceFile = ts.createSourceFile(
   desktop unaffected). Known residual: `update_global_proxy_config` is db-direct and can persist a
   bad address, but every bind funnels through the two enforced entry points.
 - Headless lifecycle order in `examples/server.rs` (mirrors desktop `lib.rs`): set_runtime_ctx →
+  global-proxy outbound client init (`db.get_global_proxy_url()` → `http_client::init`; invalid
+  config cleared + direct fallback, GP-005..GP-008 — must precede takeover restore or forwarding
+  GP-004-falls-back to direct and relay providers behind the user's proxy are unreachable) →
   crash recovery → common-config snippets → takeover restore → serve → cleanup. Graceful shutdown
   must stay BOUNDED: infinite SSE connections (`GET /api/events`) block axum's
   `with_graceful_shutdown` forever — the watch-channel + 5s connection-grace race in `main()` is
