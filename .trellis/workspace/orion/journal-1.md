@@ -477,3 +477,42 @@ Ported the shared-code surface of upstream v3.16.1+v3.16.2 in 12 batched sync co
 ### Next Steps
 
 - None - task complete
+
+
+## Session 14: Port routing proxy + random auto-failover to web runtime
+
+**Date**: 2026-06-12
+**Task**: Port routing proxy + random auto-failover to web runtime
+**Branch**: `main`
+
+### Summary
+
+Ported the desktop-only routing proxy to the web-server runtime in 5 slices: ProxyRuntimeCtx de-tauri (18 sites, desktop byte-identical), real ProxyService compiled in both runtimes (proxy_web.rs stub deleted, web_proxy.rs is a test-enforced 1:1 mirror), headless lifecycle in examples/server.rs (crash recovery, takeover restore, bounded graceful shutdown — trellis-check found and fixed a Critical: open SSE connections blocked shutdown causing SIGKILL with stale PROXY_MANAGED placeholders), web loopback-only listener (D4), FE proxy controls un-hidden in web mode, and FailoverStrategy {sequential|random} per app — random is claude-code-hub-style sticky-until-failure + uniform re-roll among circuit-closed providers. All gates green (FE 601, Rust 1427 desktop + 1372 web, smoke 123, integration 50). Merged to main (abb71c40), pushed, redeployed; live-verified failoverStrategy field and D4 400-rejection on the running service.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `260b5153` | (see git log) |
+| `6dba3361` | (see git log) |
+| `37fd9598` | (see git log) |
+| `e44abf2d` | (see git log) |
+| `ba53338b` | (see git log) |
+| `cc4e24ef` | (see git log) |
+| `abb71c40` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

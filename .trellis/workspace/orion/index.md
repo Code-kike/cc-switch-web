@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 13
-- **Last Active**: 2026-06-11
+- **Total Sessions**: 14
+- **Last Active**: 2026-06-12
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~479 | Active |
+| `journal-1.md` | ~518 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 14 | 2026-06-12 | Port routing proxy + random auto-failover to web runtime | `260b5153`, `6dba3361`, `37fd9598`, `e44abf2d`, `ba53338b`, `cc4e24ef`, `abb71c40` | `main` |
 | 13 | 2026-06-11 | Sync upstream cc-switch v3.16.1+v3.16.2 into web fork | `f48138c0`, `d5cc0039`, `b8f6dbe2`, `50dc1e9d`, `34cf2330`, `886186d3`, `e6f42a01`, `a82a0367`, `b55e2f18`, `ca797628`, `91c1b55c`, `ddfa61cb`, `6f472ace` | `main` |
 | 12 | 2026-06-10 | Round 2: fix cross-validated non-security findings (Claude x Codex) | `51261807` | `fix/non-security-findings-round-2` |
 | 11 | 2026-06-06 | Deep-read cc-switch + fix all non-security findings | `ebfb0835`, `a9a36d59`, `068736c2`, `f96afa2f`, `19eac480`, `6dda2d78`, `64166ce7`, `f0006877`, `334af2b5`, `f9b2abbb`, `466bbefd`, `d0be273d`, `c8ea038c`, `27ccf227`, `065dd870`, `e8e4dee1`, `93cd3ff0`, `64dc3fdc`, `ae38bb7b`, `86b1d606`, `a125cc34`, `cb7c6870`, `229e795e`, `f96df43c`, `c1faedfe`, `fb2e7377`, `d241c5e6` | `fix/non-security-deep-read-findings` |
