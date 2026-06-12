@@ -314,15 +314,51 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let listener = TcpListener::bind(addr).await?;
     log::info!("cc-switch-web listening on http://{addr}");
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    // Graceful shutdown with a BOUNDED connection-drain window.
+    //
+    // `axum::serve(..).with_graceful_shutdown(..)` waits for ALL in-flight
+    // connections to finish — but `GET /api/events` is an infinite SSE stream
+    // (its broadcast senders live for the whole process), so any open web-UI
+    // tab keeps `serve` alive forever after SIGTERM. Verified empirically:
+    // with one `curl -N /api/events` attached, SIGTERM left the old
+    // `serve(...).await?` hanging until the client disconnected — under
+    // systemd that means TimeoutStopSec → SIGKILL and `cleanup_proxy_before_exit`
+    // NEVER runs, leaving PROXY_MANAGED placeholders in the live CLI configs
+    // (the exact failure S3 exists to prevent). So: after the shutdown signal
+    // fires, give in-flight requests SHUTDOWN_CONNECTION_GRACE to finish, then
+    // proceed to cleanup regardless. Lingering connection tasks die with the
+    // process; browsers' EventSource auto-reconnects on the next boot.
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    tokio::spawn(async move {
+        shutdown_signal().await;
+        let _ = shutdown_tx.send(true);
+    });
+    let serve_future = axum::serve(listener, app).with_graceful_shutdown({
+        let mut rx = shutdown_rx.clone();
+        async move {
+            let _ = rx.changed().await;
+        }
+    });
+    tokio::select! {
+        result = serve_future => result?,
+        _ = async {
+            let mut rx = shutdown_rx.clone();
+            let _ = rx.changed().await;
+            tokio::time::sleep(SHUTDOWN_CONNECTION_GRACE).await;
+        } => {
+            log::warn!(
+                "graceful shutdown grace ({SHUTDOWN_CONNECTION_GRACE:?}) elapsed with connections \
+                 still open (long-lived SSE clients); proceeding to proxy cleanup"
+            );
+        }
+    }
 
     // ── Proxy lifecycle, step 4/4: graceful shutdown ─────────────────────
     // 镜像桌面 lib.rs::cleanup_before_exit：接管残留 → stop_with_restore_keep_state
     //（恢复 Live、保留 enabled 供下次启动自动恢复）；仅运行 → stop()。
-    // 必须在 axum::serve 返回之后、释放数据目录 flock 之前执行，确保
-    // systemd stop/restart 不会把 PROXY_MANAGED 占位符留在 Live CLI 配置里。
+    // 必须在 axum::serve 返回之后（或宽限期到期后）、释放数据目录 flock 之前
+    // 执行，确保 systemd stop/restart 不会把 PROXY_MANAGED 占位符留在 Live
+    // CLI 配置里。
     cleanup_proxy_before_exit(app_state.as_ref()).await;
 
     log::info!("cc-switch-web stopped cleanly");
@@ -456,6 +492,14 @@ async fn cleanup_proxy_before_exit(state: &store::AppState) {
     }
 }
 
+/// Maximum time to wait for in-flight HTTP connections after the shutdown
+/// signal before proceeding to proxy cleanup anyway. Long-lived SSE clients
+/// (`GET /api/events`) never finish on their own, so an unbounded graceful
+/// wait would block `cleanup_proxy_before_exit` until systemd SIGKILLs us.
+/// Must stay comfortably below the systemd unit's `TimeoutStopSec` (30s)
+/// minus the proxy stop timeout (5s) and live-config restore writes.
+const SHUTDOWN_CONNECTION_GRACE: Duration = Duration::from_secs(5);
+
 async fn shutdown_signal() {
     let ctrl_c = async {
         if let Err(err) = signal::ctrl_c().await {
@@ -498,9 +542,12 @@ async fn shutdown_signal() {
 ///     (`#[cfg(not(feature = "desktop"))]` / `#[cfg(feature = "web-server")]`)
 ///     MUST be in the services shim, and `#[cfg(feature = "desktop")]`-only ones
 ///     MUST NOT be;
-///   * every `#[path]` the shims reference MUST resolve to an existing source file.
-/// The proxy shim is an intentional curated subset with no cfg signal, so its
-/// web-relevance is a judgment call and is only checked for dangling paths.
+///   * every `#[path]` the shims reference MUST resolve to an existing source file;
+///   * since the 06-11 web proxy port, `examples/web_proxy.rs` is a 1:1 mirror
+///     of `src/proxy/mod.rs` (the web runtime compiles the SAME proxy hot path
+///     as desktop), so its module list is pinned to set-equality — the inline
+///     `CircuitBreakerConfig` duplicate this replaced was a silent-divergence
+///     hazard, and a partial shim would be the same hazard again.
 #[cfg(test)]
 mod dual_runtime_parity {
     use std::collections::BTreeSet;
@@ -613,6 +660,36 @@ mod dual_runtime_parity {
                 );
             }
         }
+    }
+
+    /// 06-11 web proxy port: `examples/web_proxy.rs` mirrors `src/proxy/mod.rs`
+    /// 1:1 (the web runtime compiles the SAME proxy hot path + failover engine
+    /// as desktop). Pin the module lists to set-equality so a module added to
+    /// `src/proxy/mod.rs` can never silently go missing from the web build
+    /// (and a future desktop-only proxy module must be cfg-gated, which this
+    /// test then excludes from the mirror requirement).
+    #[test]
+    fn web_proxy_shim_mirrors_proxy_mod_modules() {
+        let included = shim_stems(&read("examples/web_proxy.rs"), "proxy");
+        let mut expected = BTreeSet::new();
+        for (name, cfg) in mod_decls(&read("src/proxy/mod.rs")) {
+            match cfg {
+                Some("desktop") => assert!(
+                    !included.contains(&name),
+                    "examples/web_proxy.rs includes desktop-only proxy module `{name}` — \
+                     must not be in the web shim (item 15)"
+                ),
+                _ => {
+                    expected.insert(name);
+                }
+            }
+        }
+        assert_eq!(
+            included, expected,
+            "examples/web_proxy.rs must #[path]-include exactly the modules declared in \
+             src/proxy/mod.rs (web runtime compiles the full proxy tree since 06-11) — \
+             dual-runtime drift (item 15)"
+        );
     }
 }
 
@@ -782,6 +859,47 @@ mod web_proxy_lifecycle {
             );
             last = idx;
         }
+    }
+
+    /// S3 contract pin: the graceful-shutdown wait must be BOUNDED.
+    ///
+    /// `GET /api/events` SSE streams never finish (their broadcast senders are
+    /// process-lifetime), so an unbounded `with_graceful_shutdown(..).await`
+    /// hangs forever while a web-UI tab is open — empirically verified: SIGTERM
+    /// with one attached SSE client never reached `cleanup_proxy_before_exit`,
+    /// which under systemd means TimeoutStopSec → SIGKILL with PROXY_MANAGED
+    /// placeholders left in the live CLI configs. Pin that main() races serve
+    /// against the shutdown signal + SHUTDOWN_CONNECTION_GRACE timer.
+    #[test]
+    fn main_bounds_graceful_shutdown_with_connection_grace() {
+        let source = read_server_source();
+        let main_start = source
+            .find("async fn main")
+            .expect("examples/server.rs must define async fn main");
+        let main_end = source
+            .find("\nfn init_logging")
+            .expect("examples/server.rs must define fn init_logging after main");
+        let main_body = &source[main_start..main_end];
+
+        let serve_idx = main_body
+            .find("axum::serve(")
+            .expect("main() must call axum::serve");
+        let tail = &main_body[serve_idx..];
+        assert!(
+            tail.contains("tokio::select!"),
+            "main() must race axum::serve against a bounded shutdown branch \
+             (SSE connections never finish; cleanup must still run)"
+        );
+        assert!(
+            tail.contains("SHUTDOWN_CONNECTION_GRACE"),
+            "the shutdown branch must bound the connection drain with \
+             SHUTDOWN_CONNECTION_GRACE before running cleanup_proxy_before_exit"
+        );
+        assert!(
+            crate::SHUTDOWN_CONNECTION_GRACE < std::time::Duration::from_secs(20),
+            "SHUTDOWN_CONNECTION_GRACE must leave headroom below the systemd \
+             TimeoutStopSec=30 window (proxy stop timeout 5s + restore writes)"
+        );
     }
 
     #[tokio::test]
