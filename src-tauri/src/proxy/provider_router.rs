@@ -38,11 +38,13 @@ impl ProviderRouter {
     ///   - `Sequential`（默认，上游语义）：按队列顺序依次尝试（P1 → P2 → ...）
     ///   - `Random`（D1/D2，PRD 06-11）：当前供应商优先（粘性直到失败），
     ///     其余熔断可用的队列成员随机洗牌——失败后即随机重选下一个
+    ///
+    /// 自行读取 `proxy_config`（开关 + 策略）。热路径上 `RequestContext::new`
+    /// 已加载同一份 `AppProxyConfig`，应改用 `select_providers_with_config`
+    /// 复用它，避免每请求重复读库（M1）。生产热路径已切到 `_with_config` 变体，
+    /// 此便捷入口目前仅供测试与未来的"无预载配置"调用方使用。
+    #[allow(dead_code)]
     pub async fn select_providers(&self, app_type: &str) -> Result<Vec<Provider>, AppError> {
-        let mut result = Vec::new();
-        let mut total_providers = 0usize;
-        let mut circuit_open_count = 0usize;
-
         // 检查该应用的自动故障转移开关与选择策略（从 proxy_config 表读取）
         let (auto_failover_enabled, failover_strategy) =
             match self.db.get_proxy_config_for_app(app_type).await {
@@ -52,6 +54,25 @@ impl ProviderRouter {
                     (false, FailoverStrategy::Sequential)
                 }
             };
+
+        self.select_providers_with_config(app_type, auto_failover_enabled, failover_strategy)
+            .await
+    }
+
+    /// 选择可用供应商（复用调用方已加载的 `proxy_config` 字段，M1）。
+    ///
+    /// 与 `select_providers` 行为完全一致，只是把"故障转移开关 + 策略"作为参数
+    /// 传入而不是再读一次库。热路径（`RequestContext::new`）已在创建上下文时
+    /// 加载了同一应用的 `AppProxyConfig`，直接复用可省去每请求的一次冗余读库。
+    pub async fn select_providers_with_config(
+        &self,
+        app_type: &str,
+        auto_failover_enabled: bool,
+        failover_strategy: FailoverStrategy,
+    ) -> Result<Vec<Provider>, AppError> {
+        let mut result = Vec::new();
+        let mut total_providers = 0usize;
+        let mut circuit_open_count = 0usize;
 
         if auto_failover_enabled {
             // 故障转移开启：仅使用故障转移队列（基准顺序 = 队列顺序 P1 → P2 → ...）
@@ -822,6 +843,55 @@ mod tests {
         let mut ids = order(&third);
         ids.sort_unstable();
         assert_eq!(ids, vec!["a", "b", "c", "d", "e"]);
+    }
+
+    /// M1 回归：`select_providers_with_config`（复用调用方已加载的开关/策略）必须
+    /// 与自行读库的 `select_providers` 产出完全一致的候选列表。热路径据此省去每请求
+    /// 一次冗余的 `get_proxy_config_for_app` 读库。
+    #[tokio::test]
+    #[serial]
+    async fn select_providers_with_config_matches_db_read_path() {
+        use crate::proxy::types::FailoverStrategy;
+
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory().unwrap());
+
+        let mut provider_a =
+            Provider::with_id("a".to_string(), "Provider A".to_string(), json!({}), None);
+        provider_a.sort_index = Some(2);
+        let mut provider_b =
+            Provider::with_id("b".to_string(), "Provider B".to_string(), json!({}), None);
+        provider_b.sort_index = Some(1);
+
+        db.save_provider("claude", &provider_a).unwrap();
+        db.save_provider("claude", &provider_b).unwrap();
+        db.set_current_provider("claude", "a").unwrap();
+        db.add_to_failover_queue("claude", "b").unwrap();
+        db.add_to_failover_queue("claude", "a").unwrap();
+
+        let mut config = db.get_proxy_config_for_app("claude").await.unwrap();
+        config.auto_failover_enabled = true;
+        config.failover_strategy = FailoverStrategy::Sequential;
+        db.update_proxy_config_for_app(config.clone())
+            .await
+            .unwrap();
+
+        let router = ProviderRouter::new(db.clone());
+
+        let via_db = router.select_providers("claude").await.unwrap();
+        let via_config = router
+            .select_providers_with_config(
+                "claude",
+                config.auto_failover_enabled,
+                config.failover_strategy,
+            )
+            .await
+            .unwrap();
+
+        let ids = |list: &[Provider]| list.iter().map(|p| p.id.clone()).collect::<Vec<_>>();
+        assert_eq!(ids(&via_db), ids(&via_config));
+        // Sequential 队列顺序：b(P1) → a(P2)
+        assert_eq!(ids(&via_config), vec!["b".to_string(), "a".to_string()]);
     }
 
     #[tokio::test]

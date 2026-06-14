@@ -120,31 +120,16 @@ async fn set_auto_failover_enabled(
     State(state): State<ApiState>,
     Json(request): Json<SetAutoFailoverRequest>,
 ) -> ApiResult<()> {
-    if request.enabled {
-        let queue = state
-            .app_state
-            .db
-            .get_failover_queue(&request.app_type)
-            .map_err(ApiError::from_anyhow)?;
-        if queue.is_empty() {
-            return Err(ApiError::bad_request(
-                "Failover queue is empty; add a provider before enabling auto failover in Web mode",
-            ));
-        }
-    }
-
-    let mut config = state
-        .app_state
-        .db
-        .get_proxy_config_for_app(&request.app_type)
-        .await
-        .map_err(ApiError::from_anyhow)?;
-    config.auto_failover_enabled = request.enabled;
+    // F9: align web with desktop semantics via the shared, runtime-neutral
+    // service method. On enable it auto-adds the current provider when the queue
+    // would be empty, switches the proxy target to P1, and emits
+    // `provider-switched` through the injected ChannelEventSink (SSE) so the web
+    // UI refreshes — instead of the old "reject empty queue + only flip the flag".
     state
         .app_state
-        .db
-        .update_proxy_config_for_app(config)
+        .proxy_service
+        .set_auto_failover_enabled(&request.app_type, request.enabled)
         .await
-        .map_err(ApiError::from_anyhow)?;
+        .map_err(ApiError::from_service_message)?;
     Ok(json_ok(()))
 }

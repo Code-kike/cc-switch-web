@@ -19,7 +19,7 @@ use crate::services::provider::{
 use serde_json::{json, Map, Value};
 use std::str::FromStr;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 
 /// 用于接管 Live 配置时的占位符（避免客户端提示缺少 key，同时不泄露真实 Token）
 const PROXY_TOKEN_PLACEHOLDER: &str = "PROXY_MANAGED";
@@ -61,6 +61,13 @@ pub struct ProxyService {
     /// 传递给 ProxyServer 以支持故障转移时的 UI 更新
     runtime_ctx: Arc<RwLock<Option<ProxyRuntimeCtx>>>,
     switch_locks: SwitchLockManager,
+    /// Serializes the proxy lifecycle (audit F8). `start()`/`stop()` are
+    /// check-then-act on `server`; two concurrent `start()` calls could both pass
+    /// the "not running" check and each bind a listener (with `listen_port = 0`,
+    /// the OS-assigned port leaks the first listener). This service-wide async
+    /// mutex makes only one start/stop in flight at a time; each path re-checks
+    /// the running state after acquiring it (double-checked). SHARED desktop+web.
+    start_stop_lock: Arc<Mutex<()>>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -75,6 +82,7 @@ impl ProxyService {
             server: Arc::new(RwLock::new(None)),
             runtime_ctx: Arc::new(RwLock::new(None)),
             switch_locks: SwitchLockManager::new(),
+            start_stop_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -409,6 +417,10 @@ impl ProxyService {
 
     /// 启动代理服务器
     pub async fn start(&self) -> Result<ProxyServerInfo, String> {
+        // Serialize the lifecycle (audit F8): hold the start/stop lock across the
+        // whole check→bind→set sequence so two concurrent starts can't both bind.
+        let _lifecycle = self.start_stop_lock.clone().lock_owned().await;
+
         // 0. 获取配置并校验监听地址（先于任何状态写入，拒绝时不留副作用）
         let config = self
             .db
@@ -1063,6 +1075,10 @@ impl ProxyService {
 
     /// 停止代理服务器
     pub async fn stop(&self) -> Result<(), String> {
+        // Serialize the lifecycle (audit F8): same lock as `start()` so a start and
+        // a stop can't interleave their check→take on `server`.
+        let _lifecycle = self.start_stop_lock.clone().lock_owned().await;
+
         if let Some(server) = self.server.write().await.take() {
             server
                 .stop()
@@ -2306,6 +2322,106 @@ impl ProxyService {
         Ok(())
     }
 
+    /// 设置指定应用的自动故障转移开关（runtime-neutral，桌面 + Web 共用，F9）。
+    ///
+    /// 强一致语义（与上游桌面命令一致）：
+    /// - `enabled=true`：
+    ///   1. 若故障转移队列为空，则把"当前供应商"自动加入队列作为 P1（避免用户在
+    ///      UI 上陷入死锁——无法先加队列再开启）；若连当前供应商也没有则报错。
+    ///   2. 写入 `proxy_config.auto_failover_enabled = true`。
+    ///   3. 立即切换代理目标到队列 P1（`switch_proxy_target` 更新 is_current +
+    ///      本地 settings + 接管模式下的 Live 备份）。
+    ///   4. 通过注入的事件 sink 发射 `provider-switched`（桌面 = Tauri 事件总线；
+    ///      Web = SSE 广播），并刷新托盘（桌面端覆写；Web 为 no-op）。
+    /// - `enabled=false`：仅写回关闭标志，保留队列内容供下次开启复用（不切换、不发事件）。
+    ///
+    /// 事件/托盘统一走 `runtime_ctx` 的 `UiEventSink`，因此本方法保持 tauri-free，
+    /// 可由 `examples/server.rs` 经由的 Web 路由安全调用。
+    pub async fn set_auto_failover_enabled(
+        &self,
+        app_type: &str,
+        enabled: bool,
+    ) -> Result<(), String> {
+        log::info!(
+            "[Failover] Setting auto_failover_enabled: app_type='{app_type}', enabled={enabled}"
+        );
+
+        // 仅在 enabled=true 时确定 P1（并在队列为空时自动加入当前供应商）。
+        let p1_provider_id = if enabled {
+            let mut queue = self
+                .db
+                .get_failover_queue(app_type)
+                .map_err(|e| e.to_string())?;
+
+            if queue.is_empty() {
+                let app_enum = AppType::from_str(app_type)
+                    .map_err(|_| format!("无效的应用类型: {app_type}"))?;
+
+                let current_id =
+                    crate::settings::get_effective_current_provider(&self.db, &app_enum)
+                        .map_err(|e| e.to_string())?;
+
+                let Some(current_id) = current_id else {
+                    return Err(
+                        "故障转移队列为空，且未设置当前供应商，无法开启故障转移".to_string()
+                    );
+                };
+
+                self.db
+                    .add_to_failover_queue(app_type, &current_id)
+                    .map_err(|e| e.to_string())?;
+
+                queue = self
+                    .db
+                    .get_failover_queue(app_type)
+                    .map_err(|e| e.to_string())?;
+            }
+
+            queue
+                .first()
+                .map(|item| item.provider_id.clone())
+                .ok_or_else(|| "故障转移队列为空，无法开启故障转移".to_string())?
+        } else {
+            String::new()
+        };
+
+        // 读取当前配置并写回开关字段。
+        let mut config = self
+            .db
+            .get_proxy_config_for_app(app_type)
+            .await
+            .map_err(|e| e.to_string())?;
+        config.auto_failover_enabled = enabled;
+        self.db
+            .update_proxy_config_for_app(config)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        // 开启后立即切到 P1，并通过 sink 发射 provider-switched（仅开启路径）。
+        if enabled {
+            self.switch_proxy_target(app_type, &p1_provider_id).await?;
+
+            if let Some(ctx) = self.runtime_ctx().await {
+                ctx.emit_json(
+                    "provider-switched",
+                    json!({
+                        "appType": app_type,
+                        "providerId": p1_provider_id,
+                        "source": "failoverEnabled",
+                    }),
+                );
+            }
+        }
+
+        // 托盘刷新与上游桌面命令保持一致：开启与关闭两条路径都刷新一次
+        // （桌面端旧实现在 `if enabled` 之外无条件重建托盘菜单；Web 为 no-op）。
+        if let Some(ctx) = self.runtime_ctx().await {
+            ctx.refresh_tray();
+        }
+
+        Ok(())
+    }
+
     // ==================== Live 配置读写辅助方法 ====================
 
     /// 更新 TOML 字符串中的 base_url（委托给 codex_config 共享实现）
@@ -2831,6 +2947,151 @@ mod tests {
             assert_eq!(stored.listen_address, original_address);
             assert_eq!(stored.listen_port, original_port);
         }
+    }
+
+    /// F8 回归：并发 `start()` 必须被 start/stop 互斥锁串行化，只允许一个监听器绑定。
+    /// 使用临时端口（listen_port = 0）放大旧的 TOCTOU 漏洞——修复前两个并发 start
+    /// 都能通过"未运行"检查并各自绑定一个 OS 分配端口，泄漏第一个监听器。修复后第二个
+    /// start 在拿到锁后重新检查，发现已运行并返回同一端口。SHARED desktop+web。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[serial]
+    async fn concurrent_starts_bind_only_one_listener() {
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory().expect("init db"));
+        use_ephemeral_proxy_port(&db).await;
+
+        let service = ProxyService::new(db.clone());
+
+        // 多个并发 start() 共享同一 service（Arc 字段克隆）。
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let svc = service.clone();
+            handles.push(tokio::spawn(async move { svc.start().await }));
+        }
+
+        let mut ports = Vec::new();
+        for handle in handles {
+            let info = handle
+                .await
+                .expect("start task join")
+                .expect("start should succeed on loopback ephemeral port");
+            ports.push(info.port);
+        }
+
+        // 所有调用必须返回同一个端口（同一个监听器），证明只绑定了一次。
+        let first = ports[0];
+        assert_ne!(first, 0, "ephemeral port should resolve to a real port");
+        assert!(
+            ports.iter().all(|p| *p == first),
+            "all concurrent starts must report the single bound port, got: {ports:?}"
+        );
+        assert!(service.is_running().await, "service should be running");
+
+        // 清理：停止监听器。
+        service.stop().await.expect("stop proxy server");
+        assert!(!service.is_running().await, "service should be stopped");
+    }
+
+    /// F9 回归：开启故障转移时若队列为空，必须自动把"当前供应商"加入队列作为 P1、
+    /// 写入开关、并切到 P1（与上游桌面命令的强一致语义对齐）。runtime_ctx 未设置时
+    /// 事件发射安全 no-op，故本测试无需注入 sink。
+    #[tokio::test]
+    #[serial]
+    async fn enable_auto_failover_on_empty_queue_auto_adds_current_provider() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let service = ProxyService::new(db.clone());
+
+        let provider = Provider::with_id(
+            "p1".to_string(),
+            "P1".to_string(),
+            json!({
+                "env": {
+                    "ANTHROPIC_API_KEY": "provider-key",
+                    "ANTHROPIC_BASE_URL": "https://api.anthropic.com"
+                }
+            }),
+            None,
+        );
+        db.save_provider("claude", &provider)
+            .expect("save provider");
+        db.set_current_provider("claude", "p1")
+            .expect("set db current provider");
+        crate::settings::set_current_provider(&AppType::Claude, Some("p1"))
+            .expect("set local current provider");
+
+        // 前置：队列为空、开关关闭。
+        assert!(db
+            .get_failover_queue("claude")
+            .expect("read queue")
+            .is_empty());
+
+        service
+            .set_auto_failover_enabled("claude", true)
+            .await
+            .expect("enable auto failover");
+
+        // 当前供应商被自动加入队列并成为 P1。
+        let queue = db.get_failover_queue("claude").expect("read queue");
+        assert_eq!(queue.len(), 1, "current provider auto-added to queue");
+        assert_eq!(queue[0].provider_id, "p1");
+
+        // 开关写入 + 切到 P1。
+        let config = db
+            .get_proxy_config_for_app("claude")
+            .await
+            .expect("read proxy config");
+        assert!(config.auto_failover_enabled);
+        assert_eq!(
+            db.get_current_provider("claude")
+                .expect("read current")
+                .as_deref(),
+            Some("p1"),
+        );
+    }
+
+    /// F9 回归：关闭故障转移仅写回关闭标志，保留队列内容供下次开启复用
+    /// （不切换、不发事件——与桌面命令一致）。
+    #[tokio::test]
+    #[serial]
+    async fn disable_auto_failover_keeps_queue_and_only_flips_flag() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let service = ProxyService::new(db.clone());
+
+        let provider = Provider::with_id("p1".to_string(), "P1".to_string(), json!({}), None);
+        db.save_provider("claude", &provider)
+            .expect("save provider");
+        db.add_to_failover_queue("claude", "p1")
+            .expect("seed queue");
+
+        let mut config = db
+            .get_proxy_config_for_app("claude")
+            .await
+            .expect("read config");
+        config.auto_failover_enabled = true;
+        db.update_proxy_config_for_app(config)
+            .await
+            .expect("enable failover");
+
+        service
+            .set_auto_failover_enabled("claude", false)
+            .await
+            .expect("disable auto failover");
+
+        // 标志被关闭，但队列保留。
+        let config = db
+            .get_proxy_config_for_app("claude")
+            .await
+            .expect("read config");
+        assert!(!config.auto_failover_enabled);
+        let queue = db.get_failover_queue("claude").expect("read queue");
+        assert_eq!(queue.len(), 1, "disable must not clear the queue");
+        assert_eq!(queue[0].provider_id, "p1");
     }
 
     #[test]

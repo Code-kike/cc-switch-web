@@ -33,6 +33,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { settingsApi } from "@/lib/api";
+import { isWebMode } from "@/lib/api/adapter";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import type { SettingsFormState } from "@/hooks/useSettings";
 import type {
@@ -239,6 +240,11 @@ export function WebdavSyncSection({
   onAutoSave,
 }: WebdavSyncSectionProps) {
   const { t } = useTranslation();
+  // F10: the auto-sync background worker is a no-op stub in web mode
+  // (services/{webdav,s3}_auto_sync_web.rs::notify_db_changed). Disable the
+  // auto-sync toggles in web mode so users don't believe auto-sync is active;
+  // manual upload/download stays fully functional. Desktop behaviour unchanged.
+  const webMode = isWebMode();
   const queryClient = useQueryClient();
   const [actionState, setActionState] = useState<ActionState>("idle");
   const [dirty, setDirty] = useState(false);
@@ -1084,15 +1090,17 @@ export function WebdavSyncSection({
               <label className="w-40 text-xs font-medium text-foreground shrink-0">
                 {t("settings.webdavSync.autoSync")}
                 <span className="block text-[10px] font-normal text-muted-foreground">
-                  {t("settings.webdavSync.autoSyncHint")}
+                  {webMode
+                    ? t("settings.webdavSync.autoSyncWebDisabledHint")
+                    : t("settings.webdavSync.autoSyncHint")}
                 </span>
               </label>
               <div className="pt-1">
                 <Switch
-                  checked={form.autoSync}
+                  checked={!webMode && form.autoSync}
                   onCheckedChange={handleAutoSyncChange}
                   aria-label={t("settings.webdavSync.autoSync")}
-                  disabled={isLoading}
+                  disabled={isLoading || webMode}
                 />
               </div>
             </div>
@@ -1371,18 +1379,20 @@ export function WebdavSyncSection({
               <label className="w-40 text-xs font-medium text-foreground shrink-0">
                 {t("settings.s3Sync.autoSync")}
                 <span className="block text-[10px] font-normal text-muted-foreground">
-                  {t("settings.s3Sync.autoSyncHint")}
+                  {webMode
+                    ? t("settings.s3Sync.autoSyncWebDisabledHint")
+                    : t("settings.s3Sync.autoSyncHint")}
                 </span>
               </label>
               <div className="pt-1">
                 <Switch
-                  checked={s3AutoSync}
+                  checked={!webMode && s3AutoSync}
                   onCheckedChange={(checked) => {
                     setS3AutoSync(checked);
                     markS3Dirty();
                   }}
                   aria-label={t("settings.s3Sync.autoSync")}
-                  disabled={isS3Loading}
+                  disabled={isS3Loading || webMode}
                 />
               </div>
             </div>

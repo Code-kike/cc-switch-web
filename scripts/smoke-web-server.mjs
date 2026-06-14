@@ -2487,13 +2487,47 @@ const probes = [
     },
   },
   {
-    name: "failover-enable-codex-without-queue-blocked",
+    // F9 (audit): the web handler now delegates to the shared, runtime-neutral
+    // `ProxyService::set_auto_failover_enabled`, matching desktop semantics —
+    // enabling failover with an EMPTY queue auto-adds the current provider as P1
+    // and returns 200 (instead of the old web-only "400 reject empty queue").
+    // Codex has a current provider (seeded by the F6 startup bootstrap), so this
+    // succeeds, auto-populates the queue, switches to P1, and sets the flag.
+    name: "failover-enable-codex-without-queue-auto-adds-current",
     method: "PUT",
     path: "/api/failover/set-auto-failover-enabled",
-    body: { appType: "codex", enabled: true },
+    async send(baseUrl) {
+      const response = await fetch(
+        new URL("/api/failover/set-auto-failover-enabled", baseUrl),
+        {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ appType: "codex", enabled: true }),
+        },
+      );
+      const result = await response.json();
+      const queueResponse = await fetch(
+        new URL("/api/failover/get-failover-queue?appType=codex", baseUrl),
+      );
+      const queue = await queueResponse.json();
+      const enabledResponse = await fetch(
+        new URL("/api/failover/get-auto-failover-enabled?appType=codex", baseUrl),
+      );
+      const enabled = await enabledResponse.json();
+      return { response, payload: { result, queue, enabled } };
+    },
     validate(response, payload) {
-      if (response.status !== 400 || payload?.code !== "BAD_REQUEST") {
-        throw new Error(`expected enabling failover without queue to fail, got ${response.status} ${JSON.stringify(payload)}`);
+      if (
+        !response.ok ||
+        payload?.result !== null ||
+        !Array.isArray(payload?.queue) ||
+        payload.queue.length === 0 ||
+        typeof payload.queue[0]?.providerId !== "string" ||
+        payload?.enabled !== true
+      ) {
+        throw new Error(
+          `expected enabling failover on empty codex queue to auto-add current provider as P1 and set the flag, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -2502,15 +2536,22 @@ const probes = [
     method: "GET",
     path: "/api/failover/get-available-providers-for-failover?appType=claude",
     validate(response, payload, artifacts) {
-      if (
-        !response.ok ||
-        !Array.isArray(payload) ||
-        payload.length === 0 ||
-        typeof payload[0]?.id !== "string"
-      ) {
+      // F9 (audit): enabling failover now switches the proxy target to the queue
+      // P1 (desktop parity), and `hot_switch_provider_inner` refuses to switch to
+      // an OFFICIAL provider ("Cannot switch to official provider during proxy
+      // takeover"). A realistic failover queue therefore holds a THIRD-PARTY
+      // provider, not the seeded official one. Pick the first non-official entry
+      // (the imported "Smoke Claude" live provider); the official one sorts first
+      // (sortIndex 0) but is not a valid failover/switch target.
+      if (!response.ok || !Array.isArray(payload) || payload.length === 0) {
         throw new Error(`expected available Claude failover providers, got ${response.status} ${JSON.stringify(payload)}`);
       }
-      artifacts.claudeFailoverProviderId = payload[0].id;
+      const selected =
+        payload.find((p) => p?.category !== "official") ?? payload[0];
+      if (typeof selected?.id !== "string") {
+        throw new Error(`expected a non-official available Claude failover provider, got ${response.status} ${JSON.stringify(payload)}`);
+      }
+      artifacts.claudeFailoverProviderId = selected.id;
     },
   },
   {

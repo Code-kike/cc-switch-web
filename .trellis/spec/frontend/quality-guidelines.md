@@ -724,6 +724,15 @@ pub(crate) mod json_canonical;
   `#[cfg(feature = "desktop")] pub mod <name>; #[cfg(not(feature = "desktop"))] pub mod <name>_web; #[cfg(not(feature = "desktop"))] pub use <name>_web as <name>;`
 - `examples/web_services.rs` includes the stub via `#[path = "../src/services/<name>_web.rs"]` so the web example resolves `services::<name>::…` call sites unchanged.
 - The stub MUST stay tauri-free; the desktop worker is the only emitter of its status event (web mode simply never fires it — FE listens runtime-neutrally via `event-adapter`).
+- **FE control gating (audit F10)**: if the desktop-only worker exposes a user-facing
+  control (e.g. an auto-sync toggle), the web frontend MUST gate it in web mode
+  (`isWebMode()` from `src/lib/api/adapter.ts`): disable the control and show a hint
+  that the feature is desktop-only / manual-only, because the web `_web` stub is a
+  no-op. Leaving it active misleads users into believing the background work runs.
+  Manual equivalents (explicit upload/download/test) stay ungated; desktop is
+  unchanged. Established by `WebdavSyncSection.tsx` gating the WebDAV/S3 auto-sync
+  switches with `settings.{webdavSync,s3Sync}.autoSyncWebDisabledHint` (i18n in
+  en/ja/zh).
 
 #### 4. Validation & Error Matrix
 
@@ -1306,6 +1315,99 @@ let bypass_circuit_breaker = providers.len() == 1;
 
 ```rust
 let bypass_circuit_breaker = should_bypass_circuit_breaker(failover_enabled); // = !failover_enabled
+```
+
+---
+
+### Scenario: Failover Enable Parity, Proxy Start/Stop Safety & Config Reuse (audit Phase 3)
+
+#### 1. Scope / Trigger
+
+- Trigger: changing how auto-failover is enabled/disabled, how the proxy server
+  starts/stops, or the per-request provider-selection config reads.
+- Applies to `services/proxy.rs`, `commands/failover.rs`,
+  `web_api/handlers/failover.rs`, `proxy/provider_router.rs`,
+  `proxy/handler_context.rs`.
+
+#### 2. Signatures
+
+- `ProxyService::set_auto_failover_enabled(app_type, enabled) -> Result<_, String>`
+- `ProxyService` field `start_stop_lock: Arc<tokio::sync::Mutex<()>>`
+- `ProviderRouter::select_providers_with_config(app_type, auto_failover_enabled, failover_strategy)`
+
+#### 3. Contracts
+
+- **F9 (failover-enable SSOT, cross-runtime)**: `set_auto_failover_enabled` is the
+  single tauri-free SSOT; BOTH `commands/failover.rs` (desktop) and
+  `web_api/handlers/failover.rs` (web) delegate to it.
+  - `enabled=true` + EMPTY queue auto-adds the current provider as P1 (errors only
+    if there is no current provider), writes the flag, `switch_proxy_target`s to P1,
+    then emits `provider-switched` via the injected `UiEventSink` (desktop = Tauri
+    bus, web = `ChannelEventSink` SSE).
+  - The tray is refreshed on BOTH enable AND disable; moving `refresh_tray()` inside
+    `if enabled` is a desktop-parity regression.
+  - `enabled=false` only flips the flag and KEEPS the queue (no switch, no event).
+  - The method must stay tauri-free (no `tauri::`/`Emitter`/`AppHandle`); the web
+    handler maps `Result<_, String>` via `ApiError::from_service_message`.
+  - A failover queue P1 must be a third-party provider — switching to an OFFICIAL
+    provider is rejected by `hot_switch_provider_inner`.
+- **F8 (start/stop serialization)**: `start_stop_lock` is acquired at the top of
+  `start()` and `stop()` to serialize check→bind→set / check→take. It is
+  NON-reentrant: no path may call `self.start()`/`self.stop()` while holding it
+  (internal callers call them sequentially; inner restarts use
+  `ProxyServer::{start,stop}` on the inner instance). `update_config` does NOT take
+  it (serialized via the `server` RwLock). The post-acquire running-state
+  double-check must be preserved.
+- **M1 (per-request config reuse)**: the forward hot path calls
+  `select_providers_with_config` reusing the `AppProxyConfig` already loaded in
+  `RequestContext::new`, NOT `select_providers` (which re-reads `proxy_config`). Both
+  must produce byte-identical candidate lists for the same config (read-dedup only).
+  Known deferral: `record_result`'s `circuit_failure_threshold` re-read.
+
+#### 4. Validation & Error Matrix
+
+- Web and desktop failover-enable diverge (web rejects empty queue instead of
+  auto-adding current) -> reject; both must go through `set_auto_failover_enabled`.
+- `refresh_tray()` moved inside `if enabled` -> reject (disable path stops refreshing).
+- A re-entrant `start()`/`stop()` call while holding `start_stop_lock` -> reject
+  (deadlock; tokio Mutex is not reentrant).
+- `select_providers_with_config` diverging from `select_providers` for equal config
+  -> reject.
+
+#### 5. Good/Base/Bad Cases
+
+- Good: enabling failover on an empty queue (web or desktop) auto-adds the current
+  third-party provider as P1, switches to it, and fires `provider-switched` (SSE in
+  web); 8 concurrent `start()` calls bind exactly one listener.
+- Base: disabling failover flips the flag, keeps the queue, refreshes the tray, no event.
+- Bad: re-implementing enable semantics separately in the web handler, or keying the
+  breaker bypass / a second config read off the request path again.
+
+#### 6. Tests Required
+
+- `services/proxy.rs` F8 concurrent-start test + F9 enable-on-empty-queue test.
+- `provider_router.rs` `select_providers_with_config` parity test.
+- Desktop `cargo test --lib` + web `dual_runtime_parity::`/`web_proxy_lifecycle::`.
+- `pnpm smoke:web-server` failover probes model desktop-equivalent enable (200 on
+  empty queue via auto-add; non-official P1).
+
+#### 7. Wrong vs Correct
+
+##### Wrong
+
+```rust
+// web handler: separate, drifting semantics
+if request.enabled && queue.is_empty() { return Err(bad_request("add a provider first")); }
+config.auto_failover_enabled = request.enabled; // flip only
+```
+
+##### Correct
+
+```rust
+// both runtimes delegate to the shared tauri-free SSOT
+state.app_state.proxy_service
+    .set_auto_failover_enabled(&request.app_type, request.enabled).await
+    .map_err(ApiError::from_service_message)?;
 ```
 
 ---

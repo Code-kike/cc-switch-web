@@ -50,7 +50,6 @@ fn api_router(state: ApiState) -> Router {
         .merge(handlers::global_proxy::router(state.clone()))
         .merge(handlers::hermes::router(state.clone()))
         .merge(handlers::mcp::router(state.clone()))
-        .merge(handlers::model_fetch::router(state.clone()))
         .merge(handlers::model_test::router(state.clone()))
         .merge(handlers::omo::router(state.clone()))
         .merge(handlers::openclaw::router(state.clone()))

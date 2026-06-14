@@ -125,10 +125,16 @@ impl RequestContext {
         );
 
         // 使用共享的 ProviderRouter 选择 Provider（熔断器状态跨请求保持）
-        // 注意：只在这里调用一次，结果传递给 forwarder，避免重复消耗 HalfOpen 名额
+        // 注意：只在这里调用一次，结果传递给 forwarder，避免重复消耗 HalfOpen 名额。
+        // M1：复用上面刚加载的 `app_config`（故障转移开关 + 策略），避免
+        // select_providers 内再读一次 proxy_config（每请求省去一次冗余读库）。
         let providers = state
             .provider_router
-            .select_providers(app_type_str)
+            .select_providers_with_config(
+                app_type_str,
+                app_config.auto_failover_enabled,
+                app_config.failover_strategy,
+            )
             .await
             .map_err(|e| match e {
                 crate::error::AppError::AllProvidersCircuitOpen => {
