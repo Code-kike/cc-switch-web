@@ -6,7 +6,7 @@ use axum::{
 use serde::Deserialize;
 
 use super::super::ApiState;
-use super::common::{json_ok, ApiResult};
+use super::common::{json_ok, validate_outbound_url, ApiResult};
 
 #[derive(Deserialize)]
 struct ToolQuery {
@@ -40,6 +40,8 @@ async fn get_subscription_quota(
 }
 
 async fn get_balance(Json(query): Json<BalanceQuery>) -> ApiResult<crate::provider::UsageResult> {
+    // Audit F4: reject internal/private targets before dialing the user-supplied base_url.
+    validate_outbound_url(&query.base_url).await?;
     let result = crate::services::balance::get_balance(&query.base_url, &query.api_key)
         .await
         .map_err(super::common::ApiError::from_service_message)?;
@@ -49,6 +51,8 @@ async fn get_balance(Json(query): Json<BalanceQuery>) -> ApiResult<crate::provid
 async fn get_coding_plan_quota(
     Json(query): Json<BalanceQuery>,
 ) -> ApiResult<crate::services::subscription::SubscriptionQuota> {
+    // Audit F4: ZenMux and other coding-plan providers dial base_url; guard it.
+    validate_outbound_url(&query.base_url).await?;
     let quota =
         crate::services::coding_plan::get_coding_plan_quota(&query.base_url, &query.api_key)
             .await

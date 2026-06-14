@@ -28,7 +28,11 @@ pub fn build_router(state: ApiState) -> Router {
         .layer(
             ServiceBuilder::new()
                 .layer(TraceLayer::new_for_http())
-                .layer(from_fn(mw::security_headers::add_security_headers)),
+                .layer(from_fn(mw::security_headers::add_security_headers))
+                // Audit fix C2: Basic Auth on /api/* (except /api/health). No-op when
+                // unconfigured (loopback-only dev); server.rs forbids a non-loopback
+                // bind without credentials. SPA assets stay public.
+                .layer(from_fn(mw::auth::require_auth)),
         )
 }
 
@@ -106,9 +110,17 @@ async fn try_serve_dist_web_asset(path: &str) -> Response {
             .unwrap_or_else(spa_placeholder_response);
     }
 
-    let candidate = dist_root.join(rel);
-    if let Some(resp) = read_dist_web_file(&candidate).await {
-        return resp;
+    // Path-traversal guard (audit C1): `uri.path()` is NOT dot-segment-normalized,
+    // so a request like `/../../../../etc/passwd` would otherwise escape `dist_root`
+    // via `Path::join` and be read+served. Only read the candidate when every path
+    // component is a plain file/dir name (no `..`, absolute root, or Windows prefix).
+    // Verified exploit before this guard: `curl --path-as-is .../../../../etc/hostname`
+    // returned the host's /etc/hostname.
+    if is_safe_relative_asset(rel) {
+        let candidate = dist_root.join(rel);
+        if let Some(resp) = read_dist_web_file(&candidate).await {
+            return resp;
+        }
     }
 
     if !is_static_asset_path(rel) {
@@ -118,6 +130,19 @@ async fn try_serve_dist_web_asset(path: &str) -> Response {
     }
 
     (StatusCode::NOT_FOUND, "asset not found").into_response()
+}
+
+/// True only when `rel` is a safe relative asset path: every component is a plain
+/// file/dir name or `.` — no `..` (ParentDir), absolute root, or Windows prefix.
+/// Path-traversal guard for the hand-rolled static server (audit C1). `tower_http::
+/// ServeDir` has equivalent protection, but keeping the hand-rolled branch lets the
+/// SPA index fallback handle extensionless client routes uniformly.
+fn is_safe_relative_asset(rel: &str) -> bool {
+    use std::path::Component;
+    !rel.is_empty()
+        && Path::new(rel)
+            .components()
+            .all(|c| matches!(c, Component::Normal(_) | Component::CurDir))
 }
 
 fn is_static_asset_path(path: &str) -> bool {
@@ -262,6 +287,54 @@ mod tests {
 
         std::env::remove_var("CC_SWITCH_WEB_DIST_DIR");
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[test]
+    fn is_safe_relative_asset_rejects_traversal() {
+        // Legit relative asset paths (post leading-slash trim) are allowed.
+        assert!(is_safe_relative_asset("assets/index-abc123.js"));
+        assert!(is_safe_relative_asset("favicon.ico"));
+        assert!(is_safe_relative_asset("./assets/app.css"));
+        // Traversal / escape attempts are rejected (audit C1).
+        assert!(!is_safe_relative_asset("../../../../etc/passwd"));
+        assert!(!is_safe_relative_asset("assets/../../../etc/passwd"));
+        assert!(!is_safe_relative_asset("/etc/passwd")); // RootDir component
+        assert!(!is_safe_relative_asset("")); // empty handled by caller, but reject here too
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn path_traversal_does_not_read_outside_dist_root() {
+        // Regression for audit C1: before the guard, this returned the host's
+        // /etc/hostname. It must now fall back to the SPA index (the payload has no
+        // asset extension), never the traversed host file.
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        std::fs::write(
+            temp_dir.path().join("index.html"),
+            "<div id=\"root\">SPA</div>",
+        )
+        .expect("write index");
+        std::env::set_var("CC_SWITCH_WEB_DIST_DIR", temp_dir.path());
+
+        let response = try_serve_dist_web_asset("/../../../../../../etc/hostname").await;
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let text = String::from_utf8_lossy(&body);
+
+        std::env::remove_var("CC_SWITCH_WEB_DIST_DIR");
+
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            text.contains("id=\"root\""),
+            "traversal must fall back to SPA index, got: {text}"
+        );
+        // /etc/hostname / /etc/passwd content must never leak through.
+        assert!(
+            !text.contains("root:"),
+            "must not leak /etc/passwd-style content"
+        );
     }
 
     #[tokio::test]

@@ -21,7 +21,9 @@ use crate::settings::CustomEndpoint;
 use crate::store::AppState;
 
 // Re-export sub-module functions for external access
-#[cfg(feature = "desktop")]
+// `should_import_default_config_on_startup` is consumed by the shared
+// `bootstrap::run_post_db_bootstrap` (audit F6), so it must be reachable in
+// BOTH runtimes — desktop `lib.rs` and the web example — not desktop-only.
 pub use live::should_import_default_config_on_startup;
 pub use live::{
     import_default_config, import_hermes_providers_from_live, import_openclaw_providers_from_live,

@@ -1,4 +1,4 @@
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, ToSocketAddrs};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use axum::{
     http::StatusCode,
@@ -187,7 +187,6 @@ fn is_blocked_ip(ip: IpAddr) -> bool {
 }
 
 /// SSRF guard for user-supplied outbound URLs reaching shared services.
-///
 /// Parses `raw`, rejects non-http(s) schemes, and blocks targets that resolve
 /// to loopback / link-local / private / ULA addresses. Hostnames are resolved
 /// via DNS and rejected if ANY resolved IP is blocked. A hostname listed in the
@@ -195,7 +194,10 @@ fn is_blocked_ip(ip: IpAddr) -> bool {
 ///
 /// Note: this guard is web-server-only; the desktop runtime keeps dialing local
 /// endpoints through the same shared services without this restriction.
-pub fn validate_outbound_url(raw: &str) -> Result<(), ApiError> {
+///
+/// Async (audit F11): DNS resolution uses non-blocking `tokio::net::lookup_host`
+/// rather than the blocking `std` resolver, so it never stalls a Tokio worker.
+pub async fn validate_outbound_url(raw: &str) -> Result<(), ApiError> {
     let url = Url::parse(raw)
         .map_err(|err| ApiError::bad_request(format!("Invalid URL '{raw}': {err}")))?;
 
@@ -233,9 +235,11 @@ pub fn validate_outbound_url(raw: &str) -> Result<(), ApiError> {
             }
             // Resolve the hostname and reject if any resolved IP is blocked.
             let port = url.port_or_known_default().unwrap_or(0);
-            let addrs = (domain, port).to_socket_addrs().map_err(|err| {
-                ApiError::bad_request(format!("Failed to resolve host '{domain}': {err}"))
-            })?;
+            let addrs = tokio::net::lookup_host((domain, port))
+                .await
+                .map_err(|err| {
+                    ApiError::bad_request(format!("Failed to resolve host '{domain}': {err}"))
+                })?;
             for addr in addrs {
                 if is_blocked_ip(addr.ip()) {
                     return Err(ApiError::bad_request(format!(

@@ -241,6 +241,15 @@ impl RequestContext {
         self.providers.clone()
     }
 
+    /// 该应用的自动故障转移策略开关。
+    ///
+    /// forwarder 用它决定是否跳过熔断器放行检查：仅当故障转移被策略关闭
+    /// （current-provider-only）时才跳过。不能再用 `providers.len() == 1` 近似，
+    /// 否则故障转移开启且仅剩一个可用供应商时会错误地绕过 HalfOpen 探测限流（F7）。
+    pub fn failover_enabled(&self) -> bool {
+        self.app_config.auto_failover_enabled
+    }
+
     /// 计算请求延迟（毫秒）
     #[inline]
     pub fn latency_ms(&self) -> u64 {

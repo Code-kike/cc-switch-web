@@ -8,7 +8,7 @@ use crate::error::AppError;
 use crate::settings::{self, S3SyncSettings};
 
 use super::super::ApiState;
-use super::common::{json_ok, ApiError, ApiResult};
+use super::common::{json_ok, validate_outbound_url, ApiError, ApiResult};
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -115,6 +115,16 @@ where
     }
 }
 
+/// Audit F3: reject custom S3 endpoints that resolve to internal/private targets
+/// before dialing. An empty endpoint means the AWS default (public) — nothing to
+/// guard. Web-server only; the shared sync service stays unrestricted for desktop.
+async fn guard_s3_endpoint(settings: &S3SyncSettings) -> Result<(), ApiError> {
+    if settings.endpoint.trim().is_empty() {
+        return Ok(());
+    }
+    validate_outbound_url(&settings.endpoint).await
+}
+
 pub fn router(state: ApiState) -> Router {
     Router::new()
         .route("/s3/s3-test-connection", post(s3_test_connection))
@@ -134,6 +144,7 @@ async fn s3_test_connection(Json(request): Json<S3TestConnectionRequest>) -> Api
         settings::get_s3_sync_settings(),
         preserve_empty,
     );
+    guard_s3_endpoint(&resolved).await?;
     crate::services::s3_sync::check_connection(&resolved)
         .await
         .map_err(ApiError::from_anyhow)?;
@@ -146,6 +157,7 @@ async fn s3_test_connection(Json(request): Json<S3TestConnectionRequest>) -> Api
 async fn s3_sync_upload(State(state): State<ApiState>) -> ApiResult<Value> {
     let db = state.app_state.db.clone();
     let mut settings = require_enabled_s3_settings()?;
+    guard_s3_endpoint(&settings).await?;
     let result = run_with_s3_lock(crate::services::s3_sync::upload(&db, &mut settings)).await;
     map_sync_result(result, |error| {
         persist_sync_error(&mut settings, error, "manual")
@@ -157,6 +169,7 @@ async fn s3_sync_download(State(state): State<ApiState>) -> ApiResult<Value> {
     let db = state.app_state.db.clone();
     let db_for_sync = db.clone();
     let mut settings = require_enabled_s3_settings()?;
+    guard_s3_endpoint(&settings).await?;
     let _auto_sync_suppression = crate::services::s3_auto_sync::AutoSyncSuppressionGuard::new();
 
     let sync_result =
@@ -177,6 +190,7 @@ async fn s3_sync_download(State(state): State<ApiState>) -> ApiResult<Value> {
 
 async fn s3_sync_fetch_remote_info() -> ApiResult<Value> {
     let settings = require_enabled_s3_settings()?;
+    guard_s3_endpoint(&settings).await?;
     let info = crate::services::s3_sync::fetch_remote_info(&settings)
         .await
         .map_err(ApiError::from_anyhow)?;

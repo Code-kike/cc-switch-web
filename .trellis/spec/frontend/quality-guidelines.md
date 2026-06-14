@@ -867,7 +867,12 @@ git diff v3.14.1..upstream-v3.15.0 -- <focused-area>
   `pnpm build:web` first when the artifact is missing or stale.
 - Smoke runs must use isolated temp data/home directories through
   `CC_SWITCH_DATA_DIR` and `CC_SWITCH_TEST_HOME`; do not point the smoke server
-  at a developer's real CLI configuration.
+  at a developer's real CLI configuration. The spawn env MUST also isolate
+  `HOME` + `USERPROFILE` + `XDG_DATA_HOME` + `XDG_CONFIG_HOME` (not just
+  `CC_SWITCH_TEST_HOME`): session scanners reached via the F6 startup bootstrap
+  (e.g. `session_manager/providers/opencode.rs`) resolve through
+  `dirs::home_dir()`/XDG, so without this the smoke server reads the developer's
+  real `~/.local/share/opencode/opencode.db` (mirror the Rust example `TempHome`).
 - `CC_SWITCH_WEB_DIST_DIR` must point at the built Web bundle that should be
   served by the standalone server.
 - The smoke result should be interpreted by probe expectations, not by status
@@ -1013,6 +1018,294 @@ env:
 ```yaml
 - name: Checkout
   uses: actions/checkout@v6
+```
+
+---
+
+### Scenario: Web API Authentication (HTTP Basic) — audit C2
+
+#### 1. Scope / Trigger
+
+- Trigger: changing the web router assembly, the auth middleware, the server bind
+  gate, or the systemd/install deploy of the standalone web server.
+- Applies to `web_api/routes.rs`, `web_api/middleware/auth.rs`,
+  `examples/server.rs`, `deploy/systemd/cc-switch-web.service`,
+  `scripts/install-cc-switch-web-service.sh`.
+
+#### 2. Signatures
+
+- `web_api/middleware/auth.rs::require_auth(req, next) -> Response`
+- `web_api/middleware/auth.rs::is_configured() -> bool`
+- Env: `CC_SWITCH_WEB_AUTH_PASSWORD` (enables auth), `CC_SWITCH_WEB_AUTH_USER`
+  (default `cc-switch`).
+
+#### 3. Contracts
+
+- `require_auth` is layered in `build_router` and enforces HTTP Basic on `/api/*`
+  EXCEPT exactly `/api/health` (exact equality) and non-`/api/` static SPA assets.
+- Auth is enabled iff `CC_SWITCH_WEB_AUTH_PASSWORD` is non-empty; the credential
+  comparison is constant-time (`ct_eq`).
+- `examples/server.rs` REFUSES a non-loopback bind unless `auth::is_configured()`.
+- Static SPA assets stay public so the browser loads the app, then an `/api` 401
+  with `WWW-Authenticate: Basic` triggers the native prompt — no frontend change.
+- `ALLOW_HTTP_BASIC_OVER_HTTP` is REMOVED (a misnomer — no auth existed). The
+  password ships in a `0600` systemd drop-in; install uses `restart`, not
+  `enable --now` (the latter does not restart an already-running unit).
+
+#### 4. Validation & Error Matrix
+
+- A secret/mutating `/api` route reachable without valid creds while a password is
+  set -> reject.
+- The exemption widened to a prefix/`starts_with` match (e.g. `/api/healthz`) ->
+  reject; it must be exact `/api/health`.
+- Non-loopback bind starts with no password configured -> reject (server must
+  refuse to listen).
+- A change that requires the frontend to send credentials -> reject; Basic is
+  browser-native.
+
+#### 5. Good/Base/Bad Cases
+
+- Good: with the password set, `/api/providers` without creds returns 401, with
+  creds returns 200; `/api/health` and the SPA bundle stay public.
+- Base: loopback dev with no password -> middleware is a no-op (open) — permissible
+  ONLY because `server.rs` forbids that combination on a non-loopback bind.
+- Bad: re-introducing `ALLOW_HTTP_BASIC_OVER_HTTP` as the non-loopback gate, or
+  exempting `/api/*` beyond `/api/health`.
+
+#### 6. Tests Required
+
+- `web_api::middleware::auth::tests` (`ct_eq_basic`, `credentials_match_*`).
+- Web server cargo check.
+
+#### 7. Wrong vs Correct
+
+##### Wrong
+
+```rust
+let is_public = !path.starts_with("/api/") || path.starts_with("/api/health");
+```
+
+##### Correct
+
+```rust
+let is_public = !path.starts_with("/api/") || path == "/api/health";
+```
+
+---
+
+### Scenario: Web Request Hardening — Path Traversal + Outbound SSRF (audit C1/F3/F4/F11)
+
+#### 1. Scope / Trigger
+
+- Trigger: changing the SPA static-serve fallback, or adding/altering any web
+  handler that dials a user-influenced outbound URL.
+- Applies to `web_api/routes.rs` (`try_serve_dist_web_asset`),
+  `web_api/handlers/common.rs` (`validate_outbound_url`), and any handler that
+  reaches the network (`config`, `system`, `subscription`, `webdav`, `s3`, …).
+
+#### 2. Signatures
+
+- `routes.rs::is_safe_relative_asset(rel: &str) -> bool`
+- `common.rs::validate_outbound_url(raw: &str) -> Result<(), ApiError>` (**async**)
+
+#### 3. Contracts
+
+- The hand-rolled SPA static server must gate EVERY disk read behind
+  `is_safe_relative_asset(rel)` (only `Component::Normal`/`CurDir` allowed; rejects
+  `..`/RootDir/Prefix) BEFORE `dist_root.join`. `uri.path()` is NOT
+  dot-segment-normalized, so an unguarded `join` escapes the asset root.
+- `validate_outbound_url` is `async` and resolves DNS via non-blocking
+  `tokio::net::lookup_host` (never the blocking `std` resolver on an async task);
+  ALL callers must `.await`.
+- It must be applied on EVERY outbound-dial web handler: webdav (4 handlers), s3 (4;
+  skipping an empty endpoint = AWS default), subscription `get_balance` +
+  `get_coding_plan_quota` (2), config fetch-models (2). The shared sync/service
+  layer stays unrestricted for desktop (the guard is web-handler-only).
+- `/system/test_api_endpoints` caps `urls` at 50 (clean 400 over the cap).
+
+#### 4. Validation & Error Matrix
+
+- A static read reachable with a `..` component (raw or that a future change
+  un-gates) -> reject.
+- A new outbound handler that dials a user URL without `validate_outbound_url` ->
+  reject.
+- A blocking `to_socket_addrs` reintroduced on an async path -> reject.
+- A test that relies on a NON-resolvable host to reach a downstream "unknown
+  provider" branch -> the guard now 400s it first; use a resolvable public host.
+
+#### 5. Good/Base/Bad Cases
+
+- Good: `/../../../../etc/passwd` falls back to the SPA index (no host file read);
+  webdav/s3/subscription dials to a private/loopback target are 400-rejected.
+- Base: an empty S3 endpoint (AWS default, public) skips the guard intentionally.
+- Bad: adding a `models_url`/`base_url`/`endpoint` dial without the guard, or
+  serving `dist_root.join(rel)` before the traversal check.
+
+#### 6. Tests Required
+
+- `web_api::routes::tests::{is_safe_relative_asset_rejects_traversal,
+  path_traversal_does_not_read_outside_dist_root}`.
+- `web_api::handlers::common` SSRF guard tests.
+- Web server cargo check + `pnpm smoke:web-server` (probes use resolvable hosts).
+
+#### 7. Wrong vs Correct
+
+##### Wrong
+
+```rust
+let candidate = dist_root.join(rel);
+if let Some(resp) = read_dist_web_file(&candidate).await { return resp; }
+```
+
+##### Correct
+
+```rust
+if is_safe_relative_asset(rel) {
+    let candidate = dist_root.join(rel);
+    if let Some(resp) = read_dist_web_file(&candidate).await { return resp; }
+}
+```
+
+---
+
+### Scenario: Dual-Runtime Startup Bootstrap & Legacy Migration (audit F5/F6)
+
+#### 1. Scope / Trigger
+
+- Trigger: changing app startup — DB init ordering, the `config.json`→SQLite
+  migration, or the post-DB import/seed of providers/MCP/prompts/skills/OMO.
+- Applies to `src/bootstrap.rs`, `src/lib.rs` (desktop setup), and
+  `examples/server.rs` (web main).
+
+#### 2. Signatures
+
+- `bootstrap::apply_legacy_json_migration(db, config, json_path)` (tauri-free)
+- `bootstrap::run_post_db_bootstrap(app_state: &AppState)` (tauri-free)
+
+#### 3. Contracts
+
+- Both runtimes call BOTH functions: desktop `lib.rs` and web `examples/server.rs`.
+  `bootstrap.rs` MUST stay tauri-free (it is `#[path]`-included by the web example).
+- The JSON LOAD step stays per-caller: desktop wraps it in the dialog/retry/
+  `process::exit(1)` loop; web logs-and-continues on load failure (the headless
+  server must still come up). Do not move the dialog/exit into `bootstrap.rs`.
+- Web migration MUST run BEFORE `Database::init()` (otherwise `!db_path.exists()` is
+  already false and migration is skipped — the F5 bug).
+- `run_post_db_bootstrap` runs after `AppState::new` and BEFORE `set_runtime_ctx`
+  (i.e. before the proxy lifecycle, matching desktop). It must not disturb the order
+  pinned by `web_proxy_lifecycle::main_pins_proxy_lifecycle_ordering`.
+- Every bootstrap step stays idempotent (table-empty / flag gated) so it re-runs
+  safely on each systemd boot — the smoke fixture depends on this (explicit
+  re-import endpoints report 0 newly-imported after startup already imported).
+- A helper the shared bootstrap needs (e.g.
+  `services::provider::should_import_default_config_on_startup`) must be re-exported
+  in BOTH runtimes, not desktop-gated.
+
+#### 4. Validation & Error Matrix
+
+- Web `Database::init()` runs before the legacy-JSON check -> reject (migration
+  dead).
+- `bootstrap.rs` references `tauri`/`AppHandle`/`Emitter` -> reject (web build
+  breaks).
+- A non-idempotent step added to `run_post_db_bootstrap` -> reject (re-runs each
+  boot).
+- Bootstrap moved after `set_runtime_ctx` / into the proxy lifecycle -> reject.
+
+#### 5. Good/Base/Bad Cases
+
+- Good: a fresh web install seeds official providers + imports live config/MCP/
+  prompts/skills exactly as desktop; a legacy `config.json` migrates then archives
+  to `config.json.migrated`.
+- Base: desktop behaviour is byte-for-byte unchanged (pure extraction + dialog stays).
+- Bad: duplicating or removing `initialize_common_config_snippets` (a SEPARATE
+  existing step), or making `run_post_db_bootstrap` desktop-only.
+
+#### 6. Tests Required
+
+- Desktop `cargo test --lib` (migration/provider/mcp areas) unchanged-green.
+- Web `dual_runtime_parity::` + `web_proxy_lifecycle::` tests.
+- `pnpm smoke:web-server` (startup import idempotency).
+
+#### 7. Wrong vs Correct
+
+##### Wrong
+
+```rust
+// examples/server.rs
+let db = Arc::new(database::Database::init()?); // creates the DB first
+// ... legacy config.json now ignored forever
+```
+
+##### Correct
+
+```rust
+let needs_migration = !db_path.exists() && json_path.exists();
+let cfg = needs_migration.then(|| MultiAppConfig::load().ok()).flatten();
+let db = Arc::new(database::Database::init()?);
+if let Some(cfg) = cfg { bootstrap::apply_legacy_json_migration(&db, &cfg, &json_path); }
+```
+
+---
+
+### Scenario: Failover Circuit-Breaker Bypass Policy (audit F7)
+
+#### 1. Scope / Trigger
+
+- Trigger: changing how the forwarder decides to consult vs bypass the circuit
+  breaker, or the failover provider-selection plumbing.
+- Applies to `proxy/forwarder.rs`, `proxy/handler_context.rs`, `proxy/handlers.rs`.
+
+#### 2. Signatures
+
+- `forwarder.rs::should_bypass_circuit_breaker(failover_enabled: bool) -> bool`
+- `forward_with_retry[_inner](.., failover_enabled: bool, providers: Vec<Provider>)`
+- `handler_context.rs::RequestContext::failover_enabled() -> bool`
+
+#### 3. Contracts
+
+- The breaker bypass is `!failover_enabled`, NOT `providers.len() == 1`. With
+  failover OFF the current-provider-only path bypasses the breaker (don't block the
+  user's sole provider); with failover ON the breaker + half-open probing applies
+  even when only one provider is currently available.
+- `failover_enabled` is sourced from `AppProxyConfig.auto_failover_enabled` (the
+  same value `provider_router::select_providers` reads) and plumbed to ALL five
+  handler call sites (messages, chat_completions, responses, responses_compact,
+  gemini) — no app family may diverge.
+
+#### 4. Validation & Error Matrix
+
+- Bypass keyed on `providers.len() == 1` -> reject (an Open-past-timeout sole
+  failover provider skips half-open limiting).
+- `failover_enabled` passed at some call sites but not others -> reject.
+- A second DB read added just to learn the flag -> reject; reuse the per-request
+  `AppProxyConfig` on `RequestContext`.
+
+#### 5. Good/Base/Bad Cases
+
+- Good: failover ON + one available provider whose breaker is Open -> breaker is
+  consulted (probe-limited), not bypassed.
+- Base: failover OFF + single provider -> breaker bypassed (preserved behaviour).
+- Bad: inferring "failover off" from the selected list length.
+
+#### 6. Tests Required
+
+- `forwarder.rs` regression tests both directions
+  (`single_available_provider_with_failover_on_still_consults_breaker`,
+  `single_provider_with_failover_off_bypasses_open_breaker`).
+- Desktop proxy tests + web cargo check (forwarder is shared).
+
+#### 7. Wrong vs Correct
+
+##### Wrong
+
+```rust
+let bypass_circuit_breaker = providers.len() == 1;
+```
+
+##### Correct
+
+```rust
+let bypass_circuit_breaker = should_bypass_circuit_breaker(failover_enabled); // = !failover_enabled
 ```
 
 ---

@@ -8,7 +8,7 @@ use crate::error::AppError;
 use crate::settings::{self, WebDavSyncSettings};
 
 use super::super::ApiState;
-use super::common::{json_ok, ApiError, ApiResult};
+use super::common::{json_ok, validate_outbound_url, ApiError, ApiResult};
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -119,6 +119,13 @@ where
     }
 }
 
+/// Audit F3: reject WebDAV base URLs that resolve to internal/private targets
+/// before dialing (web-server only; the desktop runtime stays unrestricted via the
+/// shared sync service). Applied to every network-reaching WebDAV handler.
+async fn guard_webdav_url(settings: &WebDavSyncSettings) -> Result<(), ApiError> {
+    validate_outbound_url(&settings.base_url).await
+}
+
 pub fn router(state: ApiState) -> Router {
     Router::new()
         .route(
@@ -143,6 +150,7 @@ async fn webdav_test_connection(
         settings::get_webdav_sync_settings(),
         preserve_empty,
     );
+    guard_webdav_url(&resolved).await?;
     crate::services::webdav_sync::check_connection(&resolved)
         .await
         .map_err(ApiError::from_anyhow)?;
@@ -155,6 +163,7 @@ async fn webdav_test_connection(
 async fn webdav_sync_upload(State(state): State<ApiState>) -> ApiResult<Value> {
     let db = state.app_state.db.clone();
     let mut settings = require_enabled_webdav_settings()?;
+    guard_webdav_url(&settings).await?;
     let result =
         run_with_webdav_lock(crate::services::webdav_sync::upload(&db, &mut settings)).await;
     map_sync_result(result, |error| {
@@ -167,6 +176,7 @@ async fn webdav_sync_download(State(state): State<ApiState>) -> ApiResult<Value>
     let db = state.app_state.db.clone();
     let db_for_sync = db.clone();
     let mut settings = require_enabled_webdav_settings()?;
+    guard_webdav_url(&settings).await?;
     let _auto_sync_suppression = crate::services::webdav_auto_sync::AutoSyncSuppressionGuard::new();
 
     let sync_result =
@@ -187,6 +197,7 @@ async fn webdav_sync_download(State(state): State<ApiState>) -> ApiResult<Value>
 
 async fn webdav_sync_fetch_remote_info() -> ApiResult<Value> {
     let settings = require_enabled_webdav_settings()?;
+    guard_webdav_url(&settings).await?;
     let info = crate::services::webdav_sync::fetch_remote_info(&settings)
         .await
         .map_err(ApiError::from_anyhow)?;

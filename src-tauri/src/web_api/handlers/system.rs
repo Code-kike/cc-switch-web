@@ -193,13 +193,22 @@ async fn get_tool_versions(
 async fn test_api_endpoints(
     Json(request): Json<TestApiEndpointsRequest>,
 ) -> ApiResult<Vec<crate::services::EndpointLatency>> {
+    // Audit F11: bound the speed-test fan-out so a single request can't spawn an
+    // unbounded set of outbound probes (the per-URL validate + join_all are all-at-once).
+    const MAX_TEST_URLS: usize = 50;
+    if request.urls.len() > MAX_TEST_URLS {
+        return Err(ApiError::bad_request(format!(
+            "too many URLs: {} (max {MAX_TEST_URLS})",
+            request.urls.len()
+        )));
+    }
     // SSRF guard: skip URLs that resolve to internal/private targets without
     // dialing them, recording a per-URL error so the original order is kept.
     // (web-server only; desktop test commands stay unrestricted.)
     let mut results: Vec<Option<crate::services::EndpointLatency>> = vec![None; request.urls.len()];
     let mut allowed: Vec<(usize, String)> = Vec::new();
     for (idx, url) in request.urls.into_iter().enumerate() {
-        match validate_outbound_url(&url) {
+        match validate_outbound_url(&url).await {
             Ok(()) => allowed.push((idx, url)),
             Err(err) => {
                 results[idx] = Some(crate::services::EndpointLatency {

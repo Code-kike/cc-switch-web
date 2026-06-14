@@ -914,8 +914,15 @@ const probes = [
     path: "/api/mcp/import-mcp-from-apps",
     body: {},
     validate(response, payload) {
-      if (!response.ok || typeof payload !== "number" || payload < 5) {
-        throw new Error(`expected MCP import count >= 5, got ${response.status} ${JSON.stringify(payload)}`);
+      // Audit F6: the web server now runs the shared post-DB bootstrap at startup
+      // (parity with desktop `lib.rs`), which already imports the seeded live MCP
+      // servers when the MCP table is empty. So this explicit re-import is idempotent
+      // and legitimately reports 0 newly-imported servers. The authoritative check is
+      // the immediately-following `mcp-servers-after-import` probe, which still asserts
+      // the full merged 5-server state regardless of which path imported them. Accept
+      // any non-negative count here; the endpoint must still respond with a number.
+      if (!response.ok || typeof payload !== "number" || payload < 0) {
+        throw new Error(`expected MCP import count >= 0, got ${response.status} ${JSON.stringify(payload)}`);
       }
     },
   },
@@ -1746,7 +1753,13 @@ const probes = [
     method: "POST",
     path: "/api/usage/get-balance",
     body: {
-      baseUrl: "https://unknown-balance.example.com",
+      // Audit F4: get-balance now runs validate_outbound_url (DNS resolution) before
+      // dialing. A non-resolvable host (the old `unknown-balance.example.com`) is now
+      // rejected with a 400 by the SSRF guard before the balance matcher runs. Use a
+      // RESOLVABLE public host that still matches no known balance provider so this
+      // probe keeps exercising the deterministic "Unknown balance provider" branch
+      // (example.com resolves to public IPs and contains no known-provider substring).
+      baseUrl: "https://example.com",
       apiKey: "smoke",
     },
     validate(response, payload) {
@@ -1764,7 +1777,11 @@ const probes = [
     method: "POST",
     path: "/api/usage/get-coding-plan-quota",
     body: {
-      baseUrl: "https://unknown-plan.example.com",
+      // Audit F4: get-coding-plan-quota now runs validate_outbound_url before dialing,
+      // so the old non-resolvable `unknown-plan.example.com` would be rejected with a
+      // 400 before the matcher runs. Use a resolvable public host that matches no known
+      // coding-plan provider to keep exercising the deterministic not_found branch.
+      baseUrl: "https://example.com",
       apiKey: "smoke",
     },
     validate(response, payload) {
@@ -2284,7 +2301,11 @@ const probes = [
     path: "/api/config/import-default-config",
     body: { app: "claude" },
     validate(response, payload) {
-      if (!response.ok || payload !== true) {
+      // Audit F6: startup bootstrap already imports the Claude live config as the
+      // `default` provider, so this explicit import is now idempotent and returns
+      // `false` (provider already exists) rather than `true`. The
+      // `providers-claude-after-import` probe is the authoritative existence check.
+      if (!response.ok || typeof payload !== "boolean") {
         throw new Error(`expected Claude default import to succeed, got ${response.status} ${JSON.stringify(payload)}`);
       }
     },
@@ -2790,7 +2811,10 @@ const probes = [
     path: "/api/config/import-default-config",
     body: { app: "codex" },
     validate(response, payload) {
-      if (!response.ok || payload !== true) {
+      // Audit F6: startup bootstrap already imported the Codex default provider, so
+      // this explicit import is idempotent and returns `false`. The
+      // `providers-codex-after-import` probe is the authoritative existence check.
+      if (!response.ok || typeof payload !== "boolean") {
         throw new Error(`expected Codex default import to succeed, got ${response.status} ${JSON.stringify(payload)}`);
       }
     },
@@ -2811,7 +2835,10 @@ const probes = [
     path: "/api/config/import-default-config",
     body: { app: "gemini" },
     validate(response, payload) {
-      if (!response.ok || payload !== true) {
+      // Audit F6: startup bootstrap already imported the Gemini default provider, so
+      // this explicit import is idempotent and returns `false`. The
+      // `providers-gemini-after-import` probe is the authoritative existence check.
+      if (!response.ok || typeof payload !== "boolean") {
         throw new Error(`expected Gemini default import to succeed, got ${response.status} ${JSON.stringify(payload)}`);
       }
     },
@@ -2832,8 +2859,12 @@ const probes = [
     path: "/api/providers/import-opencode-providers-from-live",
     body: {},
     validate(response, payload) {
-      if (!response.ok || payload !== 1) {
-        throw new Error(`expected OpenCode live import count 1, got ${response.status} ${JSON.stringify(payload)}`);
+      // Audit F6: startup bootstrap already imports additive-mode (OpenCode) live
+      // providers (idempotent by id), so this explicit re-import legitimately returns
+      // 0 newly-imported. The `providers-opencode-after-import` probe below is the
+      // authoritative check that the seeded provider exists.
+      if (!response.ok || typeof payload !== "number" || payload < 0) {
+        throw new Error(`expected OpenCode live import count >= 0, got ${response.status} ${JSON.stringify(payload)}`);
       }
     },
   },
@@ -2901,8 +2932,11 @@ const probes = [
     path: "/api/openclaw/import-openclaw-providers-from-live",
     body: {},
     validate(response, payload) {
-      if (!response.ok || payload !== 1) {
-        throw new Error(`expected OpenClaw live import count 1, got ${response.status} ${JSON.stringify(payload)}`);
+      // Audit F6: startup bootstrap already imports additive-mode (OpenClaw) live
+      // providers (idempotent by id); the explicit re-import returns 0 newly-imported.
+      // `providers-openclaw-after-import` below is the authoritative existence check.
+      if (!response.ok || typeof payload !== "number" || payload < 0) {
+        throw new Error(`expected OpenClaw live import count >= 0, got ${response.status} ${JSON.stringify(payload)}`);
       }
     },
   },
@@ -2927,8 +2961,11 @@ const probes = [
     path: "/api/hermes/import-hermes-providers-from-live",
     body: {},
     validate(response, payload) {
-      if (!response.ok || payload !== 1) {
-        throw new Error(`expected Hermes live import count 1, got ${response.status} ${JSON.stringify(payload)}`);
+      // Audit F6: startup bootstrap already imports additive-mode (Hermes) live
+      // providers (idempotent by id); the explicit re-import returns 0 newly-imported.
+      // `providers-hermes-after-import` below is the authoritative existence check.
+      if (!response.ok || typeof payload !== "number" || payload < 0) {
+        throw new Error(`expected Hermes live import count >= 0, got ${response.status} ${JSON.stringify(payload)}`);
       }
     },
   },
@@ -3357,6 +3394,19 @@ async function main() {
         CC_SWITCH_DATA_DIR: dataDir,
         CC_SWITCH_TEST_HOME: homeDir,
         CC_SWITCH_WEB_DIST_DIR: distWebDir,
+        // Isolate ALL home/XDG-derived lookups to the temp home. cc-switch's own
+        // config honors CC_SWITCH_TEST_HOME, but session scanners reached through
+        // the F6 startup bootstrap (e.g. the OpenCode session DB at
+        // $XDG_DATA_HOME/opencode/opencode.db, falling back to ~/.local/share)
+        // resolve via `dirs::home_dir()` / XDG vars, NOT CC_SWITCH_TEST_HOME. Without
+        // these overrides the smoke server reads the developer's REAL opencode.db and
+        // leaks live sessions into `list-sessions` (spec: "do not point the smoke
+        // server at a developer's real CLI configuration"). Mirrors the Rust example
+        // test `TempHome`, which sets HOME + USERPROFILE for the same reason.
+        HOME: homeDir,
+        USERPROFILE: homeDir,
+        XDG_DATA_HOME: path.join(homeDir, ".local", "share"),
+        XDG_CONFIG_HOME: path.join(homeDir, ".config"),
       },
       stdio: ["ignore", "pipe", "pipe"],
     },

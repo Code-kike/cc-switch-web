@@ -8,14 +8,16 @@
 //!   cargo run --no-default-features --features web-server --example server
 //!
 //! Environment variables:
-//!   HOST            (default: 127.0.0.1) — refuse non-loopback unless
-//!                   ALLOW_HTTP_BASIC_OVER_HTTP=1
+//!   HOST            (default: 127.0.0.1) — a non-loopback bind REQUIRES
+//!                   CC_SWITCH_WEB_AUTH_PASSWORD (audit C2)
 //!   PORT            (default: 3010 — matches the systemd unit + install script)
 //!   CC_SWITCH_DATA_DIR (default: ~/.cc-switch) — used by bootstrap::data_dir
+//!   CC_SWITCH_WEB_AUTH_PASSWORD — enables HTTP Basic Auth on /api/* (REQUIRED for
+//!                   any non-loopback bind, e.g. the Tailscale deployment)
+//!   CC_SWITCH_WEB_AUTH_USER (default: cc-switch) — Basic Auth username
 //!   CORS_ALLOW_ORIGINS (comma-separated, optional)
 //!   ENABLE_HSTS     (default: true; set "false" for plain-HTTP local use)
 //!   WEB_COOKIE_SECURE (auto|true|false; default auto, follows HTTPS)
-//!   ALLOW_HTTP_BASIC_OVER_HTTP=1 — required for non-loopback HTTP listen
 //!
 //! ## Dual-build `#[path]` contract (M6)
 //!
@@ -228,13 +230,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .map_err(|e| format!("invalid PORT: {e}"))?;
     let addr = SocketAddr::new(host, port);
 
-    if !addr.ip().is_loopback() && std::env::var("ALLOW_HTTP_BASIC_OVER_HTTP").as_deref() != Ok("1")
-    {
+    // Audit fix C2: never expose the unauthenticated API on a non-loopback address.
+    // The Web API can read provider secrets, import/export the SQLite config, and
+    // toggle proxy takeover, so a non-loopback bind REQUIRES Basic Auth credentials
+    // (CC_SWITCH_WEB_AUTH_PASSWORD). Loopback may run open for local/dev use.
+    if !addr.ip().is_loopback() && !web_api::middleware::auth::is_configured() {
         log::error!(
-            "Refusing to listen on non-loopback {} without ALLOW_HTTP_BASIC_OVER_HTTP=1",
-            addr
+            "Refusing to listen on non-loopback {addr} without web auth. Set \
+             CC_SWITCH_WEB_AUTH_PASSWORD (and optionally CC_SWITCH_WEB_AUTH_USER) to \
+             enable HTTP Basic Auth, or bind a loopback HOST."
         );
-        return Err("non-loopback bind requires ALLOW_HTTP_BASIC_OVER_HTTP=1".into());
+        return Err("non-loopback bind requires CC_SWITCH_WEB_AUTH_PASSWORD".into());
+    }
+    if web_api::middleware::auth::is_configured() {
+        log::info!("Web API Basic Auth enabled (CC_SWITCH_WEB_AUTH_PASSWORD set)");
     }
 
     // Pre-flight: data dir + filesystem type + cross-process lock.
@@ -248,9 +257,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     app_store::set_app_config_dir_override_web(Some(&data_dir_override))
         .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
 
-    let db = Arc::new(database::Database::init()?);
-    let app_state = Arc::new(store::AppState::new(db));
+    // ── Legacy config.json → SQLite migration (audit F5) ────────────────
+    // Mirror the desktop `lib.rs` migration, MINUS the desktop-only dialog /
+    // retry / process::exit UX: a headless server must always come up. So when
+    // a legacy `config.json` exists and no DB is present yet, load + migrate +
+    // archive it BEFORE creating the DB row that would otherwise suppress a
+    // future desktop migration. On load failure we log and continue with the
+    // fresh empty DB rather than hang or exit.
     let app_config_dir = config::get_app_config_dir();
+    let json_path = app_config_dir.join("config.json");
+    let db_path = app_config_dir.join("cc-switch.db");
+    let migration_config = if !db_path.exists() && json_path.exists() {
+        log::info!("检测到旧版配置文件，验证配置文件...");
+        match app_config::MultiAppConfig::load() {
+            Ok(config) => {
+                log::info!("✓ 配置文件加载成功");
+                Some(config)
+            }
+            Err(e) => {
+                // No dialog in headless mode: log and continue with an empty DB.
+                log::error!("加载旧配置文件失败，将以空数据库继续启动: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    let db = Arc::new(database::Database::init()?);
+
+    if let Some(config) = migration_config {
+        bootstrap::apply_legacy_json_migration(&db, &config, &json_path);
+    }
+
+    let app_state = Arc::new(store::AppState::new(db));
+
+    // ── Post-DB bootstrap (audit F6) ────────────────────────────────────
+    // Seed default Skills repos + official providers and auto-import live CLI
+    // config / OMO / MCP / prompts, in parity with desktop `lib.rs`. Every step
+    // is idempotent (table-empty gated), so re-running on each systemd boot is a
+    // no-op. Runs after AppState::new and BEFORE set_runtime_ctx (matches
+    // desktop, which bootstraps before the proxy lifecycle).
+    bootstrap::run_post_db_bootstrap(app_state.as_ref());
+
     let copilot_auth = Arc::new(RwLock::new(
         crate::proxy::providers::copilot_auth::CopilotAuthManager::new(app_config_dir.clone()),
     ));

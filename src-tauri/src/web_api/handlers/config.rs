@@ -456,9 +456,9 @@ async fn fetch_models_for_config(
 ) -> ApiResult<Vec<crate::services::model_fetch::FetchedModel>> {
     // SSRF guard: reject internal/private targets before dialing the shared
     // model-fetch service (web-server only; desktop keeps unrestricted access).
-    validate_outbound_url(&query.base_url)?;
+    validate_outbound_url(&query.base_url).await?;
     if let Some(models_url) = query.models_url.as_deref() {
-        validate_outbound_url(models_url)?;
+        validate_outbound_url(models_url).await?;
     }
     let models = crate::services::model_fetch::fetch_models(
         &query.base_url,

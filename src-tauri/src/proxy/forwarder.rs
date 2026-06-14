@@ -315,6 +315,7 @@ impl RequestForwarder {
         headers: axum::http::HeaderMap,
         extensions: Extensions,
         providers: Vec<Provider>,
+        failover_enabled: bool,
     ) -> Result<ForwardResult, ForwardError> {
         {
             let mut status = self.status.write().await;
@@ -325,7 +326,14 @@ impl RequestForwarder {
 
         let result = self
             .forward_with_retry_inner(
-                app_type, method, endpoint, body, headers, extensions, providers,
+                app_type,
+                method,
+                endpoint,
+                body,
+                headers,
+                extensions,
+                providers,
+                failover_enabled,
             )
             .await;
 
@@ -347,6 +355,8 @@ impl RequestForwarder {
     /// * `body` - 请求体
     /// * `headers` - 请求头
     /// * `providers` - 已选择的 Provider 列表（由 RequestContext 提供，避免重复调用 select_providers）
+    /// * `failover_enabled` - 该应用的自动故障转移策略开关（来自 AppProxyConfig）。
+    ///   仅当其为 `false`（current-provider-only）时才跳过熔断器放行检查（见 F7）。
     #[allow(clippy::too_many_arguments)]
     async fn forward_with_retry_inner(
         &self,
@@ -357,6 +367,7 @@ impl RequestForwarder {
         headers: axum::http::HeaderMap,
         extensions: Extensions,
         providers: Vec<Provider>,
+        failover_enabled: bool,
     ) -> Result<ForwardResult, ForwardError> {
         // 获取适配器
         let adapter = get_adapter(app_type);
@@ -373,8 +384,10 @@ impl RequestForwarder {
         let mut last_provider = None;
         let mut attempted_providers = 0usize;
 
-        // 单 Provider 场景下跳过熔断器检查（故障转移关闭时）
-        let bypass_circuit_breaker = providers.len() == 1;
+        // 跳过熔断器检查的唯一条件：故障转移被策略关闭（current-provider-only 路径）。
+        // 不能用 providers.len()==1 近似——故障转移开启且仅剩一个可用供应商时长度也是 1，
+        // 那种情况下熔断器/HalfOpen 探测限流必须照常生效（F7）。
+        let bypass_circuit_breaker = should_bypass_circuit_breaker(failover_enabled);
 
         // 依次尝试每个供应商
         for provider in providers.iter() {
@@ -395,7 +408,7 @@ impl RequestForwarder {
             }
 
             // 发起请求前先获取熔断器放行许可（HalfOpen 会占用探测名额）
-            // 单 Provider 场景下跳过此检查，避免熔断器阻塞所有请求
+            // 故障转移关闭（current-provider-only）时跳过此检查，避免熔断器阻塞用户唯一供应商
             let (allowed, used_half_open_permit) = if bypass_circuit_breaker {
                 (true, false)
             } else {
@@ -2001,6 +2014,19 @@ fn max_attempts_from_retries(max_retries: u32) -> usize {
     (max_retries as usize).saturating_add(1)
 }
 
+/// 是否跳过熔断器放行检查。
+///
+/// 仅当**故障转移被策略关闭**（current-provider-only 路径）时才跳过，避免熔断器
+/// 阻塞用户唯一可用的当前供应商。
+///
+/// 历史 bug（F7）：此前以 `providers.len() == 1` 作为"故障转移关闭"的近似判断。
+/// 但故障转移开启且仅剩一个**当前可用**供应商时列表长度同样为 1，会让一个
+/// Open-past-timeout 的供应商绕过 `allow_request()` 的 HalfOpen 探测限流、直接吃下
+/// 全量流量，熔断器也无法正确完成 Open→HalfOpen 转换。改为只看故障转移策略开关。
+fn should_bypass_circuit_breaker(failover_enabled: bool) -> bool {
+    !failover_enabled
+}
+
 fn is_rectifier_retry_provider_error(error: &ProxyError) -> bool {
     match error {
         ProxyError::Timeout(_) | ProxyError::ForwardFailed(_) => true,
@@ -2612,6 +2638,188 @@ mod tests {
     fn max_retries_maps_to_attempt_limit() {
         assert_eq!(max_attempts_from_retries(0), 1);
         assert_eq!(max_attempts_from_retries(3), 4);
+    }
+
+    #[test]
+    fn bypass_circuit_breaker_only_when_failover_disabled() {
+        // F7: 仅在故障转移被策略关闭时才跳过熔断器。
+        // 故障转移开启时，无论可用供应商剩几个都必须经过熔断器放行检查
+        // （单个可用供应商不再被错误地当作"故障转移关闭"）。
+        assert!(
+            should_bypass_circuit_breaker(false),
+            "failover OFF（current-provider-only）→ 跳过熔断器，避免阻塞唯一供应商"
+        );
+        assert!(
+            !should_bypass_circuit_breaker(true),
+            "failover ON → 必须走熔断器（即使仅剩一个可用供应商，HalfOpen 探测限流照常生效）"
+        );
+    }
+
+    /// 用相同的 Database 构造 forwarder 与一个会读取该 db 的 ProviderRouter，
+    /// 便于测试中预置熔断器配置/状态后再驱动 forward_with_retry_inner。
+    fn test_forwarder_with_db(db: Arc<Database>) -> RequestForwarder {
+        RequestForwarder {
+            router: Arc::new(ProviderRouter::new(db.clone())),
+            status: Arc::new(RwLock::new(ProxyStatus::default())),
+            current_providers: Arc::new(RwLock::new(HashMap::new())),
+            gemini_shadow: Arc::new(GeminiShadowStore::new()),
+            failover_manager: Arc::new(FailoverSwitchManager::new(db)),
+            runtime_ctx: None,
+            current_provider_id_at_start: String::new(),
+            session_id: String::new(),
+            session_client_provided: false,
+            rectifier_config: RectifierConfig::default(),
+            optimizer_config: OptimizerConfig::default(),
+            copilot_optimizer_config: CopilotOptimizerConfig::default(),
+            non_streaming_timeout: std::time::Duration::from_secs(1),
+            streaming_first_byte_timeout: std::time::Duration::from_secs(1),
+            max_attempts: 1,
+        }
+    }
+
+    /// F7 回归：故障转移开启 + 仅剩一个可用供应商，且其熔断器处于 Open（冷却未到）。
+    /// 熔断器必须被咨询并拒绝该请求（返回 NoAvailableProvider，attempted=0），
+    /// 而不是因为 `providers.len() == 1` 被绕过。
+    #[tokio::test]
+    async fn single_available_provider_with_failover_on_still_consults_breaker() {
+        let db = Arc::new(Database::memory().expect("memory db"));
+
+        // 1 次失败即熔断；60 秒冷却 → 测试窗口内 Open 不可用（HalfOpen 名额受限）。
+        db.update_circuit_breaker_config(&crate::proxy::circuit_breaker::CircuitBreakerConfig {
+            failure_threshold: 1,
+            timeout_seconds: 60,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        let forwarder = test_forwarder_with_db(db.clone());
+
+        // provider 必须先入库（record_result 会写 provider 健康度，受外键约束）。
+        let provider = test_provider_with_type(None); // id = provider-1
+        db.save_provider("claude", &provider).unwrap();
+
+        // 把 provider-1 打到 Open（冷却未到）。
+        forwarder
+            .router
+            .record_result("provider-1", "claude", false, false, Some("fail".into()))
+            .await
+            .unwrap();
+        assert_eq!(
+            forwarder
+                .router
+                .get_circuit_breaker_stats("provider-1", "claude")
+                .await
+                .unwrap()
+                .state,
+            crate::proxy::circuit_breaker::CircuitState::Open
+        );
+
+        let providers = vec![provider]; // 单个可用供应商（id=provider-1）
+
+        // failover ON → 不得跳过熔断器：allow_request 返回 false → 该供应商被跳过 →
+        // attempted=0 → NoAvailableProvider。这正是 F7 修复要保证的行为。
+        let result = forwarder
+            .forward_with_retry_inner(
+                &AppType::Claude,
+                http::Method::POST,
+                "/v1/messages",
+                json!({"model": "claude-3"}),
+                axum::http::HeaderMap::new(),
+                Extensions::new(),
+                providers,
+                true, // failover_enabled
+            )
+            .await;
+
+        // ForwardResult 未实现 Debug，无法用 expect_err；手动解构。
+        let err = match result {
+            Ok(_) => panic!("breaker-open single provider must be rejected when failover is on"),
+            Err(err) => err,
+        };
+        assert!(
+            matches!(err.error, ProxyError::NoAvailableProvider),
+            "熔断器应拒绝唯一 Open 供应商，实际错误: {:?}",
+            err.error
+        );
+        assert!(
+            err.provider.is_none(),
+            "被熔断器拦截时不应携带 provider（未发起转发）"
+        );
+        // 熔断器仍为 Open（冷却未到，allow_request 不放行也不转 HalfOpen）。
+        assert_eq!(
+            forwarder
+                .router
+                .get_circuit_breaker_stats("provider-1", "claude")
+                .await
+                .unwrap()
+                .state,
+            crate::proxy::circuit_breaker::CircuitState::Open,
+            "冷却未到的 Open 熔断器应持续拒绝，不进入 HalfOpen"
+        );
+    }
+
+    /// F7 反向不回归：故障转移关闭（current-provider-only）+ 单个供应商，
+    /// 即使其熔断器 Open 也必须被绕过——熔断器不得阻塞用户唯一可用的当前供应商。
+    /// 绕过后会真正尝试转发（dial 因空配置失败），返回的错误携带 provider 且
+    /// 不是 NoAvailableProvider，以此区别于"被熔断器拦截"。
+    #[tokio::test]
+    async fn single_provider_with_failover_off_bypasses_open_breaker() {
+        let db = Arc::new(Database::memory().expect("memory db"));
+
+        db.update_circuit_breaker_config(&crate::proxy::circuit_breaker::CircuitBreakerConfig {
+            failure_threshold: 1,
+            timeout_seconds: 60,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        let forwarder = test_forwarder_with_db(db.clone());
+
+        // provider 必须先入库（record_result 受外键约束）。
+        let provider = test_provider_with_type(None); // id = provider-1
+        db.save_provider("claude", &provider).unwrap();
+
+        // 同样把 provider-1 打到 Open（冷却未到）。
+        forwarder
+            .router
+            .record_result("provider-1", "claude", false, false, Some("fail".into()))
+            .await
+            .unwrap();
+
+        let providers = vec![provider];
+
+        // failover OFF → 跳过熔断器：直接尝试转发该唯一供应商。
+        let result = forwarder
+            .forward_with_retry_inner(
+                &AppType::Claude,
+                http::Method::POST,
+                "/v1/messages",
+                json!({"model": "claude-3"}),
+                axum::http::HeaderMap::new(),
+                Extensions::new(),
+                providers,
+                false, // failover_enabled = false
+            )
+            .await;
+
+        // ForwardResult 未实现 Debug，无法用 expect_err；手动解构。
+        let err = match result {
+            Ok(_) => panic!("dial against empty provider config must fail"),
+            Err(err) => err,
+        };
+        // 关键区别：不是被熔断器拦截的 NoAvailableProvider，而是发起转发后的失败，
+        // 且错误携带被尝试的 provider —— 证明熔断器被绕过、请求确实尝试了该供应商。
+        assert!(
+            !matches!(err.error, ProxyError::NoAvailableProvider),
+            "failover 关闭时熔断器必须被绕过（不应返回 NoAvailableProvider），实际: {:?}",
+            err.error
+        );
+        assert!(
+            err.provider.is_some(),
+            "绕过熔断器后应发起转发，错误需携带被尝试的 provider"
+        );
     }
 
     #[test]
