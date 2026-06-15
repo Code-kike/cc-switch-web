@@ -1,0 +1,2 @@
+{"file": ".trellis/tasks/06-15-harden-residual-authenticated-web-api-vectors-post-audit-follow-up/prd.md", "reason": "Scope: R1 (sourcePath root guard) + R2 (logging default) to fix; R3/R4 accepted with rationale"}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "Web API Authentication + Web Request Hardening scenarios — the security contracts not to violate"}
