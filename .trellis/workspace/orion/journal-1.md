@@ -550,3 +550,38 @@ User-reported bug: codex auto-failover failed while single-account direct calls 
 ### Next Steps
 
 - None - task complete
+
+
+## Session 16: Audit + 2-round verification co-review of cc-switch-web (Phase 1-4)
+
+**Date**: 2026-06-15
+**Task**: Audit + 2-round verification co-review of cc-switch-web (Phase 1-4)
+**Branch**: `fix/web-audit-phase1-2`
+
+### Summary
+
+codex+Claude audit (13 consensus findings, multi-round debate) fixed across Phase 1-3 (C1 traversal, C2 Basic auth, F3/F4/F11 SSRF, F5/F6 bootstrap+migration parity, F7 breaker, F8 start-lock, F9 failover SSOT, F10 web-gate, M1, L2). A verification review (6-reviewer Workflow + codex, cross-validated) then found real SSRF gaps + an S3 regression in those fixes; Phase 4 closed them: get_guarded redirect-revalidating client + tauri-free ip_guard SSOT (0.0.0.0/CGNAT), testusagescript+stream_check guards, schemeless-S3 normalization, CSRF-theater removal, 4 dead-stub routers deleted. 3 commits on branch fix/web-audit-phase1-2 (NOT merged/deployed). Residual authenticated-only items (sourcePath read, MCP write-exec, debug-log prompts, OAuth plaintext) deferred to a follow-up task.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `e65b8a07` | (see git log) |
+| `2a0b3305` | (see git log) |
+| `a20ea3e1` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 15
-- **Last Active**: 2026-06-12
+- **Total Sessions**: 16
+- **Last Active**: 2026-06-15
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~552 | Active |
+| `journal-1.md` | ~587 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 16 | 2026-06-15 | Audit + 2-round verification co-review of cc-switch-web (Phase 1-4) | `e65b8a07`, `2a0b3305`, `a20ea3e1` | `fix/web-audit-phase1-2` |
 | 15 | 2026-06-12 | Fix web runtime global outbound proxy init (failover unreachable relays) | `74635c8f`, `a4b9bcee` | `main` |
 | 14 | 2026-06-12 | Port routing proxy + random auto-failover to web runtime | `260b5153`, `6dba3361`, `37fd9598`, `e44abf2d`, `ba53338b`, `cc4e24ef`, `abb71c40` | `main` |
 | 13 | 2026-06-11 | Sync upstream cc-switch v3.16.1+v3.16.2 into web fork | `f48138c0`, `d5cc0039`, `b8f6dbe2`, `50dc1e9d`, `34cf2330`, `886186d3`, `e6f42a01`, `a82a0367`, `b55e2f18`, `ca797628`, `91c1b55c`, `ddfa61cb`, `6f472ace` | `main` |
