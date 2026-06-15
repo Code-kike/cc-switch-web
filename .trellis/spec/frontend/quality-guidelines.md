@@ -1072,6 +1072,28 @@ env:
   aren't ambient like cookies; the default CORS is same-origin). Do NOT re-add CSRF
   token plumbing or advertise CSRF/rate-limit/cookie-session in docs. Mutating `/api`
   calls `fetch` directly with `credentials: "include"`.
+- **Residual authenticated-only vectors (06-15 follow-up)**: with C2 the whole `/api`
+  is auth-gated, so the remaining "write→exec"/"file-read" surfaces are OPERATOR-ONLY
+  (the single authenticated user configuring their own machine):
+  - `get-session-messages?sourcePath=` now root-guards reads exactly like
+    `delete_session` (`session_manager::load_messages` resolves the provider's session
+    roots, canonicalizes, and rejects out-of-root paths; the `sqlite:<db>` form must be
+    the provider's own DB) — out-of-root reads are rejected before any bytes.
+  - `POST /api/mcp/upsert-mcp-server` writes an MCP stdio command that runs on the next
+    CLI launch. This is the INTENDED operator feature; ACCEPTED post-C2 (no confirmation
+    gate). If the tailnet ever becomes multi-user, reconsider a confirmation gate or
+    command allowlist.
+  - OAuth token files are written `0o600` on Linux; encryption-at-rest is out of scope
+    for a single-user host (key-management cost > benefit when 0o600 already gates other
+    local users).
+- **Body-logging is privacy-by-default (06-15 follow-up)**: full request/response bodies
+  (prompts + model outputs) and SSE data are logged ONLY at `log::debug!`
+  (`proxy/forwarder.rs`, `proxy/response_processor.rs`). The shipped systemd unit defaults
+  to `RUST_LOG=info` so bodies are NOT journaled in plaintext; operators opt into
+  `cc_switch=debug` temporarily. `info!`/`warn!`/`error!` may carry metadata (model,
+  provider id, counts) and a ≤180-char summary of upstream HTTP ERROR responses
+  (`summarize_upstream_body`) — never the prompt or normal model output. Do NOT raise a
+  prompt/response BODY log above debug.
 
 #### 4. Validation & Error Matrix
 

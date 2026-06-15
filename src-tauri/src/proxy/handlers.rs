@@ -323,7 +323,14 @@ async fn handle_claude_transform(
         responses_sse_to_response_value(&body_str)?
     } else {
         serde_json::from_slice(&body_bytes).map_err(|e| {
-            log::error!("[Claude] 解析上游响应失败: {e}, body: {body_str}");
+            // Privacy: truncate the upstream body so a malformed response does not
+            // dump a full prompt/response body into the journal at `error!` level
+            // (visible under the shipped `RUST_LOG=info` default). 180 chars keeps
+            // diagnostic value, mirroring forwarder.rs's upstream-error summaries.
+            log::error!(
+                "[Claude] 解析上游响应失败: {e}, body: {}",
+                compact_error_message(&body_str, 180)
+            );
             ProxyError::TransformError(format!("Failed to parse upstream response: {e}"))
         })?
     };

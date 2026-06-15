@@ -184,13 +184,46 @@ fn row_to_json(row: &rusqlite::Row, columns: &[String]) -> Value {
     Value::Object(map)
 }
 
+/// Validate that the `<db>` file referenced by a `sqlite:` source is the
+/// provider's expected database (canonical equality), rejecting any
+/// attacker-supplied path pointing at an out-of-root SQLite file. Returns the
+/// canonicalized db path on success.
+fn validate_sqlite_db_path(db_path: &Path) -> Result<PathBuf, String> {
+    validate_sqlite_db_path_against(db_path, &get_hermes_db_path())
+}
+
+/// Inner form of [`validate_sqlite_db_path`] with the expected db path injected
+/// so the containment logic is unit-testable without touching global home env.
+fn validate_sqlite_db_path_against(
+    db_path: &Path,
+    expected_db_path: &Path,
+) -> Result<PathBuf, String> {
+    let db_path = db_path
+        .canonicalize()
+        .map_err(|e| format!("Failed to canonicalize Hermes database path: {e}"))?;
+    let expected_db_path = expected_db_path
+        .canonicalize()
+        .map_err(|e| format!("Failed to canonicalize expected Hermes database path: {e}"))?;
+    if db_path != expected_db_path {
+        return Err("SQLite path does not match expected Hermes database".to_string());
+    }
+    Ok(db_path)
+}
+
 /// Load messages from the Hermes SQLite database.
 pub fn load_messages_sqlite(source: &str) -> Result<Vec<SessionMessage>, String> {
     let (db_path, session_id) = parse_sqlite_source(source)
         .ok_or_else(|| format!("Invalid SQLite source reference: {source}"))?;
 
+    // Containment guard: only the provider's own database may be opened.
+    let db_path = validate_sqlite_db_path(&db_path)?;
+    read_messages_from_db(&db_path, &session_id)
+}
+
+/// Read messages for a session from a (already validated) Hermes SQLite db.
+fn read_messages_from_db(db_path: &Path, session_id: &str) -> Result<Vec<SessionMessage>, String> {
     let conn = Connection::open_with_flags(
-        &db_path,
+        db_path,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
     .map_err(|e| format!("Failed to open Hermes database: {e}"))?;
@@ -204,7 +237,7 @@ pub fn load_messages_sqlite(source: &str) -> Result<Vec<SessionMessage>, String>
         .map_err(|e| format!("Failed to prepare messages query: {e}"))?;
 
     let rows = stmt
-        .query_map([session_id.as_str()], |row| {
+        .query_map([session_id], |row| {
             let role: String = row.get(0)?;
             let content: String = row.get(1)?;
             let ts: Option<i64> = row.get(2).ok();
@@ -233,21 +266,13 @@ pub fn load_messages_sqlite(source: &str) -> Result<Vec<SessionMessage>, String>
 pub fn delete_session_sqlite(session_id: &str, source: &str) -> Result<bool, String> {
     let (db_path, ref_session_id) = parse_sqlite_source(source)
         .ok_or_else(|| format!("Invalid SQLite source reference: {source}"))?;
-    let db_path = db_path
-        .canonicalize()
-        .map_err(|e| format!("Failed to canonicalize Hermes database path: {e}"))?;
-    let expected_db_path = get_hermes_db_path()
-        .canonicalize()
-        .map_err(|e| format!("Failed to canonicalize expected Hermes database path: {e}"))?;
 
     if ref_session_id != session_id {
         return Err(format!(
             "Hermes SQLite session ID mismatch: expected {session_id}, found {ref_session_id}"
         ));
     }
-    if db_path != expected_db_path {
-        return Err("SQLite path does not match expected Hermes database".to_string());
-    }
+    let db_path = validate_sqlite_db_path(&db_path)?;
 
     let conn =
         Connection::open(&db_path).map_err(|e| format!("Failed to open Hermes database: {e}"))?;
@@ -501,6 +526,26 @@ mod tests {
     use std::io::Write;
     use tempfile::tempdir;
 
+    fn create_hermes_schema(conn: &Connection) {
+        conn.execute_batch(
+            "
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                title TEXT,
+                cwd TEXT
+            );
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at INTEGER
+            );
+            ",
+        )
+        .expect("create hermes schema");
+    }
+
     #[test]
     fn parse_sqlite_source_valid() {
         let (path, id) = parse_sqlite_source("sqlite:/home/user/.hermes/state.db#session-123")
@@ -599,5 +644,58 @@ mod tests {
 
         delete_session(dir.path(), &path, "session").expect("should delete");
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn validate_sqlite_db_path_accepts_expected_db() {
+        let temp = tempdir().expect("tempdir");
+        let expected_db = temp.path().join("state.db");
+        Connection::open(&expected_db).expect("create expected sqlite db");
+
+        let validated = validate_sqlite_db_path_against(&expected_db, &expected_db)
+            .expect("expected db should be accepted");
+        assert_eq!(validated, expected_db.canonicalize().expect("canonicalize"));
+    }
+
+    #[test]
+    fn validate_sqlite_db_path_rejects_foreign_db() {
+        let temp = tempdir().expect("tempdir");
+        let expected_db = temp.path().join("state.db");
+        Connection::open(&expected_db).expect("create expected sqlite db");
+
+        // A foreign database an attacker could try to read via `sqlite:<db>#<id>`.
+        let foreign_db = temp.path().join("foreign.db");
+        Connection::open(&foreign_db).expect("create foreign sqlite db");
+
+        let err = validate_sqlite_db_path_against(&foreign_db, &expected_db)
+            .expect_err("foreign db should be rejected");
+        assert!(err.contains("expected Hermes database"));
+    }
+
+    #[test]
+    fn load_messages_sqlite_reads_expected_db_when_path_matches() {
+        let temp = tempdir().expect("tempdir");
+        let db_path = temp.path().join("state.db");
+        let conn = Connection::open(&db_path).expect("open sqlite db");
+        create_hermes_schema(&conn);
+        conn.execute(
+            "INSERT INTO sessions (id, title, cwd) VALUES (?1, ?2, ?3)",
+            ("s1", "Session", "/tmp/project"),
+        )
+        .expect("insert session");
+        conn.execute(
+            "INSERT INTO messages (session_id, role, content, created_at) VALUES (?1, ?2, ?3, ?4)",
+            ("s1", "user", "Hello", 1000_i64),
+        )
+        .expect("insert message");
+        drop(conn);
+
+        // Confirm the read path produces messages once db-path validation passes
+        // (validation itself is covered race-free by the tests above).
+        assert!(validate_sqlite_db_path_against(&db_path, &db_path).is_ok());
+        let messages = read_messages_from_db(&db_path, "s1").expect("read messages");
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].role, "user");
+        assert_eq!(messages[0].content, "Hello");
     }
 }

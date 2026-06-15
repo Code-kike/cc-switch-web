@@ -91,7 +91,10 @@ pub fn scan_sessions() -> Vec<SessionMeta> {
 }
 
 pub fn load_messages(provider_id: &str, source_path: &str) -> Result<Vec<SessionMessage>, String> {
-    // SQLite sessions use a "sqlite:" prefixed source_path
+    // SQLite sessions use a "sqlite:" prefixed source_path. The `<db>` file is
+    // validated against the provider's expected database before reading so a
+    // crafted `sqlite:<arbitrary-db>:<id>` cannot open an out-of-root SQLite DB
+    // (mirrors `delete_session_sqlite`'s db-path validation).
     if provider_id == "opencode" && source_path.starts_with("sqlite:") {
         return opencode::load_messages_sqlite(source_path);
     }
@@ -99,7 +102,15 @@ pub fn load_messages(provider_id: &str, source_path: &str) -> Result<Vec<Session
         return hermes::load_messages_sqlite(source_path);
     }
 
+    // Containment guard: the requested file must resolve inside one of the
+    // provider's legitimate session roots. Mirrors `delete_session`'s root
+    // validation so the read-allowed set is identical to the delete-allowed set;
+    // an attacker-supplied `source_path` pointing outside all roots (e.g.
+    // `/etc/passwd`) is rejected before any bytes are read.
+    let roots = provider_roots(provider_id)?;
     let path = Path::new(source_path);
+    let validated_path = validate_source_path_within_roots(provider_id, path, &roots)?;
+    let path = validated_path.as_path();
     match provider_id {
         "codex" => codex::load_messages(path),
         "claude" => claude::load_messages(path),
@@ -168,6 +179,48 @@ fn delete_session_with_roots(
                 "hermes" => hermes::delete_session(&validated_root, &validated_source, session_id),
                 _ => Err(format!("Unsupported provider: {provider_id}")),
             };
+        }
+    }
+
+    if !saw_existing_root {
+        return Err(format!(
+            "Session root not found for provider {provider_id}: {}",
+            roots
+                .first()
+                .map(|root| root.display().to_string())
+                .unwrap_or_else(|| "<none>".to_string())
+        ));
+    }
+
+    Err(format!(
+        "Session source path is outside provider roots: {}",
+        source_path.display()
+    ))
+}
+
+/// Resolve `source_path` against the provider's session roots and return the
+/// canonicalized path when it is contained in one of the (existing) roots.
+///
+/// Mirrors `delete_session_with_roots`'s containment logic exactly so the set of
+/// readable session sources is identical to the set of deletable ones: the path
+/// must exist, canonicalize, and start with a canonicalized existing root.
+fn validate_source_path_within_roots(
+    provider_id: &str,
+    source_path: &Path,
+    roots: &[PathBuf],
+) -> Result<PathBuf, String> {
+    let validated_source = canonicalize_existing_path(source_path, "session source")?;
+
+    let mut saw_existing_root = false;
+    for root in roots {
+        if !root.exists() {
+            continue;
+        }
+
+        saw_existing_root = true;
+        let validated_root = canonicalize_existing_path(root, "session root")?;
+        if validated_source.starts_with(&validated_root) {
+            return Ok(validated_source);
         }
     }
 
@@ -307,6 +360,56 @@ mod tests {
                 .expect_err("expected missing source path to fail");
 
         assert!(err.contains("session source not found"));
+    }
+
+    #[test]
+    fn load_validate_accepts_source_path_under_any_allowed_root() {
+        let active_root = tempdir().expect("active root");
+        let archived_root = tempdir().expect("archived root");
+        let source = archived_root.path().join("session.jsonl");
+        write_codex_session(&source, "archived-session");
+
+        let validated = validate_source_path_within_roots(
+            "codex",
+            &source,
+            &[
+                active_root.path().to_path_buf(),
+                archived_root.path().to_path_buf(),
+            ],
+        )
+        .expect("in-root source accepted");
+
+        assert_eq!(
+            validated,
+            source.canonicalize().expect("canonicalize source")
+        );
+    }
+
+    #[test]
+    fn load_validate_rejects_source_path_outside_provider_root() {
+        let root = tempdir().expect("tempdir");
+        let outside = tempdir().expect("tempdir");
+        let source = outside.path().join("session.jsonl");
+        std::fs::write(&source, "{}").expect("write source");
+
+        let err = validate_source_path_within_roots("codex", &source, &[root.path().to_path_buf()])
+            .expect_err("expected outside-root path to be rejected");
+
+        assert!(err.contains("outside provider roots"));
+    }
+
+    #[test]
+    fn load_messages_rejects_source_path_outside_provider_root() {
+        // End-to-end: `load_messages` must reject a path that escapes the real
+        // provider roots (e.g. a host file) before reading any bytes.
+        let outside = tempdir().expect("tempdir");
+        let source = outside.path().join("etc-passwd-stand-in");
+        std::fs::write(&source, "root:x:0:0:root:/root:/bin/bash\n").expect("write source");
+
+        let err = load_messages("codex", source.to_str().expect("utf8 path"))
+            .expect_err("expected out-of-root read to be rejected");
+
+        assert!(err.contains("outside provider roots") || err.contains("Session root not found"));
     }
 
     #[test]

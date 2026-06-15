@@ -26,7 +26,11 @@ Environment=CC_SWITCH_WEB_AUTH_USER=cc-switch
 # Environment=CC_SWITCH_WEB_AUTH_PASSWORD=CHANGE_ME_to_a_strong_password
 Environment=CC_SWITCH_DATA_DIR=%h/.cc-switch
 Environment=CC_SWITCH_WEB_DIST_DIR=%h/.local/share/cc-switch-web/dist-web
-Environment=RUST_LOG=info,cc_switch=debug
+# Privacy-by-default: full request/response bodies (prompts + model outputs) are
+# logged only at `cc_switch=debug`. Keep `info` so those bodies are NOT written to
+# the systemd journal in plaintext. To troubleshoot, an operator can TEMPORARILY
+# set `RUST_LOG=info,cc_switch=debug` (then revert) to capture verbose proxy traffic.
+Environment=RUST_LOG=info
 WorkingDirectory=%h
 
 [Install]

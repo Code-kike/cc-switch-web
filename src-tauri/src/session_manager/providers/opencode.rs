@@ -224,14 +224,47 @@ pub fn load_messages(path: &Path) -> Result<Vec<SessionMessage>, String> {
     Ok(messages)
 }
 
+/// Validate that the `<db>` file referenced by a `sqlite:` source is the
+/// provider's expected database (canonical equality), rejecting any
+/// attacker-supplied path pointing at an out-of-root SQLite file. Returns the
+/// canonicalized db path on success.
+fn validate_sqlite_db_path(db_path: &Path) -> Result<PathBuf, String> {
+    validate_sqlite_db_path_against(db_path, &get_opencode_db_path())
+}
+
+/// Inner form of [`validate_sqlite_db_path`] with the expected db path injected
+/// so the containment logic is unit-testable without touching global home env.
+fn validate_sqlite_db_path_against(
+    db_path: &Path,
+    expected_db_path: &Path,
+) -> Result<PathBuf, String> {
+    let db_path = db_path
+        .canonicalize()
+        .map_err(|e| format!("Failed to canonicalize SQLite database path: {e}"))?;
+    let expected_db_path = expected_db_path
+        .canonicalize()
+        .map_err(|e| format!("Failed to canonicalize expected OpenCode database path: {e}"))?;
+    if db_path != expected_db_path {
+        return Err("SQLite path does not match expected OpenCode database".to_string());
+    }
+    Ok(db_path)
+}
+
 /// Load messages from the OpenCode SQLite database for a given source reference.
 /// Joins the `message` and `part` tables in memory to reconstruct full messages.
 pub fn load_messages_sqlite(source: &str) -> Result<Vec<SessionMessage>, String> {
     let (db_path, session_id) = parse_sqlite_source(source)
         .ok_or_else(|| format!("Invalid SQLite source reference: {source}"))?;
 
+    // Containment guard: only the provider's own database may be opened.
+    let db_path = validate_sqlite_db_path(&db_path)?;
+    read_messages_from_db(&db_path, &session_id)
+}
+
+/// Read messages for a session from a (already validated) OpenCode SQLite db.
+fn read_messages_from_db(db_path: &Path, session_id: &str) -> Result<Vec<SessionMessage>, String> {
     let conn = Connection::open_with_flags(
-        &db_path,
+        db_path,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
     .map_err(|e| format!("Failed to open OpenCode database: {e}"))?;
@@ -243,7 +276,7 @@ pub fn load_messages_sqlite(source: &str) -> Result<Vec<SessionMessage>, String>
         .map_err(|e| format!("Failed to prepare message query: {e}"))?;
 
     let msg_rows = msg_stmt
-        .query_map([session_id.as_str()], |row| {
+        .query_map([session_id], |row| {
             let id: String = row.get(0)?;
             let ts: i64 = row.get(1)?;
             let data: String = row.get(2)?;
@@ -258,7 +291,7 @@ pub fn load_messages_sqlite(source: &str) -> Result<Vec<SessionMessage>, String>
         .map_err(|e| format!("Failed to prepare part query: {e}"))?;
 
     let part_rows = part_stmt
-        .query_map([session_id.as_str()], |row| {
+        .query_map([session_id], |row| {
             let message_id: String = row.get(0)?;
             let data: String = row.get(1)?;
             Ok((message_id, data))
@@ -382,21 +415,13 @@ pub fn delete_session(storage: &Path, path: &Path, session_id: &str) -> Result<b
 pub fn delete_session_sqlite(session_id: &str, source: &str) -> Result<bool, String> {
     let (db_path, ref_session_id) = parse_sqlite_source(source)
         .ok_or_else(|| format!("Invalid SQLite source reference: {source}"))?;
-    let db_path = db_path
-        .canonicalize()
-        .map_err(|e| format!("Failed to canonicalize SQLite database path: {e}"))?;
-    let expected_db_path = get_opencode_db_path()
-        .canonicalize()
-        .map_err(|e| format!("Failed to canonicalize expected OpenCode database path: {e}"))?;
 
     if ref_session_id != session_id {
         return Err(format!(
             "OpenCode SQLite session ID mismatch: expected {session_id}, found {ref_session_id}"
         ));
     }
-    if db_path != expected_db_path {
-        return Err("SQLite path does not match expected OpenCode database".to_string());
-    }
+    let db_path = validate_sqlite_db_path(&db_path)?;
 
     let conn =
         Connection::open(&db_path).map_err(|e| format!("Failed to open OpenCode database: {e}"))?;
@@ -878,8 +903,7 @@ mod tests {
         .expect("insert part 3");
         drop(conn);
 
-        let source = format!("sqlite:{}:ses_1", db_path.display());
-        let messages = load_messages_sqlite(&source).expect("load sqlite messages");
+        let messages = read_messages_from_db(&db_path, "ses_1").expect("load sqlite messages");
 
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].role, "user");
@@ -888,6 +912,24 @@ mod tests {
         assert_eq!(messages[1].role, "assistant");
         assert_eq!(messages[1].content, "[Tool: bash]\nDone");
         assert_eq!(messages[1].ts, Some(2000));
+
+        // Db-path validation accepts the legitimate db (race-free, no global env).
+        assert!(validate_sqlite_db_path_against(&db_path, &db_path).is_ok());
+    }
+
+    #[test]
+    fn validate_sqlite_db_path_rejects_foreign_db() {
+        let temp = tempdir().expect("tempdir");
+        let expected_db = temp.path().join("opencode.db");
+        Connection::open(&expected_db).expect("create expected sqlite db");
+
+        // A foreign database an attacker could try to read via `sqlite:<db>:<id>`.
+        let foreign_db = temp.path().join("foreign.db");
+        Connection::open(&foreign_db).expect("create foreign sqlite db");
+
+        let err = validate_sqlite_db_path_against(&foreign_db, &expected_db)
+            .expect_err("foreign db should be rejected");
+        assert!(err.contains("expected OpenCode database"));
     }
 
     #[test]
