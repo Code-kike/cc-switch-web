@@ -618,3 +618,37 @@ Follow-up to the archived audit task: R1 — session_manager::load_messages now 
 ### Next Steps
 
 - None - task complete
+
+
+## Session 18: Round-2 verification of audit fixes (Workflow + codex) — closed 4 converged residuals
+
+**Date**: 2026-06-15
+**Task**: Round-2 verification of audit fixes (Workflow + codex) — closed 4 converged residuals
+**Branch**: `fix/web-audit-phase1-2`
+
+### Summary
+
+Re-audited the audit-fix branch twice with the user-requested loop (Workflow 6-dim + codex blind → cross-validate findings to convergence → co-deliberate fix plan with codex ('converged') → implement → cross-validate fixes with codex ('verified')). Scope-C round (ed07d9ba): fixed 9 findings — usage custom-template SSRF, redirect-hardening (get_guarded), request-log truncation, F9 enable atomicity, CSRF cross-site intent check, OPTIONS preflight exemption, ip_guard exotic ranges, web background workers, dead-code cleanup. Round-2 (d5210074): closed 4 residuals the re-review found — native-template (token_plan/balance) base_url SSRF (now ALL web outbound usage paths guarded), provider_health.last_error truncation, auth IPv6 Host bracket-parse, set_auto_failover_enabled full queue+flag atomicity; accepted desktop redirect-policy parity. All via trellis-implement→trellis-check; gates green (desktop clippy -D +1457 tests, web 1422 tests, fmt/format/routes/locales/tsc). Branch fix/web-audit-phase1-2 NOT pushed/merged/deployed.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `ed07d9ba` | (see git log) |
+| `d5210074` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
