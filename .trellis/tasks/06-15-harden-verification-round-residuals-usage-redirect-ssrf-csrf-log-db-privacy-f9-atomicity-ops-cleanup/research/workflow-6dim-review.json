@@ -1,0 +1,537 @@
+{
+  "summary": "Re-audit fix/web-audit-phase1-2: 6-dimension firsthand code review (verify fixes + find new issues)",
+  "agentCount": 6,
+  "logs": [
+    "[stall] agent \"review:proxy-failover\" stalled (no progress) after 1300s — retrying (1/5)",
+    "Review complete: 6/6 dimensions reported"
+  ],
+  "result": [
+    {
+      "key": "auth",
+      "result": {
+        "dimension": "Web auth & access control (C2 + C1)",
+        "summary": "Verified the C2 Basic-auth wiring, the non-loopback bind refusal, and the C1 static path-traversal guard firsthand, including empirical probing of the auth-predicate-vs-router path-normalization divergence (built a standalone axum 0.7.9 + tower-http 0.5.2 harness) and the is_safe_relative_asset component check against a full traversal payload set on Linux. All four core guards are sound: no path that reaches an /api/* handler can dodge starts_with(\"/api/\") because axum routes on the same raw, un-percent-decoded path, so any auth-dodging path also dodges the route and falls to the public SPA fallback (no handler reached). The /api/health exemption is exact-match (not prefix), so /api/healthx and /api/health/../providers are correctly gated. The C1 guard rejects RootDir + ParentDir components and is applied before the only user-input join+read; the /etc/hostname repro is closed (falls back to SPA index). ct_eq is length-checked and both user+password are compared unconditionally (no short-circuit timing oracle); empty password cannot enable auth. The non-loopback refusal fails closed for 0.0.0.0, ::, and even ::ffff:127.0.0.1 (treated as non-loopback → requires password), and HOST must parse as an IpAddr so a hostname can't smuggle a non-loopback bind. The 18 web_api tests pass under the web-server feature. NEW finding: with the CORS layer nested inside /api but require_auth on the outer router, a CORS preflight (OPTIONS /api/*, which browsers send without credentials) is 401'd before CORS handling — so setting CORS_ALLOW_ORIGINS cannot actually enable a working cross-origin SPA (fails closed; usability/correctness gap, not a security hole). Plus an info-level CORS_ALLOW_ORIGINS=* + allow_credentials operator foot-gun.",
+        "findings": [
+          {
+            "title": "C2 require_auth public-path predicate is non-bypassable: auth and router share the same raw path",
+            "kind": "confirmation-ok",
+            "severity": "info",
+            "confidence": "high",
+            "file": "src-tauri/src/web_api/middleware/auth.rs",
+            "lines": "110-128",
+            "evidence": "`let is_public = !path.starts_with(\"/api/\") || path == \"/api/health\";` (auth.rs:112) runs on the OUTER router (routes.rs:35, `.layer(from_fn(mw::auth::require_auth))` applied after `.nest(\"/api\", api)`), so `req.uri().path()` is the full, raw, un-percent-decoded path. I built a standalone axum 0.7.9 harness replicating `nest(\"/api\", inner).fallback(spa).layer(require_auth)` and probed bypass vectors with auth-enabled-but-no-creds: `/api/providers`->401, `/api/health`->200, `/api/healthx`->401, `/api/health/../providers`->401, `//api/providers`->200 SPA (no handler), `/API/providers`->200 SPA, `/%61pi/providers`->200 SPA, `/api//providers`->401, `/api/providers/`->401, `/./api/providers`->200 SPA, `/api/../api/providers`->401, `/api` (bare)->200 SPA, `/api/`->401. No payload that dodged `starts_with(\"/api/\")` ever reached an /api handler — matchit routes on the SAME raw path, so an auth-dodging path also fails to match the nest and falls to the public SPA fallback. The `/api/health` exemption is exact-match, so `/api/healthx` and `/api/health/..` stay gated.",
+            "impact": "The C2 auth guard cannot be bypassed via case, double-slash, percent-encoding, trailing slash, dot-segments, or the health-path prefix trick. The known divergence class (auth-predicate string check vs router matcher) does not apply here because both use the identical raw path and no NormalizePath layer is installed.",
+            "recommendation": "No change required. If a NormalizePath/normalize layer is ever added to the outer router, re-verify this invariant — that would reintroduce the divergence."
+          },
+          {
+            "title": "C1 is_safe_relative_asset closes the /etc/hostname traversal and is applied before every user-input read",
+            "kind": "confirmation-ok",
+            "severity": "info",
+            "confidence": "high",
+            "file": "src-tauri/src/web_api/routes.rs",
+            "lines": "98-141",
+            "evidence": "`fn is_safe_relative_asset(rel)` (routes.rs:135-141) returns true only when every `Path::components()` element is `Component::Normal(_) | Component::CurDir`. In `try_serve_dist_web_asset` the ONLY read using attacker input is gated by it: `if is_safe_relative_asset(rel) { let candidate = dist_root.join(rel); ... read }` (routes.rs:114-119); the other two reads use the fixed `dist_root.join(\"index.html\")` (routes.rs:103, 122). I verified on Linux: `/etc/passwd`->safe=false (RootDir), `..`/`../`/`a/../b`/`./../etc`->safe=false (ParentDir). The C1 repro `/../../../../../../etc/hostname` -> after `trim_start_matches('/')` becomes `../../../../../../etc/hostname` -> ParentDir present -> safe=false -> has no asset extension -> serves index.html. The committed regression test `path_traversal_does_not_read_outside_dist_root` passes.",
+            "impact": "The pre-fix exploit (curl --path-as-is .../../etc/hostname returning the host file) is closed. No read-before-guard ordering bug.",
+            "recommendation": "No change required on Linux (the production host). Note for awareness only: backslash and Windows-prefix/UNC payloads (C:\\..., \\\\server\\share) pass is_safe_relative_asset on Linux because backslash is not a path separator there — they become single Normal components that join inside dist-web and simply 404; they would only matter on a Windows host, which is out of scope."
+          },
+          {
+            "title": "C2 credential compare is length-checked, colon-split correct, and free of a user-mismatch timing short-circuit",
+            "kind": "confirmation-ok",
+            "severity": "info",
+            "confidence": "high",
+            "file": "src-tauri/src/web_api/middleware/auth.rs",
+            "lines": "59-94",
+            "evidence": "`ct_eq` returns early on length mismatch (auth.rs:60-62) then XOR-accumulates over the full length (only credential length leaks, documented at auth.rs:57-58). `credentials_match` splits on the FIRST colon via `decoded.iter().position(|&b| b == b':')` (auth.rs:84) so passwords may contain colons (RFC 7617); both checks run unconditionally and combine with bitwise `&` (`user_ok & pass_ok`, auth.rs:91-93) so a fast user mismatch cannot short-circuit the password timing. `web_auth()` filters out an empty password (auth.rs:39-41, `.filter(|p| !p.is_empty())?`) so auth can never be 'enabled' with a blank secret; empty user falls back to `cc-switch` (auth.rs:42-45). Non-ASCII Authorization header -> `to_str()` fails -> reject (auth.rs:72). Non-Basic scheme / malformed base64 / missing colon all return false. Unit test `credentials_match_accepts_correct_and_rejects_wrong` covers these and passes.",
+            "impact": "No credential timing oracle beyond length, no empty-password enablement, correct user/pass split.",
+            "recommendation": "No change required."
+          },
+          {
+            "title": "C2 non-loopback bind refusal fails closed for 0.0.0.0/::/IPv4-mapped loopback and cannot be smuggled via hostname",
+            "kind": "confirmation-ok",
+            "severity": "info",
+            "confidence": "high",
+            "file": "src-tauri/examples/server.rs",
+            "lines": "217-247",
+            "evidence": "HOST is parsed via `.parse()` into `IpAddr` (server.rs:217-222) so a hostname like `localhost` errors out (`invalid HOST`) rather than being resolved — no DNS-based loopback smuggling. The gate `if !addr.ip().is_loopback() && !web_api::middleware::auth::is_configured()` (server.rs:237) returns Err. I verified `IpAddr::is_loopback()`: 127.0.0.1/127.5.5.5/::1 -> true; 0.0.0.0 (unspecified) -> false, :: -> false, ::ffff:127.0.0.1 -> false. So every wildcard/public bind requires CC_SWITCH_WEB_AUTH_PASSWORD, and even the IPv4-mapped IPv6 loopback fails closed (refuses without a password). `is_configured()`/`web_auth()` use a process-lifetime OnceLock seeded from env at first call, so the startup refusal check and the middleware enforcement read the same cached creds (no TOCTOU). Loopback bind with no password correctly skips enforcement (require_auth `None => next.run`), preserving local dev usability.",
+            "impact": "The unauthenticated API cannot be exposed on a non-loopback address; loopback dev stays password-free. Refusal direction is conservative.",
+            "recommendation": "No change required."
+          },
+          {
+            "title": "CORS preflight on /api/* is 401'd by require_auth, so CORS_ALLOW_ORIGINS cannot actually enable cross-origin API access",
+            "kind": "new-issue",
+            "severity": "low",
+            "confidence": "high",
+            "file": "src-tauri/src/web_api/routes.rs",
+            "lines": "28-37, 39-71",
+            "evidence": "`mw::cors::layer()` is applied INSIDE the nested api_router (routes.rs:66), while `require_auth` is on the OUTER router (routes.rs:35). In tower, outer layers run first, so the auth layer wraps the CORS layer. require_auth gates ALL methods on /api/* (it only exempts by path, not method — auth.rs:112). Browsers send CORS preflight (OPTIONS) WITHOUT credentials, so the preflight carries no Authorization header and gets 401'd before the CorsLayer can answer it. I reproduced this with a standalone axum+tower-http 0.5.2 harness: `OPTIONS /api/providers` with Origin + Access-Control-Request-Method and no auth header -> 401 (not 200/204). Since the preflight fails, the browser never issues the real cross-origin request.",
+            "impact": "Setting CORS_ALLOW_ORIGINS (the only supported cross-origin mechanism) does not work when Basic auth is enabled — the documented escape hatch is silently non-functional. Fails CLOSED (no security exposure), but a misleading/dead config knob. Low because the production deployment is same-origin (browser loads the SPA from the same host), so no preflight occurs in normal use.",
+            "recommendation": "Either (a) exempt the CORS preflight from auth (let OPTIONS preflight requests with an Origin header pass through to the CorsLayer, e.g. short-circuit `if req.method()==OPTIONS && req.headers().contains_key(ORIGIN)`), or (b) document that CORS_ALLOW_ORIGINS is incompatible with Basic auth and drop the knob to avoid the foot-gun. Option (a) keeps real requests gated since the actual cross-origin GET/POST still carries credentials and is auth-checked."
+          },
+          {
+            "title": "CORS allow_credentials(true) combined with an operator-supplied wildcard in CORS_ALLOW_ORIGINS",
+            "kind": "new-issue",
+            "severity": "info",
+            "confidence": "medium",
+            "file": "src-tauri/src/web_api/middleware/cors.rs",
+            "lines": "11-37",
+            "evidence": "`.allow_credentials(true)` (cors.rs:24) is always set, and `CORS_ALLOW_ORIGINS` is parsed verbatim into `AllowOrigin::list(origins)` (cors.rs:26-33) via `HeaderValue::from_str(s.trim())`. A literal `*` entry would be reflected as an allowed origin string. The default path (env unset) sets NO allow_origin -> same-origin only, which is safe. The audit's cors.rs change only removed the dead `x-csrf-token` allowed header and reworded the doc comment (git diff main...HEAD: +1/-1 lines plus the header removal); it did NOT widen origins.",
+            "impact": "Only reachable if the single operator deliberately sets CORS_ALLOW_ORIGINS to include `*` (or an attacker-controlled origin) AND knows the Basic-auth password — and per the finding above the preflight is 401'd anyway. So this is an operator foot-gun with no realistic external-attacker path under this threat model. Recorded for defense-in-depth completeness only.",
+            "recommendation": "Optionally reject a literal `*` (or any wildcard) when allow_credentials is true, logging a warning, so the combination can't be misconfigured. Not required for the current single-operator deployment."
+          }
+        ]
+      }
+    },
+    {
+      "key": "ssrf",
+      "result": {
+        "dimension": "SSRF & outbound hardening (P4-A/B/C + F3 + F4 + F11)",
+        "summary": "Verified the SSRF cluster firsthand. The single-SSOT ip_guard (#[path]-shared by the web binary, no drift), the guarded redirect client, validate_outbound_url, the S3 schemeless-normalize regression fix, and the F11 speed-test bound are all genuinely sound for the classic internal ranges and the requested bypass classes (decimal/hex/userinfo/fragment/IPv6-literal/v4-mapped all blocked). Two real gaps found: (1) HIGH — test_usage_script has a custom-template SSRF bypass: in custom mode with an empty base_url the handler skips validate_outbound_url, usage_script.rs skips HTTPS+same-origin checks, and the script-controlled request.url is dialed via the UNGUARDED get() client, reaching e.g. 169.254.169.254. (2) MEDIUM/LOW — the guarded redirect client (get_guarded) is only used by balance/coding_plan/model_fetch; webdav, s3, stream_check, and speedtest dial user/redirect-influenced URLs through the unguarded get() after a single upfront validate, so a 30x redirect (or DNS-rebind) to an internal IP is followed un-rechecked. Plus info-level reserved-range gaps in ip_guard (6to4/NAT64/v4-compat/multicast/0.0.0.0-8). All are operator-password-gated.",
+        "findings": [
+          {
+            "title": "test_usage_script custom-template mode is an authenticated SSRF: script-controlled request.url dialed via unguarded client, bypassing validate_outbound_url",
+            "kind": "fix-incomplete",
+            "severity": "high",
+            "confidence": "high",
+            "file": "src-tauri/src/usage_script.rs + src-tauri/src/web_api/handlers/usage.rs",
+            "lines": "usage.rs:330-334; usage_script.rs:146-148, 241, 366, 614-657",
+            "evidence": "Handler guard is conditional: `if let Some(base_url) = request.base_url.as_deref() { if !base_url.trim().is_empty() { validate_outbound_url(base_url).await?; } }` (usage.rs:330-334) — when base_url is empty/None it is NOT validated. In custom mode `should_validate_base_url(base_url, true)` returns false (usage_script.rs:614 `!base_url.is_empty() && !is_custom_template`) so validate_base_url is skipped, and validate_request_url skips BOTH the HTTPS check (`if !is_custom_template && ...`) and the same-origin check (`if !base_url.is_empty() && !is_custom_template`) (usage_script.rs:644-655). The actual dial uses the UNGUARDED client: `let client = crate::proxy::http_client::get();` then `client.request(method, &config.url)` (usage_script.rs:366,379) where config.url is the script-controlled request.url — never passed through ip_guard. is_loopback_host (usage_script.rs:710-718) only checks .is_loopback(), missing 169.254.x/10.x/CGNAT even in non-custom mode.",
+            "impact": "An operator-authenticated request to /api/usage/testusagescript with app=...&templateType=custom and base_url=\"\" can set the script's request.url to http://169.254.169.254/latest/meta-data/, http://127.0.0.1:<port>/, 10.x, Tailscale 100.64.x, etc., and read the response body — defeating the P4-A1 guard the audit specifically added to this endpoint. Cloud-metadata/internal-service exfiltration behind the auth boundary.",
+            "recommendation": "Validate the actually-dialed URL, not just base_url. Either call validate_outbound_url on the resolved request.url inside send_http_request (or right after validate_request_url at usage_script.rs:241) for the web runtime, or have the web handler reject custom-template mode, or switch usage_script's send_http_request to http_client::get_guarded(). Note even get_guarded only re-checks redirect hops to IP literals, so an explicit validate of request.url is the correct fix here."
+          },
+          {
+            "title": "Guarded redirect client (get_guarded) not used by webdav/s3/stream_check/speedtest — redirect & DNS-rebinding TOCTOU window left open for those outbound paths",
+            "kind": "fix-incomplete",
+            "severity": "medium",
+            "confidence": "high",
+            "file": "src-tauri/src/services/stream_check.rs, src-tauri/src/services/webdav.rs, src-tauri/src/services/s3.rs, src-tauri/src/services/speedtest.rs",
+            "lines": "stream_check.rs:256,710; webdav.rs:134,173,231,258,302; s3.rs:335,377,422,488; speedtest.rs:122",
+            "evidence": "Only balance.rs/coding_plan.rs/model_fetch.rs call http_client::get_guarded() (the client with the per-hop is_blocked_ip redirect policy). stream_check.rs dials with `let client = crate::proxy::http_client::get();` (stream_check.rs:256 and :710) — reqwest's DEFAULT redirect policy (follow up to 10) applies, so a public provider base_url that the handler validated upfront (providers.rs:578-579 validate_outbound_url(&base_url)) can 30x-redirect to http://127.0.0.1/ and the redirect is followed un-rechecked. Same pattern in webdav.rs/s3.rs (all get()) and speedtest.rs build_client returns http_client::get() (speedtest.rs:122). The validate-then-dial gap (validate_outbound_url resolves DNS, then a separate client connects) is the documented DNS-rebinding residual (http_client.rs:241-244) and is only narrowed (not closed) for the get() callers since they lack even the redirect re-check.",
+            "impact": "Authenticated SSRF via HTTP redirect from an attacker-controlled public host to an internal address (metadata, loopback proxy admin, RFC1918) for Stream Check / WebDAV / S3 / speed-test. Lower than finding #1 because it needs the attacker to control a public host that issues a 302 to an internal IP literal (or win a DNS-rebind race), and is operator-gated.",
+            "recommendation": "Route the web-reachable user-URL dials (stream_check, webdav, s3, speedtest) through get_guarded() so redirect hops to internal IP literals are aborted, matching balance/coding_plan. This closes the redirect vector cheaply; the domain-redirect/DNS-rebind residual remains acknowledged."
+          },
+          {
+            "title": "ip_guard reserved-range gaps: 6to4, NAT64, IPv4-compatible ::a.b.c.d, IPv4 multicast, and 0.0.0.0/8 (non-zero) are not blocked",
+            "kind": "new-issue",
+            "severity": "info",
+            "confidence": "high",
+            "file": "src-tauri/src/proxy/ip_guard.rs",
+            "lines": "21-67",
+            "evidence": "Compiled a standalone replica of is_blocked_ip and ran it: 6to4 `2002:7f00:1::` (embeds 127.0.0.1) => blocked=false; NAT64 `64:ff9b::7f00:1` => false; IPv4-compatible `::127.0.0.1` => false (to_ipv4_mapped() returns None for the deprecated ::a.b.c.d form, so the v6 path runs and fc00/fe80 don't match); IPv4 multicast `224.0.0.1` => false (not loopback/private/link_local/unspecified/cgnat); `0.1.2.3` => false (is_unspecified() is only true for exact 0.0.0.0, so the rest of 0.0.0.0/8 — which Linux also routes to localhost — is reachable). Correctly blocked: ::ffff:127.0.0.1, ::ffff:169.254.169.254, ::1, ::, fe80::/10, fc00::/7, 100.64/10, RFC1918.",
+            "impact": "Defense-in-depth only under this single-operator threat model: reaching localhost via these forms requires the host to actually route 6to4/NAT64/v4-compat to loopback (uncommon on a default Linux host) and the attacker to already hold the operator password. 0.0.0.0/8 and multicast are not loopback so not directly exploitable. The metadata IP 169.254.169.254 and all common internal ranges ARE covered.",
+            "recommendation": "Optional hardening: also reject IPv4 in 0.0.0.0/8 (octets[0]==0), multicast/reserved (ip.is_multicast(), 240.0.0.0/4), and for IPv6 unwrap via to_ipv4() (covers ::a.b.c.d) plus block 6to4 2002::/16, NAT64 64:ff9b::/96, Teredo 2001::/32, IPv6 multicast ff00::/8. Cheap and removes the whole class."
+          },
+          {
+            "title": "Confirmed sound: web binary shares ip_guard via #[path] include — single SSOT, no drifting copy",
+            "kind": "confirmation-ok",
+            "severity": "info",
+            "confidence": "high",
+            "file": "src-tauri/examples/web_proxy.rs",
+            "lines": "54-55",
+            "evidence": "`#[path = \"../src/proxy/ip_guard.rs\"] pub mod ip_guard;` — the production web binary compiles the exact same source file as the desktop runtime. Both the web request guard (common.rs:16 re-exports is_blocked_ip/is_blocked_ipv4 from crate::proxy::ip_guard) and the redirect policy (http_client.rs:300,303 call crate::proxy::ip_guard::is_blocked_ip) resolve to this one module. ip_guard.rs:14 imports only std::net (tauri-free), so it does not break the desktop clippy/test gate.",
+            "impact": "No divergence risk between the two runtimes' SSRF classification.",
+            "recommendation": "None — this is the correct pattern."
+          },
+          {
+            "title": "Confirmed sound: guarded redirect policy re-runs ip_guard on every hop incl. v4-mapped, both clients rebuilt lock-step on init/apply/update",
+            "kind": "confirmation-ok",
+            "severity": "info",
+            "confidence": "high",
+            "file": "src-tauri/src/proxy/http_client.rs",
+            "lines": "293-311, 64-94, 120-163, 174-217",
+            "evidence": "guarded_redirect_policy (293-311) caps at 10 hops and stops on Host::Ipv4/Ipv6 that is_blocked_ip rejects — including the final destination (every attempt.url() is checked, and the FIRST request also goes through reqwest's redirect machinery only on a 3xx; the first dial target is separately covered by the handler's validate_outbound_url). is_blocked_ip unwraps to_ipv4_mapped so ::ffff:127.0.0.1 is caught (verified empirically). init() sets GLOBAL_CLIENT then GUARDED_CLIENT (69-81); apply_proxy (122-144) and update_proxy (176-198) both build new_client AND new_guarded and swap both under their RwLocks; if GLOBAL set fails init() delegates to apply_proxy which rebuilds guarded — so the two clients never diverge in proxy config.",
+            "impact": "Redirect-hop SSRF to internal IP literals is genuinely blocked for the get_guarded() consumers (balance/coding_plan/model_fetch).",
+            "recommendation": "None. (Documented residual: a redirect Location pointing at a DOMAIN that resolves internally is not caught by the sync no-IO redirect callback — acceptable and documented at http_client.rs:241-244.)"
+          },
+          {
+            "title": "Confirmed sound: S3 schemeless-endpoint normalize fixes the MinIO regression without opening a bypass",
+            "kind": "confirmation-ok",
+            "severity": "info",
+            "confidence": "high",
+            "file": "src-tauri/src/web_api/handlers/s3.rs",
+            "lines": "124-144",
+            "evidence": "normalize_s3_endpoint_for_guard prepends https:// to schemeless host:port then validate_outbound_url runs. Verified against url 2.5.8: `127.0.0.1:9000`->Ipv4 blocked; `[::1]:9000`->Ipv6(::1) blocked; `0:0`->Ipv4(0.0.0.0) blocked (unspecified); `user@127.0.0.1:9000` and `127.0.0.1#@evil.com` both extract host 127.0.0.1 (blocked, no fragment/userinfo confusion); decimal `2130706433` and hex `0x7f.0.0.1` both canonicalize to Ipv4(127.0.0.1) blocked; homoglyph `①.example.com` normalizes to a domain (no localhost bypass). Empty endpoint => Ok (AWS default, public). Public schemeless 1.1.1.1:9000 passes.",
+            "impact": "MinIO host:port endpoints work again AND internal MinIO targets stay blocked; none of the requested bypass classes (0:0, homoglyph, IPv6 literal, decimal/hex/userinfo) slip through.",
+            "recommendation": "None."
+          },
+          {
+            "title": "Confirmed sound: F11 speed-test fan-out bound + per-URL guard with order preservation",
+            "kind": "confirmation-ok",
+            "severity": "info",
+            "confidence": "high",
+            "file": "src-tauri/src/web_api/handlers/system.rs",
+            "lines": "178-219",
+            "evidence": "test_api_endpoints caps at MAX_TEST_URLS=50 (returns 400 above), then loops validate_outbound_url per URL (196), recording an inline per-URL error for blocked targets (199-205) so result ordering/length is preserved, and only passes the allowed subset to SpeedtestService::test_endpoints. CC_SWITCH_WEB_SSRF_ALLOW (common.rs:141-154) is exact-match, case-insensitive, trims entries — an attacker cannot inject a host into it (operator env only).",
+            "impact": "No unbounded outbound probe amplification; internal targets are filtered before dialing.",
+            "recommendation": "Pair with finding #2 (route speedtest through get_guarded) to also cover the redirect hop."
+          },
+          {
+            "title": "Confirmed acceptable: subscription get-subscription-quota uses unguarded get() but only dials hardcoded vendor hosts (not user-influenced)",
+            "kind": "confirmation-ok",
+            "severity": "info",
+            "confidence": "high",
+            "file": "src-tauri/src/services/subscription.rs",
+            "lines": "324, 659, 957, 1038",
+            "evidence": "The /subscription/get-subscription-quota?tool= path (subscription.rs handler) dials only fixed literals: https://api.anthropic.com/api/oauth/usage (324), https://chatgpt.com/backend-api/wham/usage (659), https://oauth2.googleapis.com/token (957), https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist (1038). None derive their host from request input, so the absence of validate_outbound_url on this route and the use of unguarded get() is not a user-controllable SSRF. The user-supplied-base_url quota path (get_coding_plan_quota -> query_zenmux dials raw base_url, coding_plan.rs:418-422) IS guarded both at the handler (subscription.rs router handler validate_outbound_url) and via get_guarded().",
+            "impact": "No SSRF on the OAuth quota route.",
+            "recommendation": "None."
+          }
+        ]
+      }
+    },
+    {
+      "key": "failover",
+      "result": {
+        "dimension": "Proxy / failover correctness (F7 + F8 + F9 + M1)",
+        "summary": "Verified all four fixes (F7 circuit-breaker bypass policy, F8 start/stop lock, F9 set_auto_failover SSOT, M1 config reuse) plus R2 log truncation firsthand against source. All are correct, complete, and regression-free. F7's semantic (bypass == !failover_enabled) is provably right because provider_router's failover-OFF branch structurally returns ≤1 provider; the prompt's \"multi-provider + failover-off\" worry cannot arise. F8 lock is bounded and deadlock-free (takeover/restore wrappers delegate to lock-acquiring start/stop, never hold it). F9 desktop refactor preserves emit + unconditional tray-refresh exactly via the injected sink; web path now reaches SSE through a verified ChannelEventSink injected before serving. M1 reuses the identical AppProxyConfig source with no dropped field or staleness. Only minor defense-in-depth/info observations, no actionable defects.",
+        "findings": [
+          {
+            "title": "F7: should_bypass_circuit_breaker(failover_enabled) == !failover_enabled is the correct semantic and fully plumbed",
+            "kind": "confirmation-ok",
+            "severity": "info",
+            "confidence": "high",
+            "file": "src-tauri/src/proxy/forwarder.rs, src-tauri/src/proxy/provider_router.rs, src-tauri/src/proxy/handlers.rs, src-tauri/src/proxy/handler_context.rs",
+            "lines": "forwarder.rs:387-389,2024-2027; provider_router.rs:116-126; handlers.rs:133,459,524,589,928; handler_context.rs:253-255",
+            "evidence": "forwarder.rs:2024 `fn should_bypass_circuit_breaker(failover_enabled: bool) -> bool { !failover_enabled }`. The old approximation was `let bypass_circuit_breaker = providers.len() == 1;`. The new semantic is provably sound: in provider_router.rs the failover-OFF branch (lines 116-126) returns AT MOST one provider (`total_providers = 1; result.push(current);`), so 'multi-provider + failover-off' cannot occur — bypass on that lone current provider is intended (don't let the breaker block the user's only target). The failover-ON branch (77-115) already filters by `breaker.is_available()`, and with bypass=false the forwarder re-consults the breaker (HalfOpen permit) even when only one provider survives — exactly the bug the old len==1 rule caused. failover_enabled is read from the SAME `app_config.auto_failover_enabled` (handler_context.rs:253-255) used for selection (135) and timeouts (204), so no split-brain. All 5 forward_with_retry call sites pass `ctx.failover_enabled()` (grep confirms exactly 5; param is non-optional so a miss is a compile error).",
+            "impact": "Circuit breaker now correctly governs the failover-ON path; the single-available-provider regression is closed without breaking the failover-OFF single-provider fast path.",
+            "recommendation": "None. The two added tests (single_available_provider_with_failover_on_still_consults_breaker / single_provider_with_failover_off_bypasses_open_breaker) cover both directions; keep them."
+          },
+          {
+            "title": "F8: start_stop_lock genuinely serializes start()/stop() and is deadlock-free and bounded",
+            "kind": "confirmation-ok",
+            "severity": "info",
+            "confidence": "high",
+            "file": "src-tauri/src/services/proxy.rs",
+            "lines": "proxy.rs:64-68,422,1080; 497-509,511-589 (start_with_takeover), 1112-1154 (stop_with_restore)",
+            "evidence": "start() acquires `self.start_stop_lock.clone().lock_owned().await` (422) across the whole check(448)→bind(461)→set(474) sequence; stop() takes the same lock (1080). Deadlock check: start_with_takeover (511) and stop_with_restore (1112) do NOT take the lock themselves — they call self.start()/self.stop() which each acquire+release it, so the re-entrant `start_before_takeover_if_ephemeral_port`→start() (507) and step-5 start() (569) and the error-path `self.stop()` calls (544,563,584) never nest the same lock. Bounded against systemd TimeoutStopSec=30: server.stop() in server.rs is itself capped by `tokio::time::timeout(Duration::from_secs(5), handle)`, and server.start() binds a loopback TCP listener (fast) + SQLite reads (local). No unbounded await is held under the lock.",
+            "impact": "Two concurrent starts can no longer both pass the not-running check and double-bind (with listen_port=0 the first listener would have leaked). Concurrency test concurrent_starts_bind_only_one_listener validates single-bind across 8 racing starts.",
+            "recommendation": "None. Note (info only): the lock is per-call, so a concurrent stop() can still interleave BETWEEN start_with_takeover's internal start() invocations — but that is pre-existing wrapper-level behavior, not introduced by F8, and out of scope for the single-operator threat model."
+          },
+          {
+            "title": "F9: desktop refactor preserves emit + tray-refresh + db-write exactly; web path now reaches SSE",
+            "kind": "confirmation-ok",
+            "severity": "info",
+            "confidence": "high",
+            "file": "src-tauri/src/services/proxy.rs, src-tauri/src/commands/failover.rs, src-tauri/src/web_api/handlers/failover.rs, src-tauri/src/runtime/runtime_events.rs",
+            "lines": "proxy.rs:2340-2424; commands/failover.rs:80-90; web_api/handlers/failover.rs:120-135; runtime_events.rs:67-77,93-118",
+            "evidence": "Shared ProxyService::set_auto_failover_enabled (proxy.rs:2340) reproduces the old desktop command's exact order: compute P1 with empty-queue auto-add of current provider (2353-2384) → write `config.auto_failover_enabled` (2392-2400) → on enable, switch_proxy_target to P1 (2404) → emit `provider-switched`{source:'failoverEnabled'} via ctx.emit_json (2406-2415, inside `if enabled`) → UNCONDITIONAL ctx.refresh_tray() (2419-2421). Desktop's TauriEventSink.refresh_tray (runtime_events.rs:106-118) does the identical create_tray_menu+tray_by_id(TRAY_ID)+set_menu the old inline code did; emit_json (95-100) calls handle.emit like old app.emit. Web: handlers/failover.rs now calls the same service method (the old code REJECTED empty queue and only flipped the flag); ChannelEventSink.emit_json broadcasts via shared tx (runtime_events.rs:68-76), the SSE handler subscribes from the same sender (web_api/handlers/system.rs:282 `state.events.subscribe()`), and set_runtime_ctx with the ChannelEventSink runs BEFORE the router serves (examples/server.rs:332-334, before crash-recovery/serve). The method is tauri-free (only doc-comment mentions tauri), so the web build/clippy gate stays intact.",
+            "impact": "Enable/disable now have identical strong-consistency semantics on desktop and web; the web UI receives provider-switched over SSE instead of silently flipping a flag.",
+            "recommendation": "None. F9 enable/disable tests cover auto-add-on-empty-queue and disable-keeps-queue."
+          },
+          {
+            "title": "M1: select_providers_with_config reuses the identical AppProxyConfig source with no staleness or dropped field",
+            "kind": "confirmation-ok",
+            "severity": "info",
+            "confidence": "high",
+            "file": "src-tauri/src/proxy/handler_context.rs, src-tauri/src/proxy/provider_router.rs",
+            "lines": "handler_context.rs:93-98,131-137; provider_router.rs:46-59,67-72",
+            "evidence": "RequestContext::new loads `app_config` at handler_context.rs:94 via `state.db.get_proxy_config_for_app(app_type_str)` — the EXACT call the old select_providers performed internally (provider_router.rs:48 `self.db.get_proxy_config_for_app(app_type)`). The new _with_config (67) consumes only `auto_failover_enabled` + `failover_strategy`, which are the only two fields the old internal read extracted (49-52). Both come from the same struct instance loaded once per request, so there is no second read that could diverge and no field is missed. The convenience select_providers is kept (#[allow(dead_code)]) only for tests, delegating to _with_config — behavior identical. Test select_providers_with_config_matches_db_read_path asserts identical candidate ordering between the two paths.",
+            "impact": "Removes one redundant get_proxy_config_for_app DB read per proxied request with zero behavioral change.",
+            "recommendation": "None."
+          },
+          {
+            "title": "R2: 180-char body truncation is applied only to the log line, not to propagated error",
+            "kind": "confirmation-ok",
+            "severity": "info",
+            "confidence": "high",
+            "file": "src-tauri/src/proxy/handlers.rs",
+            "lines": "handlers.rs:325-335,861-874",
+            "evidence": "In handle_claude_transform the `compact_error_message(&body_str, 180)` (332) is interpolated only inside `log::error!` (330-333). The returned `ProxyError::TransformError(format!(\"Failed to parse upstream response: {e}\"))` (334) carries only the serde error `{e}` (e.g. 'expected value at line 1 column 1'), NOT the body — so client-facing error propagation is unchanged and untruncated. compact_error_message (861) truncates by char-count (`normalized.chars().take(max_chars)`), so it is multi-byte/UTF-8 safe and won't split a codepoint.",
+            "impact": "A malformed upstream response no longer dumps a full prompt/response body into the journal at error! level under the shipped RUST_LOG=info default; diagnostic value retained.",
+            "recommendation": "None."
+          },
+          {
+            "title": "Enable-failover writes the auto_failover flag outside the per-app switch lock (pre-existing, benign window)",
+            "kind": "new-issue",
+            "severity": "low",
+            "confidence": "high",
+            "file": "src-tauri/src/services/proxy.rs",
+            "lines": "proxy.rs:2392-2404",
+            "evidence": "set_auto_failover_enabled writes `config.auto_failover_enabled = true` and persists it (update_proxy_config_for_app, 2396-2400) BEFORE calling switch_proxy_target (2404), and the flag write is not guarded by switch_locks.lock_for_app (only hot_switch_provider, reached via switch_proxy_target, takes that lock — proxy.rs:~2050 `let _guard = self.switch_locks.lock_for_app(app_type).await;`). There is a brief window where the DB flag is ON but the current target has not yet been switched to P1.",
+            "impact": "Negligible: a concurrent in-flight proxy request during that window selects providers via the failover queue (provider_router.rs:77-115), which is already the correct ON behavior, so routing is consistent regardless of whether switch_proxy_target has completed. Concurrent failover-recovery hot-switches for the same app ARE serialized against the P1 switch by the per-app lock inside hot_switch_provider. This exactly matches the old desktop command's ordering — not a regression.",
+            "recommendation": "Leave as-is for the single-operator threat model. If ever hardened for multi-writer correctness, wrap the flag-write + switch in lock_switch_for_app(app_type) so the enable transition is atomic w.r.t. recovery switches."
+          }
+        ]
+      }
+    },
+    {
+      "key": "bootstrap",
+      "result": {
+        "dimension": "Dual-runtime, startup &amp; bootstrap (F5 + F6 + feature-gating)",
+        "summary": "F5 (apply_legacy_json_migration) and F6 (run_post_db_bootstrap) are FAITHFUL, verbatim extractions of the desktop lib.rs blocks into the tauri-free bootstrap.rs, and both runtimes now call the identical helpers — verified by reading the full git diff (lib.rs -293, bootstrap.rs +334) line-for-line. Init ordering in examples/server.rs is correct end-to-end (migration -> Database::init -> AppState::new -> run_post_db_bootstrap -> set_runtime_ctx -> global outbound proxy init -> crash recovery -> common-config snippets -> takeover restore -> bind -> bounded shutdown -> cleanup) and matches desktop; the prior global-outbound-proxy fix (74635c8f) IS present on the web path (init_global_proxy_http_client at server.rs:342, before restore). Both the desktop (cargo check --features desktop) and web (cargo check --no-default-features --features web-server --example server) builds compile cleanly. bootstrap.rs is genuinely tauri-free. proxy/mod.rs `pub mod ip_guard` is mirrored into examples/web_proxy.rs and pinned by the set-equality parity test. F5 is idempotent (guarded by !db_path.exists() so it can only run pre-DB, and it archives config.json->config.json.migrated). The two confirmed problems are LOW/INFO and outside the strict F5/F6 seed scope: (1) dead scaffolding in bootstrap.rs (RuntimeMode enum + migration_marker_path) the compiler flags as never-used; (2) the web runtime never starts the desktop startup-time background workers (periodic DB backup / daily maintenance timer / session-usage sync) — a pre-existing web-vs-desktop parity gap, the most material being no periodic DB backup on the headless server. No use-before-init, no race, no migration re-run hazard found in the F5/F6 area.",
+        "findings": [
+          {
+            "title": "F6 run_post_db_bootstrap is a faithful verbatim extraction; desktop+web share it symmetrically",
+            "kind": "confirmation-ok",
+            "severity": "info",
+            "confidence": "high",
+            "file": "src-tauri/src/bootstrap.rs",
+            "lines": "190-460",
+            "evidence": "git diff main...HEAD shows lib.rs deleted the exact steps 1,1.1,1.5,1.6,2,2.3,3,4 block and replaced it with `bootstrap::run_post_db_bootstrap(&app_state);` (lib.rs:432). bootstrap.rs:190-460 contains that block byte-for-byte (same log strings, same gating: init_default_skill_repos, skills_ssot_migration_pending, should_import_default_config_on_startup loop, init_default_official_providers, import_opencode/openclaw/hermes_providers_from_live, OMO/OMO-slim has_* guards, is_mcp_table_empty, is_prompts_table_empty). Only mechanical change: bare `AppError::OmoConfigNotFound` -> `crate::error::AppError::OmoConfigNotFound`. server.rs:301 calls `bootstrap::run_post_db_bootstrap(app_state.as_ref())` at the same ordering position (after AppState::new, before set_runtime_ctx). Both desktop `cargo check --features desktop` and `cargo check --no-default-features --features web-server --example server` compile clean.",
+            "impact": "Web runtime seeds defaults / auto-imports live config identically to desktop; no behavior dropped or duplicated. Every step is table-empty / flag gated, so re-running on each systemd boot is a no-op (idempotent).",
+            "recommendation": "None — extraction verified correct."
+          },
+          {
+            "title": "F5 apply_legacy_json_migration is idempotent and ordered before AppState/proxy on both runtimes",
+            "kind": "confirmation-ok",
+            "severity": "info",
+            "confidence": "high",
+            "file": "src-tauri/examples/server.rs",
+            "lines": "267-301",
+            "evidence": "server.rs:270 `let migration_config = if !db_path.exists() && json_path.exists()` mirrors desktop lib.rs:363 `if !has_db && has_json`; both resolve paths via config::get_app_config_dir() (config.rs:90, which reads app_store override) and Database::init() uses the same get_app_config_dir().join(\"cc-switch.db\") (database/mod.rs:96). Migration runs at server.rs:289-291 AFTER Database::init (287) but the GUARD is pre-DB so it only fires once; apply_legacy_json_migration (bootstrap.rs:155-180) renames json_path -> config.json.migrated on success (bootstrap.rs:168-169), so even the inner step cannot repeat. Called BEFORE AppState::new (293) and long before set_runtime_ctx (332). MultiAppConfig::load (app_config.rs:489) only auto-creates+saves config.json when the file is ABSENT (492-498) — unreachable here because the guard requires json_path.exists().",
+            "impact": "Safe on every boot; the post-first-boot DB-exists guard prevents re-migration, and the file is archived so the desktop migrate path is also suppressed afterward. Web log-and-continue on load failure (server.rs:277-281) is the correct headless behavior vs the desktop dialog/retry/exit loop.",
+            "recommendation": "None — guard and ordering verified sound."
+          },
+          {
+            "title": "bootstrap.rs is tauri-free and the ip_guard module is symmetrically wired into both runtimes",
+            "kind": "confirmation-ok",
+            "severity": "info",
+            "confidence": "high",
+            "file": "src-tauri/src/proxy/mod.rs",
+            "lines": "20",
+            "evidence": "grep of bootstrap.rs for tauri/AppHandle/tauri_plugin/Manager/Emitter returns only two comment-line hits (bootstrap.rs:139-140), no code references. proxy/mod.rs diff adds `pub mod ip_guard;` (line 20) and examples/web_proxy.rs diff adds the matching `#[path = \"../src/proxy/ip_guard.rs\"] pub mod ip_guard;`. The dual_runtime_parity::web_proxy_shim_mirrors_proxy_mod_modules test (server.rs:758-780) pins examples/web_proxy.rs to set-equality with src/proxy/mod.rs, so a future drift fails CI. `cargo check --no-default-features --features web-server --example server` compiles clean, proving bootstrap.rs + all transitively #[path]-included modules stay tauri-free.",
+            "impact": "Web build cannot break on tauri leakage from bootstrap.rs, and ip_guard (the P4-B SSRF SSOT) is compiled into both runtimes consistently.",
+            "recommendation": "None."
+          },
+          {
+            "title": "Web runtime never starts desktop's startup background workers (periodic DB backup, daily maintenance timer, session-usage sync)",
+            "kind": "new-issue",
+            "severity": "low",
+            "confidence": "high",
+            "file": "src-tauri/examples/server.rs",
+            "lines": "293-367",
+            "evidence": "Desktop lib.rs (spawn block lib.rs:657-740) runs on startup: `state.db.periodic_backup_if_needed()` (680), a daily PERIODIC_MAINTENANCE_INTERVAL_SECS=24h timer re-running periodic_backup_if_needed (684-696), and an initial+60s session-usage sync (sync_claude_session_logs / sync_codex_usage / sync_gemini_usage / sync_opencode_usage, 698+). grep of examples/server.rs for periodic_backup|session_usage|sync_claude_session|interval(|start_worker returns NONE. The session_usage* and *_auto_sync_web modules ARE compiled into the web build (web_services.rs:37-86) but main() never invokes them; session sync only happens lazily on `GET /api/usage` (web_api/handlers/usage.rs:174-175). webdav_auto_sync/s3_auto_sync start_worker (desktop lib.rs:555-560) is likewise never called in the web path.",
+            "impact": "On the long-running headless web server the SQLite config DB is never periodically backed up, and Claude/Codex/Gemini/OpenCode usage stats are only synced when a UI tab actively hits /api/usage (never in the background). Pre-existing divergence, not introduced by F5/F6; under the single-operator threat model the missing periodic DB backup is the only materially risky one (data-loss resilience on disk corruption).",
+            "recommendation": "If parity is desired, spawn periodic_backup_if_needed (initial + daily) and the webdav/s3 auto-sync workers in server.rs main() after run_post_db_bootstrap, mirroring the desktop spawn block. At minimum wire the periodic DB backup. Otherwise document the intentional gap in the server.rs header."
+          },
+          {
+            "title": "Dead scaffolding left in bootstrap.rs: RuntimeMode enum + migration_marker_path() are never used (compiler-confirmed)",
+            "kind": "new-issue",
+            "severity": "info",
+            "confidence": "high",
+            "file": "src-tauri/src/bootstrap.rs",
+            "lines": "14-44",
+            "evidence": "The web example build emits `warning: enum RuntimeMode is never used` (bootstrap.rs:15) and `methods is_web and is_desktop are never used` (bootstrap.rs:20) — captured from target/.fingerprint output-example-server. grep confirms RuntimeMode is never constructed (no `RuntimeMode::` / `RuntimeMode {` outside its own def; the only other mention is a comment in lib.rs:2) and migration_marker_path (bootstrap.rs:42) has zero callers (only its definition + the module doc at bootstrap.rs:10). The module header (bootstrap.rs:3-10) still calls itself 'partial scaffolding' and promises 'Full integration ... is deferred to a follow-up patch', which is stale now that F5/F6 are fully integrated.",
+            "impact": "No functional risk; runtime distinction is actually done via cargo features, not RuntimeMode. Just dead code + a misleading 'partial scaffolding / deferred' doc header on a module that is now the real shared startup core.",
+            "recommendation": "Delete RuntimeMode (+ impl) and migration_marker_path, or wire them in if a future use is intended; refresh the bootstrap.rs:1-10 header to drop the 'partial scaffolding / deferred follow-up' language."
+          },
+          {
+            "title": "Data-dir advisory lock is held for whole process lifetime (let _data_lock, not let _) — verified correct",
+            "kind": "confirmation-ok",
+            "severity": "info",
+            "confidence": "high",
+            "file": "src-tauri/examples/server.rs",
+            "lines": "254-422",
+            "evidence": "server.rs:254 binds the flock as `let _data_lock = bootstrap::acquire_data_dir_lock(&data_dir)...?` (a named binding, not `let _ =` which would drop+release immediately), and main ends with explicit `drop(_data_lock);` (422) after cleanup_proxy_before_exit. acquire_data_dir_lock (bootstrap.rs:57-70) try_lock_exclusive's <data_dir>/cc-switch.db.lock and returns the File whose Drop releases the lock. check_filesystem_local (bootstrap.rs:75-120) runs before the lock and blocks nfs/cifs/9p/sshfs where flock is unreliable.",
+            "impact": "A second web-server instance on the same data dir is refused for the entire run, preventing concurrent DB writers; the lock outlives proxy cleanup so no second instance can race in during shutdown.",
+            "recommendation": "None — binding lifetime and ordering verified correct."
+          }
+        ]
+      }
+    },
+    {
+      "key": "session",
+      "result": {
+        "dimension": "Session-manager path safety + residual vectors (R1 + R3 + R4 + deeplink)",
+        "summary": "Verified all dimension fixes firsthand. R1 (load_messages root guard) is SOUND: validate_source_path_within_roots mirrors delete_session_with_roots byte-for-byte (canonicalize + component-based Path::starts_with), defeating prefix-escape (.claudeX vs .claude), '..' segments, and symlink-out. SQLite validation (opencode/hermes) is SOUND: canonical-equality to the fixed provider DB, read-only flags, no SQLITE_OPEN_URI, query-param/arbitrary-.db rejected. All four session entry points are under /api and auth-gated; only get-session-messages and the two deletes accept caller paths. R3 (MCP upsert write->exec) and the deeplink-unified direct import are confirmed auth-gated/operator-gated residuals; deeplink has NO SSRF (config_url unimplemented). R4 OAuth files confirmed 0o600 on Linux. Two low/info defense-in-depth gaps found in opencode file-based load_messages (attacker-influenced msg_id joined into a part path; read/delete containment asymmetry) — both require pre-existing in-root write access, so not web-exploitable on this threat model.",
+        "findings": [
+          {
+            "title": "R1 load_messages containment guard mirrors delete guard exactly (canonicalize + component-wise starts_with)",
+            "kind": "confirmation-ok",
+            "severity": "info",
+            "confidence": "high",
+            "file": "src-tauri/src/session_manager/mod.rs",
+            "lines": "93-123, 152-241, 257-264",
+            "evidence": "load_messages() routes file-based reads through `validate_source_path_within_roots` (mod.rs:112). That fn (mod.rs:207-241) is identical in structure to `delete_session_with_roots` (mod.rs:152-199): both call `canonicalize_existing_path` (mod.rs:257 -> requires path.exists() + path.canonicalize()) on the source and on each existing root, then accept only when `validated_source.starts_with(&validated_root)` (mod.rs:222 vs :168). `Path::starts_with` is COMPONENT-based, so a sibling-prefix like /home/u/.claudeX does NOT start_with /home/u/.claude. canonicalize() fully resolves symlinks, so a symlink placed inside a root pointing to /etc/passwd resolves OUTSIDE the root and fails the starts_with check. The test `load_messages_rejects_source_path_outside_provider_root` (mod.rs:402-413) exercises the /etc/passwd-stand-in rejection end-to-end.",
+            "impact": "Read-allowed set is provably identical to the delete-allowed set; '..', sibling-prefix, and symlink-out escapes are all rejected before any bytes are read. The R1 fix is correct and complete.",
+            "recommendation": "No action. Guard is sound for the single-operator Tailscale threat model."
+          },
+          {
+            "title": "SQLite source validation (opencode + hermes) is read-only and canonical-equality bound to the fixed provider DB",
+            "kind": "confirmation-ok",
+            "severity": "info",
+            "confidence": "high",
+            "file": "src-tauri/src/session_manager/providers/opencode.rs",
+            "lines": "237-262; hermes.rs:197-221",
+            "evidence": "Both providers gate sqlite reads via validate_sqlite_db_path_against (opencode.rs:237-251, hermes.rs:197-211): db_path.canonicalize() must EQUAL get_opencode_db_path()/get_hermes_db_path().canonicalize(), else 'does not match expected ... database'. read_messages_from_db opens with `OpenFlags::SQLITE_OPEN_READ_ONLY | SQLITE_OPEN_NO_MUTEX` (opencode.rs:267-268, hermes.rs:225-227) — NO SQLITE_OPEN_URI, so `sqlite:file:/etc/x.db?mode=rwc:...` URI tricks are not interpreted as URIs and the path also fails canonical-equality. Provider-specific separators prevent cross-provider DB access: opencode parse_sqlite_source requires `:ses_` (opencode.rs:90), hermes requires `#` (hermes.rs:299). An arbitrary /etc/foo.db fails canonicalize-equality (validate_sqlite_db_path_rejects_foreign_db tests confirm).",
+            "impact": "sqlite:<db>:<id> / sqlite:<db>#<id> cannot open any DB other than the provider's own; reads are truly read-only; query-param and cross-provider DB substitution are blocked.",
+            "recommendation": "No action. Note delete_session_sqlite uses Connection::open (read-write) which is correct since deletion mutates, and it is still gated by the same validate_sqlite_db_path canonical-equality check (opencode.rs:424, hermes.rs:275)."
+          },
+          {
+            "title": "C2 Basic-Auth wiring + non-loopback bind refusal correctly gate all session endpoints",
+            "kind": "confirmation-ok",
+            "severity": "info",
+            "confidence": "high",
+            "file": "src-tauri/src/web_api/routes.rs",
+            "lines": "23-37; auth.rs:110-128; examples/server.rs:217-244",
+            "evidence": "build_router wraps the whole tree (incl. nest('/api')) with `from_fn(mw::auth::require_auth)` (routes.rs:35). require_auth treats only non-/api/ paths and /api/health as public (auth.rs:112), so /api/sessions/* require valid Basic creds when configured. server.rs:217 parses HOST strictly as IpAddr (not a hostname → no DNS-rebind-to-loopback at bind time), and server.rs:237 `if !addr.ip().is_loopback() && !auth::is_configured()` returns Err and refuses to bind. The Tailscale IP 100.75.197.120 is non-loopback, so CC_SWITCH_WEB_AUTH_PASSWORD is mandatory there. credentials_match uses constant-time compare on both user and pass (auth.rs:91-93).",
+            "impact": "Every session read/delete is operator-password-gated on the Tailscale deployment; the unauthenticated path can only occur on a loopback bind.",
+            "recommendation": "No action."
+          },
+          {
+            "title": "Session-manager performs no path/prompt logging — R2 leak surface absent here",
+            "kind": "confirmation-ok",
+            "severity": "info",
+            "confidence": "high",
+            "file": "src-tauri/src/session_manager/mod.rs",
+            "lines": "whole module + providers/opencode.rs, providers/hermes.rs",
+            "evidence": "grep for `log::`/`println!`/`eprintln!`/`tracing::` across src-tauri/src/session_manager/ returns zero hits. Error strings returned to the caller include only the offending path (e.g. mod.rs:196-198 'Session source path is outside provider roots: {path}') which is the caller's own input, never message bodies/prompts.",
+            "impact": "No session sourcePath or message content is written to logs from the session manager; the R2 'logs must not persist prompts' concern does not regress through this module.",
+            "recommendation": "No action."
+          },
+          {
+            "title": "R4 confirmed: OAuth/token files written 0o600 on Linux via create-mode + post-rename set_permissions",
+            "kind": "confirmation-ok",
+            "severity": "info",
+            "confidence": "high",
+            "file": "src-tauri/src/proxy/providers/copilot_auth.rs",
+            "lines": "1294-1308; codex_oauth_auth.rs:845-851",
+            "evidence": "copilot_auth.rs writes the token via OpenOptions::new().create_new(true).write(true).mode(0o600) into a tmp file (1298-1302), fs::rename to storage_path (1306), then fs::set_permissions(&storage_path, Permissions::from_mode(0o600)) (1307) — so even a pre-existing target ends 0o600. codex_oauth_auth.rs:845-851 uses the identical pattern.",
+            "impact": "Persisted OAuth credentials are owner-read/write only on Linux; other local users cannot read them.",
+            "recommendation": "No action."
+          },
+          {
+            "title": "deeplink import-from-deeplink-unified executes provider/prompt/mcp/skill import directly on POST (parity with desktop; auth/operator-gated)",
+            "kind": "new-issue",
+            "severity": "low",
+            "confidence": "high",
+            "file": "src-tauri/src/web_api/handlers/deeplink.rs",
+            "lines": "55-97",
+            "evidence": "import_from_deeplink_unified (deeplink.rs:55) immediately calls import_provider/import_prompt/import_mcp/import_skill_from_deeplink on POST with no confirmation step. This is NOT a web-only regression: the desktop tauri command commands/deeplink.rs:46-89 does the exact same direct import. The OS-level deep-link path in lib.rs:140 emits a `deeplink-import` event so the FE shows a confirm dialog, then the FE calls this same import command AFTER the user confirms; the web FE is expected to do the same before POSTing. The endpoint itself is under /api (auth-gated). No SSRF: parse_and_merge_config rejects config_url with 'Remote config URL is not yet supported' (deeplink/provider.rs:526-530), so only inline base64/URL params are parsed locally.",
+            "impact": "An authenticated caller (operator password) can import a provider/prompt/skill/MCP server in one POST with no server-side confirmation. Real risk is the MCP-stdio case (see next finding). Defense-in-depth gap only; matches the accepted R3 posture.",
+            "recommendation": "Acceptable for single-operator. If multi-user is ever introduced, require a server-side confirm token for unified import, and keep config_url unimplemented (or add an ip_guard-validated allowlist if implemented)."
+          },
+          {
+            "title": "R3 residual confirmed: authenticated MCP upsert writes attacker-supplied stdio command/args/env into host CLI configs, executed on next CLI launch",
+            "kind": "new-issue",
+            "severity": "low",
+            "confidence": "high",
+            "file": "src-tauri/src/web_api/handlers/mcp.rs",
+            "lines": "86, 96-98, 148-264; services/mcp.rs:22-54",
+            "evidence": "POST /mcp/upsert-mcp-server (mcp.rs:86 -> upsert_mcp_server:148) and POST /config/upsert-mcp-server-in-config (mcp.rs:96 -> :216) accept a McpServer whose `server` JSON spec carries command/args/env for stdio servers, then call McpService::upsert_server (services/mcp.rs:22) which save_mcp_server + sync_server_to_apps (services/mcp.rs:51) writing the spec verbatim into the fixed claude/codex/gemini/opencode/hermes mcp.json. Paths are fixed config paths (crate::config::get_app_config_path, mcp.rs:209), NOT caller-controlled, so there is no path-traversal write; but the written stdio `command` executes when the operator next launches that CLI.",
+            "impact": "Write->exec: an authenticated request can plant a command that runs on the next CLI invocation. Operator-password-gated and matches the audit's accepted R3 residual.",
+            "recommendation": "Accept for single-operator. Optionally validate stdio `command` against an allowlist or surface a one-time confirmation in web mode; document that anyone with the web password can achieve host code execution via MCP config."
+          },
+          {
+            "title": "opencode file-based load_messages joins attacker-influenced JSON `id` field into storage/part/{msg_id} (traversal within an already in-root read)",
+            "kind": "new-issue",
+            "severity": "info",
+            "confidence": "medium",
+            "file": "src-tauri/src/session_manager/providers/opencode.rs",
+            "lines": "158-225",
+            "evidence": "After the mod.rs root guard validates the message dir, opencode::load_messages reads msg_id from JSON files in that dir: `let msg_id = value.get(\"id\")...` (opencode.rs:185-188), then `let part_dir = storage.join(\"part\").join(&msg_id)` (opencode.rs:203) where storage = path.parent().parent() (opencode.rs:164-167). A message JSON containing \"id\":\"../../../../etc\" makes part_dir escape `storage` and collect_parts_text would read *.json under the traversed dir. parse_session (opencode.rs:482) and find_session_file similarly trust filenames. Exploitation requires first writing a crafted message JSON INTO the opencode storage tree; there is no web endpoint that writes arbitrary files into ~/.local/share/opencode/storage, so this is not reachable from the web API.",
+            "impact": "Defense-in-depth gap: if any future feature lets a caller write files into opencode storage, the unsanitized msg_id join becomes a read-amplification escape. Not web-exploitable today.",
+            "recommendation": "Sanitize msg_id before joining (reject any component that is not Component::Normal, e.g. reuse the is_safe_relative_asset style check), so the read stays inside `storage/part/` regardless of JSON contents."
+          },
+          {
+            "title": "opencode read vs delete containment asymmetry (load_messages lacks the filename==session_id check delete enforces)",
+            "kind": "new-issue",
+            "severity": "info",
+            "confidence": "high",
+            "file": "src-tauri/src/session_manager/providers/opencode.rs",
+            "lines": "158-167, 349-355",
+            "evidence": "opencode::delete_session enforces `path.file_name() == Some(session_id)` (opencode.rs:350-355) before deleting. opencode::load_messages has no equivalent provider-level constraint — it accepts any in-root directory and recursively reads all *.json (opencode.rs:158-170). The mod.rs *containment* guard is identical for both (root membership), but the per-provider constraints differ, so the audit's phrasing 'read-allowed set identical to delete-allowed set' is true only at the root-containment layer, not at the provider layer.",
+            "impact": "A caller can read message JSON from any directory inside the opencode storage root, not just a directory whose name matches a session id. Still fully root-contained (the operator's own data), so no out-of-root disclosure; purely an internal-consistency note.",
+            "recommendation": "If strict read/delete parity is desired, apply the same file_name==session_id (or message-dir-shape) check in load_messages. Otherwise document that read containment is root-level, delete is session-name-level."
+          }
+        ]
+      }
+    },
+    {
+      "key": "frontend",
+      "result": {
+        "dimension": "Frontend contract + diff hygiene + docs/ops (P4-C CSRF removal + F10 web-mode gating + L2 stub-router deletions)",
+        "summary": "The P4-C / F10 / L2 fixes in my dimension are correct, complete, and regression-free. CSRF was fully excised from the frontend with no dangling refs and all mutating calls still send credentials:\"include\" so Basic-auth attaches; the 5 deleted stub handlers + 2 deleted middleware modules leave no dangling mod/merge references and no live FE call to a deleted endpoint (the routes gate passes missing:0, and the only FE commands using the old prefixes are all unsupported:true, while live universal-provider commands correctly route to /api/providers/...). F10 WebdavSyncSection gating is correct (web disables+unchecks auto-sync, forces persist false, hides auto-error panels, swaps hints) with desktop intent preserved and unit tests pinned to desktop via __TAURI_INTERNALS__. i18n adds autoSyncWebDisabledHint under both webdavSync and s3Sync namespaces in all three locales (check:locales reports parity, 2356 keys each). systemd unit + install script correctly drop ALLOW_HTTP_BASIC_OVER_HTTP, default RUST_LOG=info, generate a 0600 password drop-in, and use enable+restart. Removed test lines are pure CSRF scaffolding — no assertions lost. Two low/info-grade items: a cosmetic prettier nit in a test file (outside the enforced src/** format:check scope) and a dead, unreachable isWebAuthError/401-throw path. No critical or high findings.",
+        "findings": [
+          {
+            "title": "CSRF fully removed from adapter.ts and all mutating calls still send credentials:\"include\"",
+            "kind": "confirmation-ok",
+            "severity": "info",
+            "confidence": "high",
+            "file": "src/lib/api/adapter.ts",
+            "lines": "222-227, 242-247",
+            "evidence": "httpInvoke ends with `const resp = await fetch(url, { method, headers, body, credentials: \"include\" });` (L222-227) and webFetch with `const resp = await fetch(apiBase() + path, { ...init, method, headers, credentials: \"include\" });` (L242-247). The deleted fetchWithCsrfRetry used to be the sole place adding credentials; both replacement direct-fetch sites retain credentials:\"include\". `webUpload` (L57-68, multipart) and `webDownload` (L70-75) delegate to webFetch, so they inherit credentials too. Repo-wide grep for csrf/X-CSRF/fetchWithCsrfRetry/refreshCsrfToken/setCsrfToken/getCsrfToken/SAFE_METHODS across src/**/*.{ts,tsx} returns zero hits (the only matches were base64 image data inside src/icons/*.svg).",
+            "impact": "Basic-auth credentials attach to every mutating /api call, so no mutating call will spuriously 401 against the hardened server. P4-C CSRF-theater removal is clean with no dangling references.",
+            "recommendation": "None — verified sound."
+          },
+          {
+            "title": "L2 stub-router deletions leave no dangling mod/merge references and no live FE→deleted-endpoint call",
+            "kind": "confirmation-ok",
+            "severity": "info",
+            "confidence": "high",
+            "file": "src-tauri/src/web_api/routes.rs",
+            "lines": "43-66",
+            "evidence": "api_router() no longer .merge()'s copilot/model_fetch/model_test/universal/vscode (diff removes all 5 lines). handlers/mod.rs no longer declares those 5 `pub mod`s; middleware/mod.rs no longer declares csrf or rate_limit. All 7 files confirmed deleted on disk and their git diff shows they were empty `Router::new()` stubs. `check:web-routes` passes with missing:0. The only FE commands still carrying /api/{copilot,vscode}/ paths in web-commands.ts (e.g. L66 copilot-get-models, L259 vscode get-claude-plugin-status) are every one marked `unsupported: true as const`, so invoke() throws WebNotSupportedError before any fetch. The LIVE universal-provider FE commands route to /api/providers/...-universal-provider (web-commands.ts L177/441/445/809/875), which exist in handlers/providers.rs router (L156-173) — not the deleted universal.rs (/api/universal/ prefix, which no FE command targets).",
+            "impact": "No compile-time dangling reference, no runtime 404 for any reachable FE command. L2 cleanup is correct.",
+            "recommendation": "None — verified sound."
+          },
+          {
+            "title": "F10 WebdavSyncSection web-mode gating correct; desktop behavior preserved and still unit-tested",
+            "kind": "confirmation-ok",
+            "severity": "info",
+            "confidence": "high",
+            "file": "src/components/settings/WebdavSyncSection.tsx",
+            "lines": "244, 473, 676, 926-928, 942-943, 1099-1115, 1388-1404",
+            "evidence": "`const webMode = isWebMode();` (L244). Both auto-sync Switches are `checked={!webMode && form.autoSync}` / `checked={!webMode && s3AutoSync}` and `disabled={isLoading || webMode}` (L1102/1109, L1393/1400). Persistence forces `autoSync: webMode ? false : form.autoSync` (L473) and `autoSync: webMode ? false : s3AutoSync` (L676). Auto-error panels gated: `showAutoSyncError = !webMode && !!lastError && lastErrorSource===\"auto\"` (L926-928) and the S3 equivalent (L942-943). Hints swap to autoSyncWebDisabledHint in web mode. Desktop path keeps prior behavior via the false branch of each ternary. tests/components/WebdavSyncSection.test.tsx beforeEach now sets window.__TAURI_INTERNALS__ and __TAURI__ to pin desktop mode (otherwise jsdom defaults to web mode and gates desktop controls off), so the desktop assertions still run.",
+            "impact": "Users in web mode are not misled that auto-sync (a no-op stub server-side) is active; manual upload/download stays functional; desktop intent retains test coverage. No desktop behavior lost.",
+            "recommendation": "None — verified sound."
+          },
+          {
+            "title": "i18n autoSyncWebDisabledHint key added under both namespaces in all three locales; full key parity",
+            "kind": "confirmation-ok",
+            "severity": "info",
+            "confidence": "high",
+            "file": "src/i18n/locales/en.json",
+            "lines": "446, 557",
+            "evidence": "`autoSyncWebDisabledHint` added under settings.webdavSync (L446) and settings.s3Sync (L557) in en.json, with identical placement (L446/L557) in ja.json and zh.json. The two namespaced keys are exactly what WebdavSyncSection.tsx references via t(\"settings.webdavSync.autoSyncWebDisabledHint\") and t(\"settings.s3Sync.autoSyncWebDisabledHint\"). `pnpm check:locales` reports inParity:true with 2356 keys in each of en/ja/zh — no missing-locale.",
+            "impact": "No runtime missing-translation key in any locale; the locale-parity CI gate passes.",
+            "recommendation": "None — verified sound."
+          },
+          {
+            "title": "systemd unit + install script: C2 auth guidance correct, RUST_LOG=info default, 0600 drop-in, enable+restart",
+            "kind": "confirmation-ok",
+            "severity": "info",
+            "confidence": "high",
+            "file": "scripts/install-cc-switch-web-service.sh",
+            "lines": "33-62",
+            "evidence": "Install script creates `${SERVICE_NAME}.d/auth.conf` via `( umask 077; cat > ... )` then `chmod 600`, writing `[Service]\\nEnvironment=CC_SWITCH_WEB_AUTH_PASSWORD=${NEW_PW}` (NEW_PW from `openssl rand -hex 18`), preserves on re-install, and runs `systemctl --user daemon-reload` then `enable` then explicit `restart` (comment correctly notes `enable --now` won't restart a running unit). The unit (deploy/systemd/cc-switch-web.service) removes ALLOW_HTTP_BASIC_OVER_HTTP (grep confirms zero references repo-wide, so removal orphans nothing), sets RUST_LOG=info (privacy: bodies only at cc_switch=debug), ships HOST=0.0.0.0 with CC_SWITCH_WEB_AUTH_PASSWORD commented as REQUIRED. server.rs L237 refuses non-loopback bind when !auth::is_configured(). README/README_ZH/README_JA all carry a matching, accurate auth callout.",
+            "impact": "Fresh install on 0.0.0.0/Tailscale starts with a strong auto-generated password at 0600; re-install loads the new binary; loopback dev needs no password; prompts/outputs are not journaled by default. Fail-closed posture is correct.",
+            "recommendation": "None — verified sound."
+          },
+          {
+            "title": "Removed test lines are pure CSRF scaffolding; no meaningful coverage lost",
+            "kind": "confirmation-ok",
+            "severity": "info",
+            "confidence": "high",
+            "file": "tests/lib/adapter.test.ts",
+            "lines": "1-2, 53",
+            "evidence": "Each `.web-server.test.tsx -2` removes exactly the `import { setCsrfToken }` line and the `setCsrfToken(null)` call in beforeEach (verified on AboutSection/ProviderList/SkillsPage/UsageDashboard). tests/msw/handlers.ts -3 removes the now-dead `/api/system/csrf-token` mock handler (backend route + csrf_token() handler were deleted in system.rs). tests/lib/usage-api.test.ts -2 removes setCsrfToken import + call. tests/lib/adapter.test.ts removes the setCsrfToken import AND the `\"X-CSRF-Token\": \"test-csrf-token\"` header assertion (which would otherwise now fail since the header is no longer sent) — correct, not a lost real assertion. ImportExport/UnifiedSkillsPanel multipart-mock changes drop the manual csrf-token fetch+header block. The smoke probe rewrites (failover F9, get-balance/quota F4 hosts, import F6 idempotence) preserve or strengthen assertions and the F9 probe's custom send() returns {response,payload} matching the runner contract (smoke-web-server.mjs L508-527).",
+            "impact": "No assertion regression from the test deletions/edits; the CSRF-related test scaffolding was correctly retired alongside the feature.",
+            "recommendation": "None — verified sound."
+          },
+          {
+            "title": "Cosmetic prettier style nit in tests/components/WebdavSyncSection.test.tsx (outside enforced format:check scope)",
+            "kind": "new-issue",
+            "severity": "info",
+            "confidence": "high",
+            "file": "tests/components/WebdavSyncSection.test.tsx",
+            "lines": "117-131",
+            "evidence": "`npx prettier --check` flags tests/components/WebdavSyncSection.test.tsx with `[warn] Code style issues found`. However package.json L21 defines `format:check` as `prettier --check \"src/**/*.{js,jsx,ts,tsx,css,json}\"` — scope is src/** only, so tests/ is NOT covered by the CI format gate. The production component src/components/settings/WebdavSyncSection.tsx and all changed src/ files pass `prettier --check` cleanly.",
+            "impact": "Will NOT fail the format:check CI gate (test files are out of scope). Purely a local consistency nit on a newly-added beforeEach block.",
+            "recommendation": "Optional: run `npx prettier --write tests/components/WebdavSyncSection.test.tsx` for tidiness; not required for merge."
+          },
+          {
+            "title": "Dead isWebAuthError / 401-throw path — no consumer reacts to WebAuthError(401)",
+            "kind": "new-issue",
+            "severity": "low",
+            "confidence": "high",
+            "file": "src/lib/api/adapter.ts",
+            "lines": "257-259",
+            "evidence": "parseWebResponse throws `new WebAuthError(401, \"Session expired\")` on 401 (L257-259), and errors.ts exports `isWebAuthError` (L51), but grep across src/**/*.{ts,tsx} shows ZERO consumers of isWebAuthError or any catch that handles WebAuthError outside adapter.ts/errors.ts. Re-auth is handled natively by the browser because auth.rs `unauthorized()` returns `WWW-Authenticate: Basic realm=\"cc-switch-web\"` (auth.rs L100-101), so a 401 triggers the browser's Basic-auth prompt before app JS needs to act.",
+            "impact": "Benign under HTTP Basic auth (browser intercepts 401 and re-prompts/replays cached creds). The thrown WebAuthError surfaces only as a generic rejected promise for XHR-style calls after creds are already cached, so no functional break. Pre-existing, not introduced by this branch; flagged for defense-in-depth awareness only.",
+            "recommendation": "Either wire a top-level handler that surfaces a 're-enter credentials' toast on isWebAuthError, or drop the unused isWebAuthError export to avoid implying a re-auth flow that doesn't exist. Low priority."
+          }
+        ]
+      }
+    }
+  ]
+}

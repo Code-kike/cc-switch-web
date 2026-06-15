@@ -11,17 +11,6 @@ export class WebNotSupportedError extends Error {
   }
 }
 
-export class WebAuthError extends Error {
-  readonly code = "AUTH_ERROR" as const;
-  constructor(
-    public status: number,
-    message?: string,
-  ) {
-    super(message ?? `Authentication failed (${status})`);
-    this.name = "WebAuthError";
-  }
-}
-
 export class WebApiError extends Error {
   constructor(
     public status: number,
@@ -47,6 +36,3 @@ export const isWebUnavailable = (v: unknown): v is WebUnavailableResult =>
 
 export const isWebNotSupported = (e: unknown): e is WebNotSupportedError =>
   e instanceof Error && (e as { code?: string }).code === "WEB_NOT_SUPPORTED";
-
-export const isWebAuthError = (e: unknown): e is WebAuthError =>
-  e instanceof Error && (e as { code?: string }).code === "AUTH_ERROR";

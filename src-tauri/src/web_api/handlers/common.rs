@@ -1,5 +1,3 @@
-use std::net::IpAddr;
-
 use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
@@ -7,13 +5,13 @@ use axum::{
 };
 use serde::Serialize;
 use serde_json::{json, Value};
-use url::{Host, Url};
 
 /// IP-range classification is shared with the web-outbound redirect policy in
 /// `proxy/http_client.rs`; the single tauri-free source of truth lives in
-/// `proxy/ip_guard.rs` (see audit P4-A2/P4-A3). Re-exported here so existing
-/// `common::is_blocked_*` references keep resolving.
-use crate::proxy::ip_guard::{is_blocked_ip, is_blocked_ipv4};
+/// `proxy/ip_guard.rs` (see audit P4-A2/P4-A3). The async `guard_outbound_url`
+/// helper there is the SSOT for the URL-level SSRF check; `validate_outbound_url`
+/// below just maps its result into `ApiError`.
+use crate::proxy::ip_guard::{guard_outbound_url, OutboundUrlError};
 
 pub type ApiResult<T> = Result<Json<T>, ApiError>;
 
@@ -138,26 +136,15 @@ pub async fn web_upload_required() -> Result<Json<Value>, ApiError> {
 
 /// Env var holding a comma-separated allow-list of hostnames that bypass the
 /// SSRF guard (e.g. an internal endpoint the operator deliberately exposes).
-const SSRF_ALLOW_ENV: &str = "CC_SWITCH_WEB_SSRF_ALLOW";
-
-/// Returns true if `host` is present (case-insensitively) in the
-/// `CC_SWITCH_WEB_SSRF_ALLOW` env allow-list.
-fn ssrf_host_allowed(host: &str) -> bool {
-    match std::env::var(SSRF_ALLOW_ENV) {
-        Ok(list) => list
-            .split(',')
-            .map(str::trim)
-            .filter(|entry| !entry.is_empty())
-            .any(|entry| entry.eq_ignore_ascii_case(host)),
-        Err(_) => false,
-    }
-}
-
+/// The allow-list itself is consulted inside `proxy::ip_guard::guard_outbound_url`.
+///
 /// SSRF guard for user-supplied outbound URLs reaching shared services.
-/// Parses `raw`, rejects non-http(s) schemes, and blocks targets that resolve
-/// to loopback / link-local / private / ULA addresses. Hostnames are resolved
-/// via DNS and rejected if ANY resolved IP is blocked. A hostname listed in the
-/// `CC_SWITCH_WEB_SSRF_ALLOW` env var bypasses these checks.
+/// Delegates to the tauri-free `proxy::ip_guard::guard_outbound_url` SSOT and
+/// maps the outcome into `ApiError`. Rejects non-http(s) schemes and blocks
+/// targets that resolve to loopback / link-local / private / ULA / CGNAT /
+/// reserved addresses. Hostnames are resolved via DNS and rejected if ANY
+/// resolved IP is blocked. A hostname listed in `CC_SWITCH_WEB_SSRF_ALLOW`
+/// bypasses these checks.
 ///
 /// Note: this guard is web-server-only; the desktop runtime keeps dialing local
 /// endpoints through the same shared services without this restriction.
@@ -165,59 +152,23 @@ fn ssrf_host_allowed(host: &str) -> bool {
 /// Async (audit F11): DNS resolution uses non-blocking `tokio::net::lookup_host`
 /// rather than the blocking `std` resolver, so it never stalls a Tokio worker.
 pub async fn validate_outbound_url(raw: &str) -> Result<(), ApiError> {
-    let url = Url::parse(raw)
-        .map_err(|err| ApiError::bad_request(format!("Invalid URL '{raw}': {err}")))?;
-
-    match url.scheme() {
-        "http" | "https" => {}
-        other => {
-            return Err(ApiError::bad_request(format!(
-                "Unsupported URL scheme '{other}': only http and https are allowed"
-            )));
+    guard_outbound_url(raw).await.map_err(|err| match err {
+        OutboundUrlError::InvalidUrl { raw, reason } => {
+            ApiError::bad_request(format!("Invalid URL '{raw}': {reason}"))
         }
-    }
-
-    let host = url
-        .host()
-        .ok_or_else(|| ApiError::bad_request(format!("URL '{raw}' has no host")))?;
-
-    match host {
-        Host::Ipv4(ip) => {
-            if !ssrf_host_allowed(&ip.to_string()) && is_blocked_ipv4(&ip) {
-                return Err(ApiError::bad_request(format!(
-                    "Refusing to reach internal address '{ip}'"
-                )));
-            }
+        OutboundUrlError::UnsupportedScheme { scheme } => ApiError::bad_request(format!(
+            "Unsupported URL scheme '{scheme}': only http and https are allowed"
+        )),
+        OutboundUrlError::MissingHost { raw } => {
+            ApiError::bad_request(format!("URL '{raw}' has no host"))
         }
-        Host::Ipv6(ip) => {
-            if !ssrf_host_allowed(&ip.to_string()) && is_blocked_ip(IpAddr::V6(ip)) {
-                return Err(ApiError::bad_request(format!(
-                    "Refusing to reach internal address '{ip}'"
-                )));
-            }
+        OutboundUrlError::ResolveFailed { host, reason } => {
+            ApiError::bad_request(format!("Failed to resolve host '{host}': {reason}"))
         }
-        Host::Domain(domain) => {
-            if ssrf_host_allowed(domain) {
-                return Ok(());
-            }
-            // Resolve the hostname and reject if any resolved IP is blocked.
-            let port = url.port_or_known_default().unwrap_or(0);
-            let addrs = tokio::net::lookup_host((domain, port))
-                .await
-                .map_err(|err| {
-                    ApiError::bad_request(format!("Failed to resolve host '{domain}': {err}"))
-                })?;
-            for addr in addrs {
-                if is_blocked_ip(addr.ip()) {
-                    return Err(ApiError::bad_request(format!(
-                        "Refusing to reach internal address for host '{domain}'"
-                    )));
-                }
-            }
+        OutboundUrlError::BlockedAddress { host } => {
+            ApiError::bad_request(format!("Refusing to reach internal address '{host}'"))
         }
-    }
-
-    Ok(())
+    })
 }
 
 #[cfg(test)]

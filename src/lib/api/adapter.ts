@@ -1,5 +1,5 @@
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
-import { WebApiError, WebAuthError, WebNotSupportedError } from "./errors";
+import { WebApiError, WebNotSupportedError } from "./errors";
 import type { CommandMap, CommandSpec } from "./types-internal";
 
 export const isWebMode = (): boolean =>
@@ -254,9 +254,10 @@ async function parseWebResponse<T>(
   commandOrPath: string,
   responseType: "json" | "blob" = "json",
 ): Promise<T> {
-  if (resp.status === 401) {
-    throw new WebAuthError(401, "Session expired");
-  }
+  // A 401 from the Basic-Auth-gated `/api` is handled natively by the browser
+  // (it re-prompts for credentials before the response ever reaches JS), so we
+  // do not surface a bespoke auth error here — a stale/forbidden 401 just falls
+  // through to the generic error path below.
   if (!resp.ok) {
     let errBody: { code?: string; message?: string; details?: unknown } = {};
     try {
@@ -291,6 +292,6 @@ async function parseWebResponse<T>(
   return (await resp.json()) as T;
 }
 
-export { WebApiError, WebAuthError, WebNotSupportedError } from "./errors";
+export { WebApiError, WebNotSupportedError } from "./errors";
 export { defineCommands } from "./types-internal";
 export type { CommandMap, CommandSpec, HttpMethod } from "./types-internal";

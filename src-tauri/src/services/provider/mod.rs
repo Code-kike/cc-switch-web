@@ -2646,8 +2646,9 @@ impl ProviderService {
         state: &AppState,
         app_type: AppType,
         provider_id: &str,
+        enforce_outbound_guard: bool,
     ) -> Result<UsageResult, AppError> {
-        usage::query_usage(state, app_type, provider_id).await
+        usage::query_usage(state, app_type, provider_id, enforce_outbound_guard).await
     }
 
     /// Query provider usage with native template dispatch (re-export)
@@ -2658,8 +2659,16 @@ impl ProviderService {
         copilot_auth: Option<
             &tokio::sync::RwLock<crate::proxy::providers::copilot_auth::CopilotAuthManager>,
         >,
+        enforce_outbound_guard: bool,
     ) -> Result<UsageResult, AppError> {
-        usage::query_usage_with_templates(state, app_type, provider_id, copilot_auth).await
+        usage::query_usage_with_templates(
+            state,
+            app_type,
+            provider_id,
+            copilot_auth,
+            enforce_outbound_guard,
+        )
+        .await
     }
 
     /// Test usage script (re-export)
@@ -2678,6 +2687,7 @@ impl ProviderService {
         copilot_auth: Option<
             &tokio::sync::RwLock<crate::proxy::providers::copilot_auth::CopilotAuthManager>,
         >,
+        enforce_outbound_guard: bool,
     ) -> Result<UsageResult, AppError> {
         usage::test_usage_script(
             state,
@@ -2691,6 +2701,7 @@ impl ProviderService {
             user_id,
             template_type,
             copilot_auth,
+            enforce_outbound_guard,
         )
         .await
     }

@@ -300,6 +300,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // desktop, which bootstraps before the proxy lifecycle).
     bootstrap::run_post_db_bootstrap(app_state.as_ref());
 
+    // ── Background workers (audit FIX 6) ─────────────────────────────────
+    // The long-running headless server must not rely on lazy on-request work
+    // for DB durability + usage freshness. Mirror the desktop `lib.rs` startup
+    // workers that are tauri-free: periodic DB backup (initial + daily) and
+    // the session-usage sync loop (initial + 60s). The WebDAV/S3 auto-sync
+    // workers are intentionally NOT started here — they require a `tauri::
+    // AppHandle` to emit their `*-sync-status-updated` events (the web build
+    // only has the no-op `*_auto_sync_web` stubs), and the web frontend already
+    // gates the auto-sync toggles as desktop-only (audit F10). Manual
+    // upload/download/test sync stays available via the web API.
+    spawn_background_workers(app_state.as_ref());
+
     let copilot_auth = Arc::new(RwLock::new(
         crate::proxy::providers::copilot_auth::CopilotAuthManager::new(app_config_dir.clone()),
     ));
@@ -426,6 +438,68 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 fn init_logging() {
     let env = env_logger::Env::default().filter_or("RUST_LOG", "info,cc_switch=debug");
     let _ = env_logger::Builder::from_env(env).try_init();
+}
+
+/// Period between automatic DB backup checks (mirrors desktop `lib.rs`
+/// `PERIODIC_MAINTENANCE_INTERVAL_SECS`).
+const PERIODIC_MAINTENANCE_INTERVAL_SECS: u64 = 24 * 60 * 60;
+/// Period between session-usage syncs (mirrors desktop `lib.rs`
+/// `SESSION_SYNC_INTERVAL_SECS`).
+const SESSION_SYNC_INTERVAL_SECS: u64 = 60;
+
+/// Spawn the tauri-free desktop-parity background workers on the headless web
+/// server (audit FIX 6): periodic DB backup (initial check + daily timer) and
+/// the session-usage sync loop (initial + every 60s). These mirror the desktop
+/// `lib.rs` startup workers; only the tauri-free ones are ported here (the
+/// WebDAV/S3 auto-sync workers need an `AppHandle` and are intentionally
+/// skipped — see the call site).
+fn spawn_background_workers(state: &store::AppState) {
+    // Periodic DB backup: run once now, then once per day.
+    let db_for_backup = state.db.clone();
+    tokio::spawn(async move {
+        if let Err(e) = db_for_backup.periodic_backup_if_needed() {
+            log::warn!("Periodic backup failed on startup: {e}");
+        }
+        let mut interval =
+            tokio::time::interval(Duration::from_secs(PERIODIC_MAINTENANCE_INTERVAL_SECS));
+        interval.tick().await; // skip the immediate first tick (already checked)
+        loop {
+            interval.tick().await;
+            if let Err(e) = db_for_backup.periodic_backup_if_needed() {
+                log::warn!("Periodic maintenance timer failed: {e}");
+            }
+        }
+    });
+
+    // Session-usage sync: run once now, then every 60s. Without this the web
+    // server only synced usage lazily on `GET /api/usage`.
+    let db_for_session_sync = state.db.clone();
+    tokio::spawn(async move {
+        run_session_usage_sync(&db_for_session_sync, "initial");
+        let mut interval = tokio::time::interval(Duration::from_secs(SESSION_SYNC_INTERVAL_SECS));
+        interval.tick().await; // skip the immediate first tick
+        loop {
+            interval.tick().await;
+            run_session_usage_sync(&db_for_session_sync, "periodic");
+        }
+    });
+}
+
+/// Run one round of the four session-usage syncs (Claude / Codex / Gemini /
+/// OpenCode), logging each failure without aborting the others.
+fn run_session_usage_sync(db: &database::Database, phase: &str) {
+    if let Err(e) = crate::services::session_usage::sync_claude_session_logs(db) {
+        log::warn!("Session usage {phase} sync failed: {e}");
+    }
+    if let Err(e) = crate::services::session_usage_codex::sync_codex_usage(db) {
+        log::warn!("Codex usage {phase} sync failed: {e}");
+    }
+    if let Err(e) = crate::services::session_usage_gemini::sync_gemini_usage(db) {
+        log::warn!("Gemini usage {phase} sync failed: {e}");
+    }
+    if let Err(e) = crate::services::session_usage_opencode::sync_opencode_usage(db) {
+        log::warn!("OpenCode usage {phase} sync failed: {e}");
+    }
 }
 
 // ============================================================
@@ -954,6 +1028,41 @@ mod web_proxy_lifecycle {
             );
             last = idx;
         }
+    }
+
+    /// FIX 6 pin: `main()` must spawn the desktop-parity background workers
+    /// (periodic DB backup + session-usage sync) after the post-DB bootstrap,
+    /// so the headless server keeps the SQLite DB backed up and usage fresh
+    /// without relying on lazy on-request work.
+    #[test]
+    fn main_spawns_background_workers_after_bootstrap() {
+        let source = read_server_source();
+        let main_start = source
+            .find("async fn main")
+            .expect("examples/server.rs must define async fn main");
+        let main_end = source
+            .find("\nfn init_logging")
+            .expect("examples/server.rs must define fn init_logging after main");
+        let main_body = &source[main_start..main_end];
+
+        let bootstrap_idx = main_body
+            .find("run_post_db_bootstrap(")
+            .expect("main() must run the post-DB bootstrap");
+        let workers_idx = main_body
+            .find("spawn_background_workers(")
+            .expect("main() must spawn background workers (FIX 6)");
+        assert!(
+            workers_idx > bootstrap_idx,
+            "spawn_background_workers must run AFTER run_post_db_bootstrap"
+        );
+        assert!(
+            source.contains("periodic_backup_if_needed()"),
+            "background workers must include the periodic DB backup"
+        );
+        assert!(
+            source.contains("run_session_usage_sync("),
+            "background workers must include the session-usage sync loop"
+        );
     }
 
     /// S3 contract pin: the graceful-shutdown wait must be BOUNDED.

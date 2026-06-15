@@ -1048,7 +1048,12 @@ fn log_forward_error(
 
     let logger = UsageLogger::new(&state.db);
     let status_code = map_proxy_error_to_status(error);
-    let error_message = get_error_message(error);
+    // FIX 3 (R2 gap): for ProxyError::UpstreamError, get_error_message returns
+    // the FULL upstream body, which can carry prompts/request fragments/tokens
+    // or large HTML. Bound it before it is persisted into the request-log DB.
+    // The client-facing error response (codex_proxy_error_json etc.) is built
+    // elsewhere and stays untruncated.
+    let error_message = compact_error_message(&get_error_message(error), 400);
     let request_id = uuid::Uuid::new_v4().to_string();
 
     if let Err(e) = logger.log_error_with_context(
@@ -1118,11 +1123,31 @@ async fn log_usage(
 #[cfg(test)]
 mod tests {
     use super::{
-        chat_error_to_response_error, codex_proxy_error_json, responses_sse_to_response_value,
-        should_use_claude_transform_streaming,
+        chat_error_to_response_error, codex_proxy_error_json, compact_error_message,
+        responses_sse_to_response_value, should_use_claude_transform_streaming,
     };
+    use crate::proxy::error_mapper::get_error_message;
     use crate::proxy::ProxyError;
     use serde_json::json;
+
+    #[test]
+    fn upstream_error_body_is_truncated_before_db_persistence() {
+        // FIX 3 (R2 gap): the request-log DB must not store an untruncated
+        // upstream body (prompts/tokens/large HTML). log_forward_error wraps
+        // get_error_message(error) in compact_error_message(.., 400).
+        let big_body = "x".repeat(5000);
+        let error = ProxyError::UpstreamError {
+            status: 500,
+            body: Some(big_body),
+        };
+        let persisted = compact_error_message(&get_error_message(&error), 400);
+        assert!(
+            persisted.chars().count() <= 400 + "…(truncated)".chars().count(),
+            "persisted error_message must be bounded, got {} chars",
+            persisted.chars().count()
+        );
+        assert!(persisted.contains("(truncated)"));
+    }
 
     #[test]
     fn codex_oauth_responses_force_streaming_even_if_client_sent_false() {

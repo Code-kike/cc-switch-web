@@ -1467,6 +1467,141 @@ state.app_state.proxy_service
 
 ---
 
+### Scenario: Web Outbound SSRF — Usage request.url, Redirect Hop, Log Privacy, CSRF/CORS, F9 Atomicity, Background Workers (verification round, scope C)
+
+#### 1. Scope / Trigger
+
+- Trigger: changing usage-script outbound dialing, any user-URL service dial,
+  upstream-error logging, the failover-enable path, the web auth middleware,
+  the headless server startup, or the shared IP block-list.
+- Applies to `usage_script.rs`, `services/provider/usage.rs`,
+  `services/provider/mod.rs`, `commands/provider.rs`,
+  `web_api/handlers/{usage,providers}.rs`, `services/{stream_check,webdav,s3,
+  speedtest}.rs`, `proxy/handlers.rs`, `services/proxy.rs`,
+  `web_api/middleware/auth.rs`, `examples/server.rs`, `proxy/ip_guard.rs`,
+  `web_api/handlers/common.rs`.
+
+#### 2. Signatures
+
+- `proxy::ip_guard::guard_outbound_url(raw: &str) -> Result<(), OutboundUrlError>`
+  (async; tauri-free SSOT) + `is_blocked_ipv4/_ipv6/_ip` + `ssrf_host_allowed`.
+- `usage_script::{execute_usage_script, send_http_request}(.., enforce_outbound_guard: bool)`.
+- `ProviderService::{query_usage, query_usage_with_templates, test_usage_script}(.., enforce_outbound_guard: bool)`.
+- `proxy/handlers.rs::compact_error_message(message, max_chars)`.
+- `web_api/middleware/auth.rs::{require_auth, check_same_origin_intent, is_state_changing}`.
+- `examples/server.rs::spawn_background_workers(state)` + `run_session_usage_sync`.
+
+#### 3. Contracts
+
+- **Usage request.url SSRF (FIX 1)**: secret/user-influenced usage dials must
+  validate the ACTUALLY-DIALED `request.url` (not just `base_url`) in the WEB
+  runtime via `guard_outbound_url` BEFORE dialing, then dial through
+  `http_client::get_guarded()`. Thread `enforce_outbound_guard: bool` from the
+  two web handlers (`test_usage_script`, `query_provider_usage` →
+  `query_usage_with_templates`) down to `send_http_request`; desktop callers
+  pass `false` (unchanged). `usage_script.rs` stays tauri-free (it imports
+  `proxy::ip_guard`, never `web_api`).
+- **SSRF SSOT (FIX 1)**: `guard_outbound_url` is the single tauri-free guard;
+  `web_api/handlers/common.rs::validate_outbound_url` DELEGATES to it (maps
+  `OutboundUrlError` → `ApiError`), and the usage-script path maps it →
+  `AppError`. Do not re-implement the parse/scheme/DNS/block logic in two places.
+- **Redirect hardening (FIX 2)**: every user-URL web-reachable service dial uses
+  `http_client::get_guarded()` (per-hop IP recheck), NOT `get()`. Covered:
+  `services/{stream_check,webdav,s3,speedtest}.rs`. The proxy hot-path
+  (`forwarder`) keeps the unguarded `get()` (upstream-3xx pass-through unchanged).
+- **Log-DB privacy (FIX 3)**: the persisted request-log `error_message` is
+  bounded — `log_forward_error` wraps `get_error_message(error)` in
+  `compact_error_message(.., 400)` before `log_error_with_context`. Upstream
+  error bodies (prompts/tokens/HTML) must never reach the DB untruncated. The
+  client-facing error response stays as-is.
+- **F9 atomicity (FIX 4)**: `set_auto_failover_enabled` switches FIRST, then
+  persists `auto_failover_enabled=true` only after a successful
+  `switch_proxy_target`. On switch failure it returns Err with the flag still
+  false. Preserve empty-queue auto-add of the current provider, the
+  `provider-switched` emit, and the unconditional `refresh_tray` (both paths).
+- **CSRF intent (FIX 5)**: state-changing `/api/*` methods (POST/PUT/PATCH/
+  DELETE) require a same-origin intent — `Sec-Fetch-Site ∈ {same-origin, none}`,
+  or (Origin present) Origin host == Host (port-insensitive); else 403. No token
+  plumbing. GET/HEAD and public paths exempt. The same-origin SPA is unaffected.
+- **CORS preflight (FIX 7)**: in `require_auth`, an `OPTIONS` request carrying
+  `Origin` is passed through to the inner `CorsLayer` (no 401), so
+  `CORS_ALLOW_ORIGINS` can negotiate; the real cross-origin request is still
+  auth-checked + FIX-5-checked.
+- **Background workers (FIX 6)**: `examples/server.rs` spawns the tauri-free
+  desktop-parity workers after `run_post_db_bootstrap`: periodic DB backup
+  (initial + daily) and session-usage sync (initial + 60s). WebDAV/S3 auto-sync
+  workers are intentionally SKIPPED (need `AppHandle`; FE gates them desktop-only
+  per F10).
+- **ip_guard exotic ranges (FIX 8)**: `is_blocked_ipv4` also blocks `0.0.0.0/8`
+  (octet0==0), multicast (224/4), reserved (240/4); `is_blocked_ipv6` unwraps
+  `to_ipv4()` (catches `::a.b.c.d`) and blocks 6to4 (2002::/16), NAT64
+  (64:ff9b::/96), Teredo (2001::/32), multicast (ff00::/8). Add ranges ONLY in
+  `ip_guard.rs` (tauri-free + sync).
+
+#### 4. Validation & Error Matrix
+
+- A custom-template usage script with `request.url` reaching loopback/metadata/
+  CGNAT dialed in web mode without `guard_outbound_url` -> reject.
+- Desktop usage path forced through the guard (`enforce=true`) -> reject (must
+  stay unrestricted).
+- A user-URL service dial still on `http_client::get()` -> reject (redirect-hop
+  bypass).
+- Upstream error body persisted to the request-log DB untruncated -> reject.
+- `auto_failover_enabled=true` persisted before a failed switch -> reject.
+- A cross-site mutating POST accepted because auth alone passed -> reject.
+- An `OPTIONS`+Origin preflight 401'd before the CorsLayer -> reject.
+- A new exotic range added in `common.rs` instead of `ip_guard.rs` -> reject
+  (SSOT divergence).
+
+#### 5. Good/Base/Bad Cases
+
+- Good: web custom-script `request.url=http://169.254.169.254/` is 400-rejected
+  before dial; a public `https://api.example.com` passes; the desktop command
+  path is unchanged.
+- Base: built-in usage templates (balance/token_plan/copilot/official) keep
+  their existing guarded service dials; only the custom JS path gains the guard.
+- Bad: importing `web_api` into `usage_script.rs`, or keying the breaker bypass /
+  CSRF check off something other than the documented signals.
+
+#### 6. Tests Required
+
+- `usage_script::tests::{web_guard_rejects_internal_request_url_before_dial,
+  web_guard_rejects_non_http_scheme}`.
+- `proxy::ip_guard::tests::{blocks_exotic_ipv4_ranges, blocks_exotic_ipv6_ranges,
+  guard_outbound_url_blocks_internal_and_allows_public}`.
+- `proxy::handlers::tests::upstream_error_body_is_truncated_before_db_persistence`.
+- `services::proxy` F9: `enable_auto_failover_does_not_persist_flag_when_switch_fails`.
+- `web_api::middleware::auth::tests` CSRF intent cases (cross-site 403,
+  same-origin/none/no-origin pass, opaque null 403).
+- `examples/server.rs` `main_spawns_background_workers_after_bootstrap`.
+- Gates: desktop `cargo clippy --features desktop -- -D warnings` + `cargo test`;
+  web `cargo check --no-default-features --features web-server --example server` +
+  the web test set; `cargo fmt --check`; FE `pnpm format:check`,
+  `pnpm check:web-routes` (missing:0), `pnpm typecheck`.
+
+#### 7. Wrong vs Correct
+
+##### Wrong
+
+```rust
+let client = crate::proxy::http_client::get(); // user-URL dial, no redirect recheck
+let error_message = get_error_message(error);   // full upstream body → DB
+let is_public = path == "/api/health"; // OPTIONS preflight 401'd
+```
+
+##### Correct
+
+```rust
+if enforce_outbound_guard { crate::proxy::ip_guard::guard_outbound_url(&config.url).await?; }
+let client = crate::proxy::http_client::get_guarded();
+let error_message = compact_error_message(&get_error_message(error), 400);
+if req.method() == Method::OPTIONS && req.headers().contains_key(header::ORIGIN) {
+    return next.run(req).await; // let CorsLayer answer the preflight
+}
+```
+
+---
+
 ## Testing Requirements
 
 <!-- What level of testing is expected -->

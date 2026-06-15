@@ -525,6 +525,9 @@ async fn query_provider_usage(
         app_type.clone(),
         &provider_id,
         Some(state.copilot_auth.as_ref()),
+        // Web runtime: enforce the SSRF guard on the saved custom-script
+        // request.url before dialing.
+        true,
     )
     .await;
     let snapshot = match &inner {

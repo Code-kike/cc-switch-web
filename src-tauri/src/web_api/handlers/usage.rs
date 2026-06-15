@@ -345,6 +345,9 @@ async fn test_usage_script(
         request.user_id.as_deref(),
         request.template_type.as_deref(),
         Some(state.copilot_auth.as_ref()),
+        // Web runtime: enforce the SSRF guard on the actually-dialed request.url
+        // (custom templates bypass the base_url/HTTPS/same-origin checks).
+        true,
     )
     .await
     .map_err(ApiError::from_anyhow)?;

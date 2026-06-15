@@ -27,6 +27,10 @@ struct UsageCredentials {
 }
 
 /// Execute usage script and format result (private helper method)
+///
+/// `enforce_outbound_guard` (audit FIX 1) threads the web-runtime SSRF gate
+/// down to `usage_script::send_http_request`. Desktop callers pass `false`.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn execute_and_format_usage_result(
     script_code: &str,
     api_key: &str,
@@ -35,6 +39,7 @@ pub(crate) async fn execute_and_format_usage_result(
     access_token: Option<&str>,
     user_id: Option<&str>,
     template_type: Option<&str>,
+    enforce_outbound_guard: bool,
 ) -> Result<UsageResult, AppError> {
     match usage_script::execute_usage_script(
         script_code,
@@ -44,6 +49,7 @@ pub(crate) async fn execute_and_format_usage_result(
         access_token,
         user_id,
         template_type,
+        enforce_outbound_guard,
     )
     .await
     {
@@ -498,6 +504,7 @@ pub async fn query_usage(
     state: &AppState,
     app_type: AppType,
     provider_id: &str,
+    enforce_outbound_guard: bool,
 ) -> Result<UsageResult, AppError> {
     let (script_code, timeout, api_key, base_url, access_token, user_id, template_type) = {
         let providers = state.db.get_all_providers(app_type.as_str())?;
@@ -549,6 +556,7 @@ pub async fn query_usage(
         access_token.as_deref(),
         user_id.as_deref(),
         template_type.as_deref(),
+        enforce_outbound_guard,
     )
     .await
 }
@@ -563,6 +571,7 @@ pub async fn query_usage_with_templates(
     app_type: AppType,
     provider_id: &str,
     copilot_auth: Option<&RwLock<CopilotAuthManager>>,
+    enforce_outbound_guard: bool,
 ) -> Result<UsageResult, AppError> {
     let (template_type, credentials, copilot_account_id) = {
         let providers = state.db.get_all_providers(app_type.as_str())?;
@@ -669,7 +678,7 @@ pub async fn query_usage_with_templates(
                 error: None,
             })
         }
-        _ => query_usage(state, app_type, provider_id).await,
+        _ => query_usage(state, app_type, provider_id, enforce_outbound_guard).await,
     }
 }
 
@@ -687,6 +696,7 @@ pub async fn test_usage_script(
     user_id: Option<&str>,
     template_type: Option<&str>,
     copilot_auth: Option<&RwLock<CopilotAuthManager>>,
+    enforce_outbound_guard: bool,
 ) -> Result<UsageResult, AppError> {
     if matches!(template_type, Some(TEMPLATE_TYPE_GITHUB_COPILOT)) {
         let providers = state.db.get_all_providers(app_type.as_str())?;
@@ -786,6 +796,7 @@ pub async fn test_usage_script(
         access_token,
         user_id,
         template_type,
+        enforce_outbound_guard,
     )
     .await
 }

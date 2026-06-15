@@ -1,31 +1,15 @@
 //! Bootstrap — common initialization for desktop and web-server runtimes.
 //!
-//! Layer 1 / Task 2 (partial scaffolding).
-//!
-//! Full integration (extracting `lib.rs::setup()` body, wiring `services/proxy`
-//! and the proxy crate into `UiEventSink`) is deferred to a follow-up patch.
-//! For now we expose:
-//!   - `RuntimeMode` flag distinguishing the two front ends
+//! Tauri-free startup core shared by both front ends (this module is
+//! `#[path]`-included into the web example, where `tauri` does not exist):
+//!   - `data_dir` / `db_lock_path` path helpers
 //!   - `acquire_data_dir_lock` cross-process advisory lock (web-server only)
-//!   - `migration_marker_path` / sidecar helpers for migration audit
+//!   - `check_filesystem_local` non-local-FS guard
+//!   - `apply_legacy_json_migration` (F5) + `run_post_db_bootstrap` (F6),
+//!     the fully-integrated shared startup path called by both
+//!     `src/lib.rs::setup()` and `examples/server.rs::main()`.
 
 use std::path::{Path, PathBuf};
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum RuntimeMode {
-    Desktop,
-    Web,
-}
-
-impl RuntimeMode {
-    pub fn is_web(self) -> bool {
-        matches!(self, Self::Web)
-    }
-
-    pub fn is_desktop(self) -> bool {
-        matches!(self, Self::Desktop)
-    }
-}
 
 /// Default data directory, `~/.cc-switch`. Override via `CC_SWITCH_DATA_DIR`
 /// environment variable (used by Docker `/data` volume).
@@ -36,11 +20,6 @@ pub fn data_dir() -> PathBuf {
     dirs::home_dir()
         .map(|h| h.join(".cc-switch"))
         .unwrap_or_else(|| PathBuf::from(".cc-switch"))
-}
-
-/// Path of the migration audit sidecar, `<data_dir>/migration.marker`.
-pub fn migration_marker_path(data_dir: &Path) -> PathBuf {
-    data_dir.join("migration.marker")
 }
 
 /// Path of the cross-process DB lock, `<data_dir>/cc-switch.db.lock`.

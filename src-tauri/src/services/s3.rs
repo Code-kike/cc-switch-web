@@ -332,7 +332,9 @@ pub(crate) async fn test_connection(creds: &S3Credentials) -> Result<(), AppErro
         )
     })?;
 
-    let client = http_client::get();
+    // FIX 2: redirect-hardened client so a validated public endpoint cannot
+    // 30x-redirect to an internal IP literal.
+    let client = http_client::get_guarded();
     let body_hash = sha256_hex(b"");
     let mut headers = reqwest::header::HeaderMap::new();
     sign_request(
@@ -374,7 +376,9 @@ pub(crate) async fn put_object(
         )
     })?;
 
-    let client = http_client::get();
+    // FIX 2: redirect-hardened client so a validated public endpoint cannot
+    // 30x-redirect to an internal IP literal.
+    let client = http_client::get_guarded();
     let body_hash = sha256_hex(&bytes);
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert("content-type", content_type.parse().unwrap());
@@ -419,7 +423,9 @@ pub(crate) async fn get_object(
         )
     })?;
 
-    let client = http_client::get();
+    // FIX 2: redirect-hardened client so a validated public endpoint cannot
+    // 30x-redirect to an internal IP literal.
+    let client = http_client::get_guarded();
     let body_hash = sha256_hex(b"");
     let mut headers = reqwest::header::HeaderMap::new();
     sign_request(
@@ -485,7 +491,9 @@ pub(crate) async fn head_object(
         )
     })?;
 
-    let client = http_client::get();
+    // FIX 2: redirect-hardened client so a validated public endpoint cannot
+    // 30x-redirect to an internal IP literal.
+    let client = http_client::get_guarded();
     let body_hash = sha256_hex(b"");
     let mut headers = reqwest::header::HeaderMap::new();
     sign_request(

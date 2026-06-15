@@ -141,6 +141,8 @@ pub async fn queryProviderUsage(
         app_type.clone(),
         &providerId,
         Some(copilot_state.0.as_ref()),
+        // Desktop runtime: local dials stay unrestricted (no SSRF guard).
+        false,
     )
     .await
     .map_err(|e| e.to_string());
@@ -195,6 +197,8 @@ pub async fn testUsageScript(
         userId.as_deref(),
         templateType.as_deref(),
         Some(copilot_state.0.as_ref()),
+        // Desktop runtime: local dials stay unrestricted (no SSRF guard).
+        false,
     )
     .await
     .map_err(|e| e.to_string())

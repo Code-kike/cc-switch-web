@@ -131,7 +131,9 @@ fn webdav_transport_error(
 /// Test WebDAV connectivity via PROPFIND Depth=0 on the base URL.
 pub async fn test_connection(base_url: &str, auth: &WebDavAuth) -> Result<(), AppError> {
     let url = parse_base_url(base_url)?;
-    let client = http_client::get();
+    // FIX 2: redirect-hardened client so a validated public endpoint cannot
+    // 30x-redirect to an internal IP literal.
+    let client = http_client::get_guarded();
 
     let resp = apply_auth(
         client
@@ -170,7 +172,9 @@ pub async fn ensure_remote_directories(
     if segments.is_empty() {
         return Ok(());
     }
-    let client = http_client::get();
+    // FIX 2: redirect-hardened client so a validated public endpoint cannot
+    // 30x-redirect to an internal IP literal.
+    let client = http_client::get_guarded();
 
     for depth in 1..=segments.len() {
         let prefix = &segments[..depth];
@@ -228,7 +232,9 @@ pub async fn put_bytes(
     bytes: Vec<u8>,
     content_type: &str,
 ) -> Result<(), AppError> {
-    let client = http_client::get();
+    // FIX 2: redirect-hardened client so a validated public endpoint cannot
+    // 30x-redirect to an internal IP literal.
+    let client = http_client::get_guarded();
     let resp = apply_auth(
         client
             .put(url)
@@ -255,7 +261,9 @@ pub async fn get_bytes(
     auth: &WebDavAuth,
     max_bytes: usize,
 ) -> Result<Option<(Vec<u8>, Option<String>)>, AppError> {
-    let client = http_client::get();
+    // FIX 2: redirect-hardened client so a validated public endpoint cannot
+    // 30x-redirect to an internal IP literal.
+    let client = http_client::get_guarded();
     let resp = apply_auth(
         client
             .get(url)
@@ -299,7 +307,9 @@ pub async fn get_bytes(
 
 /// HEAD request to retrieve the ETag. Returns `None` on 404.
 pub async fn head_etag(url: &str, auth: &WebDavAuth) -> Result<Option<String>, AppError> {
-    let client = http_client::get();
+    // FIX 2: redirect-hardened client so a validated public endpoint cannot
+    // 30x-redirect to an internal IP literal.
+    let client = http_client::get_guarded();
     let resp = apply_auth(
         client
             .head(url)

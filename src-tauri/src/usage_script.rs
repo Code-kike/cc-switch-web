@@ -124,6 +124,14 @@ pub fn try_extract_request_url(script_code: &str) -> Result<Option<String>, AppE
 }
 
 /// 执行用量查询脚本
+///
+/// `enforce_outbound_guard` (audit FIX 1): web-runtime-only SSRF gate. When
+/// `true` the actually-dialed `request.url` is validated against the tauri-free
+/// `proxy::ip_guard::guard_outbound_url` SSOT before the dial, and the request
+/// goes through the redirect-hardened `http_client::get_guarded()` client so
+/// every redirect hop is re-checked too. Desktop callers pass `false` to keep
+/// dialing local endpoints unrestricted (behavior unchanged).
+#[allow(clippy::too_many_arguments)]
 pub async fn execute_usage_script(
     script_code: &str,
     api_key: &str,
@@ -132,6 +140,7 @@ pub async fn execute_usage_script(
     access_token: Option<&str>,
     user_id: Option<&str>,
     template_type: Option<&str>,
+    enforce_outbound_guard: bool,
 ) -> Result<Value, AppError> {
     // 检测是否为自定义模板模式
     // 优先使用前端传递的 template_type
@@ -241,7 +250,7 @@ pub async fn execute_usage_script(
     validate_request_url(&request.url, base_url, is_custom_template)?;
 
     // 6. 发送 HTTP 请求
-    let response_data = send_http_request(&request, timeout_secs).await?;
+    let response_data = send_http_request(&request, timeout_secs, enforce_outbound_guard).await?;
 
     // 7. 在独立作用域中执行 extractor（确保 Runtime/Context 在函数结束前释放）
     // Second eval of the same script — see the L22 note at step 3 for why a
@@ -361,9 +370,34 @@ struct RequestConfig {
 }
 
 /// 发送 HTTP 请求
-async fn send_http_request(config: &RequestConfig, timeout_secs: u64) -> Result<String, AppError> {
-    // 使用全局 HTTP 客户端（已包含代理配置）
-    let client = crate::proxy::http_client::get();
+///
+/// `enforce_outbound_guard` (audit FIX 1): web-runtime-only. When `true`, the
+/// final `config.url` is validated against `proxy::ip_guard::guard_outbound_url`
+/// (reject non-http(s) schemes + internal/private/loopback/CGNAT targets)
+/// BEFORE dialing, and the request uses the redirect-hardened `get_guarded()`
+/// client. Desktop callers pass `false` and keep the unguarded `get()` client.
+async fn send_http_request(
+    config: &RequestConfig,
+    timeout_secs: u64,
+    enforce_outbound_guard: bool,
+) -> Result<String, AppError> {
+    // Web-runtime SSRF guard: validate the actually-dialed URL (not just the
+    // provider base_url) before connecting. Custom-template scripts skip the
+    // HTTPS/same-origin checks above, so this is the only barrier against a
+    // script-controlled `request.url` reaching internal endpoints.
+    if enforce_outbound_guard {
+        crate::proxy::ip_guard::guard_outbound_url(&config.url)
+            .await
+            .map_err(map_outbound_guard_error)?;
+    }
+
+    // 使用全局 HTTP 客户端（已包含代理配置）。Web 守护模式下使用重定向逐跳复检的
+    // guarded 客户端，防止公网 URL 通过 30x 重定向到内网。
+    let client = if enforce_outbound_guard {
+        crate::proxy::http_client::get_guarded()
+    } else {
+        crate::proxy::http_client::get()
+    };
     // 约束超时范围，防止异常配置导致长时间阻塞（最小 2 秒，最大 30 秒）
     let request_timeout = std::time::Duration::from_secs(timeout_secs.clamp(2, 30));
 
@@ -718,6 +752,39 @@ fn is_loopback_host(url: &Url) -> bool {
     }
 }
 
+/// Map the tauri-free SSRF guard outcome into a localized `AppError` so the
+/// usage-script path stays tauri-free and does not depend on `web_api`.
+fn map_outbound_guard_error(err: crate::proxy::ip_guard::OutboundUrlError) -> AppError {
+    use crate::proxy::ip_guard::OutboundUrlError;
+    match err {
+        OutboundUrlError::InvalidUrl { raw, reason } => AppError::localized(
+            "usage_script.request_url_invalid",
+            format!("无效的请求 URL '{raw}': {reason}"),
+            format!("Invalid request URL '{raw}': {reason}"),
+        ),
+        OutboundUrlError::UnsupportedScheme { scheme } => AppError::localized(
+            "usage_script.request_scheme_unsupported",
+            format!("不支持的请求 URL 协议 '{scheme}'：仅允许 http 与 https"),
+            format!("Unsupported request URL scheme '{scheme}': only http and https are allowed"),
+        ),
+        OutboundUrlError::MissingHost { raw } => AppError::localized(
+            "usage_script.request_url_no_host",
+            format!("请求 URL '{raw}' 缺少主机名"),
+            format!("Request URL '{raw}' has no host"),
+        ),
+        OutboundUrlError::ResolveFailed { host, reason } => AppError::localized(
+            "usage_script.request_host_resolve_failed",
+            format!("无法解析主机 '{host}': {reason}"),
+            format!("Failed to resolve host '{host}': {reason}"),
+        ),
+        OutboundUrlError::BlockedAddress { host } => AppError::localized(
+            "usage_script.request_internal_blocked",
+            format!("拒绝访问内网地址 '{host}'"),
+            format!("Refusing to reach internal address '{host}'"),
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -729,6 +796,47 @@ mod tests {
         assert!(
             result.is_err(),
             "Should reject HTTP for non-localhost domains"
+        );
+    }
+
+    fn request_config(url: &str) -> RequestConfig {
+        RequestConfig {
+            url: url.to_string(),
+            method: "GET".to_string(),
+            headers: HashMap::new(),
+            body: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn web_guard_rejects_internal_request_url_before_dial() {
+        // FIX 1: custom-template scripts skip HTTPS/same-origin checks, so the
+        // web-runtime guard is the only barrier. Internal/metadata/CGNAT
+        // targets must be rejected before any connection is attempted.
+        for url in [
+            "http://169.254.169.254/latest/meta-data/",
+            "http://127.0.0.1:9999/",
+            "http://10.0.0.1/",
+            "http://100.64.0.1/",
+        ] {
+            let err = send_http_request(&request_config(url), 5, true)
+                .await
+                .expect_err("internal target must be rejected by the web guard");
+            assert!(
+                err.to_string().contains("内网") || err.to_string().contains("internal"),
+                "expected an internal-address rejection for {url}, got: {err}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn web_guard_rejects_non_http_scheme() {
+        let err = send_http_request(&request_config("file:///etc/passwd"), 5, true)
+            .await
+            .expect_err("non-http(s) scheme must be rejected by the web guard");
+        assert!(
+            err.to_string().contains("http") || err.to_string().contains("协议"),
+            "expected an unsupported-scheme rejection, got: {err}"
         );
     }
 

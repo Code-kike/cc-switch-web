@@ -119,8 +119,10 @@ impl SpeedtestService {
     fn build_client(timeout_secs: u64) -> Result<(Client, std::time::Duration), AppError> {
         // 使用全局 HTTP 客户端（已包含代理配置）
         // 返回 timeout Duration 供请求级别使用
+        // FIX 2: redirect-hardened client so a validated public URL cannot
+        // 30x-redirect to an internal IP literal.
         let timeout = std::time::Duration::from_secs(timeout_secs);
-        Ok((crate::proxy::http_client::get(), timeout))
+        Ok((crate::proxy::http_client::get_guarded(), timeout))
     }
 
     fn sanitize_timeout(timeout_secs: Option<u64>) -> u64 {

@@ -2392,15 +2392,23 @@ impl ProxyService {
             .await
             .map_err(|e| e.to_string())?;
         config.auto_failover_enabled = enabled;
+
+        // FIX 4 (F9 atomicity): switch-then-persist. switch_proxy_target can Err
+        // (e.g. "Cannot switch to official provider during proxy takeover"); if
+        // it does we must NOT have already persisted auto_failover_enabled=true,
+        // or the API returns Err while the flag stays on (state divergence).
+        // The disable path has no switch and just commits the flag.
+        if enabled {
+            self.switch_proxy_target(app_type, &p1_provider_id).await?;
+        }
+
         self.db
             .update_proxy_config_for_app(config)
             .await
             .map_err(|e| e.to_string())?;
 
-        // 开启后立即切到 P1，并通过 sink 发射 provider-switched（仅开启路径）。
+        // 开启成功后通过 sink 发射 provider-switched（仅开启路径）。
         if enabled {
-            self.switch_proxy_target(app_type, &p1_provider_id).await?;
-
             if let Some(ctx) = self.runtime_ctx().await {
                 ctx.emit_json(
                     "provider-switched",
@@ -3092,6 +3100,56 @@ mod tests {
         let queue = db.get_failover_queue("claude").expect("read queue");
         assert_eq!(queue.len(), 1, "disable must not clear the queue");
         assert_eq!(queue[0].provider_id, "p1");
+    }
+
+    /// FIX 4 (F9 atomicity): when `switch_proxy_target` fails (P1 is an official
+    /// provider, rejected by `hot_switch_provider_inner`), enabling must return
+    /// Err AND must NOT have persisted `auto_failover_enabled = true`. The flag
+    /// is only committed after a successful switch (switch-then-persist).
+    #[tokio::test]
+    #[serial]
+    async fn enable_auto_failover_does_not_persist_flag_when_switch_fails() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let service = ProxyService::new(db.clone());
+
+        // The current provider is OFFICIAL — hot_switch_provider_inner rejects
+        // switching to it, so switch_proxy_target Errs inside the enable path.
+        let mut provider = Provider::with_id(
+            "official-1".to_string(),
+            "Official".to_string(),
+            json!({
+                "env": {
+                    "ANTHROPIC_BASE_URL": "https://api.anthropic.com"
+                }
+            }),
+            None,
+        );
+        provider.category = Some("official".to_string());
+        db.save_provider("claude", &provider)
+            .expect("save provider");
+        db.set_current_provider("claude", "official-1")
+            .expect("set db current provider");
+        crate::settings::set_current_provider(&AppType::Claude, Some("official-1"))
+            .expect("set local current provider");
+
+        let result = service.set_auto_failover_enabled("claude", true).await;
+        assert!(
+            result.is_err(),
+            "enable must fail when the P1 switch errors"
+        );
+
+        // The switch failure must NOT have persisted the enable flag.
+        let config = db
+            .get_proxy_config_for_app("claude")
+            .await
+            .expect("read proxy config");
+        assert!(
+            !config.auto_failover_enabled,
+            "auto_failover_enabled must stay false when the switch failed"
+        );
     }
 
     #[test]
