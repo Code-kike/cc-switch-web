@@ -1,0 +1,2 @@
+{"file": ".trellis/tasks/06-14-audit-and-optimize-cc-switch-web-post-refactor-codex-co-review/prd.md", "reason": "Acceptance: each fix must match the agreed fix + severity"}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "Gate contracts: web cargo check, route coverage, dual-runtime parity, 0o600, bounded shutdown"}
