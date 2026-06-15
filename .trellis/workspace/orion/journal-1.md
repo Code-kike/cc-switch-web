@@ -585,3 +585,36 @@ codex+Claude audit (13 consensus findings, multi-round debate) fixed across Phas
 ### Next Steps
 
 - None - task complete
+
+
+## Session 17: Harden residual authenticated web API vectors (R1 session-path guard + R2 log privacy)
+
+**Date**: 2026-06-15
+**Task**: Harden residual authenticated web API vectors (R1 session-path guard + R2 log privacy)
+**Branch**: `fix/web-audit-phase1-2`
+
+### Summary
+
+Follow-up to the archived audit task: R1 — session_manager::load_messages now root-guards source_path (faithful mirror of delete_session_with_roots) + opencode/hermes sqlite db-path validation, closing an authenticated arbitrary file/SQLite read (+9 tests); R2 — shipped systemd RUST_LOG=info (prompt/response bodies are debug-only → privacy-by-default) + truncated the one remaining >=info body log (handlers.rs Claude parse-error). R3 (MCP-upsert write→exec) + R4 (OAuth 0o600 at rest) accepted as operator-only/standard-practice residuals. Commit 6abaccbf on branch fix/web-audit-phase1-2 (not merged/deployed).
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `6abaccbf` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

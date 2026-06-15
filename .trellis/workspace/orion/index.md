@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 16
+- **Total Sessions**: 17
 - **Last Active**: 2026-06-15
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~587 | Active |
+| `journal-1.md` | ~620 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 17 | 2026-06-15 | Harden residual authenticated web API vectors (R1 session-path guard + R2 log privacy) | `6abaccbf` | `fix/web-audit-phase1-2` |
 | 16 | 2026-06-15 | Audit + 2-round verification co-review of cc-switch-web (Phase 1-4) | `e65b8a07`, `2a0b3305`, `a20ea3e1` | `fix/web-audit-phase1-2` |
 | 15 | 2026-06-12 | Fix web runtime global outbound proxy init (failover unreachable relays) | `74635c8f`, `a4b9bcee` | `main` |
 | 14 | 2026-06-12 | Port routing proxy + random auto-failover to web runtime | `260b5153`, `6dba3361`, `37fd9598`, `e44abf2d`, `ba53338b`, `cc4e24ef`, `abb71c40` | `main` |
