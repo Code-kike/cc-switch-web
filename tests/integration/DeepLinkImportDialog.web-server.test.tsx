@@ -10,7 +10,6 @@ import {
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import "@/lib/api/web-commands";
-import { setCsrfToken } from "@/lib/api/adapter";
 import {
   DeepLinkImportDialog,
   type DeepLinkImportDialogHandle,
@@ -92,7 +91,6 @@ describe.sequential("DeepLinkImportDialog against real web server", () => {
     toastSuccessMock.mockReset();
     toastErrorMock.mockReset();
     toastWarningMock.mockReset();
-    setCsrfToken(null);
     Object.defineProperty(window, "__TAURI_INTERNALS__", {
       configurable: true,
       value: undefined,

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { invoke, pickWebFile, setCsrfToken } from "@/lib/api/adapter";
+import { invoke, pickWebFile } from "@/lib/api/adapter";
 import { WebNotSupportedError } from "@/lib/api/errors";
 import "@/lib/api/web-commands";
 
@@ -12,7 +12,6 @@ afterEach(() => {
 
 describe("web adapter DELETE encoding", () => {
   beforeEach(() => {
-    setCsrfToken("test-csrf-token");
     Object.defineProperty(window, "__TAURI_INTERNALS__", {
       configurable: true,
       value: undefined,
@@ -54,7 +53,6 @@ describe("web adapter DELETE encoding", () => {
         headers: expect.objectContaining({
           Accept: "application/json",
           "Content-Type": "application/json",
-          "X-CSRF-Token": "test-csrf-token",
         }),
       }),
     );

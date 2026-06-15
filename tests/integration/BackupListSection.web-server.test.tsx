@@ -10,7 +10,6 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 
 import "@/lib/api/web-commands";
 import { BackupListSection } from "@/components/settings/BackupListSection";
-import { setCsrfToken } from "@/lib/api/adapter";
 import { server } from "../msw/server";
 import {
   startTestWebServer,
@@ -85,7 +84,6 @@ describe.sequential("BackupListSection against real web server", () => {
   beforeEach(() => {
     toastSuccessMock.mockReset();
     toastErrorMock.mockReset();
-    setCsrfToken(null);
     Object.defineProperty(window, "__TAURI_INTERNALS__", {
       configurable: true,
       value: undefined,

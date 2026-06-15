@@ -18,7 +18,6 @@ import {
 
 import "@/lib/api/web-commands";
 import { ProxyTabContent } from "@/components/settings/ProxyTabContent";
-import { setCsrfToken } from "@/lib/api/adapter";
 import { providersApi } from "@/lib/api/providers";
 import { server } from "../msw/server";
 import {
@@ -215,7 +214,6 @@ describe.sequential("ProxyTabContent against real web server", () => {
     toastSuccessMock.mockReset();
     toastErrorMock.mockReset();
 
-    setCsrfToken(null);
     Object.defineProperty(Element.prototype, "scrollIntoView", {
       configurable: true,
       value: vi.fn(),

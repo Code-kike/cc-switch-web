@@ -44,20 +44,6 @@ vi.mock("@/lib/api/adapter", async () => {
         throw new Error("missing upload field");
       }
 
-      let token = actual.getCsrfToken();
-      if (!token) {
-        const csrfResponse = await fetch(
-          `${actual.apiBase()}/api/system/csrf-token`,
-          {
-            credentials: "include",
-            headers: { Accept: "application/json" },
-          },
-        );
-        const payload = (await csrfResponse.json()) as { token: string };
-        token = payload.token;
-        actual.setCsrfToken(token);
-      }
-
       const fileName =
         source instanceof Blob && "name" in source && typeof source.name === "string"
           ? source.name
@@ -83,7 +69,6 @@ vi.mock("@/lib/api/adapter", async () => {
         headers: {
           Accept: "application/json",
           "Content-Type": `multipart/form-data; boundary=${boundary}`,
-          ...(token ? { "X-CSRF-Token": token } : {}),
         },
       });
       if (!response.ok) {
@@ -98,7 +83,7 @@ import "@/lib/api/web-commands";
 import PromptPanel, {
   type PromptPanelHandle,
 } from "@/components/prompts/PromptPanel";
-import { getCsrfToken, pickWebFile, setCsrfToken } from "@/lib/api/adapter";
+import { pickWebFile } from "@/lib/api/adapter";
 import type { Prompt } from "@/lib/api/prompts";
 import { server } from "../msw/server";
 import {
@@ -196,7 +181,6 @@ describe.sequential("PromptPanel against real web server", () => {
     vi.mocked(pickWebFile).mockReset();
     vi.mocked(pickWebFile).mockResolvedValue(promptFile);
 
-    setCsrfToken(null);
     Object.defineProperty(window, "__TAURI_INTERNALS__", {
       configurable: true,
       value: undefined,
@@ -209,7 +193,6 @@ describe.sequential("PromptPanel against real web server", () => {
       configurable: true,
       value: webServer.baseUrl,
     });
-    expect(getCsrfToken()).toBeNull();
   });
 
   it(

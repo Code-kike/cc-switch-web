@@ -17,7 +17,6 @@ import UnifiedMcpPanel, {
   type UnifiedMcpPanelHandle,
 } from "@/components/mcp/UnifiedMcpPanel";
 import { MCP_APP_IDS } from "@/config/appConfig";
-import { setCsrfToken } from "@/lib/api/adapter";
 import type { McpServer } from "@/types";
 import { server } from "../msw/server";
 import {
@@ -187,7 +186,6 @@ describe.sequential("UnifiedMcpPanel against real web server", () => {
   beforeEach(() => {
     toastSuccessMock.mockReset();
     toastErrorMock.mockReset();
-    setCsrfToken(null);
     Object.defineProperty(window, "__TAURI_INTERNALS__", {
       configurable: true,
       value: undefined,

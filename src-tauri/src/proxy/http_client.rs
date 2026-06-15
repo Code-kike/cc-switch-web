@@ -13,6 +13,17 @@ use std::time::Duration;
 /// 全局 HTTP 客户端实例
 static GLOBAL_CLIENT: OnceCell<RwLock<Client>> = OnceCell::new();
 
+/// SSRF-guarded outbound client (audit P4-A2).
+///
+/// Mirrors the global client's proxy configuration but installs a redirect
+/// policy that re-runs the internal-IP block-check on every redirect hop, so a
+/// public host that 30x-redirects to `http://127.0.0.1/` / `169.254.169.254` /
+/// `100.64.x.x` cannot bypass the initial-URL-only `validate_outbound_url`
+/// guard. Used by the WEB outbound handlers' service layer (balance /
+/// coding_plan / model_fetch); the proxy hot path keeps the unguarded
+/// `GLOBAL_CLIENT` so its upstream-3xx pass-through behavior is unchanged.
+static GUARDED_CLIENT: OnceCell<RwLock<Client>> = OnceCell::new();
+
 /// 当前代理 URL（用于日志和状态查询）
 static CURRENT_PROXY_URL: OnceCell<RwLock<Option<String>>> = OnceCell::new();
 
@@ -66,6 +77,9 @@ pub fn init(proxy_url: Option<&str>) -> Result<(), String> {
         return apply_proxy(proxy_url);
     }
 
+    // 同步初始化 SSRF-guarded 客户端（与主客户端共用代理配置）
+    let _ = GUARDED_CLIENT.set(RwLock::new(build_guarded_client(effective_url)?));
+
     // 初始化代理 URL 记录
     let _ = CURRENT_PROXY_URL.set(RwLock::new(effective_url.map(|s| s.to_string())));
 
@@ -106,6 +120,7 @@ pub fn validate_proxy(proxy_url: Option<&str>) -> Result<(), String> {
 pub fn apply_proxy(proxy_url: Option<&str>) -> Result<(), String> {
     let effective_url = proxy_url.filter(|s| !s.trim().is_empty());
     let new_client = build_client(effective_url)?;
+    let new_guarded = build_guarded_client(effective_url)?;
 
     // 更新客户端
     if let Some(lock) = GLOBAL_CLIENT.get() {
@@ -117,6 +132,15 @@ pub fn apply_proxy(proxy_url: Option<&str>) -> Result<(), String> {
     } else {
         // 如果还没初始化，则初始化
         return init(proxy_url);
+    }
+
+    // 同步更新 SSRF-guarded 客户端
+    if let Some(lock) = GUARDED_CLIENT.get() {
+        if let Ok(mut guarded) = lock.write() {
+            *guarded = new_guarded;
+        }
+    } else {
+        let _ = GUARDED_CLIENT.set(RwLock::new(new_guarded));
     }
 
     // 更新代理 URL 记录
@@ -150,6 +174,7 @@ pub fn apply_proxy(proxy_url: Option<&str>) -> Result<(), String> {
 pub fn update_proxy(proxy_url: Option<&str>) -> Result<(), String> {
     let effective_url = proxy_url.filter(|s| !s.trim().is_empty());
     let new_client = build_client(effective_url)?;
+    let new_guarded = build_guarded_client(effective_url)?;
 
     // 更新客户端
     if let Some(lock) = GLOBAL_CLIENT.get() {
@@ -161,6 +186,15 @@ pub fn update_proxy(proxy_url: Option<&str>) -> Result<(), String> {
     } else {
         // 如果还没初始化，则初始化
         return init(proxy_url);
+    }
+
+    // 同步更新 SSRF-guarded 客户端
+    if let Some(lock) = GUARDED_CLIENT.get() {
+        if let Ok(mut guarded) = lock.write() {
+            *guarded = new_guarded;
+        }
+    } else {
+        let _ = GUARDED_CLIENT.set(RwLock::new(new_guarded));
     }
 
     // 更新代理 URL 记录
@@ -196,6 +230,29 @@ pub fn get() -> Client {
         })
 }
 
+/// 获取 SSRF-guarded outbound 客户端（audit P4-A2）。
+///
+/// 与 `get()` 共用代理配置，但额外安装了重定向策略：每一跳重定向目标若解析为
+/// 内网/环回/链路本地/未指定/CGNAT 的 **IP 字面量**，即中止重定向，防止公网主机
+/// 通过 `302 Location: http://127.0.0.1/` 绕过仅校验初始 URL 的
+/// `validate_outbound_url`。Web outbound 服务层（balance / coding_plan /
+/// model_fetch）使用此客户端；代理热路径仍用未加固的 `get()`，保持其对上游 3xx
+/// 的透传行为不变。
+///
+/// 残留：重定向目标若是 **域名**（而非 IP 字面量），同步的重定向回调无法做 DNS
+/// 解析，因此无法在此拦截 → 这是已知的 DNS-rebinding/域名重定向残留，与初始 URL
+/// 校验同样依赖 `validate_outbound_url` 的解析时刻（auth-gated 部署下可接受）。
+pub fn get_guarded() -> Client {
+    GUARDED_CLIENT
+        .get()
+        .and_then(|lock| lock.read().ok())
+        .map(|c| c.clone())
+        .unwrap_or_else(|| {
+            log::warn!("[GlobalProxy] [GP-004] Guarded client not initialized, using fallback");
+            build_guarded_client(None).unwrap_or_default()
+        })
+}
+
 /// 获取当前代理 URL
 ///
 /// 返回当前配置的代理 URL，None 表示直连。
@@ -214,7 +271,48 @@ pub fn is_proxy_enabled() -> bool {
 
 /// 构建 HTTP 客户端
 fn build_client(proxy_url: Option<&str>) -> Result<Client, String> {
-    let mut builder = Client::builder()
+    configure_builder(base_builder(), proxy_url)?
+        .build()
+        .map_err(|e| format!("Failed to build HTTP client: {e}"))
+}
+
+/// 构建 SSRF-guarded outbound 客户端（audit P4-A2）。
+///
+/// 与 `build_client` 同样的超时/代理/压缩配置，但加装 `redirect::Policy::custom`：
+/// 每一跳重定向目标的 host 若是被 `ip_guard::is_blocked_ip` 判定为内网/环回/链路
+/// 本地/未指定/CGNAT 的 IP 字面量，则中止（`stop`）；公网→公网重定向仍在默认 10
+/// 跳预算内放行。回调是同步的、不做 IO（不解析 DNS），因此可安全用于重定向策略。
+fn build_guarded_client(proxy_url: Option<&str>) -> Result<Client, String> {
+    let builder = base_builder().redirect(guarded_redirect_policy());
+    configure_builder(builder, proxy_url)?
+        .build()
+        .map_err(|e| format!("Failed to build guarded HTTP client: {e}"))
+}
+
+/// 重定向策略：逐跳重新执行内网 IP 拦截，公网→公网放行，命中内网 IP 字面量即中止。
+fn guarded_redirect_policy() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        if attempt.previous().len() >= 10 {
+            return attempt.error("too many redirects");
+        }
+        match attempt.url().host() {
+            // IP 字面量：直接分类，命中内网即中止。
+            Some(url::Host::Ipv4(ip)) if crate::proxy::ip_guard::is_blocked_ip(IpAddr::V4(ip)) => {
+                return attempt.stop();
+            }
+            Some(url::Host::Ipv6(ip)) if crate::proxy::ip_guard::is_blocked_ip(IpAddr::V6(ip)) => {
+                return attempt.stop();
+            }
+            // 公网 IP 字面量 / 域名：放行（域名见 get_guarded 的 DNS 残留说明）。
+            _ => {}
+        }
+        attempt.follow()
+    })
+}
+
+/// 客户端通用基础配置（超时/连接池/禁用自动解压），代理与重定向策略由调用方补充。
+fn base_builder() -> reqwest::ClientBuilder {
+    Client::builder()
         .timeout(Duration::from_secs(600))
         .connect_timeout(Duration::from_secs(30))
         .pool_max_idle_per_host(10)
@@ -223,8 +321,14 @@ fn build_client(proxy_url: Option<&str>) -> Result<Client, String> {
         // 响应解压由 response_processor 根据 content-encoding 手动处理。
         .no_gzip()
         .no_brotli()
-        .no_deflate();
+        .no_deflate()
+}
 
+/// 将代理配置应用到 builder（与历史 `build_client` 的代理选择逻辑一致）。
+fn configure_builder(
+    mut builder: reqwest::ClientBuilder,
+    proxy_url: Option<&str>,
+) -> Result<reqwest::ClientBuilder, String> {
     // 有代理地址则使用代理，否则跟随系统代理
     if let Some(url) = proxy_url {
         // 先验证 URL 格式和 scheme
@@ -257,9 +361,7 @@ fn build_client(proxy_url: Option<&str>) -> Result<Client, String> {
         }
     }
 
-    builder
-        .build()
-        .map_err(|e| format!("Failed to build HTTP client: {e}"))
+    Ok(builder)
 }
 
 fn system_proxy_points_to_loopback() -> bool {
@@ -369,6 +471,16 @@ mod tests {
     fn test_build_client_direct() {
         let result = build_client(None);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_build_guarded_client_direct() {
+        // The SSRF-guarded outbound client (audit P4-A2) must build with the
+        // same proxy permutations as the main client.
+        assert!(build_guarded_client(None).is_ok());
+        assert!(build_guarded_client(Some("http://127.0.0.1:7890")).is_ok());
+        assert!(build_guarded_client(Some("socks5://127.0.0.1:1080")).is_ok());
+        assert!(build_guarded_client(Some("invalid-scheme://127.0.0.1:7890")).is_err());
     }
 
     #[test]

@@ -17,7 +17,6 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import "@/lib/api/web-commands";
 import { ProviderList } from "@/components/providers/ProviderList";
 import { EditProviderDialog } from "@/components/providers/EditProviderDialog";
-import { setCsrfToken } from "@/lib/api/adapter";
 import { configApi } from "@/lib/api";
 import { failoverApi } from "@/lib/api/failover";
 import { hermesApi } from "@/lib/api/hermes";
@@ -362,7 +361,6 @@ describe.sequential("ProviderList against real web server", () => {
     toastSuccessMock.mockReset();
     toastErrorMock.mockReset();
     toastInfoMock.mockReset();
-    setCsrfToken(null);
 
     Object.defineProperty(window, "__TAURI_INTERNALS__", {
       configurable: true,

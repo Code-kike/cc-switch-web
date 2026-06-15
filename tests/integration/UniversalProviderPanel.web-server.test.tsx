@@ -4,7 +4,6 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 
 import "@/lib/api/web-commands";
 import { UniversalProviderPanel } from "@/components/universal/UniversalProviderPanel";
-import { setCsrfToken } from "@/lib/api/adapter";
 import { providersApi, universalProvidersApi } from "@/lib/api/providers";
 import { server } from "../msw/server";
 import {
@@ -94,7 +93,6 @@ describe.sequential("UniversalProviderPanel against real web server", () => {
   beforeEach(() => {
     toastSuccessMock.mockReset();
     toastErrorMock.mockReset();
-    setCsrfToken(null);
 
     Object.defineProperty(window, "__TAURI_INTERNALS__", {
       configurable: true,

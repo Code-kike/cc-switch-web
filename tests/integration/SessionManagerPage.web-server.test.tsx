@@ -6,7 +6,6 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 
 import "@/lib/api/web-commands";
 import { SessionManagerPage } from "@/components/sessions/SessionManagerPage";
-import { setCsrfToken } from "@/lib/api/adapter";
 import type { SessionMeta } from "@/types";
 import { server } from "../msw/server";
 import {
@@ -164,7 +163,6 @@ describe.sequential("SessionManagerPage against real web server", () => {
   beforeEach(() => {
     toastSuccessMock.mockReset();
     toastErrorMock.mockReset();
-    setCsrfToken(null);
     Element.prototype.scrollIntoView = vi.fn();
     Object.defineProperty(window, "__TAURI_INTERNALS__", {
       configurable: true,

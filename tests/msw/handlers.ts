@@ -40,9 +40,6 @@ const withJson = async <T>(request: Request): Promise<T> => {
 const success = <T>(payload: T) => HttpResponse.json(payload as any);
 
 export const handlers = [
-  http.get("/api/system/csrf-token", () =>
-    HttpResponse.json({ token: "stub-csrf-token" }),
-  ),
   http.get("/api/system/get_update_info", () =>
     success({
       available: false,

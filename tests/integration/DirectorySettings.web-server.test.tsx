@@ -5,7 +5,6 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import "@/lib/api/web-commands";
 import { SettingsPage } from "@/components/settings/SettingsPage";
 import { ThemeProvider } from "@/components/theme-provider";
-import { setCsrfToken } from "@/lib/api/adapter";
 import { settingsApi } from "@/lib/api/settings";
 import { server } from "../msw/server";
 import {
@@ -69,7 +68,6 @@ describe.sequential("DirectorySettings against real web server", () => {
   beforeEach(async () => {
     toastSuccessMock.mockReset();
     toastErrorMock.mockReset();
-    setCsrfToken(null);
     window.localStorage.clear();
 
     Object.defineProperty(window, "__TAURI_INTERNALS__", {

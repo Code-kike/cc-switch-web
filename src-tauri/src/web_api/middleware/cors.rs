@@ -1,6 +1,6 @@
 //! CORS middleware — same-origin by default; explicit allow-list via
 //! `CORS_ALLOW_ORIGINS` env var. Round 4 P1-2: LAN auto-allow removed
-//! to avoid CSRF attack surface when running cookie sessions.
+//! to avoid cross-origin attack surface.
 
 use axum::http::{header, HeaderName, HeaderValue, Method};
 use tower_http::cors::{AllowOrigin, CorsLayer};
@@ -19,7 +19,6 @@ pub fn layer() -> CorsLayer {
         ])
         .allow_headers([
             header::CONTENT_TYPE,
-            HeaderName::from_static("x-csrf-token"),
             HeaderName::from_static("x-request-id"),
         ])
         .allow_credentials(true);

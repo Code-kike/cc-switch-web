@@ -43,20 +43,6 @@ vi.mock("@/lib/api/adapter", async () => {
         throw new Error("missing upload field");
       }
 
-      let token = actual.getCsrfToken();
-      if (!token) {
-        const csrfResponse = await fetch(
-          `${actual.apiBase()}/api/system/csrf-token`,
-          {
-            credentials: "include",
-            headers: { Accept: "application/json" },
-          },
-        );
-        const payload = (await csrfResponse.json()) as { token: string };
-        token = payload.token;
-        actual.setCsrfToken(token);
-      }
-
       const fileName =
         source instanceof Blob && "name" in source && typeof source.name === "string"
           ? source.name
@@ -82,7 +68,6 @@ vi.mock("@/lib/api/adapter", async () => {
         headers: {
           Accept: "application/json",
           "Content-Type": `multipart/form-data; boundary=${boundary}`,
-          ...(token ? { "X-CSRF-Token": token } : {}),
         },
       });
       if (!response.ok) {
@@ -95,7 +80,7 @@ vi.mock("@/lib/api/adapter", async () => {
 
 import "@/lib/api/web-commands";
 import { ImportExportSection } from "@/components/settings/ImportExportSection";
-import { pickWebFile, setCsrfToken } from "@/lib/api/adapter";
+import { pickWebFile } from "@/lib/api/adapter";
 import { useImportExport } from "@/hooks/useImportExport";
 import { providersApi } from "@/lib/api/providers";
 import type { Provider } from "@/types";
@@ -202,7 +187,6 @@ describe.sequential("ImportExportSection against real web server", () => {
     clickedDownloads.length = 0;
     downloadedBlob = null;
 
-    setCsrfToken(null);
     Object.defineProperty(window, "__TAURI_INTERNALS__", {
       configurable: true,
       value: undefined,

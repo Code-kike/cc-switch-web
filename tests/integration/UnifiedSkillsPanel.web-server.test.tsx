@@ -60,20 +60,6 @@ vi.mock("@/lib/api/adapter", async () => {
         throw new Error("missing upload field");
       }
 
-      let token = actual.getCsrfToken();
-      if (!token) {
-        const csrfResponse = await fetch(
-          `${actual.apiBase()}/api/system/csrf-token`,
-          {
-            credentials: "include",
-            headers: { Accept: "application/json" },
-          },
-        );
-        const payload = (await csrfResponse.json()) as { token: string };
-        token = payload.token;
-        actual.setCsrfToken(token);
-      }
-
       const fileName =
         source instanceof Blob && "name" in source && typeof source.name === "string"
           ? source.name
@@ -99,7 +85,6 @@ vi.mock("@/lib/api/adapter", async () => {
         headers: {
           Accept: "application/json",
           "Content-Type": `multipart/form-data; boundary=${boundary}`,
-          ...(token ? { "X-CSRF-Token": token } : {}),
         },
       });
       if (!response.ok) {
@@ -115,7 +100,7 @@ import UnifiedSkillsPanel, {
   type UnifiedSkillsPanelHandle,
 } from "@/components/skills/UnifiedSkillsPanel";
 import { SKILLS_APP_IDS } from "@/config/appConfig";
-import { pickWebFile, setCsrfToken } from "@/lib/api/adapter";
+import { pickWebFile } from "@/lib/api/adapter";
 import type { InstalledSkill, SkillBackupEntry } from "@/lib/api/skills";
 import { server } from "../msw/server";
 import {
@@ -289,7 +274,6 @@ describe.sequential("UnifiedSkillsPanel against real web server", () => {
     toastErrorMock.mockReset();
     toastInfoMock.mockReset();
     vi.mocked(pickWebFile).mockReset();
-    setCsrfToken(null);
     Object.defineProperty(window, "__TAURI_INTERNALS__", {
       configurable: true,
       value: undefined,

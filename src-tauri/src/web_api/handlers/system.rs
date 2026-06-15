@@ -1,5 +1,4 @@
-//! System endpoints: CSRF token issuance, web credentials management, and
-//! web-mode system utilities.
+//! System endpoints: web credentials management and web-mode system utilities.
 
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -11,15 +10,10 @@ use axum::{
     routing::{get, post, put},
     Json, Router,
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 use super::super::ApiState;
 use super::common::{json_ok, validate_outbound_url, ApiError, ApiResult};
-
-#[derive(Serialize)]
-struct CsrfTokenResponse {
-    token: String,
-}
 
 #[derive(Deserialize)]
 struct WebCredentials {
@@ -56,7 +50,6 @@ struct CircuitBreakerActionRequest {
 
 pub fn router(state: ApiState) -> Router {
     Router::new()
-        .route("/system/csrf-token", get(csrf_token))
         .route("/system/web-credentials", put(web_credentials))
         .route("/system/get_migration_result", post(get_migration_result))
         .route("/system/get_init_error", post(get_init_error))
@@ -92,14 +85,6 @@ pub fn router(state: ApiState) -> Router {
         .route("/system/is-lightweight-mode", get(is_lightweight_mode))
         .route("/events", get(events))
         .with_state(state)
-}
-
-async fn csrf_token() -> Json<CsrfTokenResponse> {
-    // Placeholder: real implementation derives token from session cookie
-    // (Round 4 P1-5: CSRF bound to session_id, stored in web_sessions table).
-    Json(CsrfTokenResponse {
-        token: "stub-csrf-token".to_string(),
-    })
 }
 
 async fn web_credentials(Json(_creds): Json<WebCredentials>) -> axum::http::StatusCode {

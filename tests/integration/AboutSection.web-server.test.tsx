@@ -17,7 +17,6 @@ import {
 import "@/lib/api/web-commands";
 import { AboutSection } from "@/components/settings/AboutSection";
 import { UpdateProvider } from "@/contexts/UpdateContext";
-import { setCsrfToken } from "@/lib/api/adapter";
 import { server } from "../msw/server";
 import {
   startTestWebServer,
@@ -312,7 +311,6 @@ describe.sequential("AboutSection against real web server", () => {
     await fakeToolBin.setToolBehavior("gemini", { stdout: "gemini 5.0.0" });
     await fakeToolBin.setToolBehavior("opencode", { stdout: "opencode 2.4.0" });
     localStorage.clear();
-    setCsrfToken(null);
 
     Object.defineProperty(window, "__TAURI_INTERNALS__", {
       configurable: true,

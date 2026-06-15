@@ -10,38 +10,6 @@ export const isWebMode = (): boolean =>
 export const apiBase = (): string =>
   (typeof window !== "undefined" && window.__CC_SWITCH_API_BASE__) || "";
 
-let csrfToken: string | null = null;
-let csrfRefreshPromise: Promise<string> | null = null;
-
-export const setCsrfToken = (t: string | null): void => {
-  csrfToken = t;
-};
-
-export const getCsrfToken = (): string | null => csrfToken;
-
-async function refreshCsrfToken(): Promise<string> {
-  if (csrfRefreshPromise !== null) return csrfRefreshPromise;
-  csrfRefreshPromise = (async () => {
-    try {
-      const r = await fetch(`${apiBase()}/api/system/csrf-token`, {
-        credentials: "include",
-        headers: { Accept: "application/json" },
-      });
-      if (!r.ok) {
-        throw new WebAuthError(r.status, "CSRF token refresh failed");
-      }
-      const data = (await r.json()) as { token: string };
-      csrfToken = data.token;
-      return data.token;
-    } finally {
-      csrfRefreshPromise = null;
-    }
-  })();
-  return csrfRefreshPromise;
-}
-
-const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
-
 const commandRegistry: Record<string, CommandSpec> = Object.create(null);
 
 export function registerCommands(map: CommandMap): void {
@@ -251,20 +219,7 @@ async function httpInvoke<T>(
     body = JSON.stringify(remaining);
   }
 
-  if (!SAFE_METHODS.has(method)) {
-    if (csrfToken === null) {
-      try {
-        await refreshCsrfToken();
-      } catch {
-        // Continue without token; server will reject and trigger refresh on retry
-      }
-    }
-    if (csrfToken !== null) {
-      headers["X-CSRF-Token"] = csrfToken;
-    }
-  }
-
-  const resp = await fetchWithCsrfRetry(url, {
+  const resp = await fetch(url, {
     method,
     headers,
     body,
@@ -284,20 +239,7 @@ async function webFetch<T>(
     ...((init.headers as Record<string, string> | undefined) ?? {}),
   };
 
-  if (!SAFE_METHODS.has(method)) {
-    if (csrfToken === null) {
-      try {
-        await refreshCsrfToken();
-      } catch {
-        // Continue without token; server will reject and trigger refresh on retry
-      }
-    }
-    if (csrfToken !== null) {
-      headers["X-CSRF-Token"] = csrfToken;
-    }
-  }
-
-  const resp = await fetchWithCsrfRetry(apiBase() + path, {
+  const resp = await fetch(apiBase() + path, {
     ...init,
     method,
     headers,
@@ -307,47 +249,12 @@ async function webFetch<T>(
   return parseWebResponse<T>(resp, path, responseType);
 }
 
-async function fetchWithCsrfRetry(
-  url: string,
-  init: RequestInit,
-): Promise<Response> {
-  const method = (init.method ?? "GET").toUpperCase();
-  const headers: Record<string, string> = {
-    ...((init.headers as Record<string, string> | undefined) ?? {}),
-  };
-
-  const fetchOnce = (): Promise<Response> =>
-    fetch(url, {
-      ...init,
-      headers,
-      credentials: "include",
-    });
-
-  let resp = await fetchOnce();
-
-  if (resp.status === 403 && !SAFE_METHODS.has(method)) {
-    csrfToken = null;
-    try {
-      await refreshCsrfToken();
-    } catch {
-      throw new WebAuthError(403, "CSRF refresh failed");
-    }
-    if (csrfToken !== null) {
-      headers["X-CSRF-Token"] = csrfToken;
-    }
-    resp = await fetchOnce();
-  }
-
-  return resp;
-}
-
 async function parseWebResponse<T>(
   resp: Response,
   commandOrPath: string,
   responseType: "json" | "blob" = "json",
 ): Promise<T> {
   if (resp.status === 401) {
-    csrfToken = null;
     throw new WebAuthError(401, "Session expired");
   }
   if (!resp.ok) {

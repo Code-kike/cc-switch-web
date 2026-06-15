@@ -72,6 +72,12 @@ Web 服务器模式主要用于远程配置与管理。你可以在浏览器中�
 - 静态资源安装到 `~/.local/share/cc-switch-web/dist-web`
 - 复用 `~/.cc-switch` 数据
 
+> **非回环绑定需要认证：** 任何非回环绑定（`0.0.0.0`、局域网 IP 或 Tailscale
+> 地址）都**必须**启用 HTTP Basic 认证。请设置 `CC_SWITCH_WEB_AUTH_PASSWORD`
+> （可选 `CC_SWITCH_WEB_AUTH_USER`，默认 `cc-switch`）；未设置密码时，服务在非
+> 回环地址上将拒绝启动。安装脚本会自动生成一个 `0600` 权限的 systemd 密码 drop-in
+> 文件。仅回环（`127.0.0.1`）的本地开发运行无需密码。
+
 ## 仓库结构
 
 - `src/`：React + Vite 前端

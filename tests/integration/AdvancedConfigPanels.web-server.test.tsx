@@ -4,7 +4,6 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import "@/lib/api/web-commands";
 import { LogConfigPanel } from "@/components/settings/LogConfigPanel";
 import { ModelTestConfigPanel } from "@/components/usage/ModelTestConfigPanel";
-import { setCsrfToken } from "@/lib/api/adapter";
 import {
   getStreamCheckConfig,
   saveStreamCheckConfig,
@@ -62,7 +61,6 @@ describe.sequential("Advanced config panels against real web server", () => {
   beforeEach(async () => {
     toastSuccessMock.mockReset();
     toastErrorMock.mockReset();
-    setCsrfToken(null);
 
     Object.defineProperty(window, "__TAURI_INTERNALS__", {
       configurable: true,

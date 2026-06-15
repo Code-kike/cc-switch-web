@@ -153,6 +153,30 @@ impl StreamCheckService {
         }))
     }
 
+    /// 解析某供应商在 Stream Check 时实际会拨号的 base_url（不发起任何请求）。
+    ///
+    /// 复刻 `check_once` / `check_once_without_adapter` 的 base_url 推导逻辑，
+    /// 供 Web 层的 SSRF 守卫（`web_api/handlers/providers.rs` 的 stream_check
+    /// 路径，audit P4-A1）在真正拨号前对该地址执行 `validate_outbound_url`。
+    /// 桌面端命令路径不调用此守卫。
+    #[cfg_attr(feature = "desktop", allow(dead_code))]
+    pub fn resolve_outbound_base_url(
+        app_type: &AppType,
+        provider: &Provider,
+    ) -> Result<String, AppError> {
+        match app_type {
+            AppType::OpenClaw => Self::extract_openclaw_base_url(provider),
+            AppType::Hermes => Self::extract_hermes_base_url(provider),
+            AppType::OpenCode => {
+                let npm = Self::extract_opencode_npm(provider);
+                Self::resolve_opencode_base_url(provider, npm.as_deref())
+            }
+            AppType::Claude | AppType::Codex | AppType::Gemini => get_adapter(app_type)
+                .extract_base_url(provider)
+                .map_err(|e| AppError::Message(format!("Failed to extract base_url: {e}"))),
+        }
+    }
+
     /// 合并供应商单独配置和全局配置
     ///
     /// 如果供应商配置了 meta.testConfig 且 enabled 为 true，则使用供应商配置覆盖全局配置

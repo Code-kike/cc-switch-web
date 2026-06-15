@@ -13,7 +13,6 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 
 import "@/lib/api/web-commands";
 import EndpointSpeedTest from "@/components/providers/forms/EndpointSpeedTest";
-import { setCsrfToken } from "@/lib/api/adapter";
 import { providersApi } from "@/lib/api/providers";
 import { vscodeApi } from "@/lib/api/vscode";
 import type { Provider } from "@/types";
@@ -232,7 +231,6 @@ describe.sequential("EndpointSpeedTest against real web server", () => {
   }, 20_000);
 
   beforeEach(() => {
-    setCsrfToken(null);
 
     Object.defineProperty(window, "__TAURI_INTERNALS__", {
       configurable: true,

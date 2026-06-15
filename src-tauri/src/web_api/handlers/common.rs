@@ -1,4 +1,4 @@
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::IpAddr;
 
 use axum::{
     http::StatusCode,
@@ -8,6 +8,12 @@ use axum::{
 use serde::Serialize;
 use serde_json::{json, Value};
 use url::{Host, Url};
+
+/// IP-range classification is shared with the web-outbound redirect policy in
+/// `proxy/http_client.rs`; the single tauri-free source of truth lives in
+/// `proxy/ip_guard.rs` (see audit P4-A2/P4-A3). Re-exported here so existing
+/// `common::is_blocked_*` references keep resolving.
+use crate::proxy::ip_guard::{is_blocked_ip, is_blocked_ipv4};
 
 pub type ApiResult<T> = Result<Json<T>, ApiError>;
 
@@ -147,45 +153,6 @@ fn ssrf_host_allowed(host: &str) -> bool {
     }
 }
 
-/// Returns true if the IPv4 address falls in a range the web server must never
-/// dial outbound: loopback (127.0.0.0/8), link-local (169.254.0.0/16) or any
-/// private range (10/8, 172.16/12, 192.168/16).
-fn is_blocked_ipv4(ip: &Ipv4Addr) -> bool {
-    ip.is_loopback() || ip.is_link_local() || ip.is_private()
-}
-
-/// Returns true if the IPv6 address falls in a blocked range: loopback (::1),
-/// link-local (fe80::/10) or unique-local / ULA (fc00::/7). The `is_*` helpers
-/// for the latter two are unstable on stable Rust, so they are checked manually.
-fn is_blocked_ipv6(ip: &Ipv6Addr) -> bool {
-    if ip.is_loopback() {
-        return true;
-    }
-    let segments = ip.segments();
-    // Link-local fe80::/10
-    if (segments[0] & 0xffc0) == 0xfe80 {
-        return true;
-    }
-    // Unique-local / ULA fc00::/7
-    if (segments[0] & 0xfe00) == 0xfc00 {
-        return true;
-    }
-    false
-}
-
-/// Returns true if the IP address is in any range disallowed for outbound
-/// requests from the web server. IPv4-mapped IPv6 addresses are unwrapped so a
-/// mapped private/loopback v4 cannot slip through the v6 path.
-fn is_blocked_ip(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v4) => is_blocked_ipv4(&v4),
-        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
-            Some(v4) => is_blocked_ipv4(&v4),
-            None => is_blocked_ipv6(&v6),
-        },
-    }
-}
-
 /// SSRF guard for user-supplied outbound URLs reaching shared services.
 /// Parses `raw`, rejects non-http(s) schemes, and blocks targets that resolve
 /// to loopback / link-local / private / ULA addresses. Hostnames are resolved
@@ -320,5 +287,37 @@ mod tests {
             upload(64 * 1024 * 1024, 4 * 1024 * 1024).await,
             StatusCode::OK
         );
+    }
+
+    #[tokio::test]
+    async fn validate_outbound_url_blocks_internal_ip_literals() {
+        // P4-A3: unspecified + CGNAT are now blocked alongside the classic ranges.
+        assert!(validate_outbound_url("http://127.0.0.1/").await.is_err());
+        assert!(validate_outbound_url("http://10.0.0.1/").await.is_err());
+        assert!(validate_outbound_url("http://169.254.169.254/")
+            .await
+            .is_err());
+        assert!(validate_outbound_url("http://0.0.0.0/").await.is_err());
+        assert!(validate_outbound_url("http://[::]/").await.is_err());
+        assert!(validate_outbound_url("http://100.64.0.1/").await.is_err());
+        assert!(validate_outbound_url("http://[::1]/").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn validate_outbound_url_allows_public_ip_literals() {
+        assert!(validate_outbound_url("https://1.1.1.1/").await.is_ok());
+        assert!(validate_outbound_url("https://8.8.8.8/").await.is_ok());
+        assert!(validate_outbound_url("https://100.63.255.255/")
+            .await
+            .is_ok());
+        assert!(validate_outbound_url("https://[2606:4700:4700::1111]/")
+            .await
+            .is_ok());
+    }
+
+    #[tokio::test]
+    async fn validate_outbound_url_rejects_non_http_schemes() {
+        assert!(validate_outbound_url("file:///etc/passwd").await.is_err());
+        assert!(validate_outbound_url("ftp://1.1.1.1/").await.is_err());
     }
 }

@@ -4,7 +4,6 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 
 import "@/lib/api/web-commands";
 import { WebdavSyncSection } from "@/components/settings/WebdavSyncSection";
-import { setCsrfToken } from "@/lib/api/adapter";
 import { providersApi } from "@/lib/api/providers";
 import { settingsApi } from "@/lib/api/settings";
 import { useSettingsQuery } from "@/lib/query";
@@ -172,7 +171,6 @@ describe.sequential("WebdavSyncSection against real web server", () => {
     toastWarningMock.mockReset();
     toastInfoMock.mockReset();
     webDavServer.reset();
-    setCsrfToken(null);
 
     Object.defineProperty(window, "__TAURI_INTERNALS__", {
       configurable: true,

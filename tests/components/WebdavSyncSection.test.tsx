@@ -114,6 +114,21 @@ function renderSection(config?: WebDavSyncSettings) {
 
 describe("WebdavSyncSection", () => {
   beforeEach(() => {
+    // These cases assert DESKTOP auto-sync behavior (the auto-sync toggle saves
+    // `true`, the auto-sync "last error" callout renders). Under audit F10 the
+    // web frontend force-disables auto-sync and hides the auto-error callout, so
+    // the component must run in desktop mode here — otherwise `isWebMode()`
+    // (true by default in plain jsdom, since no Tauri globals are set) gates
+    // those controls off. Set the Tauri globals to pin desktop mode.
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: {},
+    });
+    Object.defineProperty(window, "__TAURI__", {
+      configurable: true,
+      value: {},
+    });
+
     toastSuccessMock.mockReset();
     toastErrorMock.mockReset();
     toastWarningMock.mockReset();

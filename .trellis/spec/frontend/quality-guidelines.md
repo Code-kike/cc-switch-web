@@ -750,6 +750,11 @@ pub(crate) mod json_canonical;
 
 - `cargo check --manifest-path src-tauri/Cargo.toml --no-default-features --features web-server --example server`
 - `cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features web-server --example server -- dual_runtime_parity::`
+- **Desktop-intent FE component tests must pin desktop mode (audit P4-C)**: a component
+  whose web-mode gating depends on `isWebMode()` (e.g. `WebdavSyncSection`'s auto-sync
+  toggle/error panels) needs `window.__TAURI_INTERNALS__` + `window.__TAURI__` set in
+  `beforeEach`. Plain jsdom has NO Tauri globals, so `isWebMode()` defaults to `true` and the
+  F10 gating hides those controls — a desktop-behavior assertion would fail without the pin.
 
 #### 7. Wrong vs Correct
 
@@ -1060,6 +1065,13 @@ env:
 - `ALLOW_HTTP_BASIC_OVER_HTTP` is REMOVED (a misnomer — no auth existed). The
   password ships in a `0600` systemd drop-in; install uses `restart`, not
   `enable --now` (the latter does not restart an already-running unit).
+- **CSRF + rate-limit are intentionally ABSENT (audit P4-C)**: the prior `middleware/
+  {csrf,rate_limit}.rs` stubs, the `/system/csrf-token` endpoint, and the FE adapter
+  X-CSRF token plumbing were DELETED, not wired. HTTP Basic over the encrypted
+  Tailscale tunnel is the control; cookie-CSRF is not the threat model (Basic creds
+  aren't ambient like cookies; the default CORS is same-origin). Do NOT re-add CSRF
+  token plumbing or advertise CSRF/rate-limit/cookie-session in docs. Mutating `/api`
+  calls `fetch` directly with `credentials: "include"`.
 
 #### 4. Validation & Error Matrix
 
@@ -1131,6 +1143,27 @@ let is_public = !path.starts_with("/api/") || path == "/api/health";
   `get_coding_plan_quota` (2), config fetch-models (2). The shared sync/service
   layer stays unrestricted for desktop (the guard is web-handler-only).
 - `/system/test_api_endpoints` caps `urls` at 50 (clean 400 over the cap).
+- **Call-site coverage (audit P4-A1)**: the guard ALSO covers `usage.rs::test_usage_script`
+  (guards `request.base_url` only when `Some(non-empty)`) and BOTH stream-check variants in
+  `providers.rs` via `services/stream_check.rs::resolve_outbound_base_url` (mirrors the exact
+  per-app base-url the dial uses; `_all_` records a per-provider Failed result on rejection). Any
+  NEW handler dialing a user-influenced URL MUST call the guard.
+- **IP classifier SSOT (audit P4-A3)**: the block-list lives in the tauri-free
+  `proxy/ip_guard.rs` (`is_blocked_ip`/`_ipv4`/`_ipv6`), re-exported by `common.rs` and mirrored
+  in `examples/web_proxy.rs`. Blocks loopback, link-local, private, ULA, **unspecified
+  (`0.0.0.0`/`::`/`::ffff:0.0.0.0`)**, and **CGNAT `100.64.0.0/10`**. Add a range in `ip_guard.rs`
+  only.
+- **Redirect guard (audit P4-A2)**: user-URL web services (`services/{balance,coding_plan,
+  model_fetch}.rs`) dial via `proxy/http_client.rs::get_guarded()` — a SECOND client whose
+  `reqwest::redirect::Policy` re-runs `ip_guard::is_blocked_ip` on EACH redirect hop's IP-literal
+  host and aborts on internal (public→public still follows ≤10 hops). The shared proxy forwarder
+  keeps the UNGUARDED `get()` (upstream-3xx pass-through unchanged). `init`/`apply_proxy`/
+  `update_proxy` rebuild BOTH clients in lock-step. Residual (deferred-ok): a redirect to a DOMAIN
+  resolving internal is not caught (sync callback can't DNS — same rebinding class as the guard).
+- **S3 schemeless normalization (audit P4-B)**: `s3.rs::guard_s3_endpoint` runs
+  `normalize_s3_endpoint_for_guard` (bare `host:port` → `https://host:port`, mirroring
+  `split_scheme_host`) BEFORE validating, else `Url::parse` mis-reads the bare host as the scheme
+  and 400s a valid MinIO endpoint. Explicit `http(s)://` is preserved (no bypass).
 
 #### 4. Validation & Error Matrix
 

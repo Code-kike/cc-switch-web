@@ -15,7 +15,6 @@ import {
 
 import "@/lib/api/web-commands";
 import { UsageDashboard } from "@/components/usage/UsageDashboard";
-import { setCsrfToken } from "@/lib/api/adapter";
 import { server } from "../msw/server";
 import {
   startTestWebServer,
@@ -296,7 +295,6 @@ describe.sequential("UsageDashboard against real web server", () => {
   beforeEach(() => {
     toastSuccessMock.mockReset();
     toastErrorMock.mockReset();
-    setCsrfToken(null);
     Element.prototype.scrollIntoView = vi.fn();
     Object.defineProperty(window, "__TAURI_INTERNALS__", {
       configurable: true,

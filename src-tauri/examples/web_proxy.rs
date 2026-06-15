@@ -51,6 +51,9 @@ pub mod http_client;
 #[path = "../src/proxy/hyper_client.rs"]
 pub mod hyper_client;
 
+#[path = "../src/proxy/ip_guard.rs"]
+pub mod ip_guard;
+
 #[path = "../src/proxy/json_canonical.rs"]
 pub(crate) mod json_canonical;
 

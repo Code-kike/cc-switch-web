@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::AppError;
 
 use super::super::ApiState;
-use super::common::{json_ok, ApiError, ApiResult};
+use super::common::{json_ok, validate_outbound_url, ApiError, ApiResult};
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -322,6 +322,17 @@ async fn test_usage_script(
 
     let app_type = crate::app_config::AppType::from_str(&request.app)
         .map_err(|err| ApiError::bad_request(err.to_string()))?;
+
+    // Audit P4-A1: test_usage_script dials request.base_url through the provider
+    // service; reject internal/private targets before the dial (web handler only,
+    // the desktop command path stays unguarded). Empty/None means the service
+    // falls back to the provider's own base_url, which isn't user-supplied here.
+    if let Some(base_url) = request.base_url.as_deref() {
+        if !base_url.trim().is_empty() {
+            validate_outbound_url(base_url).await?;
+        }
+    }
+
     let result = crate::services::ProviderService::test_usage_script(
         state.app_state.as_ref(),
         app_type,

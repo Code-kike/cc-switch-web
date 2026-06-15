@@ -14,7 +14,6 @@ import {
 
 import "@/lib/api/web-commands";
 import { AuthCenterPanel } from "@/components/settings/AuthCenterPanel";
-import { setCsrfToken } from "@/lib/api/adapter";
 import { server } from "../msw/server";
 import {
   startTestWebServer,
@@ -156,7 +155,6 @@ describe.sequential("AuthCenterPanel against real web server", () => {
 
   beforeEach(async () => {
     authServer.reset();
-    setCsrfToken(null);
 
     await fs.rm(path.join(webServer.dataDir, "copilot_auth.json"), {
       force: true,

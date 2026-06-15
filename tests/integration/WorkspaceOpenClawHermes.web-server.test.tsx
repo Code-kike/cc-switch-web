@@ -12,7 +12,6 @@ import EnvPanel from "@/components/openclaw/EnvPanel";
 import ToolsPanel from "@/components/openclaw/ToolsPanel";
 import AgentsDefaultsPanel from "@/components/openclaw/AgentsDefaultsPanel";
 import HermesMemoryPanel from "@/components/hermes/HermesMemoryPanel";
-import { setCsrfToken } from "@/lib/api/adapter";
 import { openclawApi } from "@/lib/api/openclaw";
 import { server } from "../msw/server";
 import {
@@ -134,7 +133,6 @@ describe.sequential(
     beforeEach(async () => {
       toastSuccessMock.mockReset();
       toastErrorMock.mockReset();
-      setCsrfToken(null);
       window.localStorage.clear();
 
       Object.defineProperty(window, "__TAURI_INTERNALS__", {

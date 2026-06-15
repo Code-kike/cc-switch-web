@@ -115,6 +115,21 @@ where
     }
 }
 
+/// Normalize an S3 endpoint to a full URL with a scheme, mirroring
+/// `services::s3::split_scheme_host`: a bare `minio.example.com:9000` is treated
+/// as `https://minio.example.com:9000`. Without this, `Url::parse` reads the
+/// host as the scheme (`minio.example.com:9000` → scheme `minio.example.com`)
+/// and `validate_outbound_url` 400s a perfectly valid MinIO endpoint (P4-B
+/// regression).
+fn normalize_s3_endpoint_for_guard(endpoint: &str) -> String {
+    let trimmed = endpoint.trim();
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        trimmed.to_string()
+    } else {
+        format!("https://{trimmed}")
+    }
+}
+
 /// Audit F3: reject custom S3 endpoints that resolve to internal/private targets
 /// before dialing. An empty endpoint means the AWS default (public) — nothing to
 /// guard. Web-server only; the shared sync service stays unrestricted for desktop.
@@ -122,7 +137,10 @@ async fn guard_s3_endpoint(settings: &S3SyncSettings) -> Result<(), ApiError> {
     if settings.endpoint.trim().is_empty() {
         return Ok(());
     }
-    validate_outbound_url(&settings.endpoint).await
+    // P4-B: schemeless endpoints (the documented MinIO `host:port` form) must be
+    // normalized to a scheme so the guard validates the host, not a phantom one.
+    let normalized = normalize_s3_endpoint_for_guard(&settings.endpoint);
+    validate_outbound_url(&normalized).await
 }
 
 pub fn router(state: ApiState) -> Router {
@@ -195,4 +213,63 @@ async fn s3_sync_fetch_remote_info() -> ApiResult<Value> {
         .await
         .map_err(ApiError::from_anyhow)?;
     Ok(json_ok(info.unwrap_or(json!({ "empty": true }))))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn settings_with_endpoint(endpoint: &str) -> S3SyncSettings {
+        S3SyncSettings {
+            endpoint: endpoint.to_string(),
+            ..S3SyncSettings::default()
+        }
+    }
+
+    #[test]
+    fn normalize_defaults_schemeless_to_https() {
+        // P4-B: a bare `host:port` must become a parseable https URL, not be
+        // mis-read as scheme `minio.example.com`.
+        assert_eq!(
+            normalize_s3_endpoint_for_guard("minio.example.com:9000"),
+            "https://minio.example.com:9000"
+        );
+        assert_eq!(
+            normalize_s3_endpoint_for_guard("  minio.local:9000  "),
+            "https://minio.local:9000"
+        );
+        // Explicit schemes are preserved untouched.
+        assert_eq!(
+            normalize_s3_endpoint_for_guard("http://minio:9000"),
+            "http://minio:9000"
+        );
+        assert_eq!(
+            normalize_s3_endpoint_for_guard("https://storage.example.com"),
+            "https://storage.example.com"
+        );
+    }
+
+    #[tokio::test]
+    async fn guard_accepts_schemeless_public_endpoint() {
+        // P4-B regression: a schemeless endpoint pointing at a public address
+        // must pass the guard (it previously 400'd on a phantom scheme). Use a
+        // public IP literal so the assertion does not depend on DNS.
+        let settings = settings_with_endpoint("1.1.1.1:9000");
+        assert!(guard_s3_endpoint(&settings).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn guard_blocks_schemeless_internal_endpoint() {
+        // The normalization must not weaken the guard: a schemeless loopback
+        // endpoint is still rejected.
+        let settings = settings_with_endpoint("127.0.0.1:9000");
+        assert!(guard_s3_endpoint(&settings).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn guard_skips_empty_endpoint() {
+        // Empty endpoint = AWS default (public); nothing to guard.
+        let settings = settings_with_endpoint("");
+        assert!(guard_s3_endpoint(&settings).await.is_ok());
+    }
 }

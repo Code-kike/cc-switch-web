@@ -1,14 +1,16 @@
-//! Web API surface — Axum router + middleware + 28 handler modules.
+//! Web API surface — Axum router + middleware + 25 handler modules.
 //!
 //! Layer 2 / Task 4. This module is consumed by `examples/server.rs` via a
 //! `#[path]` module reference; full integration into `lib.rs` is deferred to
 //! the Layer 1 / Task 2 wrap-up work (lib.rs setup() refactor).
 //!
 //! Architecture:
-//!   - `handlers/`   — one file per Web sub-resource (28 modules). Each
+//!   - `handlers/`   — one file per Web sub-resource (25 modules). Each
 //!                     exports `pub fn router(state: ApiState) -> Router`.
-//!   - `middleware/` — auth (Basic + cookie session), CSRF, CORS, rate limit,
-//!                     security headers (CSP/HSTS/Permissions-Policy).
+//!   - `middleware/` — auth (HTTP Basic, gated on `CC_SWITCH_WEB_AUTH_PASSWORD`),
+//!                     CORS (same-origin default), and security headers
+//!                     (CSP/HSTS/Permissions-Policy). Body limit is applied in
+//!                     `routes.rs` via `DefaultBodyLimit`.
 //!   - `state.rs`    — shared `ApiState` (DB pool + sink + cancel token).
 //!   - `routes.rs`   — root router assembly + SPA fallback.
 

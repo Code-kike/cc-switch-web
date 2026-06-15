@@ -1,11 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { setCsrfToken } from "@/lib/api/adapter";
 import { usageApi } from "@/lib/api/usage";
 import "@/lib/api/web-commands";
 
 describe("usageApi", () => {
   beforeEach(() => {
-    setCsrfToken("test-csrf-token");
     Object.defineProperty(window, "__TAURI_INTERNALS__", {
       configurable: true,
       value: undefined,

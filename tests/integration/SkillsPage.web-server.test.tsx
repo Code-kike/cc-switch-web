@@ -30,7 +30,6 @@ import {
 import UnifiedSkillsPanel, {
   type UnifiedSkillsPanelHandle,
 } from "@/components/skills/UnifiedSkillsPanel";
-import { setCsrfToken } from "@/lib/api/adapter";
 import type { InstalledSkill, SkillRepo } from "@/lib/api/skills";
 import { server } from "../msw/server";
 import { startTestWebServer, type TestWebServer } from "../helpers/web-server";
@@ -291,7 +290,6 @@ describe.sequential(
       toastSuccessMock.mockReset();
       toastErrorMock.mockReset();
       toastInfoMock.mockReset();
-      setCsrfToken(null);
       Object.defineProperty(window, "__TAURI_INTERNALS__", {
         configurable: true,
         value: undefined,

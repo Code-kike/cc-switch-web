@@ -470,9 +470,11 @@ export function WebdavSyncSection({
       password: passwordTouched ? form.password : "",
       remoteRoot: form.remoteRoot.trim() || "cc-switch-sync",
       profile: form.profile.trim() || "default",
-      autoSync: form.autoSync,
+      // 在 Web 模式下后端自动同步是 no-op，强制持久化为 false，避免桌面端
+      // 同步过来的 autoSync:true 在 UI 显示为关闭时仍被写回（审计 F10）。
+      autoSync: webMode ? false : form.autoSync,
     };
-  }, [form, passwordTouched]);
+  }, [form, passwordTouched, webMode]);
 
   const formatError = useCallback(
     (error: unknown, key: string) =>
@@ -671,7 +673,8 @@ export function WebdavSyncSection({
   const buildS3Settings = useCallback((): S3SyncSettings => {
     return {
       enabled: s3Enabled,
-      autoSync: s3AutoSync,
+      // 在 Web 模式下后端自动同步是 no-op，强制持久化为 false（审计 F10）。
+      autoSync: webMode ? false : s3AutoSync,
       region: s3Region.trim(),
       bucket: s3Bucket.trim(),
       accessKeyId: s3AccessKeyId.trim(),
@@ -690,6 +693,7 @@ export function WebdavSyncSection({
     s3Endpoint,
     s3RemoteRoot,
     s3Profile,
+    webMode,
   ]);
 
   // ─── S3 Handlers ──────────────────────────────────────────
@@ -919,8 +923,10 @@ export function WebdavSyncSection({
     ? new Date(lastSyncAt * 1000).toLocaleString()
     : null;
   const lastError = config?.status?.lastError?.trim();
+  // 在 Web 模式下后端自动同步是 no-op，不展示与桌面专用提示相矛盾的
+  // “自动同步上次错误”面板（审计 F10）。
   const showAutoSyncError =
-    !!lastError && config?.status?.lastErrorSource === "auto";
+    !webMode && !!lastError && config?.status?.lastErrorSource === "auto";
   const currentRemotePath = `/${form.remoteRoot.trim() || "cc-switch-sync"}/v2/db-v6/${form.profile.trim() || "default"}`;
   const currentS3RemotePath = `${s3Bucket.trim() || "bucket"}/${s3RemoteRoot.trim() || "cc-switch-sync"}/v2/db-v6/${s3Profile.trim() || "default"}`;
   const remoteDbCompatDisplay = formatDbCompatVersion(
@@ -934,7 +940,7 @@ export function WebdavSyncSection({
     : null;
   const s3LastError = s3Config?.status?.lastError?.trim();
   const s3ShowAutoSyncError =
-    !!s3LastError && s3Config?.status?.lastErrorSource === "auto";
+    !webMode && !!s3LastError && s3Config?.status?.lastErrorSource === "auto";
 
   // ─── Render ─────────────────────────────────────────────
 

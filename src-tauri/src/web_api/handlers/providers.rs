@@ -7,7 +7,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use super::super::ApiState;
-use super::common::{json_ok, ApiError, ApiResult};
+use super::common::{json_ok, validate_outbound_url, ApiError, ApiResult};
 
 #[derive(Deserialize)]
 struct AppQuery {
@@ -573,6 +573,12 @@ async fn stream_check_provider(
         .get(&request.provider_id)
         .ok_or_else(|| ApiError::bad_request(format!("供应商 {} 不存在", request.provider_id)))?;
 
+    // Audit P4-A1: StreamCheckService dials the provider's configured base_url;
+    // reject internal/private targets before the dial (web handler only).
+    if let Ok(base_url) = StreamCheckService::resolve_outbound_base_url(&app_type, provider) {
+        validate_outbound_url(&base_url).await?;
+    }
+
     let result =
         StreamCheckService::check_with_retry(&app_type, provider, &config, None, None, None)
             .await
@@ -628,6 +634,34 @@ async fn stream_check_all_providers(
     for (id, provider) in providers {
         if let Some(ids) = &allowed_ids {
             if !ids.contains(&id) {
+                continue;
+            }
+        }
+
+        // Audit P4-A1: guard each provider's dialed base_url before the check.
+        // On rejection, record a Failed result for this provider (mirroring the
+        // per-URL skip in system.rs::test_api_endpoints) so result ordering and
+        // length are preserved; the other providers are still checked.
+        if let Ok(base_url) = StreamCheckService::resolve_outbound_base_url(&app_type, &provider) {
+            if let Err(err) = validate_outbound_url(&base_url).await {
+                let result = StreamCheckResult {
+                    status: HealthStatus::Failed,
+                    success: false,
+                    message: err.message(),
+                    response_time_ms: None,
+                    http_status: None,
+                    model_used: String::new(),
+                    tested_at: chrono::Utc::now().timestamp(),
+                    retry_count: 0,
+                    error_category: None,
+                };
+                let _ = state.app_state.db.save_stream_check_log(
+                    &id,
+                    &provider.name,
+                    app_type.as_str(),
+                    &result,
+                );
+                results.push((id, result));
                 continue;
             }
         }
