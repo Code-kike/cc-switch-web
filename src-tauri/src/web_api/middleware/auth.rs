@@ -156,11 +156,17 @@ fn check_same_origin_intent(req: &Request<Body>) -> Result<(), Response> {
     let origin_host = url::Url::parse(origin)
         .ok()
         .and_then(|u| u.host_str().map(|h| h.to_ascii_lowercase()));
+    // FIX B (round-2): parse the Host bracket-aware, symmetric with the Origin
+    // side. A naive `split(':')` corrupts a bracketed IPv6 Host (`[::1]:3010` →
+    // `[`) and falsely 403s a legitimate same-origin IPv6 request.
     let request_host = headers
         .get(header::HOST)
         .and_then(|v| v.to_str().ok())
-        // Host header may include a port; compare host portion only.
-        .map(|h| h.split(':').next().unwrap_or(h).to_ascii_lowercase());
+        .and_then(|h| {
+            url::Url::parse(&format!("http://{h}"))
+                .ok()
+                .and_then(|u| u.host_str().map(|s| s.to_ascii_lowercase()))
+        });
 
     match (origin_host, request_host) {
         (Some(o), Some(h)) if o == h => Ok(()),
@@ -345,6 +351,34 @@ mod tests {
             Method::POST,
             "/api/proxy/start-proxy-server",
             &[("origin", "null")],
+        );
+        assert!(check_same_origin_intent(&req).is_err());
+    }
+
+    #[test]
+    fn ipv6_same_origin_host_passes_intent_check() {
+        // FIX B: a bracketed IPv6 Host with a port must parse to the bare IPv6
+        // host (symmetric with the Origin side), so a legitimate same-origin
+        // IPv6 request lacking Sec-Fetch-Site passes.
+        let req = req_with(
+            Method::POST,
+            "/api/proxy/start-proxy-server",
+            &[("origin", "http://[::1]:3010"), ("host", "[::1]:3010")],
+        );
+        assert!(check_same_origin_intent(&req).is_ok());
+    }
+
+    #[test]
+    fn ipv6_cross_site_origin_post_is_rejected() {
+        // FIX B: a cross-site IPv6 Origin (different host than the IPv6 Host) is
+        // still rejected.
+        let req = req_with(
+            Method::POST,
+            "/api/proxy/start-proxy-server",
+            &[
+                ("origin", "http://[2001:db8::1]:3010"),
+                ("host", "[::1]:3010"),
+            ],
         );
         assert!(check_same_origin_intent(&req).is_err());
     }

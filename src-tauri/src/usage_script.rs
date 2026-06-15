@@ -754,7 +754,7 @@ fn is_loopback_host(url: &Url) -> bool {
 
 /// Map the tauri-free SSRF guard outcome into a localized `AppError` so the
 /// usage-script path stays tauri-free and does not depend on `web_api`.
-fn map_outbound_guard_error(err: crate::proxy::ip_guard::OutboundUrlError) -> AppError {
+pub(crate) fn map_outbound_guard_error(err: crate::proxy::ip_guard::OutboundUrlError) -> AppError {
     use crate::proxy::ip_guard::OutboundUrlError;
     match err {
         OutboundUrlError::InvalidUrl { raw, reason } => AppError::localized(

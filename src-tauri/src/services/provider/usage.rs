@@ -26,6 +26,26 @@ struct UsageCredentials {
     user_id: Option<String>,
 }
 
+/// FIX A (round-2): web-runtime SSRF guard for native-template (`token_plan` /
+/// `balance`) dials. Those arms dial the user-controlled `credentials.base_url`
+/// directly through `coding_plan`/`balance` (whose service signatures stay
+/// desktop-callable and unguarded), so the initial-hop guard must be applied
+/// here at the arm. Only enforced in the web runtime (`enforce_outbound_guard`)
+/// and only for a non-empty base_url; desktop callers pass `false` (unchanged).
+/// Reuses the tauri-free `proxy::ip_guard` SSOT and the shared usage_script
+/// error mapping to avoid divergence with the JS-path guard.
+async fn guard_native_template_base_url(
+    base_url: &str,
+    enforce_outbound_guard: bool,
+) -> Result<(), AppError> {
+    if enforce_outbound_guard && !base_url.is_empty() {
+        crate::proxy::ip_guard::guard_outbound_url(base_url)
+            .await
+            .map_err(usage_script::map_outbound_guard_error)?;
+    }
+    Ok(())
+}
+
 /// Execute usage script and format result (private helper method)
 ///
 /// `enforce_outbound_guard` (audit FIX 1) threads the web-runtime SSRF gate
@@ -625,6 +645,7 @@ pub async fn query_usage_with_templates(
             query_copilot_usage(copilot_auth, copilot_account_id.as_deref()).await
         }
         TEMPLATE_TYPE_TOKEN_PLAN => {
+            guard_native_template_base_url(&credentials.base_url, enforce_outbound_guard).await?;
             let quota = crate::services::coding_plan::get_coding_plan_quota(
                 &credentials.base_url,
                 &credentials.api_key,
@@ -635,6 +656,7 @@ pub async fn query_usage_with_templates(
             Ok(coding_plan_quota_to_usage_result(&quota))
         }
         TEMPLATE_TYPE_BALANCE => {
+            guard_native_template_base_url(&credentials.base_url, enforce_outbound_guard).await?;
             crate::services::balance::get_balance(&credentials.base_url, &credentials.api_key)
                 .await
                 .map_err(|e| AppError::Message(format!("Failed to query balance: {e}")))
@@ -769,6 +791,8 @@ pub async fn test_usage_script(
         };
         return match template_type {
             Some(TEMPLATE_TYPE_TOKEN_PLAN) => {
+                guard_native_template_base_url(&credentials.base_url, enforce_outbound_guard)
+                    .await?;
                 let quota = crate::services::coding_plan::get_coding_plan_quota(
                     &credentials.base_url,
                     &credentials.api_key,
@@ -779,6 +803,8 @@ pub async fn test_usage_script(
                 Ok(coding_plan_quota_to_usage_result(&quota))
             }
             Some(TEMPLATE_TYPE_BALANCE) => {
+                guard_native_template_base_url(&credentials.base_url, enforce_outbound_guard)
+                    .await?;
                 crate::services::balance::get_balance(&credentials.base_url, &credentials.api_key)
                     .await
                     .map_err(|e| AppError::Message(format!("Failed to query balance: {e}")))
@@ -860,9 +886,9 @@ pub(crate) fn validate_usage_script(script: &UsageScript) -> Result<(), AppError
 #[cfg(test)]
 mod tests {
     use super::{
-        coding_plan_quota_to_usage_result, resolve_coding_plan_credentials,
-        resolve_usage_credentials, validate_usage_script, TEMPLATE_TYPE_BALANCE,
-        TEMPLATE_TYPE_OFFICIAL_SUBSCRIPTION,
+        coding_plan_quota_to_usage_result, guard_native_template_base_url,
+        resolve_coding_plan_credentials, resolve_usage_credentials, validate_usage_script,
+        TEMPLATE_TYPE_BALANCE, TEMPLATE_TYPE_OFFICIAL_SUBSCRIPTION,
     };
     use crate::app_config::AppType;
     use crate::provider::{Provider, ProviderMeta, UsageScript};
@@ -1324,5 +1350,44 @@ experimental_bearer_token = "sk-bearer"
         script.code = js_script_with_url("");
 
         validate_usage_script(&script).expect("disabled script should bypass url check");
+    }
+
+    // FIX A (round-2): native-template (token_plan/balance) base_url SSRF guard.
+    // The guard is applied at the arm before the coding_plan/balance dial; it is
+    // web-runtime-only (enforce=true) and skips empty base_urls.
+
+    #[tokio::test]
+    async fn native_template_guard_rejects_internal_base_url_when_enforced() {
+        for internal in [
+            "http://169.254.169.254/",
+            "http://127.0.0.1:9999/",
+            "http://10.0.0.1/",
+        ] {
+            let result = guard_native_template_base_url(internal, true).await;
+            assert!(
+                result.is_err(),
+                "internal base_url must be rejected before dial: {internal}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn native_template_guard_allows_public_base_url_when_enforced() {
+        // Public IP literal (no DNS dependency): not in any blocked range.
+        guard_native_template_base_url("https://1.1.1.1/api/usage", true)
+            .await
+            .expect("public base_url should pass the guard");
+    }
+
+    #[tokio::test]
+    async fn native_template_guard_noop_for_desktop_and_empty() {
+        // Desktop path (enforce=false) is unrestricted even for internal targets.
+        guard_native_template_base_url("http://127.0.0.1:9999/", false)
+            .await
+            .expect("desktop path must not enforce the SSRF guard");
+        // Empty base_url is skipped regardless of runtime.
+        guard_native_template_base_url("", true)
+            .await
+            .expect("empty base_url must be skipped");
     }
 }

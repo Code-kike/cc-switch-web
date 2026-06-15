@@ -1,5 +1,5 @@
 // Layer 1 / Task 2 (partial): the entire crate body is currently desktop-only.
-// Web-mode bootstrap (RuntimeMode + UiEventSink + sessions schema) lives in
+// Web-mode bootstrap (UiEventSink + sessions schema) lives in
 // dedicated modules (`bootstrap`, `runtime`) that the web-server example
 // re-includes directly via `#[path]` instead of through this gate.
 #![cfg(feature = "desktop")]

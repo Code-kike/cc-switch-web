@@ -1514,15 +1514,25 @@ state.app_state.proxy_service
   `compact_error_message(.., 400)` before `log_error_with_context`. Upstream
   error bodies (prompts/tokens/HTML) must never reach the DB untruncated. The
   client-facing error response stays as-is.
-- **F9 atomicity (FIX 4)**: `set_auto_failover_enabled` switches FIRST, then
-  persists `auto_failover_enabled=true` only after a successful
+- **FIX 4 (failover-enable atomicity)**: `set_auto_failover_enabled` switches
+  FIRST, then persists `auto_failover_enabled=true` only after a successful
   `switch_proxy_target`. On switch failure it returns Err with the flag still
-  false. Preserve empty-queue auto-add of the current provider, the
-  `provider-switched` emit, and the unconditional `refresh_tray` (both paths).
+  false. **Round-2 (FIX D)**: when the failover queue is EMPTY, the current-provider
+  auto-add is ALSO deferred until after the successful switch — compute
+  `p1 = current_id` directly, switch, and only on success `add_to_failover_queue`
+  (was-empty case) then persist. A failed enable from an empty queue must leave
+  the queue EMPTY (otherwise a stuck P1 makes later enables fail
+  deterministically). `switch_proxy_target → hot_switch_provider` takes an
+  explicit id and does NOT read the queue, so this ordering is safe. Preserve the
+  `provider-switched` emit and the unconditional `refresh_tray` (both paths).
 - **CSRF intent (FIX 5)**: state-changing `/api/*` methods (POST/PUT/PATCH/
   DELETE) require a same-origin intent — `Sec-Fetch-Site ∈ {same-origin, none}`,
   or (Origin present) Origin host == Host (port-insensitive); else 403. No token
   plumbing. GET/HEAD and public paths exempt. The same-origin SPA is unaffected.
+  **Round-2 (FIX B)**: the Host header is parsed bracket-aware and symmetric with
+  the Origin side (`url::Url::parse(&format!("http://{h}")).host_str()`), NOT a
+  naive `split(':')` — the latter corrupts a bracketed IPv6 Host (`[::1]:3010` →
+  `[`) and falsely 403s a legitimate same-origin IPv6 request.
 - **CORS preflight (FIX 7)**: in `require_auth`, an `OPTIONS` request carrying
   `Origin` is passed through to the inner `CorsLayer` (no 401), so
   `CORS_ALLOW_ORIGINS` can negotiate; the real cross-origin request is still
@@ -1537,6 +1547,38 @@ state.app_state.proxy_service
   `to_ipv4()` (catches `::a.b.c.d`) and blocks 6to4 (2002::/16), NAT64
   (64:ff9b::/96), Teredo (2001::/32), multicast (ff00::/8). Add ranges ONLY in
   `ip_guard.rs` (tauri-free + sync).
+- **Native-template base_url SSRF (round-2 FIX A)**: the `token_plan` and
+  `balance` arms of `query_usage_with_templates` (and the `test_usage_script`
+  service-fn duplicate) dial the user-controlled `credentials.base_url` directly
+  through `coding_plan`/`balance` (whose service signatures stay desktop-callable
+  and unguarded), so `get_guarded()` only re-checks REDIRECT hops — the INITIAL
+  dial is unguarded. In the WEB runtime (`enforce_outbound_guard == true`) AND
+  when `base_url` is non-empty, the arm MUST call
+  `crate::proxy::ip_guard::guard_outbound_url(&credentials.base_url).await`
+  (mapped via the shared `usage_script::map_outbound_guard_error`) BEFORE the
+  dial. Guard at the arm — do NOT thread the flag into the
+  `coding_plan.rs`/`balance.rs` signatures. `OFFICIAL_SUBSCRIPTION` + `COPILOT`
+  arms are unchanged (hardcoded vendor hosts). Desktop callers pass `false`
+  (unchanged).
+- **provider_health.last_error truncation (round-2 FIX C)**: the forwarder
+  failure-path `record_result(.., Some(<err>))` call sites pass
+  `Some(summarize_proxy_error(&e))` (forwarder.rs SSOT, bounds the upstream body
+  to 180 chars), NOT `Some(e.to_string())`. FIX 3 only bounded the request-log
+  `error_message`; the `provider_health.last_error` UPSERT path (via
+  `provider_router::record_result → dao`) must also receive the bounded summary
+  so full upstream error bodies (prompts/tokens/HTML) never persist untruncated.
+  Do NOT relocate `compact_error_message` or touch the DAO.
+- **Desktop redirect-policy parity (round-2 FIX F, ACCEPTED — no code)**:
+  `http_client::get_guarded()` is intentionally NOT feature-gated, so desktop
+  callers of `stream_check`/`speedtest`/`webdav`/`s3` also abort internal
+  IP-literal redirect HOPS (initial dials unaffected). Desktop is not used in
+  this deployment and the per-hop redirect block is desirable defense-in-depth;
+  accepted as-is, do not code-gate it back to web-only.
+- **Dead-code cleanup (round-2 FIX9/FIX E)**: the FE `WebAuthError` /
+  `isWebAuthError` path was removed because Basic-401 is browser-native (the
+  browser re-prompts; no app-level handler is needed). The Rust bootstrap
+  `RuntimeMode` enum and `migration_marker_path()` were removed as unused (F5/F6
+  are fully integrated). Do not re-introduce them.
 
 #### 4. Validation & Error Matrix
 

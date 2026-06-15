@@ -2346,9 +2346,12 @@ impl ProxyService {
             "[Failover] Setting auto_failover_enabled: app_type='{app_type}', enabled={enabled}"
         );
 
-        // 仅在 enabled=true 时确定 P1（并在队列为空时自动加入当前供应商）。
-        let p1_provider_id = if enabled {
-            let mut queue = self
+        // 仅在 enabled=true 时确定 P1。当队列为空时，FIX D（round-2）要求把
+        // 「自动加入当前供应商」推迟到切换成功之后：否则一次失败的
+        // `switch_proxy_target`（如接管模式下切到官方供应商）会把当前供应商
+        // 永久留在队列里，使后续开启确定性失败。
+        let (p1_provider_id, was_empty_current_id) = if enabled {
+            let queue = self
                 .db
                 .get_failover_queue(app_type)
                 .map_err(|e| e.to_string())?;
@@ -2367,22 +2370,17 @@ impl ProxyService {
                     );
                 };
 
-                self.db
-                    .add_to_failover_queue(app_type, &current_id)
-                    .map_err(|e| e.to_string())?;
-
-                queue = self
-                    .db
-                    .get_failover_queue(app_type)
-                    .map_err(|e| e.to_string())?;
+                // 队列为空：P1 直接取当前供应商，但暂不写入队列。
+                (current_id.clone(), Some(current_id))
+            } else {
+                let p1 = queue
+                    .first()
+                    .map(|item| item.provider_id.clone())
+                    .ok_or_else(|| "故障转移队列为空，无法开启故障转移".to_string())?;
+                (p1, None)
             }
-
-            queue
-                .first()
-                .map(|item| item.provider_id.clone())
-                .ok_or_else(|| "故障转移队列为空，无法开启故障转移".to_string())?
         } else {
-            String::new()
+            (String::new(), None)
         };
 
         // 读取当前配置并写回开关字段。
@@ -2393,13 +2391,23 @@ impl ProxyService {
             .map_err(|e| e.to_string())?;
         config.auto_failover_enabled = enabled;
 
-        // FIX 4 (F9 atomicity): switch-then-persist. switch_proxy_target can Err
-        // (e.g. "Cannot switch to official provider during proxy takeover"); if
-        // it does we must NOT have already persisted auto_failover_enabled=true,
-        // or the API returns Err while the flag stays on (state divergence).
+        // FIX 4 (failover-enable atomicity): switch-then-persist. switch_proxy_target
+        // can Err (e.g. "Cannot switch to official provider during proxy takeover");
+        // if it does we must NOT have already persisted auto_failover_enabled=true
+        // (state divergence) NOR mutated the failover queue (FIX D — a failed enable
+        // from an empty queue must leave the queue empty). switch_proxy_target →
+        // hot_switch_provider takes an explicit id and does NOT read the queue, so
+        // deferring the queue write past the switch is safe.
         // The disable path has no switch and just commits the flag.
         if enabled {
             self.switch_proxy_target(app_type, &p1_provider_id).await?;
+
+            // 切换成功后，仅对「队列原本为空」的情形补写当前供应商为 P1。
+            if let Some(current_id) = &was_empty_current_id {
+                self.db
+                    .add_to_failover_queue(app_type, current_id)
+                    .map_err(|e| e.to_string())?;
+            }
         }
 
         self.db
@@ -3149,6 +3157,16 @@ mod tests {
         assert!(
             !config.auto_failover_enabled,
             "auto_failover_enabled must stay false when the switch failed"
+        );
+
+        // FIX D (round-2): a failed enable from an empty queue must leave the
+        // failover queue empty — the current provider auto-add is deferred until
+        // AFTER a successful switch, so a stuck P1 cannot make later enables fail
+        // deterministically.
+        let queue = db.get_failover_queue("claude").expect("read queue");
+        assert!(
+            queue.is_empty(),
+            "failover queue must stay empty after a failed enable, got {queue:?}"
         );
     }
 

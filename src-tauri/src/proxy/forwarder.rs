@@ -549,7 +549,7 @@ impl RequestForwarder {
                                                 app_type_str,
                                                 used_half_open_permit,
                                                 false,
-                                                Some(retry_err.to_string()),
+                                                Some(summarize_proxy_error(&retry_err)),
                                             )
                                             .await;
                                         {
@@ -682,7 +682,7 @@ impl RequestForwarder {
                                                     app_type_str,
                                                     used_half_open_permit,
                                                     false,
-                                                    Some(retry_err.to_string()),
+                                                    Some(summarize_proxy_error(&retry_err)),
                                                 )
                                                 .await;
                                             {
@@ -831,7 +831,7 @@ impl RequestForwarder {
                                                 app_type_str,
                                                 used_half_open_permit,
                                                 false,
-                                                Some(retry_err.to_string()),
+                                                Some(summarize_proxy_error(&retry_err)),
                                             )
                                             .await;
                                         {
@@ -908,7 +908,7 @@ impl RequestForwarder {
                                     app_type_str,
                                     used_half_open_permit,
                                     false,
-                                    Some(e.to_string()),
+                                    Some(summarize_proxy_error(&e)),
                                 )
                                 .await;
 
@@ -3610,5 +3610,28 @@ mod tests {
         });
         let body = body_with_image("any-model");
         assert!(fwd.media_retry_should_trigger("Claude", false, &body, &image_unsupported_error()));
+    }
+
+    /// FIX C (round-2): the failure-path `record_result` persists
+    /// `summarize_proxy_error`, not the raw `Display`, so a large upstream error
+    /// body never reaches `provider_health.last_error` untruncated.
+    #[test]
+    fn summarize_proxy_error_bounds_large_upstream_body() {
+        let big_body = "x".repeat(4096);
+        let error = ProxyError::UpstreamError {
+            status: 502,
+            body: Some(big_body),
+        };
+        let summary = summarize_proxy_error(&error);
+        // The 180-char body cap (+ small prefix) keeps the persisted string well
+        // under the previous multi-KB Display output.
+        assert!(
+            summary.chars().count() <= 220,
+            "summary should be bounded, got {} chars",
+            summary.chars().count()
+        );
+        assert!(summary.contains("502"));
+        // Sanity: the raw Display would have been the full 4KB+ body.
+        assert!(error.to_string().chars().count() > 1000);
     }
 }
