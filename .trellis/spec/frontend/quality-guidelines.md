@@ -892,6 +892,11 @@ git diff v3.14.1..upstream-v3.15.0 -- <focused-area>
 - The smoke result should be interpreted by probe expectations, not by status
   code alone. Desktop-only endpoints returning `501` and validation probes
   returning `400` can be correct when the probe expects those statuses.
+- Startup bootstrap may already import live providers, MCP servers, prompts, or
+  session-usage rows before explicit import/sync probes run. Those probes must
+  treat a successful `0` newly-imported response as idempotent when the
+  immediately-following state probes still strictly assert the imported records
+  and derived usage totals.
 - A smoke task should leave business-code files unchanged unless it uncovered a
   real defect that is being fixed in a separate task.
 
@@ -905,6 +910,9 @@ git diff v3.14.1..upstream-v3.15.0 -- <focused-area>
 - Probe returns an unexpected status or payload -> categorize as product defect,
   test fixture defect, or environment flake before mixing repairs into the smoke
   task.
+- Explicit import/sync probe expects `imported === 1` after startup bootstrap
+  already imported the fixture -> reject the smoke assertion; keep strict
+  downstream state checks instead.
 - Web route coverage has `missing > 0` after command/route edits -> reject until
   `pnpm check:web-routes` passes.
 

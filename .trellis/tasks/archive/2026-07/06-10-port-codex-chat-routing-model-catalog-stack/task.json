@@ -3,7 +3,7 @@
   "name": "port-codex-chat-routing-model-catalog-stack",
   "title": "port codex chat routing + model catalog stack (deferred from v3.16.2 sync)",
   "description": "",
-  "status": "planning",
+  "status": "completed",
   "dev_type": null,
   "scope": null,
   "package": null,
@@ -11,7 +11,7 @@
   "creator": "orion",
   "assignee": "orion",
   "createdAt": "2026-06-10",
-  "completedAt": null,
+  "completedAt": "2026-07-06",
   "branch": null,
   "base_branch": "sync/upstream-v3.16.2",
   "worktree_path": null,
@@ -21,6 +21,6 @@
   "children": [],
   "parent": null,
   "relatedFiles": [],
-  "notes": "",
+  "notes": "Superseded on 2026-07-06 by .trellis/tasks/07-06-sync-upstream-cc-switch-v3-16-5; Codex routing/model catalog work is now part of the v3.16.5 product-upstream sync MVP.",
   "meta": {}
 }
