@@ -652,3 +652,37 @@ Re-audited the audit-fix branch twice with the user-requested loop (Workflow 6-d
 ### Next Steps
 
 - None - task complete
+
+
+## Session 19: Sync cc-switch v3.16.5 into web fork
+
+**Date**: 2026-07-07
+**Task**: Sync cc-switch v3.16.5 into web fork
+**Branch**: `fix/web-audit-phase1-2`
+
+### Summary
+
+Synced selected product-upstream v3.16.5 runtime changes into the Web-first fork, preserved Web security hardening, added release notes, verified Rust/frontend/Web smoke gates, and archived the Trellis task.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `52197b9c` | (see git log) |
+| `34602326` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 18
-- **Last Active**: 2026-06-15
+- **Total Sessions**: 19
+- **Last Active**: 2026-07-07
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~654 | Active |
+| `journal-1.md` | ~688 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 19 | 2026-07-07 | Sync cc-switch v3.16.5 into web fork | `52197b9c`, `34602326` | `fix/web-audit-phase1-2` |
 | 18 | 2026-06-15 | Round-2 verification of audit fixes (Workflow + codex) — closed 4 converged residuals | `ed07d9ba`, `d5210074` | `fix/web-audit-phase1-2` |
 | 17 | 2026-06-15 | Harden residual authenticated web API vectors (R1 session-path guard + R2 log privacy) | `6abaccbf` | `fix/web-audit-phase1-2` |
 | 16 | 2026-06-15 | Audit + 2-round verification co-review of cc-switch-web (Phase 1-4) | `e65b8a07`, `2a0b3305`, `a20ea3e1` | `fix/web-audit-phase1-2` |
