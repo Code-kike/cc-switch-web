@@ -182,9 +182,12 @@ impl Database {
         )", []).map_err(|e| AppError::Database(e.to_string()))?;
 
         // 10. Proxy Request Logs 表
+        // pricing_model = 写入时实际用于计价的模型名（pricing_model_source 解析结果）。
+        // NULL 表示 v11 前的历史行，'' 表示未计价的错误行。
         conn.execute("CREATE TABLE IF NOT EXISTS proxy_request_logs (
             request_id TEXT PRIMARY KEY, provider_id TEXT NOT NULL, app_type TEXT NOT NULL, model TEXT NOT NULL,
             request_model TEXT,
+            pricing_model TEXT,
             input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0,
             cache_read_tokens INTEGER NOT NULL DEFAULT 0, cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
             input_cost_usd TEXT NOT NULL DEFAULT '0', output_cost_usd TEXT NOT NULL DEFAULT '0',
@@ -215,7 +218,7 @@ impl Database {
             [],
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
-        Self::create_request_logs_dedup_index_if_supported(conn)?;
+        Self::create_request_logs_usage_indexes_if_supported(conn)?;
 
         // 11. Model Pricing 表
         conn.execute(
@@ -256,12 +259,16 @@ impl Database {
         .map_err(|e| AppError::Database(e.to_string()))?;
 
         // 17. Usage Daily Rollups 表 (日聚合统计)
+        // request_model 保留路由接管的“客户端别名 -> 真实模型”映射维度；
+        // pricing_model 保留写入时的计价基准，避免明细 prune 后计费不可审计。
         conn.execute(
             "CREATE TABLE IF NOT EXISTS usage_daily_rollups (
                 date TEXT NOT NULL,
                 app_type TEXT NOT NULL,
                 provider_id TEXT NOT NULL,
                 model TEXT NOT NULL,
+                request_model TEXT NOT NULL DEFAULT '',
+                pricing_model TEXT NOT NULL DEFAULT '',
                 request_count INTEGER NOT NULL DEFAULT 0,
                 success_count INTEGER NOT NULL DEFAULT 0,
                 input_tokens INTEGER NOT NULL DEFAULT 0,
@@ -270,7 +277,7 @@ impl Database {
                 cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
                 total_cost_usd TEXT NOT NULL DEFAULT '0',
                 avg_latency_ms INTEGER NOT NULL DEFAULT 0,
-                PRIMARY KEY (date, app_type, provider_id, model)
+                PRIMARY KEY (date, app_type, provider_id, model, request_model, pricing_model)
             )",
             [],
         )
@@ -437,6 +444,13 @@ impl Database {
                         log::info!("迁移数据库从 v9 到 v10（添加 Hermes Agent 支持）");
                         Self::migrate_v9_to_v10(conn)?;
                         Self::set_user_version(conn, 10)?;
+                    }
+                    10 => {
+                        log::info!(
+                            "迁移数据库从 v10 到 v11（usage rollup 保留请求与计价模型维度）"
+                        );
+                        Self::migrate_v10_to_v11(conn)?;
+                        Self::set_user_version(conn, 11)?;
                     }
                     _ => {
                         return Err(AppError::Database(format!(
@@ -1122,7 +1136,7 @@ impl Database {
                 "data_source",
                 "TEXT NOT NULL DEFAULT 'proxy'",
             )?;
-            Self::create_request_logs_dedup_index_if_supported(conn)?;
+            Self::create_request_logs_usage_indexes_if_supported(conn)?;
         }
 
         // 2. 创建会话日志同步状态表
@@ -1211,6 +1225,58 @@ impl Database {
         }
 
         log::info!("v9 -> v10 迁移完成：已添加 Hermes Agent 支持");
+        Ok(())
+    }
+
+    /// v10 -> v11：usage_daily_rollups 增加 request_model/pricing_model 维度，
+    /// proxy_request_logs 增加 pricing_model 列（写入时的计价基准，回填依据）。
+    fn migrate_v10_to_v11(conn: &Connection) -> Result<(), AppError> {
+        if Self::table_exists(conn, "proxy_request_logs")? {
+            Self::add_column_if_missing(conn, "proxy_request_logs", "pricing_model", "TEXT")?;
+            Self::create_request_logs_usage_indexes_if_supported(conn)?;
+        }
+
+        if !Self::table_exists(conn, "usage_daily_rollups")? {
+            log::info!("v10 -> v11：usage_daily_rollups 不存在，跳过重建");
+            return Ok(());
+        }
+
+        conn.execute_batch(
+            "ALTER TABLE usage_daily_rollups RENAME TO usage_daily_rollups_v10;
+             CREATE TABLE usage_daily_rollups (
+                 date TEXT NOT NULL,
+                 app_type TEXT NOT NULL,
+                 provider_id TEXT NOT NULL,
+                 model TEXT NOT NULL,
+                 request_model TEXT NOT NULL DEFAULT '',
+                 pricing_model TEXT NOT NULL DEFAULT '',
+                 request_count INTEGER NOT NULL DEFAULT 0,
+                 success_count INTEGER NOT NULL DEFAULT 0,
+                 input_tokens INTEGER NOT NULL DEFAULT 0,
+                 output_tokens INTEGER NOT NULL DEFAULT 0,
+                 cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+                 cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+                 total_cost_usd TEXT NOT NULL DEFAULT '0',
+                 avg_latency_ms INTEGER NOT NULL DEFAULT 0,
+                 PRIMARY KEY (date, app_type, provider_id, model, request_model, pricing_model)
+             );
+             INSERT INTO usage_daily_rollups
+                 (date, app_type, provider_id, model, request_model, pricing_model,
+                  request_count, success_count, input_tokens, output_tokens,
+                  cache_read_tokens, cache_creation_tokens, total_cost_usd, avg_latency_ms)
+             SELECT date, app_type, provider_id, model, '', '',
+                  request_count, success_count, input_tokens, output_tokens,
+                  cache_read_tokens, cache_creation_tokens, total_cost_usd, avg_latency_ms
+             FROM usage_daily_rollups_v10;
+             DROP TABLE usage_daily_rollups_v10;",
+        )
+        .map_err(|e| {
+            AppError::Database(format!("v10 -> v11 重建 usage_daily_rollups 失败: {e}"))
+        })?;
+
+        log::info!(
+            "v10 -> v11 迁移完成：usage_daily_rollups 已保留 request_model/pricing_model 维度"
+        );
         Ok(())
     }
 
@@ -2232,9 +2298,20 @@ impl Database {
         Ok(false)
     }
 
-    fn create_request_logs_dedup_index_if_supported(conn: &Connection) -> Result<(), AppError> {
+    fn create_request_logs_usage_indexes_if_supported(conn: &Connection) -> Result<(), AppError> {
         if !Self::table_exists(conn, "proxy_request_logs")? {
             return Ok(());
+        }
+
+        let has_app_type = Self::has_column(conn, "proxy_request_logs", "app_type")?;
+        let has_created_at = Self::has_column(conn, "proxy_request_logs", "created_at")?;
+        if has_app_type && has_created_at {
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_request_logs_app_created_at
+                 ON proxy_request_logs(app_type, created_at DESC)",
+                [],
+            )
+            .map_err(|e| AppError::Database(format!("创建使用量应用时间索引失败: {e}")))?;
         }
 
         let required_columns = [
@@ -2252,13 +2329,17 @@ impl Database {
             }
         }
 
+        conn.execute("DROP INDEX IF EXISTS idx_request_logs_dedup_lookup", [])
+            .map_err(|e| AppError::Database(format!("删除旧使用量去重索引失败: {e}")))?;
+
         conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_request_logs_dedup_lookup
-             ON proxy_request_logs(app_type, data_source, input_tokens, output_tokens,
-                                   cache_read_tokens, created_at, cache_creation_tokens)",
+            "CREATE INDEX IF NOT EXISTS idx_request_logs_dedup_lookup_expr
+             ON proxy_request_logs(app_type, COALESCE(data_source, 'proxy'), input_tokens,
+                                   output_tokens, cache_read_tokens, created_at,
+                                   cache_creation_tokens)",
             [],
         )
-        .map_err(|e| AppError::Database(format!("创建使用量去重索引失败: {e}")))?;
+        .map_err(|e| AppError::Database(format!("创建使用量去重表达式索引失败: {e}")))?;
         Ok(())
     }
 

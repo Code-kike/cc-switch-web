@@ -2,8 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   extractCodexPromptPreview,
   formatSessionMessagePreview,
+  getSessionDirectoryGroupKey,
+  groupSessionsByProviderAndDirectory,
   shouldHideCodexMessageFromToc,
 } from "@/components/sessions/utils";
+import type { SessionMeta } from "@/types";
 
 describe("session utils", () => {
   it("extracts Codex VS Code prompts after the request marker", () => {
@@ -114,5 +117,50 @@ describe("session utils", () => {
     expect(formatSessionMessagePreview("a".repeat(51))).toBe(
       `${"a".repeat(50)}...`,
     );
+  });
+
+  it("groups sessions by provider and project directory", () => {
+    const sessions: SessionMeta[] = [
+      {
+        providerId: "codex",
+        sessionId: "codex-1",
+        projectDir: "/work/alpha",
+        createdAt: 3,
+      },
+      {
+        providerId: "codex",
+        sessionId: "codex-2",
+        projectDir: "/work/alpha",
+        createdAt: 2,
+      },
+      {
+        providerId: "claude",
+        sessionId: "claude-1",
+        projectDir: null,
+        createdAt: 1,
+      },
+    ];
+
+    const groups = groupSessionsByProviderAndDirectory(sessions, "Unknown");
+
+    expect(groups).toHaveLength(2);
+    expect(groups[0].providerId).toBe("codex");
+    expect(groups[0].sessions).toHaveLength(2);
+    expect(groups[0].directories).toHaveLength(1);
+    expect(groups[0].directories[0]).toMatchObject({
+      key: "codex:/work/alpha",
+      projectDir: "/work/alpha",
+      label: "alpha",
+    });
+    expect(groups[0].directories[0].sessions.map((item) => item.sessionId)).toEqual([
+      "codex-1",
+      "codex-2",
+    ]);
+
+    expect(groups[1].directories[0]).toMatchObject({
+      key: getSessionDirectoryGroupKey("claude", null),
+      projectDir: null,
+      label: "Unknown",
+    });
   });
 });

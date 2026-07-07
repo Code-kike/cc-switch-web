@@ -134,6 +134,23 @@ export function RequestDetailPanel({
                 </dt>
                 <dd className="font-mono">{request.model}</dd>
               </div>
+              {request.requestModel &&
+                request.requestModel !== request.model && (
+                  <div>
+                    <dt className="text-muted-foreground">
+                      {t("usage.requestModel", "请求模型")}
+                    </dt>
+                    <dd className="font-mono">{request.requestModel}</dd>
+                  </div>
+                )}
+              {request.pricingModel && (
+                <div>
+                  <dt className="text-muted-foreground">
+                    {t("usage.pricingModel", "计价模型")}
+                  </dt>
+                  <dd className="font-mono">{request.pricingModel}</dd>
+                </div>
+              )}
               <div>
                 <dt className="text-muted-foreground">
                   {t("usage.status", "状态")}

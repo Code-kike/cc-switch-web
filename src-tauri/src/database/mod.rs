@@ -48,7 +48,7 @@ use std::sync::Mutex;
 
 /// 当前 Schema 版本号
 /// 每次修改表结构时递增，并在 schema.rs 中添加相应的迁移逻辑
-pub(crate) const SCHEMA_VERSION: i32 = 10;
+pub(crate) const SCHEMA_VERSION: i32 = 11;
 
 /// 安全地序列化 JSON，避免 unwrap panic
 pub(crate) fn to_json_string<T: Serialize>(value: &T) -> Result<String, AppError> {
@@ -128,9 +128,11 @@ impl Database {
                 log::info!(
                     "Creating pre-migration database backup (v{version} → v{SCHEMA_VERSION})"
                 );
-                if let Err(e) = db.backup_database_file() {
-                    log::warn!("Pre-migration backup failed, continuing migration: {e}");
-                }
+                db.backup_database_file().map_err(|e| {
+                    AppError::Database(format!(
+                        "Pre-migration backup failed; migration aborted to preserve data: {e}"
+                    ))
+                })?;
             }
         }
 
@@ -156,6 +158,20 @@ impl Database {
         }
 
         Ok(db)
+    }
+
+    /// Read the on-disk SQLite `user_version` without running schema creation or
+    /// migrations. Returns `Some(version)` only when the database is newer than
+    /// this binary supports.
+    pub fn stored_user_version_exceeds_supported(
+        db_path: &std::path::Path,
+    ) -> Result<Option<i32>, AppError> {
+        if !db_path.exists() {
+            return Ok(None);
+        }
+        let conn = Connection::open(db_path).map_err(|e| AppError::Database(e.to_string()))?;
+        let version = Self::get_user_version(&conn)?;
+        Ok((version > SCHEMA_VERSION).then_some(version))
     }
 
     /// 创建内存数据库（用于测试）

@@ -103,7 +103,7 @@ const closeSearch = () => {
 };
 
 const openProviderFilter = () => {
-  const trigger = screen.getByRole("combobox");
+  const trigger = screen.getByRole("combobox", { name: /供应商筛选/i });
   fireEvent.pointerDown(trigger);
   fireEvent.click(trigger);
 };
@@ -113,6 +113,7 @@ describe("SessionManagerPage", () => {
     toastSuccessMock.mockReset();
     toastErrorMock.mockReset();
     launchTerminalSpy.mockClear();
+    window.localStorage.clear();
     Element.prototype.scrollIntoView = vi.fn();
     Object.defineProperty(HTMLElement.prototype, "hasPointerCapture", {
       configurable: true,

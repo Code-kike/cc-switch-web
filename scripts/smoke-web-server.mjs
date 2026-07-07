@@ -30,7 +30,8 @@ const smokeProviderIds = {
 const smokeWorkspace = {
   filename: "AGENTS.md",
   initialContent: "# Smoke Workspace\n\nSeeded AGENTS content for web smoke.\n",
-  updatedContent: "# Smoke Workspace\n\nUpdated AGENTS content for web smoke.\n",
+  updatedContent:
+    "# Smoke Workspace\n\nUpdated AGENTS content for web smoke.\n",
 };
 
 const smokeDailyMemory = {
@@ -201,11 +202,15 @@ const smokeUsage = {
   outputTokens: 450,
   pricingModelId: "smoke-web-model-pricing",
 };
-smokeUsage.freshInputTokens = smokeUsage.inputTokens - smokeUsage.cachedInputTokens;
+smokeUsage.freshInputTokens =
+  smokeUsage.inputTokens - smokeUsage.cachedInputTokens;
 smokeUsage.realTotalTokens =
-  smokeUsage.freshInputTokens + smokeUsage.cachedInputTokens + smokeUsage.outputTokens;
+  smokeUsage.freshInputTokens +
+  smokeUsage.cachedInputTokens +
+  smokeUsage.outputTokens;
 smokeUsage.cacheHitRate =
-  smokeUsage.cachedInputTokens / (smokeUsage.freshInputTokens + smokeUsage.cachedInputTokens);
+  smokeUsage.cachedInputTokens /
+  (smokeUsage.freshInputTokens + smokeUsage.cachedInputTokens);
 
 async function ensureDistWeb() {
   const indexPath = path.join(distWebDir, "index.html");
@@ -232,11 +237,22 @@ async function readJsonFixture(filePath) {
 }
 
 function getSmokeSessionPath(homeDir, session) {
-  return path.join(homeDir, ".codex", "sessions", session.subdir, session.fileName);
+  return path.join(
+    homeDir,
+    ".codex",
+    "sessions",
+    session.subdir,
+    session.fileName,
+  );
 }
 
 function getArchivedCodexUsagePath(homeDir) {
-  return path.join(homeDir, ".codex", "archived_sessions", smokeUsage.archivedFileName);
+  return path.join(
+    homeDir,
+    ".codex",
+    "archived_sessions",
+    smokeUsage.archivedFileName,
+  );
 }
 
 function getOpenClawConfigPath(homeDir) {
@@ -319,31 +335,34 @@ async function seedLiveProviderFixtures(homeDir) {
     selectedAuthType: "api_key",
   });
 
-  await writeJsonFixture(path.join(homeDir, ".config", "opencode", "opencode.json"), {
-    $schema: "https://opencode.ai/config.json",
-    provider: {
-      [seededProviderIds.opencode]: {
-        npm: "@ai-sdk/openai-compatible",
-        name: "Smoke OpenCode",
-        options: {
-          baseURL: "https://opencode-smoke.example.com/v1",
-          apiKey: "opencode-smoke-key",
-        },
-        models: {
-          "gpt-4o": {
-            name: "GPT-4o",
+  await writeJsonFixture(
+    path.join(homeDir, ".config", "opencode", "opencode.json"),
+    {
+      $schema: "https://opencode.ai/config.json",
+      provider: {
+        [seededProviderIds.opencode]: {
+          npm: "@ai-sdk/openai-compatible",
+          name: "Smoke OpenCode",
+          options: {
+            baseURL: "https://opencode-smoke.example.com/v1",
+            apiKey: "opencode-smoke-key",
+          },
+          models: {
+            "gpt-4o": {
+              name: "GPT-4o",
+            },
           },
         },
       },
-    },
-    mcp: {
-      [smokeMcpIds.opencodeOnly]: {
-        type: "local",
-        command: ["sh", "-lc", "echo opencode"],
-        enabled: true,
+      mcp: {
+        [smokeMcpIds.opencodeOnly]: {
+          type: "local",
+          command: ["sh", "-lc", "echo opencode"],
+          enabled: true,
+        },
       },
     },
-  });
+  );
 
   await writeJsonFixture(getOpenClawConfigPath(homeDir), {
     models: {
@@ -591,9 +610,14 @@ const probes = [
     validate(response, payload) {
       const contentType = response.headers.get("content-type") ?? "";
       if (!response.ok || !contentType.includes("text/html")) {
-        throw new Error(`expected HTML 200, got ${response.status} ${contentType}`);
+        throw new Error(
+          `expected HTML 200, got ${response.status} ${contentType}`,
+        );
       }
-      if (typeof payload !== "string" || !payload.toLowerCase().includes("<!doctype html")) {
+      if (
+        typeof payload !== "string" ||
+        !payload.toLowerCase().includes("<!doctype html")
+      ) {
         throw new Error("expected SPA index.html payload");
       }
     },
@@ -624,7 +648,9 @@ const probes = [
         typeof payload?.codexModel !== "string" ||
         typeof payload?.geminiModel !== "string"
       ) {
-        throw new Error(`expected stream-check config object, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected stream-check config object, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -637,7 +663,9 @@ const probes = [
     },
     validate(response, payload) {
       if (!response.ok || payload !== null) {
-        throw new Error(`expected stream-check save null payload, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected stream-check save null payload, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -650,13 +678,16 @@ const probes = [
         !response.ok ||
         payload?.timeoutSecs !== smokeAdvancedConfig.streamCheck.timeoutSecs ||
         payload?.maxRetries !== smokeAdvancedConfig.streamCheck.maxRetries ||
-        payload?.degradedThresholdMs !== smokeAdvancedConfig.streamCheck.degradedThresholdMs ||
+        payload?.degradedThresholdMs !==
+          smokeAdvancedConfig.streamCheck.degradedThresholdMs ||
         payload?.claudeModel !== smokeAdvancedConfig.streamCheck.claudeModel ||
         payload?.codexModel !== smokeAdvancedConfig.streamCheck.codexModel ||
         payload?.geminiModel !== smokeAdvancedConfig.streamCheck.geminiModel ||
         payload?.testPrompt !== smokeAdvancedConfig.streamCheck.testPrompt
       ) {
-        throw new Error(`expected persisted stream-check config, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected persisted stream-check config, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -672,7 +703,9 @@ const probes = [
         typeof payload?.enabled !== "boolean" ||
         typeof payload?.level !== "string"
       ) {
-        throw new Error(`expected log-config object, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected log-config object, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -685,7 +718,9 @@ const probes = [
     },
     validate(response, payload) {
       if (!response.ok || payload !== true) {
-        throw new Error(`expected log-config set true payload, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected log-config set true payload, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -699,7 +734,9 @@ const probes = [
         payload?.enabled !== smokeAdvancedConfig.logConfig.enabled ||
         payload?.level !== smokeAdvancedConfig.logConfig.level
       ) {
-        throw new Error(`expected persisted log-config, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected persisted log-config, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -728,8 +765,14 @@ const probes = [
     method: "POST",
     path: "/api/backups/create-db-backup",
     validate(response, payload, artifacts) {
-      if (!response.ok || typeof payload !== "string" || !payload.endsWith(".db")) {
-        throw new Error(`expected created backup filename, got ${response.status} ${JSON.stringify(payload)}`);
+      if (
+        !response.ok ||
+        typeof payload !== "string" ||
+        !payload.endsWith(".db")
+      ) {
+        throw new Error(
+          `expected created backup filename, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
       artifacts.createdBackupFilename = payload;
     },
@@ -742,9 +785,13 @@ const probes = [
       if (
         !response.ok ||
         !Array.isArray(payload) ||
-        !payload.some((entry) => entry?.filename === artifacts.createdBackupFilename)
+        !payload.some(
+          (entry) => entry?.filename === artifacts.createdBackupFilename,
+        )
       ) {
-        throw new Error(`expected created backup to appear in list, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected created backup to appear in list, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -756,23 +803,28 @@ const probes = [
       if (!artifacts.createdBackupFilename) {
         throw new Error("missing created backup filename artifact");
       }
-      const response = await fetch(new URL("/api/backups/rename-db-backup", baseUrl), {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
+      const response = await fetch(
+        new URL("/api/backups/rename-db-backup", baseUrl),
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            oldFilename: artifacts.createdBackupFilename,
+            newName: smokeBackup.renamedName,
+          }),
         },
-        body: JSON.stringify({
-          oldFilename: artifacts.createdBackupFilename,
-          newName: smokeBackup.renamedName,
-        }),
-      });
+      );
       const payload = await response.json();
       return { response, payload };
     },
     validate(response, payload, artifacts) {
       const expectedFilename = `${smokeBackup.renamedName}.db`;
       if (!response.ok || payload !== expectedFilename) {
-        throw new Error(`expected renamed backup filename ${expectedFilename}, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected renamed backup filename ${expectedFilename}, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
       artifacts.renamedBackupFilename = payload;
     },
@@ -785,10 +837,16 @@ const probes = [
       if (
         !response.ok ||
         !Array.isArray(payload) ||
-        !payload.some((entry) => entry?.filename === artifacts.renamedBackupFilename) ||
-        payload.some((entry) => entry?.filename === artifacts.createdBackupFilename)
+        !payload.some(
+          (entry) => entry?.filename === artifacts.renamedBackupFilename,
+        ) ||
+        payload.some(
+          (entry) => entry?.filename === artifacts.createdBackupFilename,
+        )
       ) {
-        throw new Error(`expected renamed backup to replace original list entry, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected renamed backup to replace original list entry, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -800,21 +858,26 @@ const probes = [
       if (!artifacts.renamedBackupFilename) {
         throw new Error("missing renamed backup filename artifact");
       }
-      const response = await fetch(new URL("/api/backups/restore-db-backup", baseUrl), {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
+      const response = await fetch(
+        new URL("/api/backups/restore-db-backup", baseUrl),
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            filename: artifacts.renamedBackupFilename,
+          }),
         },
-        body: JSON.stringify({
-          filename: artifacts.renamedBackupFilename,
-        }),
-      });
+      );
       const payload = await response.json();
       return { response, payload };
     },
     validate(response, payload, artifacts) {
       if (!response.ok || typeof payload !== "string" || payload.length === 0) {
-        throw new Error(`expected restore safety backup id, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected restore safety backup id, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
       artifacts.restoreSafetyBackupId = payload;
     },
@@ -828,10 +891,14 @@ const probes = [
       if (
         !response.ok ||
         !Array.isArray(payload) ||
-        !payload.some((entry) => entry?.filename === artifacts.renamedBackupFilename) ||
+        !payload.some(
+          (entry) => entry?.filename === artifacts.renamedBackupFilename,
+        ) ||
         !payload.some((entry) => entry?.filename === safetyFilename)
       ) {
-        throw new Error(`expected restore to keep target backup and create safety backup, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected restore to keep target backup and create safety backup, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -857,7 +924,9 @@ const probes = [
     },
     validate(response, payload) {
       if (!response.ok || payload !== null) {
-        throw new Error(`expected backup delete null payload, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected backup delete null payload, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -870,10 +939,14 @@ const probes = [
       if (
         !response.ok ||
         !Array.isArray(payload) ||
-        payload.some((entry) => entry?.filename === artifacts.renamedBackupFilename) ||
+        payload.some(
+          (entry) => entry?.filename === artifacts.renamedBackupFilename,
+        ) ||
         !payload.some((entry) => entry?.filename === safetyFilename)
       ) {
-        throw new Error(`expected deleted backup to disappear while safety backup remains, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected deleted backup to disappear while safety backup remains, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -893,7 +966,9 @@ const probes = [
     path: "/api/mcp/get-claude-mcp-status",
     validate(response, payload) {
       if (!response.ok || typeof payload !== "object" || payload === null) {
-        throw new Error(`expected Claude MCP status object, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected Claude MCP status object, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -904,7 +979,9 @@ const probes = [
     body: { cmd: "sh" },
     validate(response, payload) {
       if (!response.ok || payload !== true) {
-        throw new Error(`expected MCP command validation to succeed, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected MCP command validation to succeed, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -922,7 +999,9 @@ const probes = [
       // the full merged 5-server state regardless of which path imported them. Accept
       // any non-negative count here; the endpoint must still respond with a number.
       if (!response.ok || typeof payload !== "number" || payload < 0) {
-        throw new Error(`expected MCP import count >= 0, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected MCP import count >= 0, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -932,7 +1011,9 @@ const probes = [
     path: "/api/mcp/get-mcp-servers",
     validate(response, payload) {
       if (!response.ok || typeof payload !== "object" || payload === null) {
-        throw new Error(`expected imported MCP object, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected imported MCP object, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
       if (
         Object.keys(payload).length !== 5 ||
@@ -945,7 +1026,9 @@ const probes = [
         payload[smokeMcpIds.opencodeOnly]?.server?.type !== "stdio" ||
         payload[smokeMcpIds.geminiOnly]?.server?.type !== "sse"
       ) {
-        throw new Error(`expected imported MCP servers to merge and normalize correctly, got ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected imported MCP servers to merge and normalize correctly, got ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -960,7 +1043,9 @@ const probes = [
         !payload.includes(smokeMcpIds.shared) ||
         !payload.includes(smokeMcpIds.claudeOnly)
       ) {
-        throw new Error(`expected Claude MCP config text, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected Claude MCP config text, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -980,7 +1065,9 @@ const probes = [
         !payload.servers[smokeMcpIds.claudeOnly] ||
         payload.servers[smokeMcpIds.geminiOnly]
       ) {
-        throw new Error(`expected Claude legacy MCP projection, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected Claude legacy MCP projection, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -989,23 +1076,28 @@ const probes = [
     method: "POST",
     path: "/api/mcp/toggle-mcp-app",
     async send(baseUrl, artifacts) {
-      const response = await fetch(new URL("/api/mcp/toggle-mcp-app", baseUrl), {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
+      const response = await fetch(
+        new URL("/api/mcp/toggle-mcp-app", baseUrl),
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            serverId: smokeMcpIds.shared,
+            app: "codex",
+            enabled: false,
+          }),
         },
-        body: JSON.stringify({
-          serverId: smokeMcpIds.shared,
-          app: "codex",
-          enabled: false,
-        }),
-      });
+      );
       const result = await response.json();
       const codexConfig = await fs.readFile(
         path.join(artifacts.homeDir, ".codex", "config.toml"),
         "utf8",
       );
-      const serversResponse = await fetch(new URL("/api/mcp/get-mcp-servers", baseUrl));
+      const serversResponse = await fetch(
+        new URL("/api/mcp/get-mcp-servers", baseUrl),
+      );
       const servers = await serversResponse.json();
       return { response, payload: { result, codexConfig, servers } };
     },
@@ -1016,7 +1108,9 @@ const probes = [
         payload?.codexConfig?.includes(`mcp_servers.${smokeMcpIds.shared}`) ||
         payload?.servers?.[smokeMcpIds.shared]?.apps?.codex !== false
       ) {
-        throw new Error(`expected disabling Codex MCP to remove live config, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected disabling Codex MCP to remove live config, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -1025,23 +1119,28 @@ const probes = [
     method: "PUT",
     path: "/api/mcp/set-mcp-enabled",
     async send(baseUrl, artifacts) {
-      const response = await fetch(new URL("/api/mcp/set-mcp-enabled", baseUrl), {
-        method: "PUT",
-        headers: {
-          "content-type": "application/json",
+      const response = await fetch(
+        new URL("/api/mcp/set-mcp-enabled", baseUrl),
+        {
+          method: "PUT",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            app: "codex",
+            id: smokeMcpIds.shared,
+            enabled: true,
+          }),
         },
-        body: JSON.stringify({
-          app: "codex",
-          id: smokeMcpIds.shared,
-          enabled: true,
-        }),
-      });
+      );
       const result = await response.json();
       const codexConfig = await fs.readFile(
         path.join(artifacts.homeDir, ".codex", "config.toml"),
         "utf8",
       );
-      const serversResponse = await fetch(new URL("/api/mcp/get-mcp-servers", baseUrl));
+      const serversResponse = await fetch(
+        new URL("/api/mcp/get-mcp-servers", baseUrl),
+      );
       const servers = await serversResponse.json();
       return { response, payload: { result, codexConfig, servers } };
     },
@@ -1052,7 +1151,9 @@ const probes = [
         !payload?.codexConfig?.includes(`mcp_servers.${smokeMcpIds.shared}`) ||
         payload?.servers?.[smokeMcpIds.shared]?.apps?.codex !== true
       ) {
-        throw new Error(`expected legacy set_mcp_enabled to restore Codex live config, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected legacy set_mcp_enabled to restore Codex live config, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -1061,33 +1162,36 @@ const probes = [
     method: "POST",
     path: "/api/mcp/upsert-mcp-server",
     async send(baseUrl, artifacts) {
-      const response = await fetch(new URL("/api/mcp/upsert-mcp-server", baseUrl), {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({
-          server: {
-            id: smokeMcpIds.unified,
-            name: "Smoke Unified Server",
-            description: "Unified smoke MCP server",
-            server: {
-              type: "stdio",
-              command: "sh",
-              args: ["-lc", "echo unified"],
-            },
-            apps: {
-              claude: true,
-              codex: false,
-              gemini: true,
-              opencode: false,
-              openclaw: false,
-              hermes: false,
-            },
-            tags: ["smoke"],
+      const response = await fetch(
+        new URL("/api/mcp/upsert-mcp-server", baseUrl),
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
           },
-        }),
-      });
+          body: JSON.stringify({
+            server: {
+              id: smokeMcpIds.unified,
+              name: "Smoke Unified Server",
+              description: "Unified smoke MCP server",
+              server: {
+                type: "stdio",
+                command: "sh",
+                args: ["-lc", "echo unified"],
+              },
+              apps: {
+                claude: true,
+                codex: false,
+                gemini: true,
+                opencode: false,
+                openclaw: false,
+                hermes: false,
+              },
+              tags: ["smoke"],
+            },
+          }),
+        },
+      );
       const result = await response.json();
       const claudeConfig = await readJsonFixture(
         path.join(artifacts.homeDir, ".claude.json"),
@@ -1095,9 +1199,14 @@ const probes = [
       const geminiConfig = await readJsonFixture(
         path.join(artifacts.homeDir, ".gemini", "settings.json"),
       );
-      const serversResponse = await fetch(new URL("/api/mcp/get-mcp-servers", baseUrl));
+      const serversResponse = await fetch(
+        new URL("/api/mcp/get-mcp-servers", baseUrl),
+      );
       const servers = await serversResponse.json();
-      return { response, payload: { result, claudeConfig, geminiConfig, servers } };
+      return {
+        response,
+        payload: { result, claudeConfig, geminiConfig, servers },
+      };
     },
     validate(response, payload) {
       if (
@@ -1108,7 +1217,9 @@ const probes = [
         !payload?.servers?.[smokeMcpIds.unified]?.apps?.claude ||
         !payload?.servers?.[smokeMcpIds.unified]?.apps?.gemini
       ) {
-        throw new Error(`expected unified MCP upsert to sync live config, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected unified MCP upsert to sync live config, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -1118,7 +1229,10 @@ const probes = [
     path: `/api/mcp/delete-mcp-server?id=${encodeURIComponent(smokeMcpIds.unified)}`,
     async send(baseUrl, artifacts) {
       const response = await fetch(
-        new URL(`/api/mcp/delete-mcp-server?id=${encodeURIComponent(smokeMcpIds.unified)}`, baseUrl),
+        new URL(
+          `/api/mcp/delete-mcp-server?id=${encodeURIComponent(smokeMcpIds.unified)}`,
+          baseUrl,
+        ),
         {
           method: "DELETE",
         },
@@ -1130,9 +1244,14 @@ const probes = [
       const geminiConfig = await readJsonFixture(
         path.join(artifacts.homeDir, ".gemini", "settings.json"),
       );
-      const serversResponse = await fetch(new URL("/api/mcp/get-mcp-servers", baseUrl));
+      const serversResponse = await fetch(
+        new URL("/api/mcp/get-mcp-servers", baseUrl),
+      );
       const servers = await serversResponse.json();
-      return { response, payload: { result, claudeConfig, geminiConfig, servers } };
+      return {
+        response,
+        payload: { result, claudeConfig, geminiConfig, servers },
+      };
     },
     validate(response, payload) {
       if (
@@ -1142,7 +1261,9 @@ const probes = [
         payload?.geminiConfig?.mcpServers?.[smokeMcpIds.unified] ||
         payload?.servers?.[smokeMcpIds.unified]
       ) {
-        throw new Error(`expected unified MCP delete to remove live config, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected unified MCP delete to remove live config, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -1151,20 +1272,23 @@ const probes = [
     method: "POST",
     path: "/api/mcp/upsert-claude-mcp-server",
     async send(baseUrl, artifacts) {
-      const response = await fetch(new URL("/api/mcp/upsert-claude-mcp-server", baseUrl), {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({
-          id: smokeMcpIds.legacyClaude,
-          spec: {
-            type: "stdio",
-            command: "echo",
-            args: ["legacy-claude"],
+      const response = await fetch(
+        new URL("/api/mcp/upsert-claude-mcp-server", baseUrl),
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
           },
-        }),
-      });
+          body: JSON.stringify({
+            id: smokeMcpIds.legacyClaude,
+            spec: {
+              type: "stdio",
+              command: "echo",
+              args: ["legacy-claude"],
+            },
+          }),
+        },
+      );
       const result = await response.json();
       const claudeConfig = await readJsonFixture(
         path.join(artifacts.homeDir, ".claude.json"),
@@ -1177,7 +1301,9 @@ const probes = [
         payload?.result !== true ||
         !payload?.claudeConfig?.mcpServers?.[smokeMcpIds.legacyClaude]
       ) {
-        throw new Error(`expected legacy Claude MCP upsert to update live config, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected legacy Claude MCP upsert to update live config, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -1207,7 +1333,9 @@ const probes = [
         payload?.result !== true ||
         payload?.claudeConfig?.mcpServers?.[smokeMcpIds.legacyClaude]
       ) {
-        throw new Error(`expected legacy Claude MCP delete to update live config, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected legacy Claude MCP delete to update live config, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -1239,7 +1367,9 @@ const probes = [
         path.join(artifacts.homeDir, ".hermes", "config.yaml"),
         "utf8",
       );
-      const serversResponse = await fetch(new URL("/api/mcp/get-mcp-servers", baseUrl));
+      const serversResponse = await fetch(
+        new URL("/api/mcp/get-mcp-servers", baseUrl),
+      );
       const servers = await serversResponse.json();
       return { response, payload: { result, hermesConfig, servers } };
     },
@@ -1250,7 +1380,9 @@ const probes = [
         !payload?.hermesConfig?.includes(`${smokeMcpIds.legacyConfig}:`) ||
         !payload?.servers?.[smokeMcpIds.legacyConfig]?.apps?.hermes
       ) {
-        throw new Error(`expected legacy config MCP upsert to update Hermes live config, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected legacy config MCP upsert to update Hermes live config, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -1273,7 +1405,9 @@ const probes = [
         path.join(artifacts.homeDir, ".hermes", "config.yaml"),
         "utf8",
       );
-      const serversResponse = await fetch(new URL("/api/mcp/get-mcp-servers", baseUrl));
+      const serversResponse = await fetch(
+        new URL("/api/mcp/get-mcp-servers", baseUrl),
+      );
       const servers = await serversResponse.json();
       return { response, payload: { result, hermesConfig, servers } };
     },
@@ -1284,7 +1418,9 @@ const probes = [
         payload?.hermesConfig?.includes(`${smokeMcpIds.legacyConfig}:`) ||
         payload?.servers?.[smokeMcpIds.legacyConfig]
       ) {
-        throw new Error(`expected legacy config MCP delete to update Hermes live config, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected legacy config MCP delete to update Hermes live config, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -1300,7 +1436,9 @@ const probes = [
         !response.ok ||
         !Array.isArray(payload) ||
         payload.length !== smokeSessions.length ||
-        !smokeSessions.every((session) => sessionIds.includes(session.sessionId)) ||
+        !smokeSessions.every((session) =>
+          sessionIds.includes(session.sessionId),
+        ) ||
         !payload.every(
           (session) =>
             session?.providerId === "codex" &&
@@ -1308,7 +1446,9 @@ const probes = [
             session.resumeCommand.includes(session.sessionId),
         )
       ) {
-        throw new Error(`expected seeded session list, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected seeded session list, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -1323,7 +1463,10 @@ const probes = [
         sourcePath: getSmokeSessionPath(artifacts.homeDir, session),
       });
       const response = await fetch(
-        new URL(`/api/sessions/get-session-messages?${query.toString()}`, baseUrl),
+        new URL(
+          `/api/sessions/get-session-messages?${query.toString()}`,
+          baseUrl,
+        ),
       );
       const payload = await response.json();
       return { response, payload };
@@ -1338,7 +1481,9 @@ const probes = [
         payload[1]?.role !== "assistant" ||
         payload[1]?.content !== smokeSessions[0].assistantMessage
       ) {
-        throw new Error(`expected session messages payload, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected session messages payload, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -1361,7 +1506,9 @@ const probes = [
         },
       );
       const deleted = await response.json();
-      const listResponse = await fetch(new URL("/api/sessions/list-sessions", baseUrl));
+      const listResponse = await fetch(
+        new URL("/api/sessions/list-sessions", baseUrl),
+      );
       const remainingSessions = await listResponse.json();
       let fileExists = true;
       try {
@@ -1382,7 +1529,9 @@ const probes = [
           (session) => session?.sessionId === smokeSessions[0].sessionId,
         )
       ) {
-        throw new Error(`expected single session delete to succeed, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected single session delete to succeed, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -1396,15 +1545,20 @@ const probes = [
         sessionId: session.sessionId,
         sourcePath: getSmokeSessionPath(artifacts.homeDir, session),
       }));
-      const response = await fetch(new URL("/api/sessions/delete-sessions", baseUrl), {
-        method: "DELETE",
-        headers: {
-          "content-type": "application/json",
+      const response = await fetch(
+        new URL("/api/sessions/delete-sessions", baseUrl),
+        {
+          method: "DELETE",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ items }),
         },
-        body: JSON.stringify({ items }),
-      });
+      );
       const outcomes = await response.json();
-      const listResponse = await fetch(new URL("/api/sessions/list-sessions", baseUrl));
+      const listResponse = await fetch(
+        new URL("/api/sessions/list-sessions", baseUrl),
+      );
       const remainingSessions = await listResponse.json();
       const remainingFiles = await Promise.all(
         smokeSessions.slice(1).map(async (session) => {
@@ -1416,7 +1570,10 @@ const probes = [
           }
         }),
       );
-      return { response, payload: { outcomes, remainingSessions, remainingFiles } };
+      return {
+        response,
+        payload: { outcomes, remainingSessions, remainingFiles },
+      };
     },
     validate(response, payload) {
       if (
@@ -1429,7 +1586,9 @@ const probes = [
         !Array.isArray(payload?.remainingFiles) ||
         payload.remainingFiles.some(Boolean)
       ) {
-        throw new Error(`expected batch session delete to succeed, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected batch session delete to succeed, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -1440,7 +1599,9 @@ const probes = [
     body: { command: `codex resume ${smokeSessions[0].sessionId}` },
     validate(response, payload) {
       if (response.status !== 501 || payload?.code !== "WEB_DESKTOP_ONLY") {
-        throw new Error(`expected session terminal route to be desktop-only, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected session terminal route to be desktop-only, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -1449,16 +1610,25 @@ const probes = [
     method: "POST",
     path: "/api/sessions/sync-session-usage",
     validate(response, payload, artifacts) {
+      // Audit F6: the web server runs the shared startup bootstrap, whose
+      // initial session-usage sync may already import the seeded archived Codex
+      // session before this explicit endpoint probe. Treat this probe as
+      // idempotent; the following data-source/summary/log/detail probes assert
+      // that the row exists with the expected values.
       if (
         !response.ok ||
-        payload?.imported !== 1 ||
-        payload?.skipped !== 0 ||
+        typeof payload?.imported !== "number" ||
+        payload.imported < 0 ||
+        typeof payload?.skipped !== "number" ||
+        payload.skipped < 0 ||
         typeof payload?.filesScanned !== "number" ||
         payload.filesScanned < 1 ||
         !Array.isArray(payload?.errors) ||
         payload.errors.length !== 0
       ) {
-        throw new Error(`expected session usage sync to import one archived Codex session, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected idempotent session usage sync response, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
       artifacts.syncedUsageRequestId = `codex_session:${smokeUsage.codexSessionId}:1`;
     },
@@ -1478,7 +1648,9 @@ const probes = [
         codexSessionSource.requestCount !== 1 ||
         Number(codexSessionSource.totalCostUsd) <= 0
       ) {
-        throw new Error(`expected codex session data source after sync, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected codex session data source after sync, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -1495,11 +1667,14 @@ const probes = [
         payload?.totalCacheReadTokens !== smokeUsage.cachedInputTokens ||
         payload?.totalCacheCreationTokens !== 0 ||
         payload?.realTotalTokens !== smokeUsage.realTotalTokens ||
-        Math.abs(Number(payload?.cacheHitRate) - smokeUsage.cacheHitRate) > 0.001 ||
+        Math.abs(Number(payload?.cacheHitRate) - smokeUsage.cacheHitRate) >
+          0.001 ||
         Math.abs(Number(payload?.successRate) - 100) > 0.001 ||
         Number(payload?.totalCost) <= 0
       ) {
-        throw new Error(`expected codex usage summary after sync, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected codex usage summary after sync, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -1533,7 +1708,9 @@ const probes = [
             Number(bucket?.totalCost) > 0,
         )
       ) {
-        throw new Error(`expected daily usage trends after sync, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected daily usage trends after sync, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -1564,7 +1741,9 @@ const probes = [
         firstLog.dataSource !== "codex_session" ||
         Number(firstLog.totalCostUsd) <= 0
       ) {
-        throw new Error(`expected request logs populated from synced session usage, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected request logs populated from synced session usage, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
       artifacts.syncedUsageRequestId = firstLog.requestId;
     },
@@ -1575,13 +1754,16 @@ const probes = [
     path: "/api/system/get_request_detail",
     async send(baseUrl, artifacts) {
       const requestId = artifacts.syncedUsageRequestId;
-      const response = await fetch(new URL("/api/system/get_request_detail", baseUrl), {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
+      const response = await fetch(
+        new URL("/api/system/get_request_detail", baseUrl),
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ requestId }),
         },
-        body: JSON.stringify({ requestId }),
-      });
+      );
       const payload = await response.json();
       return { response, payload };
     },
@@ -1598,7 +1780,9 @@ const probes = [
         payload?.dataSource !== "codex_session" ||
         Number(payload?.totalCostUsd) <= 0
       ) {
-        throw new Error(`expected request detail for synced session usage, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected request detail for synced session usage, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -1609,7 +1793,9 @@ const probes = [
     body: { requestId: "smoke-missing-request" },
     validate(response, payload) {
       if (!response.ok || payload !== null) {
-        throw new Error(`expected null request detail for missing request id, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected null request detail for missing request id, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -1623,7 +1809,9 @@ const probes = [
         !Array.isArray(payload) ||
         !payload.some((item) => item?.modelId === smokeUsage.normalizedModel)
       ) {
-        throw new Error(`expected seeded model pricing list, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected seeded model pricing list, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -1632,30 +1820,38 @@ const probes = [
     method: "POST",
     path: "/api/system/update_model_pricing",
     async send(baseUrl) {
-      const response = await fetch(new URL("/api/system/update_model_pricing", baseUrl), {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
+      const response = await fetch(
+        new URL("/api/system/update_model_pricing", baseUrl),
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            modelId: smokeUsage.pricingModelId,
+            displayName: "Smoke Web Model",
+            inputCost: "1.25",
+            outputCost: "2.50",
+            cacheReadCost: "0.10",
+            cacheCreationCost: "0.05",
+          }),
         },
-        body: JSON.stringify({
-          modelId: smokeUsage.pricingModelId,
-          displayName: "Smoke Web Model",
-          inputCost: "1.25",
-          outputCost: "2.50",
-          cacheReadCost: "0.10",
-          cacheCreationCost: "0.05",
-        }),
-      });
+      );
       const result = await response.json();
-      const pricingResponse = await fetch(new URL("/api/system/get_model_pricing", baseUrl), {
-        method: "POST",
-      });
+      const pricingResponse = await fetch(
+        new URL("/api/system/get_model_pricing", baseUrl),
+        {
+          method: "POST",
+        },
+      );
       const pricing = await pricingResponse.json();
       return { response, payload: { result, pricing } };
     },
     validate(response, payload) {
       const smokeEntry = Array.isArray(payload?.pricing)
-        ? payload.pricing.find((item) => item?.modelId === smokeUsage.pricingModelId)
+        ? payload.pricing.find(
+            (item) => item?.modelId === smokeUsage.pricingModelId,
+          )
         : null;
       if (
         !response.ok ||
@@ -1667,7 +1863,9 @@ const probes = [
         smokeEntry.cacheReadCostPerMillion !== "0.10" ||
         smokeEntry.cacheCreationCostPerMillion !== "0.05"
       ) {
-        throw new Error(`expected model pricing upsert to persist, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected model pricing upsert to persist, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -1676,19 +1874,25 @@ const probes = [
     method: "POST",
     path: "/api/system/delete_model_pricing",
     async send(baseUrl) {
-      const response = await fetch(new URL("/api/system/delete_model_pricing", baseUrl), {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
+      const response = await fetch(
+        new URL("/api/system/delete_model_pricing", baseUrl),
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            modelId: smokeUsage.pricingModelId,
+          }),
         },
-        body: JSON.stringify({
-          modelId: smokeUsage.pricingModelId,
-        }),
-      });
+      );
       const result = await response.json();
-      const pricingResponse = await fetch(new URL("/api/system/get_model_pricing", baseUrl), {
-        method: "POST",
-      });
+      const pricingResponse = await fetch(
+        new URL("/api/system/get_model_pricing", baseUrl),
+        {
+          method: "POST",
+        },
+      );
       const pricing = await pricingResponse.json();
       return { response, payload: { result, pricing } };
     },
@@ -1697,9 +1901,13 @@ const probes = [
         !response.ok ||
         payload?.result !== null ||
         !Array.isArray(payload?.pricing) ||
-        payload.pricing.some((item) => item?.modelId === smokeUsage.pricingModelId)
+        payload.pricing.some(
+          (item) => item?.modelId === smokeUsage.pricingModelId,
+        )
       ) {
-        throw new Error(`expected model pricing delete to remove smoke entry, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected model pricing delete to remove smoke entry, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -1716,7 +1924,9 @@ const probes = [
         !Array.isArray(payload?.tiers) ||
         payload.tiers.length !== 0
       ) {
-        throw new Error(`expected claude subscription quota not-found state, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected claude subscription quota not-found state, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -1730,7 +1940,10 @@ const probes = [
         "{invalid-json",
       );
       const response = await fetch(
-        new URL("/api/subscription/get-subscription-quota?tool=gemini", baseUrl),
+        new URL(
+          "/api/subscription/get-subscription-quota?tool=gemini",
+          baseUrl,
+        ),
       );
       const payload = await response.json();
       return { response, payload };
@@ -1744,7 +1957,9 @@ const probes = [
         typeof payload?.error !== "string" ||
         !payload.error.includes("Failed to parse Gemini credentials")
       ) {
-        throw new Error(`expected gemini subscription quota parse-error state, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected gemini subscription quota parse-error state, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -1768,7 +1983,9 @@ const probes = [
         payload?.success !== false ||
         payload?.error !== "Unknown balance provider"
       ) {
-        throw new Error(`expected deterministic unknown-provider balance state, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected deterministic unknown-provider balance state, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -1793,7 +2010,9 @@ const probes = [
         !Array.isArray(payload?.tiers) ||
         payload.tiers.length !== 0
       ) {
-        throw new Error(`expected deterministic unknown-provider coding plan state, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected deterministic unknown-provider coding plan state, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -1808,7 +2027,9 @@ const probes = [
     },
     validate(response, payload) {
       if (response.status !== 400 || payload?.code !== "BAD_REQUEST") {
-        throw new Error(`expected invalid app usage script probe to fail with BAD_REQUEST, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected invalid app usage script probe to fail with BAD_REQUEST, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -1818,7 +2039,9 @@ const probes = [
     path: `/api/workspace/read-workspace-file?filename=${encodeURIComponent(smokeWorkspace.filename)}`,
     validate(response, payload) {
       if (!response.ok || payload !== smokeWorkspace.initialContent) {
-        throw new Error(`expected seeded workspace file content, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected seeded workspace file content, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -1827,16 +2050,19 @@ const probes = [
     method: "PUT",
     path: "/api/workspace/write-workspace-file",
     async send(baseUrl, artifacts) {
-      const response = await fetch(new URL("/api/workspace/write-workspace-file", baseUrl), {
-        method: "PUT",
-        headers: {
-          "content-type": "application/json",
+      const response = await fetch(
+        new URL("/api/workspace/write-workspace-file", baseUrl),
+        {
+          method: "PUT",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            filename: smokeWorkspace.filename,
+            content: smokeWorkspace.updatedContent,
+          }),
         },
-        body: JSON.stringify({
-          filename: smokeWorkspace.filename,
-          content: smokeWorkspace.updatedContent,
-        }),
-      });
+      );
       const result = await response.json();
       const fileContent = await fs.readFile(
         getWorkspaceFilePath(artifacts.homeDir),
@@ -1850,7 +2076,9 @@ const probes = [
         payload?.result !== null ||
         payload?.fileContent !== smokeWorkspace.updatedContent
       ) {
-        throw new Error(`expected workspace write to update live file, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected workspace write to update live file, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -1861,7 +2089,9 @@ const probes = [
     body: { subdir: "workspace" },
     validate(response, payload) {
       if (response.status !== 501 || payload?.code !== "WEB_DESKTOP_ONLY") {
-        throw new Error(`expected workspace open-directory route to be desktop-only, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected workspace open-directory route to be desktop-only, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -1877,7 +2107,9 @@ const probes = [
         payload[0]?.filename !== smokeDailyMemory.filename ||
         !String(payload[0]?.preview ?? "").includes(smokeDailyMemory.query)
       ) {
-        throw new Error(`expected seeded daily memory list entry, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected seeded daily memory list entry, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -1888,7 +2120,9 @@ const probes = [
     body: { filename: smokeDailyMemory.filename },
     validate(response, payload) {
       if (!response.ok || payload !== smokeDailyMemory.initialContent) {
-        throw new Error(`expected seeded daily memory content, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected seeded daily memory content, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -1897,16 +2131,19 @@ const probes = [
     method: "POST",
     path: "/api/system/write_daily_memory_file",
     async send(baseUrl, artifacts) {
-      const response = await fetch(new URL("/api/system/write_daily_memory_file", baseUrl), {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
+      const response = await fetch(
+        new URL("/api/system/write_daily_memory_file", baseUrl),
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            filename: smokeDailyMemory.filename,
+            content: smokeDailyMemory.updatedContent,
+          }),
         },
-        body: JSON.stringify({
-          filename: smokeDailyMemory.filename,
-          content: smokeDailyMemory.updatedContent,
-        }),
-      });
+      );
       const result = await response.json();
       const fileContent = await fs.readFile(
         getDailyMemoryPath(artifacts.homeDir),
@@ -1920,7 +2157,9 @@ const probes = [
         payload?.result !== null ||
         payload?.fileContent !== smokeDailyMemory.updatedContent
       ) {
-        throw new Error(`expected daily memory write to update live file, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected daily memory write to update live file, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -1935,9 +2174,13 @@ const probes = [
         !Array.isArray(payload) ||
         payload.length !== 1 ||
         payload[0]?.filename !== smokeDailyMemory.filename ||
-        !String(payload[0]?.snippet ?? "").toLowerCase().includes(smokeDailyMemory.query)
+        !String(payload[0]?.snippet ?? "")
+          .toLowerCase()
+          .includes(smokeDailyMemory.query)
       ) {
-        throw new Error(`expected daily memory search result, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected daily memory search result, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -1946,19 +2189,25 @@ const probes = [
     method: "POST",
     path: "/api/system/delete_daily_memory_file",
     async send(baseUrl, artifacts) {
-      const response = await fetch(new URL("/api/system/delete_daily_memory_file", baseUrl), {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
+      const response = await fetch(
+        new URL("/api/system/delete_daily_memory_file", baseUrl),
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            filename: smokeDailyMemory.filename,
+          }),
         },
-        body: JSON.stringify({
-          filename: smokeDailyMemory.filename,
-        }),
-      });
+      );
       const result = await response.json();
-      const listResponse = await fetch(new URL("/api/system/list_daily_memory_files", baseUrl), {
-        method: "POST",
-      });
+      const listResponse = await fetch(
+        new URL("/api/system/list_daily_memory_files", baseUrl),
+        {
+          method: "POST",
+        },
+      );
       const remaining = await listResponse.json();
       let fileExists = true;
       try {
@@ -1976,7 +2225,9 @@ const probes = [
         !Array.isArray(payload?.remaining) ||
         payload.remaining.length !== 0
       ) {
-        throw new Error(`expected daily memory delete to remove live file, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected daily memory delete to remove live file, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -1987,10 +2238,13 @@ const probes = [
     validate(response, payload) {
       if (
         !response.ok ||
-        payload?.vars?.OPENCLAW_TOKEN !== smokeOpenClaw.env.vars.OPENCLAW_TOKEN ||
+        payload?.vars?.OPENCLAW_TOKEN !==
+          smokeOpenClaw.env.vars.OPENCLAW_TOKEN ||
         payload?.shellEnv?.PATH !== smokeOpenClaw.env.shellEnv.PATH
       ) {
-        throw new Error(`expected seeded OpenClaw env config, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected seeded OpenClaw env config, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -1999,21 +2253,26 @@ const probes = [
     method: "PUT",
     path: "/api/env/set-openclaw-env",
     async send(baseUrl, artifacts) {
-      const response = await fetch(new URL("/api/env/set-openclaw-env", baseUrl), {
-        method: "PUT",
-        headers: {
-          "content-type": "application/json",
+      const response = await fetch(
+        new URL("/api/env/set-openclaw-env", baseUrl),
+        {
+          method: "PUT",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            env: smokeOpenClaw.envUpdated,
+          }),
         },
-        body: JSON.stringify({
-          env: smokeOpenClaw.envUpdated,
-        }),
-      });
+      );
       const result = await response.json();
       const configText = await fs.readFile(
         getOpenClawConfigPath(artifacts.homeDir),
         "utf8",
       );
-      const liveEnvResponse = await fetch(new URL("/api/env/get-openclaw-env", baseUrl));
+      const liveEnvResponse = await fetch(
+        new URL("/api/env/get-openclaw-env", baseUrl),
+      );
       const liveEnv = await liveEnvResponse.json();
       return { response, payload: { result, configText, liveEnv } };
     },
@@ -2022,11 +2281,16 @@ const probes = [
         !response.ok ||
         payload?.liveEnv?.vars?.OPENCLAW_TOKEN !==
           smokeOpenClaw.envUpdated.vars.OPENCLAW_TOKEN ||
-        payload?.liveEnv?.shellEnv?.HOME !== smokeOpenClaw.envUpdated.shellEnv.HOME ||
-        !String(payload?.configText ?? "").includes("smoke-openclaw-env-updated") ||
+        payload?.liveEnv?.shellEnv?.HOME !==
+          smokeOpenClaw.envUpdated.shellEnv.HOME ||
+        !String(payload?.configText ?? "").includes(
+          "smoke-openclaw-env-updated",
+        ) ||
         !String(payload?.configText ?? "").includes("/srv/smoke")
       ) {
-        throw new Error(`expected OpenClaw env writeback to update live config, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected OpenClaw env writeback to update live config, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -2044,7 +2308,9 @@ const probes = [
         payload.deny[0] !== smokeOpenClaw.tools.deny[0] ||
         payload?.passthrough !== smokeOpenClaw.tools.passthrough
       ) {
-        throw new Error(`expected seeded OpenClaw tools config, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected seeded OpenClaw tools config, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -2061,7 +2327,9 @@ const probes = [
         !warningCodes.includes("invalid_tools_profile") ||
         !warningCodes.includes("legacy_agents_timeout")
       ) {
-        throw new Error(`expected OpenClaw health warnings for legacy profile/timeout, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected OpenClaw health warnings for legacy profile/timeout, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -2070,15 +2338,18 @@ const probes = [
     method: "PUT",
     path: "/api/openclaw/set-openclaw-tools",
     async send(baseUrl, artifacts) {
-      const response = await fetch(new URL("/api/openclaw/set-openclaw-tools", baseUrl), {
-        method: "PUT",
-        headers: {
-          "content-type": "application/json",
+      const response = await fetch(
+        new URL("/api/openclaw/set-openclaw-tools", baseUrl),
+        {
+          method: "PUT",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            tools: smokeOpenClaw.toolsUpdated,
+          }),
         },
-        body: JSON.stringify({
-          tools: smokeOpenClaw.toolsUpdated,
-        }),
-      });
+      );
       const result = await response.json();
       const configText = await fs.readFile(
         getOpenClawConfigPath(artifacts.homeDir),
@@ -2095,15 +2366,20 @@ const probes = [
       if (
         !response.ok ||
         payload?.liveTools?.profile !== smokeOpenClaw.toolsUpdated.profile ||
-        payload?.liveTools?.passthrough !== smokeOpenClaw.toolsUpdated.passthrough ||
+        payload?.liveTools?.passthrough !==
+          smokeOpenClaw.toolsUpdated.passthrough ||
         !Array.isArray(payload?.liveTools?.allow) ||
-        payload.liveTools.allow.length !== smokeOpenClaw.toolsUpdated.allow.length ||
+        payload.liveTools.allow.length !==
+          smokeOpenClaw.toolsUpdated.allow.length ||
         !Array.isArray(payload?.liveTools?.deny) ||
-        payload.liveTools.deny.length !== smokeOpenClaw.toolsUpdated.deny.length ||
-        !/profile\s*:\s*"full"/.test(configText) &&
-          !/"profile"\s*:\s*"full"/.test(configText)
+        payload.liveTools.deny.length !==
+          smokeOpenClaw.toolsUpdated.deny.length ||
+        (!/profile\s*:\s*"full"/.test(configText) &&
+          !/"profile"\s*:\s*"full"/.test(configText))
       ) {
-        throw new Error(`expected OpenClaw tools writeback to update live config, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected OpenClaw tools writeback to update live config, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -2121,7 +2397,9 @@ const probes = [
         payload?.unknownFlag !== true ||
         payload?.model?.primary !== smokeOpenClaw.agents.model.primary
       ) {
-        throw new Error(`expected seeded OpenClaw agents.defaults config, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected seeded OpenClaw agents.defaults config, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -2155,7 +2433,10 @@ const probes = [
         new URL("/api/config/scan-openclaw-config-health", baseUrl),
       );
       const warnings = await warningsResponse.json();
-      return { response, payload: { result, configText, liveDefaults, warnings } };
+      return {
+        response,
+        payload: { result, configText, liveDefaults, warnings },
+      };
     },
     validate(response, payload) {
       const warningCodes = Array.isArray(payload?.warnings)
@@ -2167,7 +2448,8 @@ const probes = [
         payload?.liveDefaults?.timeoutSeconds !==
           smokeOpenClaw.agentsUpdated.timeoutSeconds ||
         payload?.liveDefaults?.timeout !== undefined ||
-        payload?.liveDefaults?.workspace !== smokeOpenClaw.agentsUpdated.workspace ||
+        payload?.liveDefaults?.workspace !==
+          smokeOpenClaw.agentsUpdated.workspace ||
         payload?.liveDefaults?.contextTokens !==
           smokeOpenClaw.agentsUpdated.contextTokens ||
         payload?.liveDefaults?.maxConcurrent !==
@@ -2177,7 +2459,9 @@ const probes = [
         !/"?timeoutSeconds"?\s*:\s*480/.test(configText) ||
         warningCodes.includes("legacy_agents_timeout")
       ) {
-        throw new Error(`expected OpenClaw agents.defaults writeback to migrate timeout and clear warning, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected OpenClaw agents.defaults writeback to migrate timeout and clear warning, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -2193,7 +2477,9 @@ const probes = [
         payload?.memoryEnabled !== true ||
         payload?.userEnabled !== false
       ) {
-        throw new Error(`expected seeded Hermes memory limits, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected seeded Hermes memory limits, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -2203,7 +2489,9 @@ const probes = [
     path: "/api/hermes/get-hermes-memory?kind=memory",
     validate(response, payload) {
       if (!response.ok || payload !== smokeHermesMemory.memoryInitial) {
-        throw new Error(`expected seeded Hermes memory content, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected seeded Hermes memory content, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -2212,16 +2500,19 @@ const probes = [
     method: "PUT",
     path: "/api/hermes/set-hermes-memory",
     async send(baseUrl, artifacts) {
-      const response = await fetch(new URL("/api/hermes/set-hermes-memory", baseUrl), {
-        method: "PUT",
-        headers: {
-          "content-type": "application/json",
+      const response = await fetch(
+        new URL("/api/hermes/set-hermes-memory", baseUrl),
+        {
+          method: "PUT",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            kind: "memory",
+            content: smokeHermesMemory.memoryUpdated,
+          }),
         },
-        body: JSON.stringify({
-          kind: "memory",
-          content: smokeHermesMemory.memoryUpdated,
-        }),
-      });
+      );
       const result = await response.json();
       const fileContent = await fs.readFile(
         getHermesMemoryPath(artifacts.homeDir, "memory"),
@@ -2240,7 +2531,9 @@ const probes = [
         payload?.fileContent !== smokeHermesMemory.memoryUpdated ||
         payload?.liveContent !== smokeHermesMemory.memoryUpdated
       ) {
-        throw new Error(`expected Hermes memory write to update live file, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected Hermes memory write to update live file, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -2279,9 +2572,13 @@ const probes = [
         payload?.liveLimits?.memoryEnabled !== false ||
         payload?.liveLimits?.userEnabled !== false ||
         !String(payload?.configText ?? "").includes("memory_enabled: false") ||
-        !String(payload?.configText ?? "").includes("user_profile_enabled: false")
+        !String(payload?.configText ?? "").includes(
+          "user_profile_enabled: false",
+        )
       ) {
-        throw new Error(`expected Hermes memory toggle to update config.yaml, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected Hermes memory toggle to update config.yaml, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -2291,7 +2588,9 @@ const probes = [
     path: "/api/skills/get-installed-skills",
     validate(response, payload) {
       if (!response.ok || !Array.isArray(payload) || payload.length !== 0) {
-        throw new Error(`expected empty installed skills list, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected empty installed skills list, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -2306,7 +2605,9 @@ const probes = [
       // `false` (provider already exists) rather than `true`. The
       // `providers-claude-after-import` probe is the authoritative existence check.
       if (!response.ok || typeof payload !== "boolean") {
-        throw new Error(`expected Claude default import to succeed, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected Claude default import to succeed, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -2315,8 +2616,15 @@ const probes = [
     method: "GET",
     path: "/api/providers/get-providers?app=claude",
     validate(response, payload) {
-      if (!response.ok || typeof payload !== "object" || payload === null || !payload.default) {
-        throw new Error(`expected imported Claude provider, got ${response.status} ${JSON.stringify(payload)}`);
+      if (
+        !response.ok ||
+        typeof payload !== "object" ||
+        payload === null ||
+        !payload.default
+      ) {
+        throw new Error(
+          `expected imported Claude provider, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -2333,16 +2641,19 @@ const probes = [
       provider.settingsConfig.env.ANTHROPIC_BASE_URL =
         updatedProviderValues.claudeBaseUrl;
 
-      const response = await fetch(new URL("/api/providers/update-provider", baseUrl), {
-        method: "PUT",
-        headers: {
-          "content-type": "application/json",
+      const response = await fetch(
+        new URL("/api/providers/update-provider", baseUrl),
+        {
+          method: "PUT",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            app: "claude",
+            provider,
+          }),
         },
-        body: JSON.stringify({
-          app: "claude",
-          provider,
-        }),
-      });
+      );
       const result = await response.json();
       const liveSettings = JSON.parse(
         await fs.readFile(
@@ -2359,7 +2670,9 @@ const probes = [
         payload?.liveSettings?.env?.ANTHROPIC_BASE_URL !==
           updatedProviderValues.claudeBaseUrl
       ) {
-        throw new Error(`expected Claude provider update to succeed, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected Claude provider update to succeed, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -2377,35 +2690,40 @@ const probes = [
       altProvider.name = "Smoke Claude Alt";
       altProvider.settingsConfig.env.ANTHROPIC_BASE_URL =
         "https://claude-switch.example.com";
-      altProvider.settingsConfig.env.ANTHROPIC_AUTH_TOKEN =
-        "claude-switch-key";
+      altProvider.settingsConfig.env.ANTHROPIC_AUTH_TOKEN = "claude-switch-key";
 
-      const addResponse = await fetch(new URL("/api/providers/add-provider", baseUrl), {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
+      const addResponse = await fetch(
+        new URL("/api/providers/add-provider", baseUrl),
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            app: "claude",
+            provider: altProvider,
+            addToLive: false,
+          }),
         },
-        body: JSON.stringify({
-          app: "claude",
-          provider: altProvider,
-          addToLive: false,
-        }),
-      });
+      );
       const addPayload = await addResponse.json();
       if (!addResponse.ok || addPayload !== true) {
         return { response: addResponse, payload: { step: "add", addPayload } };
       }
 
-      const response = await fetch(new URL("/api/providers/switch-provider", baseUrl), {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
+      const response = await fetch(
+        new URL("/api/providers/switch-provider", baseUrl),
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            app: "claude",
+            id: smokeProviderIds.claudeAlt,
+          }),
         },
-        body: JSON.stringify({
-          app: "claude",
-          id: smokeProviderIds.claudeAlt,
-        }),
-      });
+      );
       const switchResult = await response.json();
       const currentProviderResponse = await fetch(
         new URL("/api/providers/get-current-provider?app=claude", baseUrl),
@@ -2436,7 +2754,9 @@ const probes = [
         payload?.liveSettings?.env?.ANTHROPIC_BASE_URL !==
           "https://claude-switch.example.com"
       ) {
-        throw new Error(`expected Claude switch to write live settings, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected Claude switch to write live settings, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -2445,14 +2765,23 @@ const probes = [
     method: "GET",
     path: "/api/proxy/get-proxy-takeover-status",
     validate(response, payload) {
-      const appKeys = ["claude", "codex", "gemini", "opencode", "openclaw", "hermes"];
+      const appKeys = [
+        "claude",
+        "codex",
+        "gemini",
+        "opencode",
+        "openclaw",
+        "hermes",
+      ];
       if (
         !response.ok ||
         typeof payload !== "object" ||
         payload === null ||
         !appKeys.every((key) => typeof payload?.[key] === "boolean")
       ) {
-        throw new Error(`expected proxy takeover status object, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected proxy takeover status object, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -2472,7 +2801,9 @@ const probes = [
         typeof payload?.maxRetries !== "number" ||
         typeof payload?.circuitFailureThreshold !== "number"
       ) {
-        throw new Error(`expected Claude app proxy config, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected Claude app proxy config, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -2482,7 +2813,9 @@ const probes = [
     path: "/api/failover/get-failover-queue?appType=claude",
     validate(response, payload) {
       if (!response.ok || !Array.isArray(payload) || payload.length !== 0) {
-        throw new Error(`expected empty initial Claude failover queue, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected empty initial Claude failover queue, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -2511,7 +2844,10 @@ const probes = [
       );
       const queue = await queueResponse.json();
       const enabledResponse = await fetch(
-        new URL("/api/failover/get-auto-failover-enabled?appType=codex", baseUrl),
+        new URL(
+          "/api/failover/get-auto-failover-enabled?appType=codex",
+          baseUrl,
+        ),
       );
       const enabled = await enabledResponse.json();
       return { response, payload: { result, queue, enabled } };
@@ -2544,12 +2880,16 @@ const probes = [
       // (the imported "Smoke Claude" live provider); the official one sorts first
       // (sortIndex 0) but is not a valid failover/switch target.
       if (!response.ok || !Array.isArray(payload) || payload.length === 0) {
-        throw new Error(`expected available Claude failover providers, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected available Claude failover providers, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
       const selected =
         payload.find((p) => p?.category !== "official") ?? payload[0];
       if (typeof selected?.id !== "string") {
-        throw new Error(`expected a non-official available Claude failover provider, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected a non-official available Claude failover provider, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
       artifacts.claudeFailoverProviderId = selected.id;
     },
@@ -2562,23 +2902,29 @@ const probes = [
       if (!artifacts.claudeFailoverProviderId) {
         throw new Error("missing selected Claude failover provider id");
       }
-      const response = await fetch(new URL("/api/failover/add-to-failover-queue", baseUrl), {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
+      const response = await fetch(
+        new URL("/api/failover/add-to-failover-queue", baseUrl),
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            appType: "claude",
+            providerId: artifacts.claudeFailoverProviderId,
+          }),
         },
-        body: JSON.stringify({
-          appType: "claude",
-          providerId: artifacts.claudeFailoverProviderId,
-        }),
-      });
+      );
       const result = await response.json();
       const queueResponse = await fetch(
         new URL("/api/failover/get-failover-queue?appType=claude", baseUrl),
       );
       const queue = await queueResponse.json();
       const availableResponse = await fetch(
-        new URL("/api/failover/get-available-providers-for-failover?appType=claude", baseUrl),
+        new URL(
+          "/api/failover/get-available-providers-for-failover?appType=claude",
+          baseUrl,
+        ),
       );
       const availableProviders = await availableResponse.json();
       return { response, payload: { result, queue, availableProviders } };
@@ -2588,13 +2934,17 @@ const probes = [
         !response.ok ||
         payload?.result !== null ||
         !Array.isArray(payload?.queue) ||
-        !payload.queue.some((item) => item?.providerId === artifacts.claudeFailoverProviderId) ||
+        !payload.queue.some(
+          (item) => item?.providerId === artifacts.claudeFailoverProviderId,
+        ) ||
         !Array.isArray(payload?.availableProviders) ||
         payload.availableProviders.some(
           (provider) => provider?.id === artifacts.claudeFailoverProviderId,
         )
       ) {
-        throw new Error(`expected adding Claude provider to failover queue to succeed, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected adding Claude provider to failover queue to succeed, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -2652,7 +3002,9 @@ const probes = [
         payload?.updatedConfig?.circuitErrorRateThreshold !== 0.4 ||
         payload?.updatedConfig?.circuitMinRequests !== 12
       ) {
-        throw new Error(`expected Claude app proxy config update to persist, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected Claude app proxy config update to persist, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -2661,19 +3013,25 @@ const probes = [
     method: "PUT",
     path: "/api/failover/set-auto-failover-enabled",
     async send(baseUrl) {
-      const response = await fetch(new URL("/api/failover/set-auto-failover-enabled", baseUrl), {
-        method: "PUT",
-        headers: {
-          "content-type": "application/json",
+      const response = await fetch(
+        new URL("/api/failover/set-auto-failover-enabled", baseUrl),
+        {
+          method: "PUT",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            appType: "claude",
+            enabled: true,
+          }),
         },
-        body: JSON.stringify({
-          appType: "claude",
-          enabled: true,
-        }),
-      });
+      );
       const result = await response.json();
       const enabledResponse = await fetch(
-        new URL("/api/failover/get-auto-failover-enabled?appType=claude", baseUrl),
+        new URL(
+          "/api/failover/get-auto-failover-enabled?appType=claude",
+          baseUrl,
+        ),
       );
       const enabled = await enabledResponse.json();
       const configResponse = await fetch(
@@ -2689,7 +3047,9 @@ const probes = [
         payload?.enabled !== true ||
         payload?.config?.autoFailoverEnabled !== true
       ) {
-        throw new Error(`expected enabling Claude auto failover to persist, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected enabling Claude auto failover to persist, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -2699,7 +3059,9 @@ const probes = [
     path: "/api/system/get_circuit_breaker_stats",
     async send(baseUrl, artifacts) {
       if (!artifacts.claudeFailoverProviderId) {
-        throw new Error("missing Claude failover provider id for runtime-stats probe");
+        throw new Error(
+          "missing Claude failover provider id for runtime-stats probe",
+        );
       }
       const response = await fetch(
         new URL("/api/system/get_circuit_breaker_stats", baseUrl),
@@ -2726,7 +3088,9 @@ const probes = [
       // `CircuitBreakerStats | null` query renders that gracefully — a 501
       // error here wedged that 5s polling query. Assert the null contract.
       if (!response.ok || payload !== null) {
-        throw new Error(`expected circuit breaker runtime stats to be null while the proxy is stopped, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected circuit breaker runtime stats to be null while the proxy is stopped, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -2767,7 +3131,10 @@ const probes = [
       );
       const queue = await queueResponse.json();
       const enabledResponse = await fetch(
-        new URL("/api/failover/get-auto-failover-enabled?appType=claude", baseUrl),
+        new URL(
+          "/api/failover/get-auto-failover-enabled?appType=claude",
+          baseUrl,
+        ),
       );
       const enabled = await enabledResponse.json();
       return { response, payload: { disableResult, result, queue, enabled } };
@@ -2781,7 +3148,9 @@ const probes = [
         payload.queue.length !== 0 ||
         payload?.enabled !== false
       ) {
-        throw new Error(`expected disabling and removing Claude failover queue item to succeed, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected disabling and removing Claude failover queue item to succeed, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -2828,7 +3197,9 @@ const probes = [
         typeof payload.installedSkillMd !== "string" ||
         !payload.installedSkillMd.includes("# Smoke Skill")
       ) {
-        throw new Error(`expected successful skills ZIP install, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected successful skills ZIP install, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -2842,7 +3213,9 @@ const probes = [
         !Array.isArray(payload) ||
         !payload.some((skill) => skill?.id === smokeSkill.id)
       ) {
-        throw new Error(`expected uploaded skill in installed list, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected uploaded skill in installed list, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -2856,7 +3229,9 @@ const probes = [
       // this explicit import is idempotent and returns `false`. The
       // `providers-codex-after-import` probe is the authoritative existence check.
       if (!response.ok || typeof payload !== "boolean") {
-        throw new Error(`expected Codex default import to succeed, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected Codex default import to succeed, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -2865,8 +3240,15 @@ const probes = [
     method: "GET",
     path: "/api/providers/get-providers?app=codex",
     validate(response, payload) {
-      if (!response.ok || typeof payload !== "object" || payload === null || !payload.default) {
-        throw new Error(`expected imported Codex provider, got ${response.status} ${JSON.stringify(payload)}`);
+      if (
+        !response.ok ||
+        typeof payload !== "object" ||
+        payload === null ||
+        !payload.default
+      ) {
+        throw new Error(
+          `expected imported Codex provider, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -2880,7 +3262,9 @@ const probes = [
       // this explicit import is idempotent and returns `false`. The
       // `providers-gemini-after-import` probe is the authoritative existence check.
       if (!response.ok || typeof payload !== "boolean") {
-        throw new Error(`expected Gemini default import to succeed, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected Gemini default import to succeed, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -2889,8 +3273,15 @@ const probes = [
     method: "GET",
     path: "/api/providers/get-providers?app=gemini",
     validate(response, payload) {
-      if (!response.ok || typeof payload !== "object" || payload === null || !payload.default) {
-        throw new Error(`expected imported Gemini provider, got ${response.status} ${JSON.stringify(payload)}`);
+      if (
+        !response.ok ||
+        typeof payload !== "object" ||
+        payload === null ||
+        !payload.default
+      ) {
+        throw new Error(
+          `expected imported Gemini provider, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -2905,7 +3296,9 @@ const probes = [
       // 0 newly-imported. The `providers-opencode-after-import` probe below is the
       // authoritative check that the seeded provider exists.
       if (!response.ok || typeof payload !== "number" || payload < 0) {
-        throw new Error(`expected OpenCode live import count >= 0, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected OpenCode live import count >= 0, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -2920,7 +3313,9 @@ const probes = [
         payload === null ||
         !payload[seededProviderIds.opencode]
       ) {
-        throw new Error(`expected imported OpenCode provider, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected imported OpenCode provider, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -2937,16 +3332,19 @@ const probes = [
       provider.settingsConfig.options.baseURL =
         updatedProviderValues.opencodeBaseUrl;
 
-      const response = await fetch(new URL("/api/providers/update-provider", baseUrl), {
-        method: "PUT",
-        headers: {
-          "content-type": "application/json",
+      const response = await fetch(
+        new URL("/api/providers/update-provider", baseUrl),
+        {
+          method: "PUT",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            app: "opencode",
+            provider,
+          }),
         },
-        body: JSON.stringify({
-          app: "opencode",
-          provider,
-        }),
-      });
+      );
       const result = await response.json();
       const liveConfig = JSON.parse(
         await fs.readFile(
@@ -2960,10 +3358,12 @@ const probes = [
       if (
         !response.ok ||
         payload?.result !== true ||
-        payload?.liveConfig?.provider?.[seededProviderIds.opencode]?.options?.baseURL !==
-          updatedProviderValues.opencodeBaseUrl
+        payload?.liveConfig?.provider?.[seededProviderIds.opencode]?.options
+          ?.baseURL !== updatedProviderValues.opencodeBaseUrl
       ) {
-        throw new Error(`expected OpenCode provider update to succeed, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected OpenCode provider update to succeed, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -2977,7 +3377,9 @@ const probes = [
       // providers (idempotent by id); the explicit re-import returns 0 newly-imported.
       // `providers-openclaw-after-import` below is the authoritative existence check.
       if (!response.ok || typeof payload !== "number" || payload < 0) {
-        throw new Error(`expected OpenClaw live import count >= 0, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected OpenClaw live import count >= 0, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -2992,7 +3394,9 @@ const probes = [
         payload === null ||
         !payload[seededProviderIds.openclaw]
       ) {
-        throw new Error(`expected imported OpenClaw provider, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected imported OpenClaw provider, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -3006,7 +3410,9 @@ const probes = [
       // providers (idempotent by id); the explicit re-import returns 0 newly-imported.
       // `providers-hermes-after-import` below is the authoritative existence check.
       if (!response.ok || typeof payload !== "number" || payload < 0) {
-        throw new Error(`expected Hermes live import count >= 0, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected Hermes live import count >= 0, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -3021,7 +3427,9 @@ const probes = [
         payload === null ||
         !payload[seededProviderIds.hermes]
       ) {
-        throw new Error(`expected imported Hermes provider, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected imported Hermes provider, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -3039,7 +3447,9 @@ const probes = [
         payload?.endpoint !== smokeDeepLink.expectedEndpoint ||
         payload?.apiKey !== "sk-deeplink"
       ) {
-        throw new Error(`expected deep link parse result, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected deep link parse result, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -3064,7 +3474,9 @@ const probes = [
         payload?.apiKey !== "sk-merged" ||
         payload?.homepage !== "https://deeplink-merged.example.com"
       ) {
-        throw new Error(`expected deep link config merge result, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected deep link config merge result, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -3106,9 +3518,13 @@ const probes = [
         payload?.result?.type !== "provider" ||
         typeof payload?.result?.id !== "string" ||
         !String(payload?.configText ?? "").includes(payload.result.id) ||
-        !String(payload?.configText ?? "").includes(smokeDeepLink.expectedEndpoint)
+        !String(payload?.configText ?? "").includes(
+          smokeDeepLink.expectedEndpoint,
+        )
       ) {
-        throw new Error(`expected deep link provider import to update live config, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected deep link provider import to update live config, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -3129,7 +3545,9 @@ const probes = [
         provider?.name !== "Smoke DeepLink" ||
         provider?.settingsConfig?.baseUrl !== smokeDeepLink.expectedEndpoint
       ) {
-        throw new Error(`expected deep link imported provider in OpenClaw provider list, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected deep link imported provider in OpenClaw provider list, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -3138,7 +3556,9 @@ const probes = [
     method: "GET",
     path: "/api/config/export-config-download",
     async send(baseUrl, artifacts) {
-      const response = await fetch(new URL("/api/config/export-config-download", baseUrl));
+      const response = await fetch(
+        new URL("/api/config/export-config-download", baseUrl),
+      );
       const payload = await response.text();
       artifacts.exportedSql = payload;
       return { response, payload };
@@ -3147,7 +3567,9 @@ const probes = [
       const contentType = response.headers.get("content-type") ?? "";
       const disposition = response.headers.get("content-disposition") ?? "";
       if (!response.ok || !contentType.includes("application/sql")) {
-        throw new Error(`expected SQL download, got ${response.status} ${contentType}`);
+        throw new Error(
+          `expected SQL download, got ${response.status} ${contentType}`,
+        );
       }
       if (!disposition.includes("attachment;")) {
         throw new Error(`expected attachment disposition, got ${disposition}`);
@@ -3162,7 +3584,10 @@ const probes = [
     method: "POST",
     path: "/api/config/import-config-upload",
     async send(baseUrl, artifacts) {
-      if (typeof artifacts.exportedSql !== "string" || artifacts.exportedSql.length === 0) {
+      if (
+        typeof artifacts.exportedSql !== "string" ||
+        artifacts.exportedSql.length === 0
+      ) {
         throw new Error("missing exported SQL artifact for import smoke");
       }
       const formData = new FormData();
@@ -3171,16 +3596,25 @@ const probes = [
         new Blob([artifacts.exportedSql], { type: "application/sql" }),
         "smoke-export.sql",
       );
-      const response = await fetch(new URL("/api/config/import-config-upload", baseUrl), {
-        method: "POST",
-        body: formData,
-      });
+      const response = await fetch(
+        new URL("/api/config/import-config-upload", baseUrl),
+        {
+          method: "POST",
+          body: formData,
+        },
+      );
       const payload = await response.json();
       return { response, payload };
     },
     validate(response, payload) {
-      if (!response.ok || payload?.success !== true || typeof payload?.backupId !== "string") {
-        throw new Error(`expected successful SQL upload import, got ${response.status} ${JSON.stringify(payload)}`);
+      if (
+        !response.ok ||
+        payload?.success !== true ||
+        typeof payload?.backupId !== "string"
+      ) {
+        throw new Error(
+          `expected successful SQL upload import, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -3191,7 +3625,9 @@ const probes = [
     body: { id: smokeSkill.id },
     validate(response, payload) {
       if (!response.ok || typeof payload !== "object" || payload === null) {
-        throw new Error(`expected skill uninstall result, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected skill uninstall result, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -3205,7 +3641,9 @@ const probes = [
         !Array.isArray(payload) ||
         payload.some((skill) => skill?.id === smokeSkill.id)
       ) {
-        throw new Error(`expected uploaded skill to be removed, got ${response.status} ${JSON.stringify(payload)}`);
+        throw new Error(
+          `expected uploaded skill to be removed, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -3227,9 +3665,12 @@ const probes = [
       const formData = new FormData();
       formData.set(
         "file",
-        new Blob(["# Smoke Prompt\n\nThis prompt was uploaded by smoke-web-server.\n"], {
-          type: "text/markdown",
-        }),
+        new Blob(
+          ["# Smoke Prompt\n\nThis prompt was uploaded by smoke-web-server.\n"],
+          {
+            type: "text/markdown",
+          },
+        ),
         "SMOKE_PROMPT.md",
       );
       const response = await fetch(
@@ -3244,8 +3685,14 @@ const probes = [
       return { response, payload };
     },
     validate(response, payload) {
-      if (!response.ok || typeof payload !== "string" || !payload.startsWith("imported-")) {
-        throw new Error(`expected imported prompt id, got ${response.status} ${JSON.stringify(payload)}`);
+      if (
+        !response.ok ||
+        typeof payload !== "string" ||
+        !payload.startsWith("imported-")
+      ) {
+        throw new Error(
+          `expected imported prompt id, got ${response.status} ${JSON.stringify(payload)}`,
+        );
       }
     },
   },
@@ -3255,7 +3702,9 @@ const probes = [
     path: "/api/prompts/get-prompts?app=claude",
     validate(response, payload, artifacts) {
       if (!response.ok || typeof payload !== "object" || payload === null) {
-        throw new Error(`expected prompts object after upload, got ${response.status}`);
+        throw new Error(
+          `expected prompts object after upload, got ${response.status}`,
+        );
       }
       if (
         typeof artifacts.importedPromptId !== "string" ||
@@ -3283,7 +3732,9 @@ const probes = [
     path: "/api/usage/get-usage-data-sources",
     validate(response, payload) {
       if (!response.ok || !Array.isArray(payload)) {
-        throw new Error(`expected usage data source array, got ${response.status}`);
+        throw new Error(
+          `expected usage data source array, got ${response.status}`,
+        );
       }
     },
   },
@@ -3315,7 +3766,11 @@ const probes = [
     path: "/api/auth/auth-get-status",
     body: { authProvider: "github_copilot" },
     validate(response, payload) {
-      if (!response.ok || payload?.provider !== "github_copilot" || !Array.isArray(payload?.accounts)) {
+      if (
+        !response.ok ||
+        payload?.provider !== "github_copilot" ||
+        !Array.isArray(payload?.accounts)
+      ) {
         throw new Error(`expected copilot auth status, got ${response.status}`);
       }
     },
@@ -3326,7 +3781,11 @@ const probes = [
     path: "/api/auth/auth-get-status",
     body: { authProvider: "codex_oauth" },
     validate(response, payload) {
-      if (!response.ok || payload?.provider !== "codex_oauth" || !Array.isArray(payload?.accounts)) {
+      if (
+        !response.ok ||
+        payload?.provider !== "codex_oauth" ||
+        !Array.isArray(payload?.accounts)
+      ) {
         throw new Error(`expected codex auth status, got ${response.status}`);
       }
     },
@@ -3403,8 +3862,12 @@ async function main() {
 
   const port = Number(process.env.PORT || (await getFreePort()));
   const host = process.env.HOST || "127.0.0.1";
-  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "cc-switch-web-smoke-"));
-  const homeDir = await fs.mkdtemp(path.join(os.tmpdir(), "cc-switch-web-home-"));
+  const dataDir = await fs.mkdtemp(
+    path.join(os.tmpdir(), "cc-switch-web-smoke-"),
+  );
+  const homeDir = await fs.mkdtemp(
+    path.join(os.tmpdir(), "cc-switch-web-home-"),
+  );
   const baseUrl = `http://${host}:${port}`;
 
   await seedLiveProviderFixtures(homeDir);

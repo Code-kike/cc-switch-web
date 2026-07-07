@@ -2,6 +2,7 @@
  * Codex 预设供应商配置模板
  */
 import { ProviderCategory } from "../types";
+import type { CodexApiFormat, CodexCatalogModel } from "../types";
 import type { PresetTheme } from "./claudeProviderPresets";
 
 export interface CodexProviderPreset {
@@ -24,6 +25,10 @@ export interface CodexProviderPreset {
   // 图标配置
   icon?: string; // 图标名称
   iconColor?: string; // 图标颜色
+  // Codex API 格式
+  apiFormat?: CodexApiFormat;
+  // Codex 模型目录，保存为 settingsConfig.modelCatalog.models
+  modelCatalog?: CodexCatalogModel[];
 }
 
 /**
@@ -60,6 +65,33 @@ name = "${cleanProviderName}"
 base_url = "${baseUrl}"
 wire_api = "responses"
 requires_openai_auth = true`;
+}
+
+function modelCatalog(
+  models: Array<
+    | string
+    | {
+        model: string;
+        displayName?: string;
+        contextWindow?: number;
+        supportsParallelToolCalls?: boolean;
+        inputModalities?: string[];
+        baseInstructions?: string;
+      }
+  >,
+): CodexCatalogModel[] {
+  return models.map((entry) =>
+    typeof entry === "string"
+      ? { model: entry }
+      : {
+          model: entry.model,
+          displayName: entry.displayName,
+          contextWindow: entry.contextWindow,
+          supportsParallelToolCalls: entry.supportsParallelToolCalls,
+          inputModalities: entry.inputModalities,
+          baseInstructions: entry.baseInstructions,
+        },
+  );
 }
 
 export const codexProviderPresets: CodexProviderPreset[] = [
@@ -544,5 +576,12 @@ base_url = "https://cc-api.pipellm.ai/v1"`,
     ),
     endpointCandidates: ["https://api.therouter.ai/v1"],
     category: "aggregator",
+    apiFormat: "openai_chat",
+    modelCatalog: modelCatalog([
+      {
+        model: "openai/gpt-5.3-codex",
+        displayName: "GPT-5.3 Codex",
+      },
+    ]),
   },
 ];

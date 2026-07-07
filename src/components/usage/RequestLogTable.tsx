@@ -309,11 +309,16 @@ export function RequestLogTable({
                       <TableCell className="text-center font-mono text-xs max-w-[200px]">
                         <div
                           className="truncate"
-                          title={
+                          title={[
                             log.requestModel && log.requestModel !== log.model
-                              ? `${log.requestModel} → ${log.model}`
-                              : log.model
-                          }
+                              ? `${log.requestModel} -> ${log.model}`
+                              : log.model,
+                            log.pricingModel
+                              ? `${t("usage.pricingModel", "Pricing model")}: ${log.pricingModel}`
+                              : null,
+                          ]
+                            .filter(Boolean)
+                            .join("\n")}
                         >
                           {log.requestModel &&
                           log.requestModel !== log.model ? (
@@ -328,6 +333,12 @@ export function RequestLogTable({
                             log.model
                           )}
                         </div>
+                        {log.pricingModel && log.pricingModel !== log.model && (
+                          <div className="truncate text-[10px] text-muted-foreground">
+                            {t("usage.pricingModelShort", "price")}:{" "}
+                            {log.pricingModel}
+                          </div>
+                        )}
                       </TableCell>
                       <TableCell className="text-center px-1.5">
                         <div className="tabular-nums">

@@ -184,6 +184,18 @@ fn schema_migration_rejects_future_version() {
 }
 
 #[test]
+fn stored_user_version_exceeds_supported_detects_newer_disk_db_without_migration() {
+    let file = NamedTempFile::new().expect("temp db file");
+    let conn = Connection::open(file.path()).expect("open temp db");
+    Database::set_user_version(&conn, SCHEMA_VERSION + 1).expect("set future version");
+    drop(conn);
+
+    let version =
+        Database::stored_user_version_exceeds_supported(file.path()).expect("read stored version");
+    assert_eq!(version, Some(SCHEMA_VERSION + 1));
+}
+
+#[test]
 fn schema_migration_adds_missing_columns_for_providers() {
     let conn = Connection::open_in_memory().expect("open memory db");
 
@@ -289,6 +301,26 @@ fn schema_create_tables_include_pricing_model_columns() {
     let request_model = get_column_info(&conn, "proxy_request_logs", "request_model");
     assert_eq!(request_model.r#type, "TEXT");
     assert_eq!(request_model.notnull, 0);
+
+    let pricing_model = get_column_info(&conn, "proxy_request_logs", "pricing_model");
+    assert_eq!(pricing_model.r#type, "TEXT");
+    assert_eq!(pricing_model.notnull, 0);
+
+    let rollup_request_model = get_column_info(&conn, "usage_daily_rollups", "request_model");
+    assert_eq!(rollup_request_model.r#type, "TEXT");
+    assert_eq!(rollup_request_model.notnull, 1);
+    assert_eq!(
+        normalize_default(&rollup_request_model.default).as_deref(),
+        Some("")
+    );
+
+    let rollup_pricing_model = get_column_info(&conn, "usage_daily_rollups", "pricing_model");
+    assert_eq!(rollup_pricing_model.r#type, "TEXT");
+    assert_eq!(rollup_pricing_model.notnull, 1);
+    assert_eq!(
+        normalize_default(&rollup_pricing_model.default).as_deref(),
+        Some("")
+    );
 }
 
 #[test]
@@ -339,6 +371,84 @@ fn schema_migration_v4_adds_pricing_model_columns() {
     assert_eq!(request_model.r#type, "TEXT");
     assert_eq!(request_model.notnull, 0);
 
+    let pricing_model = get_column_info(&conn, "proxy_request_logs", "pricing_model");
+    assert_eq!(pricing_model.r#type, "TEXT");
+    assert_eq!(pricing_model.notnull, 0);
+
+    assert_eq!(
+        Database::get_user_version(&conn).expect("version after migration"),
+        SCHEMA_VERSION
+    );
+}
+
+#[test]
+fn schema_migration_v10_to_v11_preserves_rollups_with_new_dimensions() {
+    let conn = Connection::open_in_memory().expect("open memory db");
+    conn.execute_batch(
+        r#"
+        CREATE TABLE proxy_request_logs (
+            request_id TEXT PRIMARY KEY,
+            app_type TEXT NOT NULL,
+            data_source TEXT NOT NULL DEFAULT 'proxy',
+            input_tokens INTEGER NOT NULL DEFAULT 0,
+            output_tokens INTEGER NOT NULL DEFAULT 0,
+            cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+            cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL
+        );
+        CREATE TABLE usage_daily_rollups (
+            date TEXT NOT NULL,
+            app_type TEXT NOT NULL,
+            provider_id TEXT NOT NULL,
+            model TEXT NOT NULL,
+            request_count INTEGER NOT NULL DEFAULT 0,
+            success_count INTEGER NOT NULL DEFAULT 0,
+            input_tokens INTEGER NOT NULL DEFAULT 0,
+            output_tokens INTEGER NOT NULL DEFAULT 0,
+            cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+            cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+            total_cost_usd TEXT NOT NULL DEFAULT '0',
+            avg_latency_ms INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (date, app_type, provider_id, model)
+        );
+        INSERT INTO usage_daily_rollups (
+            date, app_type, provider_id, model, request_count, success_count,
+            input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+            total_cost_usd, avg_latency_ms
+        ) VALUES (
+            '2026-07-06', 'claude', 'p1', 'claude-sonnet-4-5',
+            2, 2, 100, 50, 10, 0, '0.25', 120
+        );
+        "#,
+    )
+    .expect("seed v10 schema");
+
+    Database::set_user_version(&conn, 10).expect("set user_version=10");
+    Database::apply_schema_migrations_on_conn(&conn).expect("apply migrations");
+
+    assert!(
+        Database::has_column(&conn, "proxy_request_logs", "pricing_model")
+            .expect("check pricing_model")
+    );
+    assert!(
+        Database::has_column(&conn, "usage_daily_rollups", "request_model")
+            .expect("check request_model")
+    );
+    assert!(
+        Database::has_column(&conn, "usage_daily_rollups", "pricing_model")
+            .expect("check rollup pricing_model")
+    );
+
+    let row: (i64, String, String) = conn
+        .query_row(
+            "SELECT request_count, request_model, pricing_model
+             FROM usage_daily_rollups
+             WHERE date = '2026-07-06' AND app_type = 'claude'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .expect("read migrated rollup");
+    assert_eq!(row, (2, String::new(), String::new()));
     assert_eq!(
         Database::get_user_version(&conn).expect("version after migration"),
         SCHEMA_VERSION

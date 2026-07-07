@@ -1,6 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
+import { DatabaseUpgrade } from "./components/DatabaseUpgrade";
 import { UpdateProvider } from "./contexts/UpdateContext";
 import "./index.css";
 // 导入国际化配置
@@ -30,6 +31,9 @@ try {
 interface ConfigLoadErrorPayload {
   path?: string;
   error?: string;
+  kind?: string;
+  db_version?: number;
+  supported_version?: number;
 }
 
 /**
@@ -78,6 +82,19 @@ async function bootstrap() {
     const initError = (await invoke(
       "get_init_error",
     )) as ConfigLoadErrorPayload | null;
+    if (initError && initError.kind === "db_version_too_new") {
+      ReactDOM.createRoot(document.getElementById("root")!).render(
+        <React.StrictMode>
+          <ErrorBoundary>
+            <ThemeProvider defaultTheme="system" storageKey="cc-switch-theme">
+              <DatabaseUpgrade payload={initError} />
+              <Toaster />
+            </ThemeProvider>
+          </ErrorBoundary>
+        </React.StrictMode>,
+      );
+      return;
+    }
     if (initError && (initError.path || initError.error)) {
       await handleConfigLoadError(initError);
       // 注意：不会执行到这里，因为 exit(1) 会终止进程

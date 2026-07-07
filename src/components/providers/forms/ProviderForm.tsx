@@ -18,6 +18,7 @@ import type {
   ProviderMeta,
   ProviderTestConfig,
   ClaudeApiFormat,
+  CodexApiFormat,
   ClaudeApiKeyField,
 } from "@/types";
 import type { ProviderPreset } from "@/config/claudeProviderPresets";
@@ -159,6 +160,7 @@ export function ProviderForm({
     isPartner?: boolean;
     partnerPromotionKey?: string;
     suggestedDefaults?: OpenClawSuggestedDefaults;
+    apiFormat?: CodexApiFormat;
   } | null>(null);
   const [isEndpointModalOpen, setIsEndpointModalOpen] = useState(false);
   const [isCodexEndpointModalOpen, setIsCodexEndpointModalOpen] =
@@ -1151,7 +1153,9 @@ export function ProviderForm({
       apiFormat:
         appId === "claude" && category !== "official"
           ? localApiFormat
-          : undefined,
+          : appId === "codex" && category !== "official"
+            ? (activePreset?.apiFormat ?? initialData?.meta?.apiFormat)
+            : undefined,
       apiKeyField:
         appId === "claude" &&
         category !== "official" &&
@@ -1309,13 +1313,28 @@ export function ProviderForm({
       const preset = entry.preset as CodexProviderPreset;
       const auth = preset.auth ?? {};
       const config = preset.config ?? "";
+      const settingsConfig = {
+        auth,
+        config,
+        ...(preset.modelCatalog && preset.modelCatalog.length > 0
+          ? { modelCatalog: { models: preset.modelCatalog } }
+          : {}),
+      };
 
       resetCodexConfig(auth, config);
+      setActivePreset((current) =>
+        current
+          ? {
+              ...current,
+              apiFormat: preset.apiFormat,
+            }
+          : current,
+      );
 
       form.reset({
         name: preset.nameKey ? t(preset.nameKey) : preset.name,
         websiteUrl: preset.websiteUrl ?? "",
-        settingsConfig: JSON.stringify({ auth, config }, null, 2),
+        settingsConfig: JSON.stringify(settingsConfig, null, 2),
         icon: preset.icon ?? "",
         iconColor: preset.iconColor ?? "",
       });

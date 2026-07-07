@@ -15,6 +15,9 @@ pub mod cache_injector;
 #[path = "../src/proxy/circuit_breaker.rs"]
 pub mod circuit_breaker;
 
+#[path = "../src/proxy/content_encoding.rs"]
+pub(crate) mod content_encoding;
+
 #[path = "../src/proxy/copilot_optimizer.rs"]
 pub mod copilot_optimizer;
 

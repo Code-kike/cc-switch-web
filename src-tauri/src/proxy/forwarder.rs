@@ -5,6 +5,7 @@
 use super::hyper_client::ProxyResponse;
 use super::{
     body_filter::filter_private_params_with_whitelist,
+    content_encoding::{decompress_body, get_content_encoding},
     error::*,
     failover_switch::FailoverSwitchManager,
     json_canonical::{canonicalize_value, short_value_hash},
@@ -1789,7 +1790,16 @@ impl RequestForwarder {
             Ok((response, resolved_claude_api_format))
         } else {
             let status_code = status.as_u16();
-            let body_text = String::from_utf8(response.bytes().await?.to_vec()).ok();
+            let encoding = get_content_encoding(response.headers());
+            let raw = response.bytes().await?;
+            let decoded = match encoding {
+                Some(encoding) => match decompress_body(&encoding, &raw) {
+                    Ok(Some(decompressed)) => decompressed,
+                    _ => raw.to_vec(),
+                },
+                None => raw.to_vec(),
+            };
+            let body_text = String::from_utf8(decoded).ok();
 
             Err(ProxyError::UpstreamError {
                 status: status_code,

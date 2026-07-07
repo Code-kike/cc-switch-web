@@ -16,6 +16,7 @@ pub struct RequestLog {
     pub app_type: String,
     pub model: String,
     pub request_model: String,
+    pub pricing_model: String,
     pub usage: TokenUsage,
     pub cost: Option<CostBreakdown>,
     pub latency_ms: u64,
@@ -86,18 +87,19 @@ impl<'a> UsageLogger<'a> {
         // (`should_skip_session_insert`) and never clobbers a proxy row.
         conn.execute(
             "INSERT OR REPLACE INTO proxy_request_logs (
-                request_id, provider_id, app_type, model, request_model,
+                request_id, provider_id, app_type, model, request_model, pricing_model,
                 input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
                 input_cost_usd, output_cost_usd, cache_read_cost_usd, cache_creation_cost_usd, total_cost_usd,
                 latency_ms, first_token_ms, status_code, error_message, session_id,
                 provider_type, is_streaming, cost_multiplier, created_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
             rusqlite::params![
                 log.request_id,
                 log.provider_id,
                 log.app_type,
                 log.model,
                 log.request_model,
+                log.pricing_model,
                 log.usage.input_tokens,
                 log.usage.output_tokens,
                 log.usage.cache_read_tokens,
@@ -141,12 +143,14 @@ impl<'a> UsageLogger<'a> {
         latency_ms: u64,
     ) -> Result<(), AppError> {
         let request_model = model.clone();
+        let pricing_model = model.clone();
         let log = RequestLog {
             request_id,
             provider_id,
             app_type,
             model,
             request_model,
+            pricing_model,
             usage: TokenUsage::default(),
             cost: None,
             latency_ms,
@@ -180,12 +184,14 @@ impl<'a> UsageLogger<'a> {
         provider_type: Option<String>,
     ) -> Result<(), AppError> {
         let request_model = model.clone();
+        let pricing_model = model.clone();
         let log = RequestLog {
             request_id,
             provider_id,
             app_type,
             model,
             request_model,
+            pricing_model,
             usage: TokenUsage::default(),
             cost: None,
             latency_ms,
@@ -339,6 +345,7 @@ impl<'a> UsageLogger<'a> {
             app_type,
             model,
             request_model,
+            pricing_model,
             usage,
             cost,
             latency_ms,
@@ -404,15 +411,16 @@ mod tests {
 
         // 验证记录已插入
         let conn = crate::database::lock_conn!(db.conn);
-        let (count, request_model): (i64, String) = conn
+        let (count, request_model, pricing_model): (i64, String, String) = conn
             .query_row(
-                "SELECT COUNT(*), request_model FROM proxy_request_logs WHERE request_id = 'req-123'",
+                "SELECT COUNT(*), request_model, pricing_model FROM proxy_request_logs WHERE request_id = 'req-123'",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .unwrap();
         assert_eq!(count, 1);
         assert_eq!(request_model, "req-model");
+        assert_eq!(pricing_model, "test-model");
         Ok(())
     }
 
@@ -477,6 +485,7 @@ mod tests {
             app_type: "claude".to_string(),
             model: "claude-sonnet-4-5".to_string(),
             request_model: "claude-sonnet-4-5".to_string(),
+            pricing_model: "claude-sonnet-4-5".to_string(),
             usage: TokenUsage {
                 input_tokens: 100,
                 output_tokens: 20,

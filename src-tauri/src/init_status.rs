@@ -5,6 +5,14 @@ use std::sync::{OnceLock, RwLock};
 pub struct InitErrorPayload {
     pub path: String,
     pub error: String,
+    /// `Some("db_version_too_new")` means the database was created by a newer
+    /// app/schema and normal startup must be blocked before any writes occur.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub db_version: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supported_version: Option<i32>,
 }
 
 static INIT_ERROR: OnceLock<RwLock<Option<InitErrorPayload>>> = OnceLock::new();
@@ -102,6 +110,9 @@ mod tests {
         let payload = InitErrorPayload {
             path: "/tmp/config.json".into(),
             error: "broken json".into(),
+            kind: None,
+            db_version: None,
+            supported_version: None,
         };
         set_init_error(payload.clone());
         let got = get_init_error().expect("should get payload back");

@@ -2524,12 +2524,16 @@ impl ProxyService {
             .get("auth")
             .ok_or_else(|| "Codex 配置缺少 auth 字段".to_string())?;
         let config_str = config.get("config").and_then(|v| v.as_str());
+        let profile = crate::codex_config::CodexCatalogToolProfile::from_api_format(
+            provider.meta.as_ref().and_then(|m| m.api_format.as_deref()),
+        );
 
         crate::codex_config::write_codex_provider_live_with_catalog(
             config,
             provider.category.as_deref(),
             auth,
             config_str,
+            profile,
         )
         .map_err(|e| format!("写入 Codex 配置失败: {e}"))
     }
@@ -2545,10 +2549,6 @@ impl ProxyService {
     /// 以占位符为准的判定与 provider category 正交，错误分类的供应商也不会
     /// 误写 OAuth 登录缓存。
     ///
-    /// 注：上游在此处还会做 model catalog 投影
-    /// （prepare_codex_live_config_text_with_optional_catalog）；该特性依赖
-    /// 未移植的 Codex model-catalog 栈（PRD D8 deferral），此处直接使用原始
-    /// config 文本。
     fn write_codex_takeover_live_for_provider(
         &self,
         config: &Value,
@@ -2560,9 +2560,19 @@ impl ProxyService {
                 .filter(|auth| Self::codex_auth_has_proxy_placeholder(auth))
             {
                 let config_str = config.get("config").and_then(|v| v.as_str()).unwrap_or("");
-                let live_config =
-                    crate::codex_config::prepare_codex_provider_live_config(auth, config_str)
-                        .map_err(|e| format!("写入 Codex 配置失败: {e}"))?;
+                let profile = crate::codex_config::CodexCatalogToolProfile::from_api_format(
+                    provider.and_then(|p| p.meta.as_ref()?.api_format.as_deref()),
+                );
+                let projected_config =
+                    crate::codex_config::prepare_codex_live_config_text_with_optional_catalog(
+                        config, config_str, profile,
+                    )
+                    .map_err(|e| format!("写入 Codex 配置失败: {e}"))?;
+                let live_config = crate::codex_config::prepare_codex_provider_live_config(
+                    auth,
+                    &projected_config,
+                )
+                .map_err(|e| format!("写入 Codex 配置失败: {e}"))?;
                 crate::codex_config::write_codex_live_config_atomic(Some(&live_config))
                     .map_err(|e| format!("写入 Codex 配置失败: {e}"))?;
                 return Ok(());

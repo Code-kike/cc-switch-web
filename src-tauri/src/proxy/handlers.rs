@@ -8,6 +8,7 @@
 //! - Claude 的格式转换逻辑保留在此文件（用于 OpenRouter 旧接口回退）
 
 use super::{
+    content_encoding::{decompress_body, get_content_encoding, is_supported_content_encoding},
     error_mapper::{get_error_message, map_proxy_error_to_status},
     forwarder::ActiveConnectionGuard,
     handler_config::{
@@ -61,23 +62,22 @@ pub async fn get_status(State(state): State<ProxyState>) -> Result<Json<ProxySta
 /// GET /v1/models — Codex model list (reachability check)
 ///
 /// Codex CLI probes this endpoint at startup and deserializes the response as a
-/// catalog with a top-level `models` field.  Without this endpoint the proxy
-/// returns 404, causing Codex to fail before any request reaches the upstream
-/// LLM (upstream issue #3812).
-///
-/// Fork adaptation of upstream `27c41f74`: upstream serves the cc-switch–managed
-/// `model_catalog_json` file when the live config.toml still references it
-/// (stale-catalog guard via `codex_config::resolve_cc_switch_catalog_path`).
-/// This fork has not ported the Codex model-catalog feature (it belongs to the
-/// deferred Codex Chat routing/catalog stack), so no cc-switch–owned catalog
-/// file ever exists and the guard would always decline — the faithful behavior
-/// is therefore the upstream fallback: an empty catalog. When the catalog stack
-/// is ported, restore the upstream catalog lookup here.
+/// catalog with a top-level `models` field. Serve the cc-switch-managed catalog
+/// only while the live config still references it; otherwise return an empty
+/// catalog so stale generated files are not exposed after a user switches away.
 pub async fn handle_models() -> Result<Json<Value>, ProxyError> {
-    log::debug!(
-        "[models] serving empty catalog (Codex model-catalog feature not ported in this fork)"
-    );
-    Ok(Json(json!({"models": []})))
+    let catalog = match crate::codex_config::read_codex_model_catalog_simplified_from_live() {
+        Ok(Some(catalog)) => catalog,
+        Ok(None) => {
+            log::debug!("[models] catalog not served; no active cc-switch model_catalog_json");
+            json!({"models": []})
+        }
+        Err(error) => {
+            log::debug!("[models] failed to read active catalog: {error}");
+            json!({"models": []})
+        }
+    };
+    Ok(Json(catalog))
 }
 
 // ============================================================================
@@ -415,6 +415,46 @@ fn endpoint_with_query(uri: &axum::http::Uri, endpoint: &str) -> String {
     }
 }
 
+/// Codex Desktop OAuth requests may arrive with compressed bodies, especially zstd.
+/// Decode before JSON parsing and drop stale entity headers; the forwarder
+/// serializes a fresh JSON body and rebuilds those headers for the upstream.
+fn decode_codex_request_body(
+    headers: &mut axum::http::HeaderMap,
+    body_bytes: Bytes,
+) -> Result<Bytes, ProxyError> {
+    let Some(encoding) = get_content_encoding(headers) else {
+        return Ok(body_bytes);
+    };
+
+    if !is_supported_content_encoding(&encoding) {
+        return Err(ProxyError::InvalidRequest(format!(
+            "Unsupported request content-encoding: {encoding}"
+        )));
+    }
+
+    log::debug!("[Codex] decompress request body: content-encoding={encoding}");
+    let decompressed = match decompress_body(&encoding, &body_bytes) {
+        Ok(Some(decompressed)) => decompressed,
+        Ok(None) => {
+            return Err(ProxyError::InvalidRequest(format!(
+                "Unsupported request content-encoding: {encoding}"
+            )));
+        }
+        Err(error) => {
+            log::warn!("[Codex] request body decompression failed ({encoding}): {error}");
+            return Err(ProxyError::InvalidRequest(format!(
+                "Failed to decompress request body ({encoding}): {error}"
+            )));
+        }
+    };
+
+    headers.remove(axum::http::header::CONTENT_ENCODING);
+    headers.remove(axum::http::header::CONTENT_LENGTH);
+    headers.remove(axum::http::header::TRANSFER_ENCODING);
+
+    Ok(Bytes::from(decompressed))
+}
+
 // ============================================================================
 // Codex API 处理器
 // ============================================================================
@@ -427,13 +467,14 @@ pub async fn handle_chat_completions(
     let (parts, req_body) = request.into_parts();
     let method = parts.method.clone();
     let uri = parts.uri;
-    let headers = parts.headers;
+    let mut headers = parts.headers;
     let extensions = parts.extensions;
     let body_bytes = req_body
         .collect()
         .await
         .map_err(|e| ProxyError::Internal(format!("Failed to read request body: {e}")))?
         .to_bytes();
+    let body_bytes = decode_codex_request_body(&mut headers, body_bytes)?;
     let body: Value = serde_json::from_slice(&body_bytes)
         .map_err(|e| ProxyError::Internal(format!("Failed to parse request body: {e}")))?;
 
@@ -492,13 +533,14 @@ pub async fn handle_responses(
     let (parts, req_body) = request.into_parts();
     let method = parts.method.clone();
     let uri = parts.uri;
-    let headers = parts.headers;
+    let mut headers = parts.headers;
     let extensions = parts.extensions;
     let body_bytes = req_body
         .collect()
         .await
         .map_err(|e| ProxyError::Internal(format!("Failed to read request body: {e}")))?
         .to_bytes();
+    let body_bytes = decode_codex_request_body(&mut headers, body_bytes)?;
     let body: Value = serde_json::from_slice(&body_bytes)
         .map_err(|e| ProxyError::Internal(format!("Failed to parse request body: {e}")))?;
 
@@ -557,13 +599,14 @@ pub async fn handle_responses_compact(
     let (parts, req_body) = request.into_parts();
     let method = parts.method.clone();
     let uri = parts.uri;
-    let headers = parts.headers;
+    let mut headers = parts.headers;
     let extensions = parts.extensions;
     let body_bytes = req_body
         .collect()
         .await
         .map_err(|e| ProxyError::Internal(format!("Failed to read request body: {e}")))?
         .to_bytes();
+    let body_bytes = decode_codex_request_body(&mut headers, body_bytes)?;
     let body: Value = serde_json::from_slice(&body_bytes)
         .map_err(|e| ProxyError::Internal(format!("Failed to parse request body: {e}")))?;
 

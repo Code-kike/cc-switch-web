@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.16.5] - 2026-07-07
+
+Synced selected product-upstream `farion1231/cc-switch` changes from `v3.16.2..v3.16.5` into this Web-first fork, preserving the standalone Web server deployment model and recent Web security hardening. Highlights: schema v11 usage/pricing storage, Web-adapted too-new database recovery, Codex native Responses model-catalog support, session organization grouping in the Web UI, functional provider/preset/pricing refreshes, and proxy correctness fixes including explicit zstd/content-encoding handling.
+
+See **[release notes ->](docs/release-notes/v3.16.5-en.md)** for the fork-specific scope, Web adaptations, and intentionally excluded upstream desktop/release-operation deltas.
+
 ## [3.16.0] - 2026-05-30
 
 Synced upstream `farion1231/cc-switch` v3.16.0 into this Web-first fork. Highlights: real-time usage refresh (dual-runtime via `UiEventSink` — Tauri event bus on desktop, `GET /api/events` SSE in web-server mode); a model & pricing refresh (default Claude Opus → 4.8, GPT-5.5 / ShengSuanYun model-id corrections, with `seed_model_pricing` kept consistent with the frontend presets); a Codex routing refactor that stops force-rewriting the user's `model_provider` plus a remote-compaction toggle; DeepSeek/Anthropic tool-thinking proxy normalization; a Codex session-sync panic fix on non-ASCII model names; and deeplink custom-env preservation on Claude import.

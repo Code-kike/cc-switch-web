@@ -284,6 +284,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         None
     };
 
+    // Refuse too-new databases before Database::init() can create tables or run
+    // migrations. The headless Web server cannot build the full API state
+    // without a compatible DB, so startup blocks with explicit recovery
+    // guidance rather than writing to a schema it does not understand.
+    if let Some(version) = database::Database::stored_user_version_exceeds_supported(&db_path)? {
+        let message = format!(
+            "database version is too new (stored user_version={version}, supported={}); \
+             upgrade cc-switch-web before starting this data directory; database left untouched: {}",
+            database::SCHEMA_VERSION,
+            db_path.display()
+        );
+        init_status::set_init_error(init_status::InitErrorPayload {
+            path: db_path.display().to_string(),
+            error: message.clone(),
+            kind: Some("db_version_too_new".to_string()),
+            db_version: Some(version),
+            supported_version: Some(database::SCHEMA_VERSION),
+        });
+        return Err(message.into());
+    }
+
     let db = Arc::new(database::Database::init()?);
 
     if let Some(config) = migration_config {
