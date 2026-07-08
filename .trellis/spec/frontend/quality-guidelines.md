@@ -407,6 +407,111 @@ std::fs::write(get_codex_config_path(), config)?;
 
 ---
 
+### Scenario: Subscription Quota Tier Names
+
+#### 1. Scope / Trigger
+
+- Trigger: adding or changing a `SubscriptionQuota.tiers[].name` value, quota
+  window mapping, or quota footer/tray display label.
+- Applies when changing `src-tauri/src/services/subscription.rs`,
+  `src-tauri/src/tray.rs`, `src/components/SubscriptionQuotaFooter.tsx`, or
+  `src/i18n/locales/*.json`.
+
+#### 2. Signatures
+
+- Backend tier shape:
+  - `QuotaTier { name: String, utilization: f64, resets_at: Option<String>, ... }`
+- Codex window mapper:
+  - `window_seconds_to_tier_name(secs: i64) -> String`
+- Frontend tier label map:
+  - `TIER_I18N_KEYS: Record<string, string>`
+- Tray quota summary groups:
+  - `TIER_LABEL_GROUPS: &[(&str, &[&str])]`
+
+#### 3. Contracts
+
+- A tier name emitted by `subscription.rs` must be recognized by every user-facing
+  display surface that filters known tiers.
+- Backend constants are the single source of truth for well-known tier names:
+  `TIER_FIVE_HOUR`, `TIER_SEVEN_DAY`, `TIER_THIRTY_DAY`,
+  `TIER_WEEKLY_LIMIT`, and Gemini tier constants.
+- Frontend `TIER_I18N_KEYS` must include every tier name that should render in
+  `SubscriptionQuotaFooter`; otherwise successful quota data can be filtered to
+  an empty display.
+- `src-tauri/src/tray.rs` must group the same tier names that the footer can
+  show, so tray summaries do not disappear when the footer renders correctly.
+- Locale files must stay in parity for every new `subscription.*` key.
+
+#### 4. Validation & Error Matrix
+
+- Backend emits a tier name missing from `TIER_I18N_KEYS` -> reject; footer may
+  render no quota even though data exists.
+- Backend emits a tier name missing from `TIER_LABEL_GROUPS` -> reject when the
+  tier is relevant to desktop/tray summaries; tray can go blank while the footer
+  works.
+- New `subscription.*` label exists in only one locale -> reject; `pnpm
+  check:locales` must fail until all locales include it.
+- Magic strings repeated instead of using backend constants -> reject in Rust
+  code; future tier changes drift across service and tray.
+
+#### 5. Good/Base/Bad Cases
+
+- Good: Codex free-plan `2_592_000` second window maps to `TIER_THIRTY_DAY`,
+  tray groups it under `"m"`, frontend maps `"30_day"` to
+  `subscription.thirtyDay`, and en/ja/zh locales define that label.
+- Base: unknown future tiers can still fall back to generated names in backend
+  data, but they are not user-visible until explicitly added to the display
+  whitelist and locales.
+- Bad: adding `2_592_000 => "30_day"` in Rust only; the UI receives the tier
+  and then filters it away as unknown.
+
+#### 6. Tests Required
+
+- Rust unit test for `window_seconds_to_tier_name` covering the new window.
+- Rust tray summary test for a quota whose only tier is the new name.
+- Frontend component test proving `SubscriptionQuotaView` renders the new tier.
+- Run `pnpm check:locales` after adding locale keys.
+- Run `pnpm typecheck` after changing `TIER_I18N_KEYS` or quota types.
+
+#### 7. Wrong vs Correct
+
+##### Wrong
+
+```rust
+match secs {
+    2_592_000 => "30_day".to_string(),
+    _ => ...
+}
+```
+
+```typescript
+export const TIER_I18N_KEYS = {
+  five_hour: "subscription.fiveHour",
+  seven_day: "subscription.sevenDay",
+};
+```
+
+##### Correct
+
+```rust
+pub const TIER_THIRTY_DAY: &str = "30_day";
+
+match secs {
+    2_592_000 => TIER_THIRTY_DAY.to_string(),
+    _ => ...
+}
+```
+
+```typescript
+export const TIER_I18N_KEYS = {
+  five_hour: "subscription.fiveHour",
+  seven_day: "subscription.sevenDay",
+  "30_day": "subscription.thirtyDay",
+};
+```
+
+---
+
 ### Scenario: Codex Provider Goal Mode
 
 #### 1. Scope / Trigger

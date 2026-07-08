@@ -18,6 +18,7 @@ const W_TIER_NAMES: &[&str] = &[
     crate::services::subscription::TIER_SEVEN_DAY_OPUS,
     crate::services::subscription::TIER_SEVEN_DAY_SONNET,
 ];
+const M_TIER_NAMES: &[&str] = &[crate::services::subscription::TIER_THIRTY_DAY];
 const GEMINI_PRO_TIER_NAMES: &[&str] = &[crate::services::subscription::TIER_GEMINI_PRO];
 const GEMINI_FLASH_TIER_NAMES: &[&str] = &[crate::services::subscription::TIER_GEMINI_FLASH];
 const GEMINI_FLASH_LITE_TIER_NAMES: &[&str] =
@@ -25,6 +26,7 @@ const GEMINI_FLASH_LITE_TIER_NAMES: &[&str] =
 const TIER_LABEL_GROUPS: &[(&str, &[&str])] = &[
     ("h", H_TIER_NAMES),
     ("w", W_TIER_NAMES),
+    ("m", M_TIER_NAMES),
     ("p", GEMINI_PRO_TIER_NAMES),
     ("f", GEMINI_FLASH_TIER_NAMES),
     ("l", GEMINI_FLASH_LITE_TIER_NAMES),
@@ -854,7 +856,7 @@ mod tests {
     use crate::services::subscription::{
         CredentialStatus, QuotaTier, SubscriptionQuota, TIER_FIVE_HOUR, TIER_GEMINI_FLASH,
         TIER_GEMINI_FLASH_LITE, TIER_GEMINI_PRO, TIER_SEVEN_DAY, TIER_SEVEN_DAY_OPUS,
-        TIER_SEVEN_DAY_SONNET, TIER_WEEKLY_LIMIT,
+        TIER_SEVEN_DAY_SONNET, TIER_THIRTY_DAY, TIER_WEEKLY_LIMIT,
     };
 
     #[test]
@@ -934,6 +936,13 @@ mod tests {
         let quota = make_quota("gemini", true, vec![tier("gemini_flash_lite", 80.0)]);
         let s = format_subscription_summary(&quota).expect("should format");
         assert!(s.contains("l80%"), "expected l80% in {s}");
+    }
+
+    #[test]
+    fn codex_summary_thirty_day_only_still_renders() {
+        let quota = make_quota("codex", true, vec![tier(TIER_THIRTY_DAY, 42.0)]);
+        let s = format_subscription_summary(&quota).expect("should format");
+        assert!(s.contains("m42%"), "expected m42% in {s}");
     }
 
     #[test]

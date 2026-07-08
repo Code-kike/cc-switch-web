@@ -20,7 +20,8 @@ const i18nState = vi.hoisted(() => ({
       return `expired:${String(options?.tool ?? "")}`;
     }
     if (key === "usage.justNow") return "just now";
-    if (key === "usage.minutesAgo") return `${String(options?.count ?? 0)}m ago`;
+    if (key === "usage.minutesAgo")
+      return `${String(options?.count ?? 0)}m ago`;
     if (key === "usage.hoursAgo") return `${String(options?.count ?? 0)}h ago`;
     if (key === "usage.daysAgo") return `${String(options?.count ?? 0)}d ago`;
     return String(options?.defaultValue ?? key);
@@ -34,7 +35,8 @@ vi.mock("react-i18next", () => ({
 }));
 
 vi.mock("@/lib/query/subscription", () => ({
-  useSubscriptionQuota: (...args: unknown[]) => useSubscriptionQuotaMock(...args),
+  useSubscriptionQuota: (...args: unknown[]) =>
+    useSubscriptionQuotaMock(...args),
 }));
 
 function createQuota(
@@ -178,5 +180,28 @@ describe("SubscriptionQuota surfaces", () => {
 
     fireEvent.click(screen.getByTitle("subscription.refresh"));
     expect(refetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders Codex free-plan 30-day quota tiers", () => {
+    render(
+      <SubscriptionQuotaView
+        quota={createQuota({
+          tool: "codex",
+          tiers: [
+            {
+              name: "30_day",
+              utilization: 33,
+              resetsAt: "2026-06-03T00:00:00Z",
+            },
+          ],
+        })}
+        loading={false}
+        refetch={refetchMock}
+        appIdForExpiredHint="codex"
+      />,
+    );
+
+    expect(screen.getByText(/subscription\.thirtyDay/)).toBeInTheDocument();
+    expect(screen.getByText("33%")).toBeInTheDocument();
   });
 });

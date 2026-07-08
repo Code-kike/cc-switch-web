@@ -18,6 +18,10 @@ _Avoid_: upstream
 A scoped effort to port selected product-upstream release deltas into the Web-first fork while preserving the Web deployment model.
 _Avoid_: pull, merge, update
 
+**Product-upstream inherited bug**:
+A defect from product-upstream behavior that is present in the Web-first fork after synchronization or Web adaptation.
+_Avoid_: upstream bug, original bug
+
 **Functional catalog delta**:
 A product-upstream provider or preset catalog change that affects model availability, defaults, routing behavior, or usage/pricing correctness.
 _Avoid_: catalog churn, provider update, preset polish

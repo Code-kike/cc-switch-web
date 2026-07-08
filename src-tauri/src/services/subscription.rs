@@ -26,7 +26,7 @@ pub enum CredentialStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QuotaTier {
-    /// 窗口标识：five_hour, seven_day, seven_day_opus, seven_day_sonnet 等
+    /// 窗口标识：five_hour, seven_day, 30_day, seven_day_opus, seven_day_sonnet 等
     pub name: String,
     /// 使用百分比 0–100
     pub utilization: f64,
@@ -302,6 +302,10 @@ pub const TIER_FIVE_HOUR: &str = "five_hour";
 pub const TIER_SEVEN_DAY: &str = "seven_day";
 pub const TIER_SEVEN_DAY_OPUS: &str = "seven_day_opus";
 pub const TIER_SEVEN_DAY_SONNET: &str = "seven_day_sonnet";
+
+/// Codex free-plan rolling 30-day secondary window. Paid plans use the
+/// seven-day secondary window, but free accounts report 2,592,000 seconds.
+pub const TIER_THIRTY_DAY: &str = "30_day";
 
 /// Coding Plan（Kimi / MiniMax）的周窗口 tier 名。与 `coding_plan::query_*`
 /// 写入、tray 渲染、commands::provider 扁平化三处共用同一标识。
@@ -627,8 +631,9 @@ struct CodexUsageResponse {
 /// 根据窗口秒数映射到 tier 名称（与 Claude 的命名兼容以复用前端 i18n）
 fn window_seconds_to_tier_name(secs: i64) -> String {
     match secs {
-        18000 => "five_hour".to_string(),
-        604800 => "seven_day".to_string(),
+        18000 => TIER_FIVE_HOUR.to_string(),
+        604800 => TIER_SEVEN_DAY.to_string(),
+        2_592_000 => TIER_THIRTY_DAY.to_string(),
         s => {
             let hours = s / 3600;
             if hours >= 24 {
@@ -1334,4 +1339,18 @@ fn now_millis() -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as i64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn window_seconds_map_to_expected_tier_names() {
+        assert_eq!(window_seconds_to_tier_name(18_000), TIER_FIVE_HOUR);
+        assert_eq!(window_seconds_to_tier_name(604_800), TIER_SEVEN_DAY);
+        assert_eq!(window_seconds_to_tier_name(2_592_000), TIER_THIRTY_DAY);
+        assert_eq!(window_seconds_to_tier_name(3_600), "1_hour");
+        assert_eq!(window_seconds_to_tier_name(86_400), "1_day");
+    }
 }

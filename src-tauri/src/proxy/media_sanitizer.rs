@@ -70,6 +70,18 @@ pub fn is_unsupported_image_error(error: &ProxyError) -> bool {
 
     let message = extract_error_text(body);
     let message = message.to_ascii_lowercase();
+
+    // These phrases are self-evident modality rejections. Some gateways return
+    // errors such as "Model only support text input" without mentioning image
+    // or media, so the usual image-word gate would miss the retry path.
+    const TEXT_ONLY_SELF_EVIDENT_HINTS: &[&str] = &["only support text", "only supports text"];
+    if TEXT_ONLY_SELF_EVIDENT_HINTS
+        .iter()
+        .any(|hint| message.contains(hint))
+    {
+        return true;
+    }
+
     let mentions_image = message.contains("image")
         || message.contains("vision")
         || message.contains("multimodal")
@@ -90,7 +102,6 @@ pub fn is_unsupported_image_error(error: &ProxyError) -> bool {
         "doesn't support",
         "do not support",
         "don't support",
-        "only supports text",
         "text only",
         "text-only",
         "invalid content type",
@@ -183,6 +194,9 @@ fn known_text_only_model(model: &str) -> bool {
         "deepseek-v4-flash",
         "deepseek-v4-pro",
         "glm-5.1",
+        // Exact tail match only. Future visual variants may follow Zhipu's
+        // 4v/5v naming, so prefix matching would strip valid image input.
+        "glm-5.2",
         "kat-coder",
         "kat-coder-pro",
         "kat-coder-pro v1",
@@ -501,6 +515,14 @@ mod tests {
     }
 
     #[test]
+    fn glm_52_is_classified_text_only_without_matching_visual_suffixes() {
+        assert!(known_text_only_model("glm-5.2"));
+        assert!(known_text_only_model("GLM-5.2[1M]"));
+        assert!(known_text_only_model("zai-org/GLM-5.2"));
+        assert!(!known_text_only_model("glm-5.2v"));
+    }
+
+    #[test]
     fn multimodal_kimi_model_is_not_on_text_only_list() {
         let provider = provider(json!({}));
         let mut body = json!({
@@ -594,6 +616,19 @@ mod tests {
             status: 400,
             body: Some(
                 r#"{"error":{"message":"This model does not support image input"}}"#.to_string(),
+            ),
+        };
+
+        assert!(is_unsupported_image_error(&error));
+    }
+
+    #[test]
+    fn detects_text_only_errors_without_image_mention() {
+        let error = ProxyError::UpstreamError {
+            status: 400,
+            body: Some(
+                r#"{"error":{"message":"Model only support text input Request id: 021783"}}"#
+                    .to_string(),
             ),
         };
 
