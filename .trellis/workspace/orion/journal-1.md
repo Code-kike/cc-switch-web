@@ -751,3 +751,36 @@ Built the current Web frontend and standalone web-server binary, installed them 
 ### Next Steps
 
 - None - task complete
+
+
+## Session 22: Remove Web Basic Auth
+
+**Date**: 2026-07-09
+**Task**: Remove Web Basic Auth
+**Branch**: `fix/web-audit-phase1-2`
+
+### Summary
+
+Removed Web Basic Auth from the standalone Web API, kept the same-origin intent guard for mutating browser requests, updated installer/systemd/docs/specs, and verified Rust plus web route/type checks.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `8fea1699` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

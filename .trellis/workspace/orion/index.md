@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 21
+- **Total Sessions**: 22
 - **Last Active**: 2026-07-09
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~753 | Active |
+| `journal-1.md` | ~786 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 22 | 2026-07-09 | Remove Web Basic Auth | `8fea1699` | `fix/web-audit-phase1-2` |
 | 21 | 2026-07-09 | Replace persistent cc-switch web service | - | `fix/web-audit-phase1-2` |
 | 20 | 2026-07-09 | Audit and fix upstream inherited bugs | `5b37ea2e`, `716fdb9a` | `fix/web-audit-phase1-2` |
 | 19 | 2026-07-07 | Sync cc-switch v3.16.5 into web fork | `52197b9c`, `34602326` | `fix/web-audit-phase1-2` |
