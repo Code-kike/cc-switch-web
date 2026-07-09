@@ -29,10 +29,10 @@ pub fn build_router(state: ApiState) -> Router {
             ServiceBuilder::new()
                 .layer(TraceLayer::new_for_http())
                 .layer(from_fn(mw::security_headers::add_security_headers))
-                // Audit fix C2: Basic Auth on /api/* (except /api/health). No-op when
-                // unconfigured (loopback-only dev); server.rs forbids a non-loopback
-                // bind without credentials. SPA assets stay public.
-                .layer(from_fn(mw::auth::require_auth)),
+                // Unauthenticated Web API: keep only the browser same-origin
+                // intent guard for state-changing /api/* requests. SPA assets
+                // and /api/health stay public.
+                .layer(from_fn(mw::intent::require_same_origin_intent)),
         )
 }
 

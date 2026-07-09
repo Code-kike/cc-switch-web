@@ -37,3 +37,11 @@ _Avoid_: updater change, platform change, packaging update
 **Web security hardening**:
 The Web-first fork's strengthened safety boundary for remote and self-hosted operation.
 _Avoid_: local patch, audit fix, security tweak
+
+**Unauthenticated Web API**:
+A deployment posture where cc-switch-web exposes its browser API without an application-layer access challenge.
+_Avoid_: no login, no security, remove password
+
+**Same-origin intent check**:
+A browser-request guard that rejects cross-site mutating Web API calls without identifying the caller.
+_Avoid_: authentication, login, user session

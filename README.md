@@ -72,13 +72,10 @@ In this repository, the service deployment already supports:
 - static asset installation to `~/.local/share/cc-switch-web/dist-web`
 - data reuse from `~/.cc-switch`
 
-> **Authentication for non-loopback binds:** any non-loopback bind (`0.0.0.0`,
-> a LAN IP, or a Tailscale address) **requires** HTTP Basic Auth. Set
-> `CC_SWITCH_WEB_AUTH_PASSWORD` (and optionally `CC_SWITCH_WEB_AUTH_USER`,
-> default `cc-switch`); without a password the server refuses to start on a
-> non-loopback address. The install script auto-generates a `0600` systemd
-> password drop-in for you. Loopback-only (`127.0.0.1`) dev runs need no
-> password.
+> **Unauthenticated Web API:** the standalone Web server exposes the full API
+> without application-layer authentication, including on `0.0.0.0`. Any host
+> that can reach port `3010` can operate the instance. Keep access control at
+> the network/deployment boundary if needed.
 
 ## Repository Layout
 

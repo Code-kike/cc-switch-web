@@ -16,14 +16,8 @@ TimeoutStopSec=30
 Environment=HOST=0.0.0.0
 Environment=PORT=3010
 Environment=ENABLE_HSTS=false
-# Audit fix C2: the Web API exposes provider secrets, SQLite import/export, and
-# proxy takeover. A non-loopback bind (HOST=0.0.0.0, for Tailscale/LAN) now REQUIRES
-# HTTP Basic Auth — the server refuses to start otherwise. Set a STRONG password
-# below (e.g. `openssl rand -base64 24`). The browser prompts for it once; the SPA's
-# /api calls then carry it automatically. Username defaults to `cc-switch`.
-Environment=CC_SWITCH_WEB_AUTH_USER=cc-switch
-# REQUIRED for HOST=0.0.0.0 — uncomment and set before enabling the service:
-# Environment=CC_SWITCH_WEB_AUTH_PASSWORD=CHANGE_ME_to_a_strong_password
+# Unauthenticated Web API: every host that can reach PORT can operate this
+# instance. Keep access control at the network/deployment boundary if needed.
 Environment=CC_SWITCH_DATA_DIR=%h/.cc-switch
 Environment=CC_SWITCH_WEB_DIST_DIR=%h/.local/share/cc-switch-web/dist-web
 # Privacy-by-default: full request/response bodies (prompts + model outputs) are

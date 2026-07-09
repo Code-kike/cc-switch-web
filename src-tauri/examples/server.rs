@@ -8,13 +8,9 @@
 //!   cargo run --no-default-features --features web-server --example server
 //!
 //! Environment variables:
-//!   HOST            (default: 127.0.0.1) — a non-loopback bind REQUIRES
-//!                   CC_SWITCH_WEB_AUTH_PASSWORD (audit C2)
+//!   HOST            (default: 127.0.0.1)
 //!   PORT            (default: 3010 — matches the systemd unit + install script)
 //!   CC_SWITCH_DATA_DIR (default: ~/.cc-switch) — used by bootstrap::data_dir
-//!   CC_SWITCH_WEB_AUTH_PASSWORD — enables HTTP Basic Auth on /api/* (REQUIRED for
-//!                   any non-loopback bind, e.g. the Tailscale deployment)
-//!   CC_SWITCH_WEB_AUTH_USER (default: cc-switch) — Basic Auth username
 //!   CORS_ALLOW_ORIGINS (comma-separated, optional)
 //!   ENABLE_HSTS     (default: true; set "false" for plain-HTTP local use)
 //!   WEB_COOKIE_SECURE (auto|true|false; default auto, follows HTTPS)
@@ -229,22 +225,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .parse()
         .map_err(|e| format!("invalid PORT: {e}"))?;
     let addr = SocketAddr::new(host, port);
-
-    // Audit fix C2: never expose the unauthenticated API on a non-loopback address.
-    // The Web API can read provider secrets, import/export the SQLite config, and
-    // toggle proxy takeover, so a non-loopback bind REQUIRES Basic Auth credentials
-    // (CC_SWITCH_WEB_AUTH_PASSWORD). Loopback may run open for local/dev use.
-    if !addr.ip().is_loopback() && !web_api::middleware::auth::is_configured() {
-        log::error!(
-            "Refusing to listen on non-loopback {addr} without web auth. Set \
-             CC_SWITCH_WEB_AUTH_PASSWORD (and optionally CC_SWITCH_WEB_AUTH_USER) to \
-             enable HTTP Basic Auth, or bind a loopback HOST."
-        );
-        return Err("non-loopback bind requires CC_SWITCH_WEB_AUTH_PASSWORD".into());
-    }
-    if web_api::middleware::auth::is_configured() {
-        log::info!("Web API Basic Auth enabled (CC_SWITCH_WEB_AUTH_PASSWORD set)");
-    }
 
     // Pre-flight: data dir + filesystem type + cross-process lock.
     let data_dir = bootstrap::data_dir();

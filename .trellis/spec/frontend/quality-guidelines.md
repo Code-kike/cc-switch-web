@@ -1296,56 +1296,53 @@ env:
 
 ---
 
-### Scenario: Web API Authentication (HTTP Basic) — audit C2
+### Scenario: Unauthenticated Web API + Same-Origin Intent Guard
 
 #### 1. Scope / Trigger
 
-- Trigger: changing the web router assembly, the auth middleware, the server bind
-  gate, or the systemd/install deploy of the standalone web server.
-- Applies to `web_api/routes.rs`, `web_api/middleware/auth.rs`,
+- Trigger: changing the web router assembly, the same-origin intent middleware,
+  the server bind behavior, or the systemd/install deploy of the standalone web
+  server.
+- Applies to `web_api/routes.rs`, `web_api/middleware/intent.rs`,
   `examples/server.rs`, `deploy/systemd/cc-switch-web.service`,
   `scripts/install-cc-switch-web-service.sh`.
 
 #### 2. Signatures
 
-- `web_api/middleware/auth.rs::require_auth(req, next) -> Response`
-- `web_api/middleware/auth.rs::is_configured() -> bool`
-- Env: `CC_SWITCH_WEB_AUTH_PASSWORD` (enables auth), `CC_SWITCH_WEB_AUTH_USER`
-  (default `cc-switch`).
+- `web_api/middleware/intent.rs::require_same_origin_intent(req, next) -> Response`
+- `web_api/middleware/intent.rs::check_same_origin_intent(req) -> Result<(), Response>`
+- Env: `HOST` (default `127.0.0.1`), `PORT` (default `3010`).
 
 #### 3. Contracts
 
-- `require_auth` is layered in `build_router` and enforces HTTP Basic on `/api/*`
-  EXCEPT exactly `/api/health` (exact equality) and non-`/api/` static SPA assets.
-- Auth is enabled iff `CC_SWITCH_WEB_AUTH_PASSWORD` is non-empty; the credential
-  comparison is constant-time (`ct_eq`).
-- `examples/server.rs` REFUSES a non-loopback bind unless `auth::is_configured()`.
-- Static SPA assets stay public so the browser loads the app, then an `/api` 401
-  with `WWW-Authenticate: Basic` triggers the native prompt — no frontend change.
-- `ALLOW_HTTP_BASIC_OVER_HTTP` is REMOVED (a misnomer — no auth existed). The
-  password ships in a `0600` systemd drop-in; install uses `restart`, not
-  `enable --now` (the latter does not restart an already-running unit).
-- **CSRF + rate-limit are intentionally ABSENT (audit P4-C)**: the prior `middleware/
-  {csrf,rate_limit}.rs` stubs, the `/system/csrf-token` endpoint, and the FE adapter
-  X-CSRF token plumbing were DELETED, not wired. HTTP Basic over the encrypted
-  Tailscale tunnel is the control; cookie-CSRF is not the threat model (Basic creds
-  aren't ambient like cookies; the default CORS is same-origin). Do NOT re-add CSRF
-  token plumbing or advertise CSRF/rate-limit/cookie-session in docs. Mutating `/api`
-  calls `fetch` directly with `credentials: "include"`.
-- **Residual authenticated-only vectors (06-15 follow-up)**: with C2 the whole `/api`
-  is auth-gated, so the remaining "write→exec"/"file-read" surfaces are OPERATOR-ONLY
-  (the single authenticated user configuring their own machine):
-  - `get-session-messages?sourcePath=` now root-guards reads exactly like
-    `delete_session` (`session_manager::load_messages` resolves the provider's session
-    roots, canonicalizes, and rejects out-of-root paths; the `sqlite:<db>` form must be
-    the provider's own DB) — out-of-root reads are rejected before any bytes.
-  - `POST /api/mcp/upsert-mcp-server` writes an MCP stdio command that runs on the next
-    CLI launch. This is the INTENDED operator feature; ACCEPTED post-C2 (no confirmation
-    gate). If the tailnet ever becomes multi-user, reconsider a confirmation gate or
-    command allowlist.
-  - OAuth token files are written `0o600` on Linux; encryption-at-rest is out of scope
-    for a single-user host (key-management cost > benefit when 0o600 already gates other
-    local users).
+- The Web API is unauthenticated by design, including when the standalone server
+  binds `0.0.0.0`. Any host that can reach `PORT` can operate the instance.
+- Do not support `CC_SWITCH_WEB_AUTH_PASSWORD`, `CC_SWITCH_WEB_AUTH_USER`,
+  Basic Auth challenges, API tokens, cookie sessions, or replacement login paths
+  in this posture.
+- `examples/server.rs` must allow non-loopback binds without checking auth
+  configuration.
+- `require_same_origin_intent` is layered in `build_router` and applies only a
+  browser same-origin intent guard to state-changing `/api/*` methods.
+- `/api/health` (exact equality) and non-`/api/` static SPA assets stay public.
+- CORS preflight (`OPTIONS` with `Origin`) reaches the inner `CorsLayer`; the
+  real mutating request is still checked by same-origin intent.
+- Same-origin intent accepts `Sec-Fetch-Site: same-origin|none`, accepts matching
+  `Origin`/`Host`, rejects cross-site or opaque `Origin`, and accepts direct
+  clients with no `Origin`/Fetch Metadata.
+- Install uses `restart`, not `enable --now` (the latter does not restart an
+  already-running unit), and removes the legacy `auth.conf` systemd drop-in so
+  old `CC_SWITCH_WEB_AUTH_PASSWORD` values cannot create confusing half-auth
+  deployments.
+- **CSRF token + rate-limit remain intentionally ABSENT**: the prior `middleware/
+  {csrf,rate_limit}.rs` stubs, the `/system/csrf-token` endpoint, and the FE
+  adapter X-CSRF token plumbing were deleted, not wired. Do not re-add CSRF token
+  plumbing or advertise CSRF/rate-limit/cookie-session in docs.
+- **Residual unauthenticated operator vectors**: the full API surface remains
+  open to reachable network clients by product decision. This includes provider
+  secret management, OAuth account management, MCP command configuration,
+  database import/export, and proxy takeover. Do not silently add read-only mode
+  or route-specific confirmations as part of this contract.
 - **Body-logging is privacy-by-default (06-15 follow-up)**: full request/response bodies
   (prompts + model outputs) and SSE data are logged ONLY at `log::debug!`
   (`proxy/forwarder.rs`, `proxy/response_processor.rs`). The shipped systemd unit defaults
@@ -1357,27 +1354,31 @@ env:
 
 #### 4. Validation & Error Matrix
 
-- A secret/mutating `/api` route reachable without valid creds while a password is
-  set -> reject.
-- The exemption widened to a prefix/`starts_with` match (e.g. `/api/healthz`) ->
-  reject; it must be exact `/api/health`.
-- Non-loopback bind starts with no password configured -> reject (server must
-  refuse to listen).
-- A change that requires the frontend to send credentials -> reject; Basic is
-  browser-native.
+- A route returns `401` with `WWW-Authenticate: Basic` -> reject; Basic Auth was
+  removed.
+- Non-loopback bind refuses to start because no password is set -> reject.
+- A cross-site mutating request is accepted -> reject.
+- An `OPTIONS` + `Origin` preflight is rejected before CORS -> reject.
+- The public health exemption is widened to a prefix/`starts_with` match (e.g.
+  `/api/healthz`) -> reject; it must remain exact `/api/health`.
+- Installer leaves `auth.conf` in the service drop-in after install -> reject.
 
 #### 5. Good/Base/Bad Cases
 
-- Good: with the password set, `/api/providers` without creds returns 401, with
-  creds returns 200; `/api/health` and the SPA bundle stay public.
-- Base: loopback dev with no password -> middleware is a no-op (open) — permissible
-  ONLY because `server.rs` forbids that combination on a non-loopback bind.
-- Bad: re-introducing `ALLOW_HTTP_BASIC_OVER_HTTP` as the non-loopback gate, or
-  exempting `/api/*` beyond `/api/health`.
+- Good: `HOST=0.0.0.0` starts without auth env vars; `/api/providers` is
+  reachable without credentials; a cross-site POST still returns 403.
+- Base: direct clients such as curl can POST with no `Origin`; this is accepted
+  because there is no application-layer access control.
+- Bad: keeping dormant Basic Auth code or env vars "just in case"; it creates
+  misleading deployments and conflicts with the unauthenticated posture.
 
 #### 6. Tests Required
 
-- `web_api::middleware::auth::tests` (`ct_eq_basic`, `credentials_match_*`).
+- `web_api::middleware::intent::tests` for cross-site 403, same-origin pass,
+  `Sec-Fetch-Site: none` pass, no-origin direct-client pass, opaque null 403,
+  and bracketed IPv6 Origin/Host behavior.
+- Test or script-check installer removal of legacy `auth.conf` behavior when
+  changing `scripts/install-cc-switch-web-service.sh`.
 - Web server cargo check.
 
 #### 7. Wrong vs Correct
@@ -1385,13 +1386,16 @@ env:
 ##### Wrong
 
 ```rust
-let is_public = !path.starts_with("/api/") || path.starts_with("/api/health");
+if !addr.ip().is_loopback() && !auth::is_configured() {
+    return Err("non-loopback bind requires CC_SWITCH_WEB_AUTH_PASSWORD".into());
+}
 ```
 
 ##### Correct
 
 ```rust
-let is_public = !path.starts_with("/api/") || path == "/api/health";
+let addr = SocketAddr::new(host, port);
+// Unauthenticated Web API: non-loopback binds are allowed.
 ```
 
 ---
@@ -1732,13 +1736,13 @@ state.app_state.proxy_service
 #### 1. Scope / Trigger
 
 - Trigger: changing usage-script outbound dialing, any user-URL service dial,
-  upstream-error logging, the failover-enable path, the web auth middleware,
-  the headless server startup, or the shared IP block-list.
+  upstream-error logging, the failover-enable path, the web same-origin intent
+  middleware, the headless server startup, or the shared IP block-list.
 - Applies to `usage_script.rs`, `services/provider/usage.rs`,
   `services/provider/mod.rs`, `commands/provider.rs`,
   `web_api/handlers/{usage,providers}.rs`, `services/{stream_check,webdav,s3,
   speedtest}.rs`, `proxy/handlers.rs`, `services/proxy.rs`,
-  `web_api/middleware/auth.rs`, `examples/server.rs`, `proxy/ip_guard.rs`,
+  `web_api/middleware/intent.rs`, `examples/server.rs`, `proxy/ip_guard.rs`,
   `web_api/handlers/common.rs`.
 
 #### 2. Signatures
@@ -1748,7 +1752,7 @@ state.app_state.proxy_service
 - `usage_script::{execute_usage_script, send_http_request}(.., enforce_outbound_guard: bool)`.
 - `ProviderService::{query_usage, query_usage_with_templates, test_usage_script}(.., enforce_outbound_guard: bool)`.
 - `proxy/handlers.rs::compact_error_message(message, max_chars)`.
-- `web_api/middleware/auth.rs::{require_auth, check_same_origin_intent, is_state_changing}`.
+- `web_api/middleware/intent.rs::{require_same_origin_intent, check_same_origin_intent, is_state_changing}`.
 - `examples/server.rs::spawn_background_workers(state)` + `run_session_usage_sync`.
 
 #### 3. Contracts
@@ -1793,10 +1797,10 @@ state.app_state.proxy_service
   the Origin side (`url::Url::parse(&format!("http://{h}")).host_str()`), NOT a
   naive `split(':')` — the latter corrupts a bracketed IPv6 Host (`[::1]:3010` →
   `[`) and falsely 403s a legitimate same-origin IPv6 request.
-- **CORS preflight (FIX 7)**: in `require_auth`, an `OPTIONS` request carrying
+- **CORS preflight (FIX 7)**: in `require_same_origin_intent`, an `OPTIONS` request carrying
   `Origin` is passed through to the inner `CorsLayer` (no 401), so
   `CORS_ALLOW_ORIGINS` can negotiate; the real cross-origin request is still
-  auth-checked + FIX-5-checked.
+  FIX-5-checked.
 - **Background workers (FIX 6)**: `examples/server.rs` spawns the tauri-free
   desktop-parity workers after `run_post_db_bootstrap`: periodic DB backup
   (initial + daily) and session-usage sync (initial + 60s). WebDAV/S3 auto-sync
@@ -1835,8 +1839,7 @@ state.app_state.proxy_service
   this deployment and the per-hop redirect block is desirable defense-in-depth;
   accepted as-is, do not code-gate it back to web-only.
 - **Dead-code cleanup (round-2 FIX9/FIX E)**: the FE `WebAuthError` /
-  `isWebAuthError` path was removed because Basic-401 is browser-native (the
-  browser re-prompts; no app-level handler is needed). The Rust bootstrap
+  `isWebAuthError` path was removed with the Basic Auth flow. The Rust bootstrap
   `RuntimeMode` enum and `migration_marker_path()` were removed as unused (F5/F6
   are fully integrated). Do not re-introduce them.
 
@@ -1850,7 +1853,7 @@ state.app_state.proxy_service
   bypass).
 - Upstream error body persisted to the request-log DB untruncated -> reject.
 - `auto_failover_enabled=true` persisted before a failed switch -> reject.
-- A cross-site mutating POST accepted because auth alone passed -> reject.
+- A cross-site mutating POST accepted without same-origin intent -> reject.
 - An `OPTIONS`+Origin preflight 401'd before the CorsLayer -> reject.
 - A new exotic range added in `common.rs` instead of `ip_guard.rs` -> reject
   (SSOT divergence).
@@ -1873,7 +1876,7 @@ state.app_state.proxy_service
   guard_outbound_url_blocks_internal_and_allows_public}`.
 - `proxy::handlers::tests::upstream_error_body_is_truncated_before_db_persistence`.
 - `services::proxy` F9: `enable_auto_failover_does_not_persist_flag_when_switch_fails`.
-- `web_api::middleware::auth::tests` CSRF intent cases (cross-site 403,
+- `web_api::middleware::intent::tests` same-origin intent cases (cross-site 403,
   same-origin/none/no-origin pass, opaque null 403).
 - `examples/server.rs` `main_spawns_background_workers_after_bootstrap`.
 - Gates: desktop `cargo clippy --features desktop -- -D warnings` + `cargo test`;

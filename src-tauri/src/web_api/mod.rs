@@ -7,10 +7,9 @@
 //! Architecture:
 //!   - `handlers/`   — one file per Web sub-resource (25 modules). Each
 //!                     exports `pub fn router(state: ApiState) -> Router`.
-//!   - `middleware/` — auth (HTTP Basic, gated on `CC_SWITCH_WEB_AUTH_PASSWORD`),
-//!                     CORS (same-origin default), and security headers
-//!                     (CSP/HSTS/Permissions-Policy). Body limit is applied in
-//!                     `routes.rs` via `DefaultBodyLimit`.
+//!   - `middleware/` — same-origin intent guard, CORS (same-origin default), and
+//!                     security headers (CSP/HSTS/Permissions-Policy). Body
+//!                     limit is applied in `routes.rs` via `DefaultBodyLimit`.
 //!   - `state.rs`    — shared `ApiState` (DB pool + sink + cancel token).
 //!   - `routes.rs`   — root router assembly + SPA fallback.
 
