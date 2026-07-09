@@ -686,3 +686,37 @@ Synced selected product-upstream v3.16.5 runtime changes into the Web-first fork
 ### Next Steps
 
 - None - task complete
+
+
+## Session 20: Audit and fix upstream inherited bugs
+
+**Date**: 2026-07-09
+**Task**: Audit and fix upstream inherited bugs
+**Branch**: `fix/web-audit-phase1-2`
+
+### Summary
+
+Ported product-upstream bug fixes for GLM 5.2 media fallback, Codex 30-day quota display, OpenCode resume commands, and usage/quota transient-failure last-good behavior with Web cache-bridge hardening.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `5b37ea2e` | (see git log) |
+| `716fdb9a` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
