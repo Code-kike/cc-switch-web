@@ -720,3 +720,34 @@ Ported product-upstream bug fixes for GLM 5.2 media fallback, Codex 30-day quota
 ### Next Steps
 
 - None - task complete
+
+
+## Session 21: Replace persistent cc-switch web service
+
+**Date**: 2026-07-09
+**Task**: Replace persistent cc-switch web service
+**Branch**: `fix/web-audit-phase1-2`
+
+### Summary
+
+Built the current Web frontend and standalone web-server binary, installed them through scripts/install-cc-switch-web-service.sh, restarted cc-switch-web.service, generated/preserved systemd Web auth configuration, and verified service status plus /api/health.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+(No commits - planning session)
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
