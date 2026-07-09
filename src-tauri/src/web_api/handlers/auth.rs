@@ -416,13 +416,13 @@ async fn get_codex_oauth_quota(
         }
     };
 
-    Ok(json_ok(
-        crate::services::subscription::query_codex_quota(
-            &token,
-            Some(&id),
-            "codex_oauth",
-            "Codex OAuth access token expired or rejected. Please re-login via cc-switch.",
-        )
-        .await,
-    ))
+    let quota = crate::services::subscription::query_codex_quota(
+        &token,
+        Some(&id),
+        "codex_oauth",
+        "Codex OAuth access token expired or rejected. Please re-login via cc-switch.",
+    )
+    .await
+    .map_err(super::common::ApiError::from_service_message)?;
+    Ok(json_ok(quota))
 }

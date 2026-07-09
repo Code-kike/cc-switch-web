@@ -530,25 +530,19 @@ async fn query_provider_usage(
         true,
     )
     .await;
-    let snapshot = match &inner {
-        Ok(result) => result.clone(),
-        Err(error) => crate::provider::UsageResult {
-            success: false,
-            data: None,
-            error: Some(error.to_string()),
-        },
-    };
-    let payload = serde_json::json!({
-        "kind": "script",
-        "appType": app_type.as_str(),
-        "providerId": &provider_id,
-        "data": &snapshot,
-    });
-    state.sink.emit_json("usage-cache-updated", payload);
-    state
-        .app_state
-        .usage_cache
-        .put_script(app_type, provider_id, snapshot);
+    if let Ok(snapshot) = &inner {
+        let payload = serde_json::json!({
+            "kind": "script",
+            "appType": app_type.as_str(),
+            "providerId": &provider_id,
+            "data": snapshot,
+        });
+        state.sink.emit_json("usage-cache-updated", payload);
+        state
+            .app_state
+            .usage_cache
+            .put_script(app_type, provider_id, snapshot.clone());
+    }
     let result = inner.map_err(ApiError::from_anyhow)?;
     Ok(json_ok(result))
 }

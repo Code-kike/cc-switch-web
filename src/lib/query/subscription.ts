@@ -1,9 +1,13 @@
-import { useQuery } from "@tanstack/react-query";
+import { useRef } from "react";
+import { useQuery, type UseQueryResult } from "@tanstack/react-query";
 import { subscriptionApi } from "@/lib/api/subscription";
 import type { AppId } from "@/lib/api/types";
 import type { ProviderMeta } from "@/types";
+import type { SubscriptionQuota } from "@/types/subscription";
 import { resolveManagedAccountId } from "@/lib/authBinding";
 import { PROVIDER_TYPES } from "@/config/constants";
+import { resolveDisplayUsage, type LastGoodSnapshot } from "./queries";
+import { extractErrorMessage } from "@/utils/errorUtils";
 
 const REFETCH_INTERVAL = 5 * 60 * 1000; // 5 minutes
 
@@ -11,6 +15,52 @@ export const subscriptionKeys = {
   all: ["subscription"] as const,
   quota: (appId: AppId) => [...subscriptionKeys.all, "quota", appId] as const,
 };
+
+const QUERY_REJECTED_PLACEHOLDER: SubscriptionQuota = {
+  tool: "",
+  credentialStatus: "valid",
+  credentialMessage: null,
+  success: false,
+  tiers: [],
+  extraUsage: null,
+  error: null,
+  queriedAt: null,
+};
+
+function useQuotaKeepLastGood(
+  query: UseQueryResult<SubscriptionQuota>,
+  scopeKey: string,
+) {
+  const lastGoodRef = useRef<{
+    key: string;
+    snap: LastGoodSnapshot<SubscriptionQuota> | null;
+  }>({ key: scopeKey, snap: null });
+
+  if (lastGoodRef.current.key !== scopeKey) {
+    lastGoodRef.current = { key: scopeKey, snap: null };
+  }
+
+  const { data, lastGood } = resolveDisplayUsage(
+    query.data,
+    query.dataUpdatedAt,
+    lastGoodRef.current.snap,
+    Date.now(),
+    { rejected: query.isError },
+  );
+  lastGoodRef.current.snap = lastGood;
+
+  return {
+    ...query,
+    data:
+      data ??
+      (query.isError
+        ? {
+            ...QUERY_REJECTED_PLACEHOLDER,
+            error: extractErrorMessage(query.error) || null,
+          }
+        : undefined),
+  };
+}
 
 export function useSubscriptionQuota(
   appId: AppId,
@@ -23,7 +73,7 @@ export function useSubscriptionQuota(
       ? Math.max(autoQueryIntervalMinutes, 1) * 60 * 1000
       : false;
 
-  return useQuery({
+  const query = useQuery({
     queryKey: subscriptionKeys.quota(appId),
     queryFn: () => subscriptionApi.getQuota(appId),
     enabled: enabled && ["claude", "codex", "gemini"].includes(appId),
@@ -36,6 +86,8 @@ export function useSubscriptionQuota(
         : REFETCH_INTERVAL,
     retry: 1,
   });
+
+  return useQuotaKeepLastGood(query, appId);
 }
 
 export interface UseCodexOauthQuotaOptions {
@@ -59,7 +111,7 @@ export function useCodexOauthQuota(
 ) {
   const { enabled = true, autoQuery = false } = options;
   const accountId = resolveManagedAccountId(meta, PROVIDER_TYPES.CODEX_OAUTH);
-  return useQuery({
+  const query = useQuery({
     queryKey: ["codex_oauth", "quota", accountId ?? "default"],
     queryFn: () => subscriptionApi.getCodexOauthQuota(accountId),
     enabled,
@@ -69,4 +121,6 @@ export function useCodexOauthQuota(
     staleTime: REFETCH_INTERVAL,
     retry: 1,
   });
+
+  return useQuotaKeepLastGood(query, accountId ?? "default");
 }

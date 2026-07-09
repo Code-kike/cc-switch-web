@@ -232,7 +232,11 @@ for key in [cleaned.clone(), cleaned.to_lowercase(), cleaned.to_lowercase().repl
   partial script); non-zenmux keeps per-field script-over-provider resolution
   (`resolve_coding_plan_credentials` in `services/provider/usage.rs`).
 - Saved provider-card refresh must go through `usageApi.query`, which reaches `query_usage_with_templates`.
-- Frontend API wrappers should normalize transport/API errors into `UsageResult { success: false, error }` so the provider UI can show actionable failures.
+- Saved provider-card queries through `usageApi.query` must reject transport/Web
+  API errors so React Query can retry and the display layer can preserve the
+  last good value. Script test flows through `usageApi.testScript` still
+  normalize those errors into `UsageResult { success: false, error }` because
+  the modal needs an inline validation result instead of a rejected query.
 - `UsageScriptModal` success toasts should format rows through
   `formatUsageDataSummary` so saved-query and test-query displays stay
   consistent across sparse custom-script payloads.
@@ -259,7 +263,9 @@ for key in [cleaned.clone(), cleaned.to_lowercase(), cleaned.to_lowercase().repl
 
 #### 6. Tests Required
 
-- Unit test `usageApi.query` and `usageApi.testScript` error normalization for Web API failures.
+- Unit test that `usageApi.query` rejects Web API failures while
+  `usageApi.testScript` normalizes the same class of failures into a failed
+  `UsageResult`.
 - Unit test `formatUsageDataSummary` for sparse rows where `remaining` or
   `unit` is absent.
 - Component tests asserting each built-in template calls `usageApi.testScript` with the expected template type.
@@ -302,6 +308,147 @@ formatUsageDataSummary(plan, labels);
 ```
 
 The same pattern applies to `token_plan` and `github_copilot`.
+
+---
+
+### Scenario: Usage and Quota Transient Failure Last-Good Display
+
+#### 1. Scope / Trigger
+
+- Trigger: usage or quota refresh spans Rust network callers, Tauri commands,
+  Web API handlers, React Query wrappers, and cache-bridge events.
+- Applies when changing `services/balance.rs`, `services/coding_plan.rs`,
+  `services/subscription.rs`, `services/provider/usage.rs`,
+  `commands/provider.rs`, `commands/subscription.rs`, Web API usage/quota
+  handlers, `usageApi.query`, `useUsageQuery`, `useSubscriptionQuota`,
+  `useCodexOauthQuota`, or `useUsageCacheBridge`.
+
+#### 2. Signatures
+
+- Rust service boundary:
+  - `get_balance(base_url, api_key) -> Result<UsageResult, String>`
+  - `get_coding_plan_quota(base_url, api_key) -> Result<SubscriptionQuota, String>`
+  - `get_subscription_quota(tool) -> Result<SubscriptionQuota, String>`
+  - `ProviderService::query_usage_with_templates(...) -> anyhow::Result<UsageResult>`
+- Tauri/Web command boundary:
+  - `queryProviderUsage(...) -> Result<UsageResult, String>`
+  - `get_subscription_quota(...) -> Result<SubscriptionQuota, String>`
+  - `POST /api/providers/queryproviderusage`
+  - `GET /api/subscription/get-subscription-quota`
+- Frontend query boundary:
+  - `usageApi.query(providerId, appId): Promise<UsageResult>`
+  - `resolveDisplayUsage<T extends UsageLikeResult>(raw, dataUpdatedAt, prevLastGood, now, options)`
+
+#### 3. Contracts
+
+- Service callers use two error channels:
+  - `Err(String)`: transient transport/read-body failures, such as network
+    dial errors, timeouts, connection reset before response, or truncated
+    response bodies.
+  - `Ok({ success: false, error })`: deterministic failures, such as missing
+    credentials, unsupported providers, auth rejection, completed non-2xx HTTP
+    responses, invalid complete JSON bodies, and provider business errors.
+- Tauri commands and Web handlers that write `UsageCache` or emit
+  `usage-cache-updated` may do so only for `Ok` snapshots. They must propagate
+  `Err` without creating a synthetic failed snapshot, or the cache bridge can
+  overwrite the frontend's last good display value.
+- Saved `usageApi.query` must reject command/Web API errors. Do not catch the
+  rejection and wrap it into `UsageResult` at the API adapter layer.
+- `usageApi.testScript` is the exception: it is an explicit validation action
+  and must continue to return a failed `UsageResult` for transport/API errors.
+- `resolveDisplayUsage` is the display policy for usage-like values. It keeps
+  successful snapshots for `KEEP_LAST_GOOD_MS` (10 minutes), reuses them for
+  transient failures inside that window, and clears them for deterministic
+  failures.
+- HTTP `429` and `5xx` `Ok(success:false)` snapshots may reuse last-good in the
+  UI, but they are still deterministic service responses and may be cached or
+  emitted. Transport `Err` snapshots must not be cached or emitted.
+
+#### 4. Validation & Error Matrix
+
+- Network send failure -> service `Err`; query rejects; React Query retries;
+  command/Web cache emit is skipped; last-good remains visible when available.
+- Read-body interruption after HTTP success -> service `Err`; query rejects;
+  last-good remains visible when available.
+- HTTP `401`/`403` -> `Ok(success:false)` with expired/auth error; cache emit is
+  allowed; last-good is cleared and the auth failure is shown.
+- HTTP `429` or `5xx` completed response -> `Ok(success:false)`; cache emit is
+  allowed; display may reuse last-good inside the 10-minute window.
+- Complete but invalid JSON body -> `Ok(success:false)` parse error; last-good
+  is cleared so schema/provider regressions are visible.
+- First saved query rejects with no last-good snapshot -> component must render
+  a failed state with manual retry, not disappear.
+
+#### 5. Good/Base/Bad Cases
+
+- Good: `balance.rs` reads response bytes first; `.bytes().await` errors return
+  `Err`, while `serde_json::from_slice` errors return `Ok(success:false)`.
+- Good: `commands/provider.rs` emits `usage-cache-updated` only inside
+  `if let Ok(snapshot) = &inner`.
+- Base: `usageApi.testScript` catches an invocation failure and returns
+  `{ success: false, error }` for the modal.
+- Bad: wrapping `usageApi.query` rejection into `{ success: false }`; this
+  prevents retry behavior and makes a transient outage look deterministic.
+- Bad: creating `UsageResult { success: false, error }` from a command `Err`
+  and sending it through `usage-cache-updated`; this poisons the React Query
+  cache bridge and hides the last-good path.
+
+#### 6. Tests Required
+
+- Rust tests for transient send/read failures asserting `Err`, and for
+  deterministic `401`, `429`, and invalid JSON asserting `Ok(success:false)`.
+- Web-server cargo check after changing Web API handler signatures:
+  - `cargo check --manifest-path src-tauri/Cargo.toml --no-default-features --features web-server --example server`
+- Unit tests for `usageApi.query` rejecting saved-query Web API errors and
+  `usageApi.testScript` normalizing validation errors.
+- Unit tests for `isTransientUsageError` and `resolveDisplayUsage`, including
+  `401` clearing last-good, `429`/`5xx` preserving it, rejected stale success
+  expiring after 10 minutes, and subscription-quota-shaped values.
+- Component coverage when changing footer rendering so a first rejected query
+  still exposes a retry affordance.
+
+#### 7. Wrong vs Correct
+
+##### Wrong
+
+```rust
+let snapshot = match &inner {
+    Ok(result) => result.clone(),
+    Err(error) => UsageResult {
+        success: false,
+        data: None,
+        error: Some(error.to_string()),
+    },
+};
+state.usage_cache.put_script(app_type, provider_id, snapshot);
+```
+
+```typescript
+query: async (providerId, appId) => {
+  try {
+    return await invoke("queryProviderUsage", { providerId, app: appId });
+  } catch (error) {
+    return { success: false, error: extractErrorMessage(error) };
+  }
+};
+```
+
+##### Correct
+
+```rust
+if let Ok(snapshot) = &inner {
+    state
+        .usage_cache
+        .put_script(app_type, provider_id, snapshot.clone());
+}
+inner
+```
+
+```typescript
+query: async (providerId, appId) => {
+  return await invoke("queryProviderUsage", { providerId, app: appId });
+};
+```
 
 ---
 

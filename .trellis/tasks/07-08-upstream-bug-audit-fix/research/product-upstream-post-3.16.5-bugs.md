@@ -35,13 +35,18 @@ The first audit slice follows the user's selected source: product-upstream inher
 - Reason to port: tiny session-manager correctness fix; current fork still emits `opencode session resume <id>`, while product upstream switched to `opencode -s <id>`.
 - Expected local impact: copied/resumed OpenCode sessions use the current CLI command.
 
-## Deferred candidates
+## Candidate fixes selected for second implementation batch
 
 ### Usage transient-failure keep-last-good
 
 - Upstream commit: `2df2212c fix(usage): reject transient transport failures so retry and keep-last-good work`
-- Reason to defer from first batch: high-value but broad cross-layer change touching balance, coding plan, subscription, provider usage, query cache behavior, command emit semantics, and tests.
-- Follow-up recommendation: implement as a separate focused batch after the small fixes are green.
+- Reason to port after the first batch: high-value cross-layer correctness fix
+  touching balance, coding plan, subscription, provider usage, query cache
+  behavior, command emit semantics, and tests.
+- Expected local impact: transient transport failures reject and retry without
+  poisoning the Web cache bridge or hiding last-good usage/quota data.
+
+## Deferred candidates
 
 ### Codex renamed session titles
 

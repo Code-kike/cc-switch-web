@@ -3,6 +3,7 @@ import {
   type UseQueryResult,
   keepPreviousData,
 } from "@tanstack/react-query";
+import { useRef } from "react";
 import {
   providersApi,
   settingsApi,
@@ -18,6 +19,7 @@ import type {
   SessionMessage,
 } from "@/types";
 import { usageKeys } from "@/lib/query/usage";
+import { extractErrorMessage } from "@/utils/errorUtils";
 
 const sortProviders = (
   providers: Record<string, Provider>,
@@ -99,6 +101,101 @@ export interface UseUsageQueryOptions {
   autoQueryInterval?: number; // 自动查询间隔（分钟），0 表示禁用
 }
 
+export interface UsageLikeResult {
+  success: boolean;
+  error?: string | null;
+}
+
+export interface LastGoodSnapshot<T> {
+  data: T;
+  at: number;
+}
+
+export type LastGoodUsage = LastGoodSnapshot<UsageResult>;
+
+export const KEEP_LAST_GOOD_MS = 10 * 60 * 1000;
+
+export function isTransientUsageError(result: UsageLikeResult): boolean {
+  if (result.success) return false;
+  const error = result.error?.toLowerCase() ?? "";
+  if (!error) return false;
+
+  if (
+    error.includes("network error") ||
+    error.includes("request failed") ||
+    error.includes("请求失败") ||
+    error.includes("failed to read response") ||
+    error.includes("读取响应失败")
+  ) {
+    return true;
+  }
+
+  const httpMatch = error.match(/http\s+(\d{3})/);
+  if (httpMatch) {
+    const status = Number(httpMatch[1]);
+    return (status >= 500 && status <= 599) || status === 429;
+  }
+
+  return false;
+}
+
+export interface ResolveDisplayUsageOptions {
+  rejected?: boolean;
+  keepMs?: number;
+}
+
+export function resolveDisplayUsage<T extends UsageLikeResult>(
+  raw: T | undefined,
+  dataUpdatedAt: number,
+  prevLastGood: LastGoodSnapshot<T> | null,
+  now: number,
+  options: ResolveDisplayUsageOptions = {},
+): {
+  data: T | undefined;
+  lastQueriedAt: number | null;
+  lastGood: LastGoodSnapshot<T> | null;
+} {
+  const { rejected = false, keepMs = KEEP_LAST_GOOD_MS } = options;
+
+  if (rejected && raw?.success) {
+    const lastGood = { data: raw, at: dataUpdatedAt || now };
+    if (now - lastGood.at < keepMs) {
+      return { data: raw, lastQueriedAt: lastGood.at, lastGood };
+    }
+    return { data: undefined, lastQueriedAt: lastGood.at, lastGood };
+  }
+
+  let lastGood = prevLastGood;
+
+  if (raw?.success) {
+    const snapshot = { data: raw, at: dataUpdatedAt || now };
+    return { data: raw, lastQueriedAt: snapshot.at, lastGood: snapshot };
+  }
+
+  if (!raw) {
+    return {
+      data: undefined,
+      lastQueriedAt: lastGood?.at ?? null,
+      lastGood,
+    };
+  }
+
+  if (isTransientUsageError(raw) && lastGood && now - lastGood.at < keepMs) {
+    return {
+      data: lastGood.data,
+      lastQueriedAt: lastGood.at,
+      lastGood,
+    };
+  }
+
+  const shouldClearLastGood = !isTransientUsageError(raw);
+  return {
+    data: raw,
+    lastQueriedAt: dataUpdatedAt || now,
+    lastGood: shouldClearLastGood ? null : lastGood,
+  };
+}
+
 export const useUsageQuery = (
   providerId: string,
   appId: AppId,
@@ -113,6 +210,15 @@ export const useUsageQuery = (
       ? autoQueryInterval * 60 * 1000 // 与刷新间隔保持一致
       : 5 * 60 * 1000; // 默认 5 分钟
 
+  const lastGoodRef = useRef<{
+    key: string;
+    snap: LastGoodSnapshot<UsageResult> | null;
+  }>({ key: "", snap: null });
+  const scopeKey = `${appId}:${providerId}`;
+  if (lastGoodRef.current.key !== scopeKey) {
+    lastGoodRef.current = { key: scopeKey, snap: null };
+  }
+
   const query = useQuery<UsageResult>({
     queryKey: usageKeys.script(providerId, appId),
     queryFn: async () => usageApi.query(providerId, appId),
@@ -123,14 +229,31 @@ export const useUsageQuery = (
         : false,
     refetchIntervalInBackground: true, // 后台也继续定时查询
     refetchOnWindowFocus: false,
-    retry: false,
+    retry: 1,
+    retryDelay: 1500,
     staleTime, // 使用动态计算的缓存时间
     gcTime: 10 * 60 * 1000, // 缓存保留 10 分钟（组件卸载后）
   });
+  const { data, lastQueriedAt, lastGood } = resolveDisplayUsage(
+    query.data,
+    query.dataUpdatedAt,
+    lastGoodRef.current.snap,
+    Date.now(),
+    { rejected: query.isError },
+  );
+  lastGoodRef.current.snap = lastGood;
 
   return {
     ...query,
-    lastQueriedAt: query.dataUpdatedAt || null,
+    data:
+      data ??
+      (query.isError
+        ? {
+            success: false,
+            error: extractErrorMessage(query.error) || undefined,
+          }
+        : undefined),
+    lastQueriedAt,
   };
 };
 

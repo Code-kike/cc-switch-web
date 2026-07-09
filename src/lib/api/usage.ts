@@ -21,15 +21,7 @@ import type { TemplateType } from "@/config/constants";
 export const usageApi = {
   // Provider usage script methods
   query: async (providerId: string, appId: AppId): Promise<UsageResult> => {
-    try {
-      return await invoke("queryProviderUsage", { providerId, app: appId });
-    } catch (error) {
-      return {
-        success: false,
-        data: undefined,
-        error: extractErrorMessage(error) || "Usage query failed",
-      };
-    }
+    return await invoke("queryProviderUsage", { providerId, app: appId });
   },
 
   testScript: async (

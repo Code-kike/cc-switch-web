@@ -38,7 +38,9 @@ Identify, prioritize, and fix bugs that this Web-first fork inherited from produ
   - Volcano GLM 5.2 image fallback detection (`52534618`, issue `#5025`).
   - Codex free-plan 30-day quota tier rendering (`7a7d41c8`, issue `#3651` / PR `#4886`).
   - OpenCode session resume command update (`0cda8d46`, PR `#2359`).
-- Defer larger product-upstream changes, including usage transient-failure keep-last-good, Codex renamed session title lookup, and project profiles, to later batches unless the small batch reveals a dependency.
+- Second implementation batch ports the product-upstream usage transient-failure
+  fix (`2df2212c`) with Web-first cache-bridge hardening.
+- Defer remaining larger product-upstream changes, including Codex renamed session title lookup and project profiles, to later batches unless this audit reveals a dependency.
 
 ## Acceptance Criteria (evolving)
 
@@ -85,12 +87,45 @@ First batch: apply three focused upstream fixes manually against the Web-first f
 - `src-tauri/src/services/subscription.rs`, `src/components/SubscriptionQuotaFooter.tsx`, and locale files for `"30_day"` quota display.
 - `src-tauri/src/session_manager/providers/opencode.rs` tests for `opencode -s <session_id>` resume commands.
 
+Second batch: port upstream commit `2df2212c` deliberately instead of
+cherry-picking. The Web fork has an SSE/React Query cache bridge that upstream
+desktop does not share exactly, so transient failures must be modeled at both
+the service channel and cache-emission boundary:
+
+- Network send/read-body failures return `Err` so React Query can retry and the
+  display layer can preserve the last good value.
+- Auth, completed HTTP errors, parse errors, and provider business failures
+  remain `Ok(success:false)` so deterministic failures are visible.
+- Tauri commands and Web handlers emit/cache only `Ok` snapshots; they must not
+  synthesize failed snapshots from `Err` values because that would overwrite the
+  frontend last-good cache bridge.
+- Saved `usageApi.query` rejects transport/Web API failures; `usageApi.testScript`
+  continues to normalize validation failures into a failed `UsageResult`.
+- `resolveDisplayUsage` centralizes last-good display policy for provider usage
+  and subscription quota shaped results, with a 10-minute retention window.
+
 ## Implementation Update (2026-07-08)
 
 - Ported Volcano GLM 5.2 media fallback behavior into `src-tauri/src/proxy/media_sanitizer.rs`: exact `glm-5.2` text-only classification, no prefix match for `glm-5.2v`, and reactive handling for text-only upstream errors that do not mention image/media.
 - Ported Codex free-plan `30_day` quota support across backend tier mapping, tray summary grouping, frontend tier display, and en/zh/ja locale keys.
 - Ported the OpenCode resume command change from `opencode session resume <id>` to `opencode -s <id>` for both sqlite and file-backed session metadata.
 - Updated `.trellis/spec/frontend/quality-guidelines.md` with the cross-layer subscription quota tier contract.
+
+## Implementation Update (2026-07-08, batch 2)
+
+- Ported the usage/quota transient-failure contract from product-upstream
+  `2df2212c` while preserving Web cache-bridge behavior.
+- Updated balance, coding-plan, subscription, and provider usage services so
+  transport send/read failures reject, while deterministic provider failures
+  return `success:false` payloads.
+- Updated provider/subscription Tauri commands and Web handlers so cache writes
+  and `usage-cache-updated` events happen only for `Ok` snapshots.
+- Updated saved usage queries to reject transport/Web API errors, kept
+  `testScript` normalization for modal validation, and added shared last-good
+  display resolution for provider usage, official subscription quota, and Codex
+  OAuth quota.
+- Updated `.trellis/spec/frontend/quality-guidelines.md` with the cross-layer
+  usage/quota transient failure and keep-last-good contract.
 
 ## Verification Log (2026-07-08)
 
@@ -111,6 +146,20 @@ First batch: apply three focused upstream fixes manually against the Web-first f
 - `pnpm format:check`
 - `pnpm check:web-routes` — `missing: 0`.
 - `cargo test --manifest-path src-tauri/Cargo.toml --lib` — 1476 passed, 2 ignored.
+- `git diff --check`
+
+## Verification Log (2026-07-08, batch 2)
+
+- `cargo fmt --manifest-path src-tauri/Cargo.toml`
+- `cargo check --manifest-path src-tauri/Cargo.toml`
+- `cargo check --manifest-path src-tauri/Cargo.toml --no-default-features --features web-server --example server` — passed with existing dead-code warnings in the web example.
+- `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check`
+- `pnpm exec vitest run tests/lib/keepLastGoodUsage.test.ts tests/lib/usage-api.test.ts` — 2 files and 8 tests passed.
+- `pnpm typecheck`
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib transient_` — 2 passed.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib deterministic_` — 11 passed; filter also matches unrelated deterministic tests.
+- `pnpm format:check`
+- `pnpm check:web-routes` — `missing: 0`.
 - `git diff --check`
 
 ## Decision (ADR-lite)

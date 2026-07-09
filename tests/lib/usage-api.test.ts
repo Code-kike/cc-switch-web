@@ -14,7 +14,7 @@ describe("usageApi", () => {
     });
   });
 
-  it("returns a failed UsageResult when saved usage query returns a Web API error", async () => {
+  it("rejects when saved usage query returns a Web API error", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
       new Response(
         JSON.stringify({
@@ -28,10 +28,8 @@ describe("usageApi", () => {
       ),
     );
 
-    await expect(usageApi.query("provider-1", "claude")).resolves.toEqual({
-      success: false,
-      data: undefined,
-      error: "用量查询未启用",
+    await expect(usageApi.query("provider-1", "claude")).rejects.toMatchObject({
+      message: "用量查询未启用",
     });
 
     expect(fetchMock).toHaveBeenCalledWith(

@@ -65,6 +65,7 @@ const UsageFooter: React.FC<UsageFooterProps> = ({
   const {
     data: usage,
     isFetching: loading,
+    isError,
     lastQueriedAt,
     refetch,
   } = useUsageQuery(providerId, appId, {
@@ -86,11 +87,12 @@ const UsageFooter: React.FC<UsageFooterProps> = ({
     return () => clearInterval(interval);
   }, [lastQueriedAt]);
 
-  // 只在启用用量查询且有数据时显示
-  if (!usageEnabled || !usage) return null;
+  // 只在启用用量查询且有数据时显示。瞬时 transport reject 有 last-good 时会
+  // 继续展示成功值；首次失败没有数据时也要渲染失败态，保留手动重试入口。
+  if (!usageEnabled || (!usage && !isError)) return null;
 
   // 错误状态
-  if (!usage.success) {
+  if (!usage || !usage.success) {
     if (inline) {
       return (
         <div className="inline-flex items-center gap-2 text-xs rounded-lg border border-border-default bg-card px-3 py-2 shadow-sm">
@@ -115,7 +117,7 @@ const UsageFooter: React.FC<UsageFooterProps> = ({
         <div className="flex items-center justify-between gap-2 text-xs">
           <div className="flex items-center gap-2 text-red-500 dark:text-red-400">
             <AlertCircle size={14} />
-            <span>{usage.error || t("usage.queryFailed")}</span>
+            <span>{usage?.error || t("usage.queryFailed")}</span>
           </div>
 
           {/* 刷新按钮 */}
