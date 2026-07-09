@@ -1,2 +1,0 @@
-{"file": ".trellis/tasks/07-09-remove-web-basic-auth/prd.md", "reason": "Acceptance criteria and verification log for the unauthenticated Web API change"}
-{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "Quality checklist for no Basic Auth remnants, same-origin intent behavior, and installer drop-in removal"}

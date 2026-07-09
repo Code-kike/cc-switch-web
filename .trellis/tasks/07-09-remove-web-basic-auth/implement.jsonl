@@ -1,2 +1,0 @@
-{"file": ".trellis/tasks/07-09-remove-web-basic-auth/prd.md", "reason": "Requirements and acceptance criteria for removing Web Basic Auth while keeping same-origin intent checks"}
-{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "Unauthenticated Web API + same-origin intent guard contract, installer behavior, and required tests"}
