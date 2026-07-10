@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import DailyMemoryPanel from "@/components/workspace/DailyMemoryPanel";
@@ -43,15 +49,20 @@ vi.mock("@/components/common/FullScreenPanel", () => ({
     title,
     children,
     footer,
+    onClose,
   }: {
     isOpen: boolean;
     title?: string;
     children: React.ReactNode;
     footer?: React.ReactNode;
+    onClose: () => void;
   }) =>
     isOpen ? (
       <div>
         <div>{title}</div>
+        <button type="button" onClick={onClose}>
+          panel-close
+        </button>
         <div>{children}</div>
         <div>{footer}</div>
       </div>
@@ -101,11 +112,16 @@ vi.mock("@/components/MarkdownEditor", () => ({
 
 vi.mock("@/lib/api/workspace", () => ({
   workspaceApi: {
-    listDailyMemoryFiles: (...args: unknown[]) => listDailyMemoryFilesMock(...args),
-    readDailyMemoryFile: (...args: unknown[]) => readDailyMemoryFileMock(...args),
-    writeDailyMemoryFile: (...args: unknown[]) => writeDailyMemoryFileMock(...args),
-    deleteDailyMemoryFile: (...args: unknown[]) => deleteDailyMemoryFileMock(...args),
-    searchDailyMemoryFiles: (...args: unknown[]) => searchDailyMemoryFilesMock(...args),
+    listDailyMemoryFiles: (...args: unknown[]) =>
+      listDailyMemoryFilesMock(...args),
+    readDailyMemoryFile: (...args: unknown[]) =>
+      readDailyMemoryFileMock(...args),
+    writeDailyMemoryFile: (...args: unknown[]) =>
+      writeDailyMemoryFileMock(...args),
+    deleteDailyMemoryFile: (...args: unknown[]) =>
+      deleteDailyMemoryFileMock(...args),
+    searchDailyMemoryFiles: (...args: unknown[]) =>
+      searchDailyMemoryFilesMock(...args),
     openDirectory: (...args: unknown[]) => openDirectoryMock(...args),
   },
 }));
@@ -114,11 +130,41 @@ function getDeleteTriggerForItem(text: string): HTMLElement {
   const item = Array.from(screen.getAllByRole("button")).find((button) =>
     button.textContent?.includes(text),
   );
-  if (!item?.lastElementChild || !(item.lastElementChild instanceof HTMLElement)) {
+  if (
+    !item?.lastElementChild ||
+    !(item.lastElementChild instanceof HTMLElement)
+  ) {
     throw new Error(`Delete trigger not found for ${text}`);
   }
   return item.lastElementChild;
 }
+
+function createDeferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+const dailyMemoryFiles = [
+  {
+    filename: "2026-03-04.md",
+    date: "2026-03-04",
+    sizeBytes: 128,
+    modifiedAt: 0,
+    preview: "first",
+  },
+  {
+    filename: "2026-03-05.md",
+    date: "2026-03-05",
+    sizeBytes: 256,
+    modifiedAt: 0,
+    preview: "second",
+  },
+];
 
 describe("DailyMemoryPanel", () => {
   beforeEach(() => {
@@ -285,5 +331,88 @@ describe("DailyMemoryPanel", () => {
         },
       );
     });
+  });
+
+  it("keeps the latest daily memory content and saves it to the matching file", async () => {
+    const firstRead = createDeferred<string | null>();
+    const secondRead = createDeferred<string | null>();
+    listDailyMemoryFilesMock.mockResolvedValue(dailyMemoryFiles);
+    readDailyMemoryFileMock.mockImplementation((filename: string) =>
+      filename === "2026-03-04.md" ? firstRead.promise : secondRead.promise,
+    );
+
+    render(<DailyMemoryPanel isOpen={true} onClose={() => undefined} />);
+
+    fireEvent.click(await screen.findByText("2026-03-04"));
+    await waitFor(() => {
+      expect(readDailyMemoryFileMock).toHaveBeenCalledWith("2026-03-04.md");
+    });
+    fireEvent.click(screen.getByRole("button", { name: "panel-close" }));
+    fireEvent.click(await screen.findByText("2026-03-05"));
+
+    await waitFor(() => {
+      expect(readDailyMemoryFileMock).toHaveBeenCalledWith("2026-03-05.md");
+    });
+    await act(async () => {
+      secondRead.resolve("# March 5");
+    });
+    expect(screen.getByLabelText("daily-memory-editor")).toHaveValue(
+      "# March 5",
+    );
+
+    await act(async () => {
+      firstRead.resolve("# March 4");
+    });
+    expect(screen.getByLabelText("daily-memory-editor")).toHaveValue(
+      "# March 5",
+    );
+
+    fireEvent.change(screen.getByLabelText("daily-memory-editor"), {
+      target: { value: "# March 5 updated" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "common.save" }));
+
+    await waitFor(() => {
+      expect(writeDailyMemoryFileMock).toHaveBeenCalledWith(
+        "2026-03-05.md",
+        "# March 5 updated",
+      );
+    });
+  });
+
+  it("ignores a stale daily memory failure without closing or unlocking the new file", async () => {
+    const firstRead = createDeferred<string | null>();
+    const secondRead = createDeferred<string | null>();
+    listDailyMemoryFilesMock.mockResolvedValue(dailyMemoryFiles);
+    readDailyMemoryFileMock.mockImplementation((filename: string) =>
+      filename === "2026-03-04.md" ? firstRead.promise : secondRead.promise,
+    );
+
+    render(<DailyMemoryPanel isOpen={true} onClose={() => undefined} />);
+
+    fireEvent.click(await screen.findByText("2026-03-04"));
+    await waitFor(() => {
+      expect(readDailyMemoryFileMock).toHaveBeenCalledWith("2026-03-04.md");
+    });
+    fireEvent.click(screen.getByRole("button", { name: "panel-close" }));
+    fireEvent.click(await screen.findByText("2026-03-05"));
+
+    await act(async () => {
+      firstRead.reject(new Error("stale failure"));
+    });
+
+    expect(
+      screen.queryByLabelText("daily-memory-editor"),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "common.save" })).toBeDisabled();
+    expect(toastErrorMock).not.toHaveBeenCalled();
+
+    await act(async () => {
+      secondRead.resolve("# March 5");
+    });
+    expect(screen.getByLabelText("daily-memory-editor")).toHaveValue(
+      "# March 5",
+    );
+    expect(screen.getByRole("button", { name: "common.save" })).toBeEnabled();
   });
 });

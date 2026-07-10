@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import WorkspaceFileEditor from "@/components/workspace/WorkspaceFileEditor";
@@ -70,6 +76,16 @@ vi.mock("@/lib/api/workspace", () => ({
   },
 }));
 
+function createDeferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 describe("WorkspaceFileEditor", () => {
   beforeEach(() => {
     toastErrorMock.mockReset();
@@ -121,5 +137,93 @@ describe("WorkspaceFileEditor", () => {
         description: "workspace save denied",
       });
     });
+  });
+
+  it("keeps the latest file content and saves it to the matching filename", async () => {
+    const firstRead = createDeferred<string | null>();
+    const secondRead = createDeferred<string | null>();
+    readFileMock.mockImplementation((filename: string) =>
+      filename === "AGENTS.md" ? firstRead.promise : secondRead.promise,
+    );
+
+    const { rerender } = render(
+      <WorkspaceFileEditor
+        filename="AGENTS.md"
+        isOpen={true}
+        onClose={() => undefined}
+      />,
+    );
+
+    rerender(
+      <WorkspaceFileEditor
+        filename="CLAUDE.md"
+        isOpen={true}
+        onClose={() => undefined}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(readFileMock).toHaveBeenCalledWith("CLAUDE.md");
+    });
+    expect(screen.getByRole("button", { name: "common.save" })).toBeDisabled();
+
+    await act(async () => {
+      secondRead.resolve("# Claude");
+    });
+    expect(screen.getByLabelText("workspace-editor")).toHaveValue("# Claude");
+
+    await act(async () => {
+      firstRead.resolve("# Agents");
+    });
+    expect(screen.getByLabelText("workspace-editor")).toHaveValue("# Claude");
+
+    fireEvent.change(screen.getByLabelText("workspace-editor"), {
+      target: { value: "# Claude updated" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "common.save" }));
+
+    await waitFor(() => {
+      expect(writeFileMock).toHaveBeenCalledWith(
+        "CLAUDE.md",
+        "# Claude updated",
+      );
+    });
+  });
+
+  it("ignores a stale read failure without unlocking or failing the new file", async () => {
+    const firstRead = createDeferred<string | null>();
+    const secondRead = createDeferred<string | null>();
+    readFileMock.mockImplementation((filename: string) =>
+      filename === "AGENTS.md" ? firstRead.promise : secondRead.promise,
+    );
+
+    const { rerender } = render(
+      <WorkspaceFileEditor
+        filename="AGENTS.md"
+        isOpen={true}
+        onClose={() => undefined}
+      />,
+    );
+    rerender(
+      <WorkspaceFileEditor
+        filename="CLAUDE.md"
+        isOpen={true}
+        onClose={() => undefined}
+      />,
+    );
+
+    await act(async () => {
+      firstRead.reject(new Error("stale failure"));
+    });
+
+    expect(screen.queryByLabelText("workspace-editor")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "common.save" })).toBeDisabled();
+    expect(toastErrorMock).not.toHaveBeenCalled();
+
+    await act(async () => {
+      secondRead.resolve("# Claude");
+    });
+    expect(screen.getByLabelText("workspace-editor")).toHaveValue("# Claude");
+    expect(screen.getByRole("button", { name: "common.save" })).toBeEnabled();
   });
 });

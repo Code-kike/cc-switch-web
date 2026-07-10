@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -22,7 +22,9 @@ const WorkspaceFileEditor: React.FC<WorkspaceFileEditorProps> = ({
   const [content, setContent] = useState("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [loadedFilename, setLoadedFilename] = useState<string | null>(null);
   const [isDarkMode, setIsDarkMode] = useState(false);
+  const loadRequestIdRef = useRef(0);
 
   useEffect(() => {
     setIsDarkMode(document.documentElement.classList.contains("dark"));
@@ -37,27 +39,51 @@ const WorkspaceFileEditor: React.FC<WorkspaceFileEditorProps> = ({
   }, []);
 
   useEffect(() => {
-    if (!isOpen || !filename) return;
+    const requestId = ++loadRequestIdRef.current;
+
+    if (!isOpen || !filename) {
+      setContent("");
+      setLoadedFilename(null);
+      setLoading(false);
+      return;
+    }
 
     setLoading(true);
+    setContent("");
+    setLoadedFilename(null);
     workspaceApi
       .readFile(filename)
       .then((data) => {
+        if (loadRequestIdRef.current !== requestId) return;
         setContent(data ?? "");
+        setLoadedFilename(filename);
       })
       .catch((err) => {
+        if (loadRequestIdRef.current !== requestId) return;
         console.error("Failed to read workspace file:", err);
         toast.error(t("workspace.loadFailed"), {
           description: extractErrorMessage(err) || t("common.unknown"),
         });
       })
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (loadRequestIdRef.current === requestId) {
+          setLoading(false);
+        }
+      });
+
+    return () => {
+      if (loadRequestIdRef.current === requestId) {
+        loadRequestIdRef.current += 1;
+      }
+    };
   }, [isOpen, filename, t]);
 
   const handleSave = useCallback(async () => {
+    if (loadedFilename !== filename) return;
+
     setSaving(true);
     try {
-      await workspaceApi.writeFile(filename, content);
+      await workspaceApi.writeFile(loadedFilename, content);
       toast.success(t("workspace.saveSuccess"));
     } catch (err) {
       console.error("Failed to save workspace file:", err);
@@ -67,7 +93,7 @@ const WorkspaceFileEditor: React.FC<WorkspaceFileEditorProps> = ({
     } finally {
       setSaving(false);
     }
-  }, [filename, content, t]);
+  }, [filename, loadedFilename, content, t]);
 
   return (
     <FullScreenPanel
@@ -75,7 +101,10 @@ const WorkspaceFileEditor: React.FC<WorkspaceFileEditorProps> = ({
       title={t("workspace.editing", { filename })}
       onClose={onClose}
       footer={
-        <Button onClick={handleSave} disabled={saving || loading}>
+        <Button
+          onClick={handleSave}
+          disabled={saving || loading || loadedFilename !== filename}
+        >
           {saving ? t("common.saving") : t("common.save")}
         </Button>
       }

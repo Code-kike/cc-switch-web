@@ -57,6 +57,10 @@ const DailyMemoryPanel: React.FC<DailyMemoryPanelProps> = ({
   const [content, setContent] = useState("");
   const [loadingContent, setLoadingContent] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [loadedEditingFile, setLoadedEditingFile] = useState<string | null>(
+    null,
+  );
+  const contentLoadRequestIdRef = useRef(0);
 
   // Delete state
   const [deletingFile, setDeletingFile] = useState<string | null>(null);
@@ -207,19 +211,28 @@ const DailyMemoryPanel: React.FC<DailyMemoryPanelProps> = ({
   // Open file for editing
   const openFile = useCallback(
     async (filename: string) => {
+      const requestId = ++contentLoadRequestIdRef.current;
       setLoadingContent(true);
       setEditingFile(filename);
+      setLoadedEditingFile(null);
+      setContent("");
       try {
         const data = await workspaceApi.readDailyMemoryFile(filename);
+        if (contentLoadRequestIdRef.current !== requestId) return;
         setContent(data ?? "");
+        setLoadedEditingFile(filename);
       } catch (err) {
+        if (contentLoadRequestIdRef.current !== requestId) return;
         console.error("Failed to read daily memory file:", err);
         toast.error(t("workspace.dailyMemory.loadFailed"), {
           description: extractErrorMessage(err) || t("common.unknown"),
         });
+        setLoadedEditingFile(null);
         setEditingFile(null);
       } finally {
-        setLoadingContent(false);
+        if (contentLoadRequestIdRef.current === requestId) {
+          setLoadingContent(false);
+        }
       }
     },
     [t],
@@ -236,16 +249,20 @@ const DailyMemoryPanel: React.FC<DailyMemoryPanelProps> = ({
       return;
     }
     // Open editor with empty content — no file created until user saves
+    contentLoadRequestIdRef.current += 1;
+    setLoadingContent(false);
     setEditingFile(filename);
+    setLoadedEditingFile(filename);
     setContent("");
   }, [files, openFile]);
 
   // Save current file
   const handleSave = useCallback(async () => {
-    if (!editingFile) return;
+    if (!editingFile || loadedEditingFile !== editingFile) return;
+
     setSaving(true);
     try {
-      await workspaceApi.writeDailyMemoryFile(editingFile, content);
+      await workspaceApi.writeDailyMemoryFile(loadedEditingFile, content);
       toast.success(t("workspace.saveSuccess"));
     } catch (err) {
       console.error("Failed to save daily memory file:", err);
@@ -255,7 +272,7 @@ const DailyMemoryPanel: React.FC<DailyMemoryPanelProps> = ({
     } finally {
       setSaving(false);
     }
-  }, [editingFile, content, t]);
+  }, [editingFile, loadedEditingFile, content, t]);
 
   // Delete file
   const handleDelete = useCallback(async () => {
@@ -266,6 +283,8 @@ const DailyMemoryPanel: React.FC<DailyMemoryPanelProps> = ({
       setDeletingFile(null);
       // If we were editing this file, go back to list
       if (editingFile === deletingFile) {
+        contentLoadRequestIdRef.current += 1;
+        setLoadedEditingFile(null);
         setEditingFile(null);
       }
       await loadFiles();
@@ -292,7 +311,10 @@ const DailyMemoryPanel: React.FC<DailyMemoryPanelProps> = ({
 
   // Back from edit mode to list mode — preserve search state
   const handleBackToList = useCallback(() => {
+    contentLoadRequestIdRef.current += 1;
+    setLoadingContent(false);
     setEditingFile(null);
+    setLoadedEditingFile(null);
     setContent("");
     void loadFiles();
     // Re-trigger search if active (file content may have changed)
@@ -303,7 +325,10 @@ const DailyMemoryPanel: React.FC<DailyMemoryPanelProps> = ({
 
   // Close panel entirely — clear search state
   const handleClose = useCallback(() => {
+    contentLoadRequestIdRef.current += 1;
+    setLoadingContent(false);
     setEditingFile(null);
+    setLoadedEditingFile(null);
     setContent("");
     setIsSearchOpen(false);
     setSearchTerm("");
@@ -321,7 +346,12 @@ const DailyMemoryPanel: React.FC<DailyMemoryPanelProps> = ({
           title={t("workspace.editing", { filename: editingFile })}
           onClose={handleBackToList}
           footer={
-            <Button onClick={handleSave} disabled={saving || loadingContent}>
+            <Button
+              onClick={handleSave}
+              disabled={
+                saving || loadingContent || loadedEditingFile !== editingFile
+              }
+            >
               {saving ? t("common.saving") : t("common.save")}
             </Button>
           }
