@@ -817,3 +817,41 @@ Built and deployed the current Web server and assets, removed the legacy Basic A
 ### Next Steps
 
 - None - task complete
+
+
+## Session 24: Audit and fix upstream Web integrity bugs
+
+**Date**: 2026-07-10
+**Task**: Audit and fix upstream Web integrity bugs
+**Branch**: `fix/web-audit-phase1-2`
+
+### Summary
+
+Fixed stale file identity races, constrained SQL restore, transactional endpoint reconciliation, managed symlink writes, and Codex common-config and MCP atomicity; added regression coverage, ADRs, and executable specs.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `6acd6097` | (see git log) |
+| `a3a1ab14` | (see git log) |
+| `2a84acd0` | (see git log) |
+| `0370b89a` | (see git log) |
+| `f35a7309` | (see git log) |
+| `08a04bb5` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
