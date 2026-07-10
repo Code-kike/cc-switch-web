@@ -2,7 +2,7 @@ use crate::database::{lock_conn, Database};
 use crate::error::AppError;
 use crate::provider::{Provider, ProviderMeta};
 use indexmap::IndexMap;
-use rusqlite::params;
+use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use std::collections::{HashMap, HashSet};
 
 type OmoProviderRow = (
@@ -15,6 +15,114 @@ type OmoProviderRow = (
     Option<String>,
     String,
 );
+
+fn load_custom_endpoints(
+    conn: &Connection,
+    provider_id: &str,
+    app_type: &str,
+) -> Result<HashMap<String, crate::settings::CustomEndpoint>, AppError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT url, added_at FROM provider_endpoints
+             WHERE provider_id = ?1 AND app_type = ?2
+             ORDER BY url ASC, added_at IS NULL ASC, added_at ASC, id ASC",
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+    let endpoints = stmt
+        .query_map(params![provider_id, app_type], |row| {
+            let url: String = row.get(0)?;
+            let added_at: Option<i64> = row.get(1)?;
+            Ok((
+                url.clone(),
+                crate::settings::CustomEndpoint {
+                    url,
+                    added_at: added_at.unwrap_or(0),
+                    last_used: None,
+                },
+            ))
+        })
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+    let mut custom_endpoints = HashMap::new();
+    for endpoint in endpoints {
+        let (url, endpoint) = endpoint.map_err(|e| AppError::Database(e.to_string()))?;
+        custom_endpoints.entry(url).or_insert(endpoint);
+    }
+    Ok(custom_endpoints)
+}
+
+fn reconcile_provider_endpoints(
+    tx: &Transaction<'_>,
+    provider_id: &str,
+    app_type: &str,
+    endpoints: &HashMap<String, crate::settings::CustomEndpoint>,
+) -> Result<(), AppError> {
+    let existing_rows = {
+        let mut stmt = tx
+            .prepare(
+                "SELECT id, url FROM provider_endpoints
+                 WHERE provider_id = ?1 AND app_type = ?2
+                 ORDER BY url ASC, added_at IS NULL ASC, added_at ASC, id ASC",
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![provider_id, app_type], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        let mut endpoints = Vec::new();
+        for row in rows {
+            endpoints.push(row.map_err(|e| AppError::Database(e.to_string()))?);
+        }
+        endpoints
+    };
+    let mut existing_endpoints = HashMap::new();
+    for (id, url) in existing_rows {
+        match existing_endpoints.entry(url) {
+            std::collections::hash_map::Entry::Occupied(_) => {
+                tx.execute("DELETE FROM provider_endpoints WHERE id = ?1", params![id])
+                    .map_err(|e| AppError::Database(e.to_string()))?;
+            }
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(id);
+            }
+        }
+    }
+
+    for url in existing_endpoints
+        .keys()
+        .filter(|url| !endpoints.contains_key(*url))
+    {
+        tx.execute(
+            "DELETE FROM provider_endpoints
+             WHERE provider_id = ?1 AND app_type = ?2 AND url = ?3",
+            params![provider_id, app_type, url],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+    }
+
+    for (url, endpoint) in endpoints {
+        if let Some(id) = existing_endpoints.get(url) {
+            tx.execute(
+                "UPDATE provider_endpoints
+                 SET added_at = COALESCE(added_at, ?2)
+                 WHERE id = ?1",
+                params![id, endpoint.added_at],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        } else {
+            tx.execute(
+                "INSERT INTO provider_endpoints (provider_id, app_type, url, added_at)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![provider_id, app_type, url, endpoint.added_at],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        }
+    }
+
+    Ok(())
+}
 
 impl Database {
     pub fn get_all_providers(
@@ -72,31 +180,7 @@ impl Database {
             let (id, mut provider) = provider_res.map_err(|e| AppError::Database(e.to_string()))?;
             provider.id = id.clone();
 
-            let mut stmt_endpoints = conn.prepare(
-                "SELECT url, added_at FROM provider_endpoints WHERE provider_id = ?1 AND app_type = ?2 ORDER BY added_at ASC, url ASC"
-            ).map_err(|e| AppError::Database(e.to_string()))?;
-
-            let endpoints_iter = stmt_endpoints
-                .query_map(params![id, app_type], |row| {
-                    let url: String = row.get(0)?;
-                    let added_at: Option<i64> = row.get(1)?;
-                    Ok((
-                        url,
-                        crate::settings::CustomEndpoint {
-                            url: "".to_string(),
-                            added_at: added_at.unwrap_or(0),
-                            last_used: None,
-                        },
-                    ))
-                })
-                .map_err(|e| AppError::Database(e.to_string()))?;
-
-            let mut custom_endpoints = HashMap::new();
-            for ep_res in endpoints_iter {
-                let (url, mut ep) = ep_res.map_err(|e| AppError::Database(e.to_string()))?;
-                ep.url = url.clone();
-                custom_endpoints.insert(url, ep);
-            }
+            let custom_endpoints = load_custom_endpoints(&conn, &id, app_type)?;
 
             if let Some(meta) = &mut provider.meta {
                 meta.custom_endpoints = custom_endpoints;
@@ -171,7 +255,14 @@ impl Database {
         );
 
         match result {
-            Ok(provider) => Ok(Some(provider)),
+            Ok(mut provider) => {
+                let custom_endpoints = load_custom_endpoints(&conn, id, app_type)?;
+                provider
+                    .meta
+                    .get_or_insert_with(ProviderMeta::default)
+                    .custom_endpoints = custom_endpoints;
+                Ok(Some(provider))
+            }
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(AppError::Database(e.to_string())),
         }
@@ -183,8 +274,12 @@ impl Database {
             .transaction()
             .map_err(|e| AppError::Database(e.to_string()))?;
 
+        let endpoints = provider
+            .meta
+            .as_ref()
+            .map(|meta| meta.custom_endpoints.clone());
         let mut meta_clone = provider.meta.clone().unwrap_or_default();
-        let endpoints = std::mem::take(&mut meta_clone.custom_endpoints);
+        meta_clone.custom_endpoints.clear();
 
         let existing: Option<(bool, bool)> = tx
             .query_row(
@@ -192,7 +287,8 @@ impl Database {
                 params![provider.id, app_type],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
-            .ok();
+            .optional()
+            .map_err(|e| AppError::Database(e.to_string()))?;
 
         let is_update = existing.is_some();
         let (is_current, in_failover_queue) =
@@ -262,15 +358,10 @@ impl Database {
                 ],
             )
             .map_err(|e| AppError::Database(e.to_string()))?;
+        }
 
-            for (url, endpoint) in endpoints {
-                tx.execute(
-                    "INSERT INTO provider_endpoints (provider_id, app_type, url, added_at)
-                     VALUES (?1, ?2, ?3, ?4)",
-                    params![provider.id, app_type, url, endpoint.added_at],
-                )
-                .map_err(|e| AppError::Database(e.to_string()))?;
-            }
+        if let Some(endpoints) = endpoints.as_ref() {
+            reconcile_provider_endpoints(&tx, &provider.id, app_type, endpoints)?;
         }
 
         tx.commit().map_err(|e| AppError::Database(e.to_string()))?;
@@ -336,12 +427,56 @@ impl Database {
         provider_id: &str,
         url: &str,
     ) -> Result<(), AppError> {
-        let conn = lock_conn!(self.conn);
+        let mut conn = lock_conn!(self.conn);
+        let tx = conn
+            .transaction()
+            .map_err(|e| AppError::Database(e.to_string()))?;
         let added_at = chrono::Utc::now().timestamp_millis();
-        conn.execute(
-            "INSERT INTO provider_endpoints (provider_id, app_type, url, added_at) VALUES (?1, ?2, ?3, ?4)",
-            params![provider_id, app_type, url, added_at],
-        ).map_err(|e| AppError::Database(e.to_string()))?;
+        let existing_rows = {
+            let mut stmt = tx
+                .prepare(
+                    "SELECT id FROM provider_endpoints
+                     WHERE provider_id = ?1 AND app_type = ?2 AND url = ?3
+                     ORDER BY added_at IS NULL ASC, added_at ASC, id ASC",
+                )
+                .map_err(|e| AppError::Database(e.to_string()))?;
+            let rows = stmt
+                .query_map(params![provider_id, app_type, url], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .map_err(|e| AppError::Database(e.to_string()))?;
+            let mut ids = Vec::new();
+            for row in rows {
+                ids.push(row.map_err(|e| AppError::Database(e.to_string()))?);
+            }
+            ids
+        };
+
+        if let Some((keeper_id, duplicate_ids)) = existing_rows.split_first() {
+            tx.execute(
+                "UPDATE provider_endpoints
+                 SET added_at = COALESCE(added_at, ?2)
+                 WHERE id = ?1",
+                params![keeper_id, added_at],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+            for duplicate_id in duplicate_ids {
+                tx.execute(
+                    "DELETE FROM provider_endpoints WHERE id = ?1",
+                    params![duplicate_id],
+                )
+                .map_err(|e| AppError::Database(e.to_string()))?;
+            }
+        } else {
+            tx.execute(
+                "INSERT INTO provider_endpoints (provider_id, app_type, url, added_at)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![provider_id, app_type, url, added_at],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        }
+
+        tx.commit().map_err(|e| AppError::Database(e.to_string()))?;
         Ok(())
     }
 
@@ -648,5 +783,281 @@ impl Database {
         self.set_setting("official_providers_seeded", "true")?;
 
         Ok(inserted)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::settings::CustomEndpoint;
+    use serde_json::json;
+
+    fn endpoint(url: &str, added_at: i64) -> CustomEndpoint {
+        CustomEndpoint {
+            url: url.to_string(),
+            added_at,
+            last_used: None,
+        }
+    }
+
+    fn provider_with_endpoints(id: &str, name: &str, endpoints: &[(&str, i64)]) -> Provider {
+        let mut provider =
+            Provider::with_id(id.to_string(), name.to_string(), json!({"env": {}}), None);
+        provider.meta = Some(ProviderMeta {
+            custom_endpoints: endpoints
+                .iter()
+                .map(|(url, added_at)| (url.to_string(), endpoint(url, *added_at)))
+                .collect(),
+            ..ProviderMeta::default()
+        });
+        provider
+    }
+
+    #[test]
+    fn save_provider_reconciles_endpoint_snapshot_on_update() {
+        let db = Database::memory().expect("create database");
+        let original = provider_with_endpoints(
+            "provider-1",
+            "Original",
+            &[
+                ("https://keep.example", 100),
+                ("https://remove.example", 200),
+            ],
+        );
+        db.save_provider("claude", &original)
+            .expect("save original provider");
+        {
+            let conn = db.conn.lock().expect("lock database");
+            conn.execute(
+                "INSERT INTO provider_endpoints (provider_id, app_type, url, added_at)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params!["provider-1", "claude", "https://keep.example", 500],
+            )
+            .expect("seed duplicate endpoint row");
+        }
+
+        let updated = provider_with_endpoints(
+            "provider-1",
+            "Updated",
+            &[("https://keep.example", 999), ("https://new.example", 300)],
+        );
+        db.save_provider("claude", &updated)
+            .expect("update provider");
+
+        let fresh = db
+            .get_provider_by_id("provider-1", "claude")
+            .expect("read updated provider")
+            .expect("provider exists");
+        let endpoints = &fresh.meta.as_ref().expect("provider meta").custom_endpoints;
+
+        assert_eq!(fresh.name, "Updated");
+        assert_eq!(endpoints.len(), 2);
+        assert_eq!(
+            endpoints
+                .get("https://keep.example")
+                .expect("kept endpoint")
+                .added_at,
+            100,
+            "an existing URL keeps its original added_at"
+        );
+        assert_eq!(
+            endpoints
+                .get("https://new.example")
+                .expect("new endpoint")
+                .added_at,
+            300
+        );
+        assert!(!endpoints.contains_key("https://remove.example"));
+
+        let kept_row_count: i64 = db
+            .conn
+            .lock()
+            .expect("lock database")
+            .query_row(
+                "SELECT COUNT(*) FROM provider_endpoints
+                 WHERE provider_id = ?1 AND app_type = ?2 AND url = ?3",
+                params!["provider-1", "claude", "https://keep.example"],
+                |row| row.get(0),
+            )
+            .expect("count kept endpoint rows");
+        assert_eq!(kept_row_count, 1, "duplicate URL rows are reconciled");
+    }
+
+    #[test]
+    fn save_provider_rolls_back_provider_when_endpoint_reconcile_fails() {
+        let db = Database::memory().expect("create database");
+        let original =
+            provider_with_endpoints("provider-1", "Original", &[("https://old.example", 100)]);
+        db.save_provider("claude", &original)
+            .expect("save original provider");
+
+        {
+            let conn = db.conn.lock().expect("lock database");
+            conn.execute_batch(
+                "CREATE TRIGGER fail_provider_endpoint_insert
+                 BEFORE INSERT ON provider_endpoints
+                 BEGIN
+                     SELECT RAISE(ABORT, 'forced endpoint failure');
+                 END;",
+            )
+            .expect("create failure trigger");
+        }
+
+        let updated = provider_with_endpoints(
+            "provider-1",
+            "Partially updated",
+            &[("https://new.example", 200)],
+        );
+        assert!(db.save_provider("claude", &updated).is_err());
+
+        let fresh = db
+            .get_provider_by_id("provider-1", "claude")
+            .expect("read provider after rollback")
+            .expect("provider exists");
+        let endpoints = &fresh.meta.as_ref().expect("provider meta").custom_endpoints;
+
+        assert_eq!(fresh.name, "Original");
+        assert_eq!(endpoints.len(), 1);
+        assert!(endpoints.contains_key("https://old.example"));
+        assert!(!endpoints.contains_key("https://new.example"));
+    }
+
+    #[test]
+    fn save_provider_without_meta_preserves_existing_endpoints() {
+        let db = Database::memory().expect("create database");
+        let original = provider_with_endpoints(
+            "provider-1",
+            "Original",
+            &[("https://existing.example", 100)],
+        );
+        db.save_provider("claude", &original)
+            .expect("save original provider");
+
+        let update_without_meta = Provider::with_id(
+            "provider-1".to_string(),
+            "Updated without meta".to_string(),
+            json!({"env": {"ANTHROPIC_API_KEY": "updated"}}),
+            None,
+        );
+        db.save_provider("claude", &update_without_meta)
+            .expect("update provider without meta");
+
+        let fresh = db
+            .get_provider_by_id("provider-1", "claude")
+            .expect("read updated provider")
+            .expect("provider exists");
+        let endpoints = &fresh.meta.as_ref().expect("provider meta").custom_endpoints;
+
+        assert_eq!(fresh.name, "Updated without meta");
+        assert_eq!(endpoints.len(), 1);
+        assert_eq!(
+            endpoints
+                .get("https://existing.example")
+                .expect("existing endpoint")
+                .added_at,
+            100
+        );
+    }
+
+    #[test]
+    fn save_provider_with_empty_endpoint_snapshot_clears_existing_endpoints() {
+        let db = Database::memory().expect("create database");
+        let original = provider_with_endpoints(
+            "provider-1",
+            "Original",
+            &[("https://existing.example", 100)],
+        );
+        db.save_provider("claude", &original)
+            .expect("save original provider");
+
+        let cleared = provider_with_endpoints("provider-1", "Cleared", &[]);
+        db.save_provider("claude", &cleared)
+            .expect("clear provider endpoints");
+
+        let fresh = db
+            .get_provider_by_id("provider-1", "claude")
+            .expect("read updated provider")
+            .expect("provider exists");
+        assert!(
+            fresh
+                .meta
+                .expect("provider meta")
+                .custom_endpoints
+                .is_empty(),
+            "Some(meta) with an empty endpoint snapshot explicitly clears endpoints"
+        );
+    }
+
+    #[test]
+    fn add_custom_endpoint_is_idempotent_and_collapses_historical_duplicates() {
+        let db = Database::memory().expect("create database");
+        let provider = Provider::with_id(
+            "provider-1".to_string(),
+            "Provider".to_string(),
+            json!({"env": {}}),
+            None,
+        );
+        db.save_provider("claude", &provider)
+            .expect("save provider");
+
+        db.add_custom_endpoint("claude", "provider-1", "https://api.example")
+            .expect("add endpoint");
+        let original_added_at: i64 = db
+            .conn
+            .lock()
+            .expect("lock database")
+            .query_row(
+                "SELECT added_at FROM provider_endpoints
+                 WHERE provider_id = ?1 AND app_type = ?2 AND url = ?3",
+                params!["provider-1", "claude", "https://api.example"],
+                |row| row.get(0),
+            )
+            .expect("read original added_at");
+
+        db.add_custom_endpoint("claude", "provider-1", "https://api.example")
+            .expect("add endpoint again");
+
+        {
+            let conn = db.conn.lock().expect("lock database");
+            let (count, added_at): (i64, i64) = conn
+                .query_row(
+                    "SELECT COUNT(*), MIN(added_at) FROM provider_endpoints
+                     WHERE provider_id = ?1 AND app_type = ?2 AND url = ?3",
+                    params!["provider-1", "claude", "https://api.example"],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .expect("read idempotent endpoint state");
+            assert_eq!(count, 1);
+            assert_eq!(added_at, original_added_at);
+
+            conn.execute(
+                "INSERT INTO provider_endpoints (provider_id, app_type, url, added_at)
+                 VALUES (?1, ?2, ?3, ?4), (?1, ?2, ?3, NULL)",
+                params![
+                    "provider-1",
+                    "claude",
+                    "https://api.example",
+                    original_added_at + 1_000
+                ],
+            )
+            .expect("seed historical duplicate rows");
+        }
+
+        db.add_custom_endpoint("claude", "provider-1", "https://api.example")
+            .expect("reconcile historical duplicates");
+
+        let (count, added_at): (i64, i64) = db
+            .conn
+            .lock()
+            .expect("lock database")
+            .query_row(
+                "SELECT COUNT(*), MIN(added_at) FROM provider_endpoints
+                 WHERE provider_id = ?1 AND app_type = ?2 AND url = ?3",
+                params!["provider-1", "claude", "https://api.example"],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read reconciled endpoint state");
+        assert_eq!(count, 1);
+        assert_eq!(added_at, original_added_at);
     }
 }
