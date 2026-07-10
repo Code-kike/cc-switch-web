@@ -3,7 +3,7 @@
 //! 提供代理服务器的启动、停止和配置管理
 
 use crate::app_config::AppType;
-use crate::config::{get_claude_settings_path, read_json_file, write_json_file};
+use crate::config::{get_claude_settings_path, read_json_file, write_json_file_managed};
 use crate::database::Database;
 use crate::provider::Provider;
 use crate::proxy::providers::codex_oauth_auth::CodexOAuthManager;
@@ -2480,7 +2480,7 @@ impl ProxyService {
     fn write_claude_live(&self, config: &Value) -> Result<(), String> {
         let path = get_claude_settings_path();
         let settings = crate::services::provider::sanitize_claude_settings_for_live(config);
-        write_json_file(&path, &settings).map_err(|e| format!("写入 Claude 配置失败: {e}"))
+        write_json_file_managed(&path, &settings).map_err(|e| format!("写入 Claude 配置失败: {e}"))
     }
 
     fn read_codex_live(&self) -> Result<Value, String> {
@@ -2594,7 +2594,7 @@ impl ProxyService {
                     let auth_path = get_codex_auth_path();
                     let _ = crate::config::delete_file(&auth_path);
                     let config_path = get_codex_config_path();
-                    crate::config::write_text_file(&config_path, cfg)
+                    crate::config::write_text_file_managed(&config_path, cfg)
                         .map_err(|e| format!("写入 Codex config 失败: {e}"))?;
                 } else {
                     crate::codex_config::write_codex_live_atomic(auth, Some(cfg))
@@ -2603,12 +2603,12 @@ impl ProxyService {
             }
             (Some(auth), None) => {
                 let auth_path = get_codex_auth_path();
-                write_json_file(&auth_path, auth)
+                write_json_file_managed(&auth_path, auth)
                     .map_err(|e| format!("写入 Codex auth 失败: {e}"))?;
             }
             (None, Some(cfg)) => {
                 let config_path = get_codex_config_path();
-                crate::config::write_text_file(&config_path, cfg)
+                crate::config::write_text_file_managed(&config_path, cfg)
                     .map_err(|e| format!("写入 Codex config 失败: {e}"))?;
             }
             (None, None) => {}

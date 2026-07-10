@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::config::{
-    atomic_write, delete_file, get_home_dir, read_json_file, sanitize_provider_name,
-    write_json_file, write_text_file,
+    atomic_write_managed, delete_file, get_home_dir, read_json_file, sanitize_provider_name,
+    write_json_file_managed, write_text_file_managed,
 };
 use crate::error::AppError;
 use serde_json::{json, Value};
@@ -185,13 +185,13 @@ pub fn write_codex_live_atomic(
     }
 
     // 第一步：写 auth.json
-    write_json_file(&auth_path, auth)?;
+    write_json_file_managed(&auth_path, auth)?;
 
     // 第二步：写 config.toml（失败则回滚 auth.json）
-    if let Err(e) = write_text_file(&config_path, &cfg_text) {
+    if let Err(e) = write_text_file_managed(&config_path, &cfg_text) {
         // 回滚 auth.json
         if let Some(bytes) = old_auth {
-            let _ = atomic_write(&auth_path, &bytes);
+            let _ = atomic_write_managed(&auth_path, &bytes);
         } else {
             let _ = delete_file(&auth_path);
         }
@@ -260,7 +260,7 @@ pub fn write_codex_live_config_atomic(config_text_opt: Option<&str>) -> Result<(
         toml::from_str::<toml::Table>(&cfg_text).map_err(|e| AppError::toml(&config_path, e))?;
     }
 
-    write_text_file(&config_path, &cfg_text)
+    write_text_file_managed(&config_path, &cfg_text)
 }
 
 pub fn extract_codex_auth_api_key(auth: &Value) -> Option<String> {
@@ -864,7 +864,7 @@ pub fn prepare_codex_config_text_with_model_catalog(
         let disable_web_search = profile == CodexCatalogToolProfile::NativeResponses
             && codex_native_gateway_rejects_web_search(&config_text);
         let config_text = set_codex_native_web_search_field(&config_text, disable_web_search)?;
-        write_json_file(&catalog_path, &catalog)?;
+        write_json_file_managed(&catalog_path, &catalog)?;
         Ok(config_text)
     } else {
         let config_text = set_codex_model_catalog_json_field(config_text, None)?;

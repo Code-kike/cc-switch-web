@@ -1,4 +1,4 @@
-use crate::config::{atomic_write, write_json_file};
+use crate::config::{atomic_write_managed, write_json_file_managed};
 use crate::error::AppError;
 use crate::opencode_config::get_opencode_dir;
 use crate::provider::Provider;
@@ -157,7 +157,7 @@ impl OmoService {
 
     fn restore_config_file(path: &Path, snapshot: Option<&[u8]>) -> Result<(), AppError> {
         match snapshot {
-            Some(bytes) => atomic_write(path, bytes),
+            Some(bytes) => atomic_write_managed(path, bytes),
             None => {
                 if path.exists() {
                     std::fs::remove_file(path).map_err(|e| AppError::io(path, e))?;
@@ -179,7 +179,7 @@ impl OmoService {
         }
 
         let previous_contents = Self::snapshot_config_file(&config_path)?;
-        write_json_file(&config_path, &merged)?;
+        write_json_file_managed(&config_path, &merged)?;
         if let Err(err) = crate::opencode_config::add_plugin(v.plugin_name) {
             if let Err(rollback_err) =
                 Self::restore_config_file(&config_path, previous_contents.as_deref())

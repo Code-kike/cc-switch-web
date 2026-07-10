@@ -30,7 +30,7 @@
 //!     args: ["-y", "@modelcontextprotocol/server-filesystem"]
 //! ```
 
-use crate::config::{atomic_write, get_app_config_dir};
+use crate::config::{atomic_write, atomic_write_managed, get_app_config_dir};
 use crate::error::AppError;
 use crate::settings::{effective_backup_retain_count, get_hermes_override_dir};
 use chrono::Local;
@@ -400,7 +400,7 @@ fn write_yaml_section_to_config_locked(
         fs::create_dir_all(parent).map_err(|e| AppError::io(parent, e))?;
     }
 
-    atomic_write(&config_path, new_raw.as_bytes())?;
+    atomic_write_managed(&config_path, new_raw.as_bytes())?;
 
     log::debug!(
         "Hermes config section '{}' written to {:?}",

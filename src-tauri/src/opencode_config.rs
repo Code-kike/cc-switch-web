@@ -1,4 +1,4 @@
-use crate::config::{atomic_write, write_json_file};
+use crate::config::{atomic_write_managed, write_json_file_managed};
 use crate::error::AppError;
 use crate::provider::OpenCodeProviderConfig;
 use crate::settings::get_opencode_override_dir;
@@ -113,12 +113,12 @@ pub fn write_opencode_config(config: &Value) -> Result<(), AppError> {
     // OpenClaw's comment-preserving round-trip. Falls back to a strict write
     // when there is nothing to preserve or the edit can't be round-trip-verified.
     if let Some(source) = comment_preserving_source(&path, config) {
-        atomic_write(&path, source.as_bytes())?;
+        atomic_write_managed(&path, source.as_bytes())?;
         log::debug!("OpenCode config written (comment-preserving) to {path:?}");
         return Ok(());
     }
 
-    write_json_file(&path, config)?;
+    write_json_file_managed(&path, config)?;
     log::debug!("OpenCode config written to {path:?}");
     Ok(())
 }
@@ -375,6 +375,48 @@ mod tests {
 
         let parsed = read_opencode_config().unwrap();
         assert_eq!(parsed["provider"]["p"]["npm"], json!("pkg"));
+
+        match old_home {
+            Some(v) => std::env::set_var("CC_SWITCH_TEST_HOME", v),
+            None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn set_provider_preserves_managed_config_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let old_home = std::env::var_os("CC_SWITCH_TEST_HOME");
+        std::env::set_var("CC_SWITCH_TEST_HOME", temp.path());
+
+        let config_path = get_opencode_config_path();
+        fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+        let managed_dir = temp.path().join("dotfiles");
+        fs::create_dir_all(&managed_dir).unwrap();
+        let target_path = managed_dir.join("opencode.json");
+        fs::write(
+            &target_path,
+            "{\n  // managed by dotfiles\n  \"$schema\": \"https://opencode.ai/config.json\",\n}\n",
+        )
+        .unwrap();
+        symlink(&target_path, &config_path).unwrap();
+
+        set_provider("linked", json!({ "npm": "linked-package" })).unwrap();
+
+        assert!(
+            fs::symlink_metadata(&config_path)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "provider writes must preserve the managed opencode.json link"
+        );
+        let written = fs::read_to_string(&target_path).unwrap();
+        assert!(written.contains("// managed by dotfiles"));
+        let parsed: Value = json5::from_str(&written).unwrap();
+        assert_eq!(parsed["provider"]["linked"]["npm"], json!("linked-package"));
 
         match old_home {
             Some(v) => std::env::set_var("CC_SWITCH_TEST_HOME", v),

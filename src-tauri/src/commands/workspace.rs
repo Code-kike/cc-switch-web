@@ -3,7 +3,7 @@ use std::sync::LazyLock;
 use tauri::AppHandle;
 use tauri_plugin_opener::OpenerExt;
 
-use crate::config::write_text_file;
+use crate::config::{ensure_write_path_within_root, write_text_file};
 use crate::openclaw_config::get_openclaw_dir;
 
 /// Allowed workspace filenames (whitelist for security)
@@ -144,6 +144,9 @@ pub async fn write_daily_memory_file(filename: String, content: String) -> Resul
         .map_err(|e| format!("Failed to create memory directory: {e}"))?;
 
     let path = memory_dir.join(&filename);
+
+    ensure_write_path_within_root(&memory_dir, &path)
+        .map_err(|e| format!("Failed to validate daily memory file {filename}: {e}"))?;
 
     write_text_file(&path, &content)
         .map_err(|e| format!("Failed to write daily memory file {filename}: {e}"))
@@ -334,6 +337,9 @@ pub async fn write_workspace_file(filename: String, content: String) -> Result<(
         .map_err(|e| format!("Failed to create workspace directory: {e}"))?;
 
     let path = workspace_dir.join(&filename);
+
+    ensure_write_path_within_root(&workspace_dir, &path)
+        .map_err(|e| format!("Failed to validate workspace file {filename}: {e}"))?;
 
     write_text_file(&path, &content)
         .map_err(|e| format!("Failed to write workspace file {filename}: {e}"))

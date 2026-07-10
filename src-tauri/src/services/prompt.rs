@@ -1,7 +1,7 @@
 use indexmap::IndexMap;
 
 use crate::app_config::AppType;
-use crate::config::write_text_file;
+use crate::config::write_text_file_managed;
 use crate::error::AppError;
 use crate::prompt::Prompt;
 use crate::prompt_files::prompt_file_path;
@@ -43,7 +43,7 @@ impl PromptService {
         if is_enabled {
             // 启用提示词：写入内容到文件
             let target_path = prompt_file_path(&app)?;
-            write_text_file(&target_path, &prompt.content)?;
+            write_text_file_managed(&target_path, &prompt.content)?;
         } else if was_enabled {
             // 仅在“原本启用 -> 现在禁用”时才检查是否需要清空 live 文件。
             // 新导入/新建/编辑 disabled prompt 不应触碰当前 live 文件。
@@ -54,7 +54,7 @@ impl PromptService {
                 // 所有提示词都已禁用，清空文件
                 let target_path = prompt_file_path(&app)?;
                 if target_path.exists() {
-                    write_text_file(&target_path, "")?;
+                    write_text_file_managed(&target_path, "")?;
                 }
             }
         }
@@ -134,7 +134,7 @@ impl PromptService {
 
         if let Some(prompt) = prompts.get_mut(id) {
             prompt.enabled = true;
-            write_text_file(&target_path, &prompt.content)?; // 原子写入
+            write_text_file_managed(&target_path, &prompt.content)?; // 原子写入
             state.db.save_prompt(app.as_str(), prompt)?;
         } else {
             return Err(AppError::InvalidInput(format!("提示词 {id} 不存在")));

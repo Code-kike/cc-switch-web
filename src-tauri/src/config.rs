@@ -179,6 +179,21 @@ fn sort_json_keys(value: &Value) -> Value {
 
 /// 写入 JSON 配置文件（键按字母排序，确保确定性输出）
 pub fn write_json_file<T: Serialize>(path: &Path, data: &T) -> Result<(), AppError> {
+    write_json_file_with_mode(path, data, AtomicWriteMode::RejectFinalSymlink)
+}
+
+/// 写入由外部应用拥有的 JSON 配置文件。
+///
+/// 若最终路径是一个现有且有效的文件符号链接，则原子替换其解析后的目标，保留链接本身。
+pub fn write_json_file_managed<T: Serialize>(path: &Path, data: &T) -> Result<(), AppError> {
+    write_json_file_with_mode(path, data, AtomicWriteMode::FollowManagedSymlink)
+}
+
+fn write_json_file_with_mode<T: Serialize>(
+    path: &Path,
+    data: &T,
+    mode: AtomicWriteMode,
+) -> Result<(), AppError> {
     // 确保目录存在
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| AppError::io(parent, e))?;
@@ -189,19 +204,129 @@ pub fn write_json_file<T: Serialize>(path: &Path, data: &T) -> Result<(), AppErr
     let json = serde_json::to_string_pretty(&sorted_value)
         .map_err(|e| AppError::JsonSerialize { source: e })?;
 
-    atomic_write(path, json.as_bytes())
+    atomic_write_with_mode(path, json.as_bytes(), mode)
 }
 
 /// 原子写入文本文件（用于 TOML/纯文本）
 pub fn write_text_file(path: &Path, data: &str) -> Result<(), AppError> {
+    atomic_write_with_mode(path, data.as_bytes(), AtomicWriteMode::RejectFinalSymlink)
+}
+
+/// 原子写入由外部应用拥有的文本配置文件，并保留受支持的最终符号链接。
+pub fn write_text_file_managed(path: &Path, data: &str) -> Result<(), AppError> {
+    atomic_write_with_mode(path, data.as_bytes(), AtomicWriteMode::FollowManagedSymlink)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AtomicWriteMode {
+    RejectFinalSymlink,
+    FollowManagedSymlink,
+}
+
+fn resolve_atomic_write_path(path: &Path, mode: AtomicWriteMode) -> Result<PathBuf, AppError> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => Some(metadata),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(AppError::io(path, error)),
+    };
+
+    let Some(metadata) = metadata else {
+        return Ok(path.to_path_buf());
+    };
+
+    if !metadata.file_type().is_symlink() {
+        return Ok(path.to_path_buf());
+    }
+
+    if mode == AtomicWriteMode::RejectFinalSymlink {
+        return Err(AppError::Config(format!(
+            "拒绝原子替换符号链接路径: {}",
+            path.display()
+        )));
+    }
+
+    let resolved = fs::canonicalize(path).map_err(|error| AppError::IoContext {
+        context: format!("解析受管配置符号链接失败: {}", path.display()),
+        source: error,
+    })?;
+    let target_metadata =
+        fs::metadata(&resolved).map_err(|error| AppError::io(&resolved, error))?;
+    if !target_metadata.is_file() {
+        return Err(AppError::Config(format!(
+            "受管配置符号链接目标不是普通文件: {} -> {}",
+            path.display(),
+            resolved.display()
+        )));
+    }
+
+    Ok(resolved)
+}
+
+fn atomic_write_with_mode(path: &Path, data: &[u8], mode: AtomicWriteMode) -> Result<(), AppError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| AppError::io(parent, e))?;
     }
-    atomic_write(path, data.as_bytes())
+
+    let write_path = resolve_atomic_write_path(path, mode)?;
+    atomic_write_resolved(&write_path, data)
 }
 
 /// 原子写入：写入临时文件后 rename 替换，避免半写状态
 pub fn atomic_write(path: &Path, data: &[u8]) -> Result<(), AppError> {
+    atomic_write_with_mode(path, data, AtomicWriteMode::RejectFinalSymlink)
+}
+
+/// 原子写入由外部应用管理的配置目标，保留有效的最终符号链接。
+pub fn atomic_write_managed(path: &Path, data: &[u8]) -> Result<(), AppError> {
+    atomic_write_with_mode(path, data, AtomicWriteMode::FollowManagedSymlink)
+}
+
+/// Ensure a write target resolves inside the effective allowed root.
+///
+/// The root itself may be a user-managed directory symlink. Existing targets
+/// are fully resolved; new targets resolve their parent before the filename is
+/// appended. This prevents an allowlisted filename from escaping through a
+/// nested/final symlink.
+pub fn ensure_write_path_within_root(root: &Path, path: &Path) -> Result<(), AppError> {
+    let canonical_root = fs::canonicalize(root).map_err(|error| AppError::IoContext {
+        context: format!("解析允许写入目录失败: {}", root.display()),
+        source: error,
+    })?;
+
+    let resolved_path = match fs::symlink_metadata(path) {
+        Ok(_) => fs::canonicalize(path).map_err(|error| AppError::IoContext {
+            context: format!("解析写入目标失败: {}", path.display()),
+            source: error,
+        })?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let parent = path.parent().ok_or_else(|| {
+                AppError::Config(format!("写入目标缺少父目录: {}", path.display()))
+            })?;
+            let canonical_parent =
+                fs::canonicalize(parent).map_err(|error| AppError::IoContext {
+                    context: format!("解析写入目标父目录失败: {}", parent.display()),
+                    source: error,
+                })?;
+            let filename = path.file_name().ok_or_else(|| {
+                AppError::Config(format!("写入目标缺少文件名: {}", path.display()))
+            })?;
+            canonical_parent.join(filename)
+        }
+        Err(error) => return Err(AppError::io(path, error)),
+    };
+
+    if !resolved_path.starts_with(&canonical_root) {
+        return Err(AppError::Config(format!(
+            "写入目标超出允许目录: {} -> {}",
+            path.display(),
+            resolved_path.display()
+        )));
+    }
+
+    Ok(())
+}
+
+fn atomic_write_resolved(path: &Path, data: &[u8]) -> Result<(), AppError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| AppError::io(parent, e))?;
     }
@@ -215,46 +340,55 @@ pub fn atomic_write(path: &Path, data: &[u8]) -> Result<(), AppError> {
         .ok_or_else(|| AppError::Config("无效的文件名".to_string()))?
         .to_string_lossy()
         .to_string();
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    tmp.push(format!("{file_name}.tmp.{ts}"));
+    tmp.push(format!("{file_name}.tmp.{}", uuid::Uuid::new_v4().simple()));
 
-    {
-        // 首次创建凭证文件时，直接以 0600 打开临时文件，消除
-        // create(0644)→write→chmod(0600) 之间的全局可读竞态窗口。
+    #[cfg(unix)]
+    let existing_mode = {
+        use std::os::unix::fs::PermissionsExt;
+        fs::metadata(path)
+            .ok()
+            .map(|metadata| metadata.permissions().mode())
+    };
+
+    let write_result = (|| -> Result<(), AppError> {
+        // 临时文件总是新建文件：在写入凭证/配置内容前就以 0600 打开，
+        // 消除 create(0644)→write→chmod 之间的全局可读竞态窗口。
         #[cfg(unix)]
         let mut f = {
             use std::os::unix::fs::OpenOptionsExt;
-            if fs::metadata(path).is_ok() {
-                // 已存在文件：沿用普通创建，权限稍后镜像原文件
-                fs::File::create(&tmp).map_err(|e| AppError::io(&tmp, e))?
-            } else {
-                fs::OpenOptions::new()
-                    .write(true)
-                    .create(true)
-                    .truncate(true)
-                    .mode(0o600)
-                    .open(&tmp)
-                    .map_err(|e| AppError::io(&tmp, e))?
-            }
+            fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&tmp)
+                .map_err(|e| AppError::io(&tmp, e))?
         };
         #[cfg(not(unix))]
-        let mut f = fs::File::create(&tmp).map_err(|e| AppError::io(&tmp, e))?;
+        let mut f = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)
+            .map_err(|e| AppError::io(&tmp, e))?;
         f.write_all(data).map_err(|e| AppError::io(&tmp, e))?;
         f.flush().map_err(|e| AppError::io(&tmp, e))?;
+        Ok(())
+    })();
+    if let Err(error) = write_result {
+        let _ = fs::remove_file(&tmp);
+        return Err(error);
     }
 
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        if let Ok(meta) = fs::metadata(path) {
+        if let Some(mode) = existing_mode {
             // 已存在文件：保留原有权限位
-            let perm = meta.permissions().mode();
-            let _ = fs::set_permissions(&tmp, fs::Permissions::from_mode(perm));
+            if let Err(error) = fs::set_permissions(&tmp, fs::Permissions::from_mode(mode)) {
+                let _ = fs::remove_file(&tmp);
+                return Err(AppError::io(&tmp, error));
+            }
         }
-        // 首次创建：临时文件已在上方以 0600 打开，无需再次 chmod
+        // 首次创建：临时文件已在上方以 0600 打开。
     }
 
     #[cfg(windows)]
@@ -271,10 +405,13 @@ pub fn atomic_write(path: &Path, data: &[u8]) -> Result<(), AppError> {
 
     #[cfg(not(windows))]
     {
-        fs::rename(&tmp, path).map_err(|e| AppError::IoContext {
-            context: format!("原子替换失败: {} -> {}", tmp.display(), path.display()),
-            source: e,
-        })?;
+        if let Err(error) = fs::rename(&tmp, path) {
+            let _ = fs::remove_file(&tmp);
+            return Err(AppError::IoContext {
+                context: format!("原子替换失败: {} -> {}", tmp.display(), path.display()),
+                source: error,
+            });
+        }
     }
     Ok(())
 }
@@ -407,6 +544,197 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&sorted_a).unwrap(),
             serde_json::to_string(&sorted_b).unwrap(),
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn default_atomic_write_rejects_final_symlink_without_replacing_it() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target.toml");
+        let link = dir.path().join("config.toml");
+        fs::write(&target, "old").unwrap();
+        symlink(&target, &link).unwrap();
+
+        let error = atomic_write(&link, b"new").expect_err("restricted write must reject link");
+
+        assert!(error.to_string().contains("符号链接"));
+        assert!(fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(fs::read_to_string(&target).unwrap(), "old");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_atomic_write_preserves_absolute_symlink_and_updates_target() {
+        use std::os::unix::fs::symlink;
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target.toml");
+        let link = dir.path().join("config.toml");
+        fs::write(&target, "old").unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o640)).unwrap();
+        symlink(&target, &link).unwrap();
+
+        atomic_write_managed(&link, b"new").unwrap();
+
+        assert!(fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(fs::read_to_string(&target).unwrap(), "new");
+        assert_eq!(fs::read_to_string(&link).unwrap(), "new");
+        assert_eq!(
+            fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_creates_new_file_with_private_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("credentials.json");
+
+        atomic_write(&path, b"secret").unwrap();
+
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_atomic_write_preserves_relative_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target.json");
+        let link = dir.path().join("config.json");
+        fs::write(&target, "old").unwrap();
+        symlink("target.json", &link).unwrap();
+
+        write_text_file_managed(&link, "new").unwrap();
+
+        assert!(fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(fs::read_to_string(&target).unwrap(), "new");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_atomic_write_rejects_dangling_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let link = dir.path().join("config.toml");
+        symlink("missing.toml", &link).unwrap();
+
+        let error = atomic_write_managed(&link, b"new").expect_err("dangling link must fail");
+
+        assert!(error.to_string().contains("解析受管配置符号链接失败"));
+        assert!(fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_atomic_write_rejects_directory_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let target_dir = dir.path().join("target-dir");
+        let link = dir.path().join("config.toml");
+        fs::create_dir(&target_dir).unwrap();
+        symlink(&target_dir, &link).unwrap();
+
+        let error = atomic_write_managed(&link, b"new").expect_err("directory link must fail");
+
+        assert!(error.to_string().contains("不是普通文件"));
+        assert!(fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn containment_check_rejects_final_symlink_outside_root() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("workspace");
+        let outside = dir.path().join("outside.md");
+        let link = root.join("AGENTS.md");
+        fs::create_dir(&root).unwrap();
+        fs::write(&outside, "outside").unwrap();
+        symlink(&outside, &link).unwrap();
+
+        let error = ensure_write_path_within_root(&root, &link)
+            .expect_err("outside symlink must fail containment");
+
+        assert!(error.to_string().contains("超出允许目录"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restricted_write_rejects_final_symlink_even_when_target_is_inside_root() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("workspace");
+        let target = root.join("target.md");
+        let link = root.join("AGENTS.md");
+        fs::create_dir(&root).unwrap();
+        fs::write(&target, "old").unwrap();
+        symlink(&target, &link).unwrap();
+
+        ensure_write_path_within_root(&root, &link).unwrap();
+        let error = write_text_file(&link, "new")
+            .expect_err("restricted workspace writes must not follow final links");
+
+        assert!(error.to_string().contains("符号链接"));
+        assert!(fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(fs::read_to_string(&target).unwrap(), "old");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn containment_check_accepts_new_file_under_symlinked_root() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let target_root = dir.path().join("workspace-target");
+        let root_link = dir.path().join("workspace");
+        fs::create_dir(&target_root).unwrap();
+        symlink(&target_root, &root_link).unwrap();
+
+        let path = root_link.join("AGENTS.md");
+        ensure_write_path_within_root(&root_link, &path).unwrap();
+        write_text_file(&path, "managed workspace").unwrap();
+
+        assert!(fs::symlink_metadata(&root_link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            fs::read_to_string(target_root.join("AGENTS.md")).unwrap(),
+            "managed workspace"
         );
     }
 }

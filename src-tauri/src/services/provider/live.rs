@@ -9,7 +9,9 @@ use toml_edit::{DocumentMut, Item, TableLike};
 
 use crate::app_config::AppType;
 use crate::codex_config::{get_codex_auth_path, get_codex_config_path};
-use crate::config::{delete_file, get_claude_settings_path, read_json_file, write_json_file};
+use crate::config::{
+    delete_file, get_claude_settings_path, read_json_file, write_json_file_managed,
+};
 use crate::database::Database;
 use crate::error::AppError;
 use crate::provider::Provider;
@@ -677,7 +679,7 @@ impl LiveSnapshot {
             LiveSnapshot::Claude { settings } => {
                 let path = get_claude_settings_path();
                 if let Some(value) = settings {
-                    write_json_file(&path, value)?;
+                    write_json_file_managed(&path, value)?;
                 } else if path.exists() {
                     delete_file(&path)?;
                 }
@@ -686,13 +688,13 @@ impl LiveSnapshot {
                 let auth_path = get_codex_auth_path();
                 let config_path = get_codex_config_path();
                 if let Some(value) = auth {
-                    write_json_file(&auth_path, value)?;
+                    write_json_file_managed(&auth_path, value)?;
                 } else if auth_path.exists() {
                     delete_file(&auth_path)?;
                 }
 
                 if let Some(text) = config {
-                    crate::config::write_text_file(&config_path, text)?;
+                    crate::config::write_text_file_managed(&config_path, text)?;
                 } else if config_path.exists() {
                     delete_file(&config_path)?;
                 }
@@ -713,7 +715,7 @@ impl LiveSnapshot {
                     LiveSnapshot::Gemini {
                         config: Some(cfg), ..
                     } => {
-                        write_json_file(&settings_path, cfg)?;
+                        write_json_file_managed(&settings_path, cfg)?;
                     }
                     LiveSnapshot::Gemini { config: None, .. } if settings_path.exists() => {
                         delete_file(&settings_path)?;
@@ -851,7 +853,7 @@ pub(crate) fn write_live_snapshot(app_type: &AppType, provider: &Provider) -> Re
             // settings.json ever have carried one at top level. Idempotent on the
             // common path (snapshot was already sanitized; the merge adds no env).
             let settings = sanitize_claude_settings_for_live(&merged);
-            write_json_file(&path, &settings)?;
+            write_json_file_managed(&path, &settings)?;
         }
         AppType::Codex => {
             let obj = provider
@@ -1407,7 +1409,7 @@ pub(crate) fn write_gemini_live(provider: &Provider) -> Result<(), AppError> {
     }
 
     if let Some(config_value) = config_to_write {
-        write_json_file(&settings_path, &config_value)?;
+        write_json_file_managed(&settings_path, &config_value)?;
     }
 
     // Set security.auth.selectedType based on auth type
@@ -1673,6 +1675,7 @@ pub fn remove_openclaw_provider_from_live(provider_id: &str) -> Result<(), AppEr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::write_json_file;
     use serde_json::json;
 
     #[test]

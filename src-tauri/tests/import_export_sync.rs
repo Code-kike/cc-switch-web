@@ -530,6 +530,57 @@ command = "noop"
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn write_codex_live_atomic_rolls_back_through_managed_auth_symlink() {
+    use std::os::unix::fs::symlink;
+
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let home = ensure_test_home();
+
+    let auth_path = cc_switch_lib::get_codex_auth_path();
+    let config_path = cc_switch_lib::get_codex_config_path();
+    std::fs::create_dir_all(auth_path.parent().expect("codex directory"))
+        .expect("create codex directory");
+
+    let auth_target = home.join("managed-auth.json");
+    std::fs::write(&auth_target, r#"{"OPENAI_API_KEY":"legacy"}"#)
+        .expect("seed managed auth target");
+    symlink(&auth_target, &auth_path).expect("link auth.json");
+    symlink("missing-config.toml", &config_path).expect("link dangling config.toml");
+
+    let error = cc_switch_lib::write_codex_live_atomic(
+        &json!({ "OPENAI_API_KEY": "new-key" }),
+        Some("model = \"gpt-5\"\n"),
+    )
+    .expect_err("dangling managed config target must fail");
+
+    assert!(
+        error.to_string().contains("config.toml"),
+        "unexpected write error: {error}"
+    );
+    assert!(
+        std::fs::symlink_metadata(&auth_path)
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "auth.json link must survive write and rollback"
+    );
+    assert!(
+        std::fs::symlink_metadata(&config_path)
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "dangling config.toml link must remain untouched"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&auth_target).unwrap(),
+        r#"{"OPENAI_API_KEY":"legacy"}"#,
+        "auth target must be restored after the second write fails"
+    );
+}
+
 #[test]
 fn import_from_codex_adds_servers_from_mcp_servers_table() {
     let _guard = test_mutex().lock().expect("acquire test mutex");

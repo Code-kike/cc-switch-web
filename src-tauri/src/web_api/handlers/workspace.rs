@@ -133,6 +133,7 @@ async fn write_workspace_file(Json(request): Json<FileWriteRequest>) -> ApiResul
     let dir = workspace_dir();
     std::fs::create_dir_all(&dir).map_err(ApiError::from_anyhow)?;
     let path = dir.join(&request.filename);
+    crate::config::ensure_write_path_within_root(&dir, &path).map_err(ApiError::from_anyhow)?;
     crate::config::write_text_file(&path, &request.content).map_err(ApiError::from_anyhow)?;
     Ok(json_ok(()))
 }
@@ -192,6 +193,7 @@ async fn write_daily_memory_file(Json(request): Json<FileWriteRequest>) -> ApiRe
     let dir = memory_dir();
     std::fs::create_dir_all(&dir).map_err(ApiError::from_anyhow)?;
     let path = dir.join(&request.filename);
+    crate::config::ensure_write_path_within_root(&dir, &path).map_err(ApiError::from_anyhow)?;
     crate::config::write_text_file(&path, &request.content).map_err(ApiError::from_anyhow)?;
     Ok(json_ok(()))
 }

@@ -1,4 +1,4 @@
-use crate::config::{get_home_dir, write_text_file};
+use crate::config::{get_home_dir, write_text_file_managed};
 use crate::error::AppError;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -173,7 +173,7 @@ pub fn write_gemini_env_atomic(map: &HashMap<String, String>) -> Result<(), AppE
     }
 
     let content = serialize_env_file(map);
-    write_text_file(&path, &content)?;
+    write_text_file_managed(&path, &content)?;
 
     // 设置文件权限为 600（仅所有者可读写）
     #[cfg(unix)]
@@ -329,7 +329,7 @@ fn update_selected_type(selected_type: &str) -> Result<(), AppError> {
     }
 
     // 写入文件
-    crate::config::write_json_file(&settings_path, &settings_content)?;
+    crate::config::write_json_file_managed(&settings_path, &settings_content)?;
 
     Ok(())
 }
