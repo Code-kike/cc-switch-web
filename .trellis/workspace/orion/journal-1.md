@@ -784,3 +784,36 @@ Removed Web Basic Auth from the standalone Web API, kept the same-origin intent 
 ### Next Steps
 
 - None - task complete
+
+
+## Session 23: Deploy updated unauthenticated Web service
+
+**Date**: 2026-07-10
+**Task**: Deploy updated unauthenticated Web service
+**Branch**: `fix/web-audit-phase1-2`
+
+### Summary
+
+Built and deployed the current Web server and assets, removed the legacy Basic Auth systemd drop-in, restarted the persistent service on 0.0.0.0:3010, verified unauthenticated API access and cross-site intent rejection, and corrected the spec verification route.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `76aa2b83` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
