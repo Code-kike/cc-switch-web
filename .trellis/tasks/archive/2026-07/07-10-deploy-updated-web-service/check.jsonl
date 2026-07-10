@@ -1,0 +1,2 @@
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "Acceptance checks for unauthenticated API behavior, cross-site 403, auth drop-in removal, and service deployment"}
+{"file": ".trellis/tasks/archive/2026-07/07-09-replace-persistent-web-service/prd.md", "reason": "Compare the new deployment result with the previous persistent-service baseline"}
