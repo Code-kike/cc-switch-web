@@ -640,6 +640,154 @@ fn migration_from_v3_8_schema_v1_to_current_schema_v3() {
 }
 
 #[test]
+fn sql_import_accepts_legacy_v1_export_and_migrates_it() {
+    let legacy = Connection::open_in_memory().expect("open legacy database");
+    legacy
+        .execute_batch(V3_8_SCHEMA_V1_SQL)
+        .expect("create legacy schema");
+    Database::set_user_version(&legacy, 1).expect("set legacy version");
+    legacy
+        .execute(
+            "INSERT INTO providers (
+                id, app_type, name, settings_config, meta, is_current
+             ) VALUES ('legacy-provider', 'claude', 'Legacy Provider', '{}', '{}', 1)",
+            [],
+        )
+        .expect("seed legacy provider");
+    let sql = Database::dump_sql(&legacy, &[]).expect("export legacy SQL");
+
+    let target = Database::memory().expect("create target database");
+    target
+        .import_sql_string(&sql)
+        .expect("legacy SQL import should migrate successfully");
+
+    let providers = target
+        .get_all_providers("claude")
+        .expect("load imported providers");
+    assert!(providers.contains_key("legacy-provider"));
+    let conn = target.conn.lock().expect("lock imported database");
+    assert_eq!(
+        Database::get_user_version(&conn).expect("read imported version"),
+        SCHEMA_VERSION
+    );
+}
+
+#[test]
+fn sql_import_accepts_current_export_from_upgraded_legacy_schema() {
+    let upgraded = Connection::open_in_memory().expect("open upgraded database");
+    upgraded
+        .execute_batch(V3_8_SCHEMA_V1_SQL)
+        .expect("create legacy schema");
+    Database::set_user_version(&upgraded, 1).expect("set legacy version");
+    upgraded
+        .execute(
+            "INSERT INTO providers (
+                id, app_type, name, settings_config, meta, is_current
+             ) VALUES ('upgraded-provider', 'claude', 'Upgraded Provider', '{}', '{}', 1)",
+            [],
+        )
+        .expect("seed upgraded provider");
+    Database::create_tables_on_conn(&upgraded).expect("create missing tables");
+    Database::apply_schema_migrations_on_conn(&upgraded).expect("upgrade schema");
+    let sql = Database::dump_sql(&upgraded, &[]).expect("export upgraded current SQL");
+
+    let target = Database::memory().expect("create target database");
+    target
+        .import_sql_string(&sql)
+        .expect("current-version export from upgraded schema should import");
+    assert!(target
+        .get_all_providers("claude")
+        .expect("load providers")
+        .contains_key("upgraded-provider"));
+}
+
+#[test]
+fn sql_import_accepts_schema_v2_legacy_objects_and_normalizes_them() {
+    let source = Database::memory().expect("create source database");
+    source
+        .apply_schema_migrations()
+        .expect("build current source schema");
+    {
+        let conn = source.conn.lock().expect("lock source database");
+        Database::set_user_version(&conn, 2).expect("mark source as schema v2");
+        conn.execute("DELETE FROM proxy_config", [])
+            .expect("remove current proxy rows");
+        conn.execute(
+            "INSERT INTO providers (id, app_type, name, settings_config, meta)
+             VALUES ('v2-provider', 'claude', 'V2 Provider', '{}', '{}')",
+            [],
+        )
+        .expect("seed v2 provider");
+    }
+    let mut sql = source.export_sql_string().expect("export source SQL");
+
+    let proxy_start = sql
+        .find("CREATE TABLE proxy_config (")
+        .expect("find proxy_config DDL");
+    let proxy_end = proxy_start
+        + sql[proxy_start..]
+            .find(";\n")
+            .expect("find proxy_config DDL end")
+        + 2;
+    let legacy_proxy = r#"CREATE TABLE proxy_config (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        enabled INTEGER NOT NULL DEFAULT 0,
+        listen_address TEXT NOT NULL DEFAULT '127.0.0.1',
+        listen_port INTEGER NOT NULL DEFAULT 5000,
+        max_retries INTEGER NOT NULL DEFAULT 3,
+        request_timeout INTEGER NOT NULL DEFAULT 300,
+        enable_logging INTEGER NOT NULL DEFAULT 1,
+        target_app TEXT NOT NULL DEFAULT 'claude',
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );"#;
+    sql.replace_range(proxy_start..proxy_end, legacy_proxy);
+
+    let legacy_objects = r#"
+CREATE TABLE circuit_breaker_config (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    failure_threshold INTEGER NOT NULL DEFAULT 5,
+    success_threshold INTEGER NOT NULL DEFAULT 2,
+    timeout_seconds INTEGER NOT NULL DEFAULT 60,
+    error_rate_threshold REAL NOT NULL DEFAULT 0.5,
+    min_requests INTEGER NOT NULL DEFAULT 10,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+INSERT INTO circuit_breaker_config (id) VALUES (1);
+CREATE TABLE failover_queue (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    app_type TEXT NOT NULL,
+    provider_id TEXT NOT NULL,
+    queue_order INTEGER NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at INTEGER NOT NULL,
+    UNIQUE (app_type, provider_id),
+    FOREIGN KEY (provider_id, app_type) REFERENCES providers(id, app_type) ON DELETE CASCADE
+);
+CREATE INDEX idx_failover_queue_order ON failover_queue(app_type, queue_order);
+"#;
+    sql = sql.replacen(
+        "COMMIT;\nPRAGMA foreign_keys=ON;",
+        &format!("{legacy_objects}COMMIT;\nPRAGMA foreign_keys=ON;"),
+        1,
+    );
+
+    let target = Database::memory().expect("create target database");
+    target
+        .import_sql_string(&sql)
+        .expect("schema v2 SQL import should succeed");
+    assert!(target
+        .get_all_providers("claude")
+        .expect("load providers")
+        .contains_key("v2-provider"));
+    let normalized = target.export_sql_string().expect("export normalized SQL");
+    assert!(!normalized.contains("CREATE TABLE circuit_breaker_config"));
+    assert!(!normalized.contains("CREATE TABLE failover_queue"));
+    assert!(!normalized.contains("idx_failover_queue_order"));
+    assert!(normalized.contains("app_type TEXT PRIMARY KEY CHECK"));
+}
+
+#[test]
 fn schema_dry_run_does_not_write_to_disk() {
     // Create minimal valid config for migration
     let mut apps = HashMap::new();

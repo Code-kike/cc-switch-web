@@ -7,13 +7,72 @@ use crate::config::get_app_config_dir;
 use crate::error::AppError;
 use chrono::{Local, Utc};
 use rusqlite::backup::Backup;
+use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
 use rusqlite::types::ValueRef;
 use rusqlite::Connection;
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
 
 const CC_SWITCH_SQL_EXPORT_HEADER: &str = "-- CC Switch SQLite 导出";
+
+const SQL_RESTORE_TABLES: &[&str] = &[
+    "providers",
+    "provider_endpoints",
+    "mcp_servers",
+    "prompts",
+    "skills",
+    "skill_repos",
+    "settings",
+    "proxy_config",
+    "provider_health",
+    "proxy_request_logs",
+    "model_pricing",
+    "stream_check_logs",
+    "proxy_live_backup",
+    "usage_daily_rollups",
+    "session_log_sync",
+];
+
+const LEGACY_SQL_RESTORE_TABLES: &[&str] = &["circuit_breaker_config", "failover_queue"];
+
+const SQL_RESTORE_INDEXES: &[(&str, &str)] = &[
+    ("idx_providers_failover", "providers"),
+    ("idx_request_logs_provider", "proxy_request_logs"),
+    ("idx_request_logs_created_at", "proxy_request_logs"),
+    ("idx_request_logs_model", "proxy_request_logs"),
+    ("idx_request_logs_session", "proxy_request_logs"),
+    ("idx_request_logs_status", "proxy_request_logs"),
+    ("idx_request_logs_app_created_at", "proxy_request_logs"),
+    ("idx_request_logs_dedup_lookup_expr", "proxy_request_logs"),
+    ("idx_stream_check_logs_provider", "stream_check_logs"),
+    // Older supported exports; migrations remove/replace these objects.
+    ("idx_request_logs_dedup_lookup", "proxy_request_logs"),
+    ("idx_failover_queue_order", "failover_queue"),
+];
+
+type SchemaObject = (String, String);
+type TableColumnSignature = (i64, String, String, i64, Option<String>, i64, i64);
+type ForeignKeySignature = (
+    i64,
+    i64,
+    String,
+    String,
+    Option<String>,
+    String,
+    String,
+    String,
+);
+type IndexColumnSignature = (i64, i64, Option<String>, i64, String, i64);
+type TableIndexSignature = (String, i64, String, i64, Vec<IndexColumnSignature>);
+
+#[cfg(test)]
+type RestoreCriticalSectionHook = (usize, Box<dyn FnOnce() + Send>);
+
+#[cfg(test)]
+static RESTORE_CRITICAL_SECTION_HOOK: std::sync::Mutex<Option<RestoreCriticalSectionHook>> =
+    std::sync::Mutex::new(None);
 
 /// Tables whose data rows are skipped when exporting for WebDAV sync.
 const SYNC_SKIP_TABLES: &[&str] = &[
@@ -99,9 +158,6 @@ impl Database {
         let sql_content = sql_raw.trim_start_matches('\u{feff}');
         Self::validate_cc_switch_sql_export(sql_content)?;
 
-        // 导入前备份现有数据库
-        let backup_path = self.backup_database_file()?;
-
         let local_snapshot = if preserve_tables.is_empty() {
             None
         } else {
@@ -117,33 +173,673 @@ impl Database {
         let temp_conn =
             Connection::open(&temp_path).map_err(|e| AppError::Database(e.to_string()))?;
 
-        temp_conn
+        Self::install_sql_restore_authorizer(&temp_conn);
+        let import_result = temp_conn
             .execute_batch(sql_content)
-            .map_err(|e| AppError::Database(format!("执行 SQL 导入失败: {e}")))?;
+            .map_err(|e| AppError::Database(format!("执行 SQL 导入失败: {e}")));
+        temp_conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>);
+        import_result?;
 
-        // 补齐缺失表/索引并进行基础校验
+        Self::validate_restore_objects(&temp_conn)?;
+        temp_conn
+            .execute("PRAGMA foreign_keys = ON;", [])
+            .map_err(|e| AppError::Database(format!("启用导入库外键约束失败: {e}")))?;
+
+        // 补齐缺失表/索引并校验迁移后的 schema。
         Self::create_tables_on_conn(&temp_conn)?;
         Self::apply_schema_migrations_on_conn(&temp_conn)?;
+        Self::validate_current_schema(&temp_conn, true)?;
         Self::validate_basic_state(&temp_conn)?;
-        if let Some(local_snapshot) = local_snapshot.as_ref() {
-            Self::restore_tables(local_snapshot, &temp_conn, preserve_tables)?;
+
+        // 不可信 DDL 永不直接进入 live DB：无条件将数据复制到可信代码创建的 canonical schema。
+        let normalized_file = NamedTempFile::new().map_err(|e| AppError::IoContext {
+            context: "创建规范化数据库文件失败".to_string(),
+            source: e,
+        })?;
+        let normalized_conn = Connection::open(normalized_file.path())
+            .map_err(|e| AppError::Database(format!("创建规范化数据库失败: {e}")))?;
+        normalized_conn
+            .execute("PRAGMA foreign_keys = OFF;", [])
+            .map_err(|e| AppError::Database(format!("关闭规范化库外键约束失败: {e}")))?;
+        Self::create_tables_on_conn(&normalized_conn)?;
+        Self::apply_schema_migrations_on_conn(&normalized_conn)?;
+        Self::restore_tables(&temp_conn, &normalized_conn, SQL_RESTORE_TABLES)?;
+        normalized_conn
+            .execute("PRAGMA foreign_keys = ON;", [])
+            .map_err(|e| AppError::Database(format!("启用规范化库外键约束失败: {e}")))?;
+        if !Self::validate_current_schema(&normalized_conn, false)? {
+            return Err(AppError::Database(
+                "规范化数据库未生成当前 canonical schema".to_string(),
+            ));
         }
 
-        // 使用 Backup 将临时库原子写回主库
-        {
-            let mut main_conn = lock_conn!(self.conn);
-            let backup = Backup::new(&temp_conn, &mut main_conn)
-                .map_err(|e| AppError::Database(e.to_string()))?;
-            backup
-                .step(-1)
-                .map_err(|e| AppError::Database(e.to_string()))?;
+        if let Some(local_snapshot) = local_snapshot.as_ref() {
+            Self::restore_tables(local_snapshot, &normalized_conn, preserve_tables)?;
         }
+        Self::validate_database_integrity(&normalized_conn)?;
+
+        let backup_path = self.replace_main_with_safety_backup(&normalized_conn)?;
 
         let backup_id = backup_path
             .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().to_string()))
             .unwrap_or_default();
 
         Ok(backup_id)
+    }
+
+    fn install_sql_restore_authorizer(conn: &Connection) {
+        conn.authorizer(Some(|ctx: AuthContext<'_>| {
+            if ctx.accessor.is_some()
+                || matches!(ctx.database_name, Some(database) if database != "main")
+            {
+                return Authorization::Deny;
+            }
+
+            let allowed = match ctx.action {
+                AuthAction::CreateTable { table_name } => {
+                    Self::is_known_restore_table(table_name) || table_name == "sqlite_sequence"
+                }
+                AuthAction::CreateIndex {
+                    index_name,
+                    table_name,
+                } => {
+                    Self::restore_index_table(index_name) == Some(table_name)
+                        || (index_name.starts_with("sqlite_autoindex_")
+                            && Self::is_known_restore_table(table_name))
+                }
+                AuthAction::Insert { table_name } => {
+                    table_name == "sqlite_master" || Self::is_known_restore_table(table_name)
+                }
+                AuthAction::Update {
+                    table_name,
+                    column_name,
+                } => {
+                    table_name == "sqlite_master"
+                        && matches!(
+                            column_name,
+                            "type" | "name" | "tbl_name" | "rootpage" | "sql"
+                        )
+                }
+                AuthAction::Read {
+                    table_name,
+                    column_name,
+                } => {
+                    Self::is_known_restore_table(table_name)
+                        || (table_name == "sqlite_master"
+                            && column_name.eq_ignore_ascii_case("rowid"))
+                }
+                AuthAction::Pragma {
+                    pragma_name,
+                    pragma_value,
+                } => Self::is_allowed_restore_pragma(pragma_name, pragma_value),
+                AuthAction::Transaction { .. } => true,
+                AuthAction::Reindex { index_name } => {
+                    Self::restore_index_table(index_name).is_some()
+                }
+                AuthAction::Function { function_name } => {
+                    function_name.eq_ignore_ascii_case("coalesce")
+                }
+                _ => false,
+            };
+
+            if allowed {
+                Authorization::Allow
+            } else {
+                Authorization::Deny
+            }
+        }));
+    }
+
+    fn is_known_restore_table(table: &str) -> bool {
+        SQL_RESTORE_TABLES.contains(&table) || LEGACY_SQL_RESTORE_TABLES.contains(&table)
+    }
+
+    fn restore_index_table(index: &str) -> Option<&'static str> {
+        SQL_RESTORE_INDEXES
+            .iter()
+            .find_map(|(name, table)| (*name == index).then_some(*table))
+    }
+
+    fn is_allowed_restore_pragma(name: &str, value: Option<&str>) -> bool {
+        if name.eq_ignore_ascii_case("foreign_keys") {
+            return value.is_some_and(|value| {
+                value.eq_ignore_ascii_case("on") || value.eq_ignore_ascii_case("off")
+            });
+        }
+
+        if name.eq_ignore_ascii_case("user_version") {
+            return value
+                .and_then(|value| value.parse::<i32>().ok())
+                .is_some_and(|version| (0..=super::SCHEMA_VERSION).contains(&version));
+        }
+
+        false
+    }
+
+    fn validate_restore_objects(conn: &Connection) -> Result<(), AppError> {
+        let version = Self::get_user_version(conn)?;
+        let mut has_providers = false;
+        let mut has_mcp_servers = false;
+        let mut stmt = conn
+            .prepare(
+                "SELECT type, name, tbl_name
+                 FROM sqlite_master
+                 WHERE name NOT LIKE 'sqlite_%'",
+            )
+            .map_err(|e| AppError::Database(format!("读取导入对象失败: {e}")))?;
+        let mut rows = stmt
+            .query([])
+            .map_err(|e| AppError::Database(format!("查询导入对象失败: {e}")))?;
+
+        while let Some(row) = rows.next().map_err(|e| AppError::Database(e.to_string()))? {
+            let object_type: String = row.get(0).map_err(|e| AppError::Database(e.to_string()))?;
+            let name: String = row.get(1).map_err(|e| AppError::Database(e.to_string()))?;
+            let table: String = row.get(2).map_err(|e| AppError::Database(e.to_string()))?;
+
+            let allowed = match object_type.as_str() {
+                "table" => {
+                    let current = SQL_RESTORE_TABLES.contains(&name.as_str());
+                    let legacy = version <= 2 && LEGACY_SQL_RESTORE_TABLES.contains(&name.as_str());
+                    current || legacy
+                }
+                "index" => Self::restore_index_table(&name) == Some(table.as_str()),
+                _ => false,
+            };
+            if !allowed {
+                return Err(AppError::Database(format!(
+                    "SQL 备份包含未授权对象: {object_type} {name}"
+                )));
+            }
+
+            has_providers |= object_type == "table" && name == "providers";
+            has_mcp_servers |= object_type == "table" && name == "mcp_servers";
+        }
+
+        if !has_providers || !has_mcp_servers {
+            return Err(AppError::Database(
+                "SQL 备份缺少 CC Switch 核心表".to_string(),
+            ));
+        }
+
+        Ok(())
+    }
+
+    fn validate_current_schema(
+        conn: &Connection,
+        allow_normalization: bool,
+    ) -> Result<bool, AppError> {
+        let expected = Connection::open_in_memory()
+            .map_err(|e| AppError::Database(format!("创建 schema 校验库失败: {e}")))?;
+        Self::create_tables_on_conn(&expected)?;
+        Self::apply_schema_migrations_on_conn(&expected)?;
+
+        let expected_objects = Self::schema_objects(&expected)?;
+        let actual_objects = Self::schema_objects(conn)?;
+        if actual_objects != expected_objects {
+            return Err(AppError::Database(
+                "SQL 备份的数据库对象与当前 CC Switch schema 不一致".to_string(),
+            ));
+        }
+
+        let mut canonical = true;
+        for table in SQL_RESTORE_TABLES {
+            if Self::table_xinfo_signature(conn, table)?
+                != Self::table_xinfo_signature(&expected, table)?
+            {
+                if !allow_normalization || !Self::legacy_columns_compatible(conn, &expected, table)?
+                {
+                    return Err(AppError::Database(format!(
+                        "SQL 备份的表结构不匹配: {table}"
+                    )));
+                }
+                canonical = false;
+            }
+            if Self::foreign_key_signature(conn, table)?
+                != Self::foreign_key_signature(&expected, table)?
+                || Self::table_flags(conn, table)? != Self::table_flags(&expected, table)?
+                || Self::table_index_signature(conn, table)?
+                    != Self::table_index_signature(&expected, table)?
+                || Self::table_check_signature(conn, table)?
+                    != Self::table_check_signature(&expected, table)?
+                || Self::table_has_keyword(conn, table, "autoincrement")?
+                    != Self::table_has_keyword(&expected, table, "autoincrement")?
+            {
+                return Err(AppError::Database(format!(
+                    "SQL 备份的表结构不匹配: {table}"
+                )));
+            }
+        }
+        Self::validate_expression_index_semantics(conn)?;
+
+        let version = Self::get_user_version(conn)?;
+        if version != super::SCHEMA_VERSION {
+            return Err(AppError::Database(format!(
+                "SQL 备份迁移后的 schema 版本无效: {version}"
+            )));
+        }
+
+        Ok(canonical)
+    }
+
+    fn schema_objects(conn: &Connection) -> Result<BTreeMap<String, SchemaObject>, AppError> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT type, name, tbl_name
+                 FROM sqlite_master
+                 WHERE name NOT LIKE 'sqlite_%'
+                 ORDER BY name",
+            )
+            .map_err(|e| AppError::Database(format!("读取 schema 对象失败: {e}")))?;
+        let rows = stmt
+            .query_map([], |row| {
+                let object_type = row.get::<_, String>(0)?;
+                let name = row.get::<_, String>(1)?;
+                let table = row.get::<_, String>(2)?;
+                Ok((name, (object_type, table)))
+            })
+            .map_err(|e| AppError::Database(format!("查询 schema 对象失败: {e}")))?;
+
+        let mut objects = BTreeMap::new();
+        for row in rows {
+            let (name, object) = row.map_err(|e| AppError::Database(e.to_string()))?;
+            objects.insert(name, object);
+        }
+        Ok(objects)
+    }
+
+    fn table_xinfo_signature(
+        conn: &Connection,
+        table: &str,
+    ) -> Result<Vec<TableColumnSignature>, AppError> {
+        let mut stmt = conn
+            .prepare(&format!("PRAGMA table_xinfo(\"{table}\")"))
+            .map_err(|e| AppError::Database(format!("读取表 {table} 结构失败: {e}")))?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                ))
+            })
+            .map_err(|e| AppError::Database(format!("查询表 {table} 结构失败: {e}")))?;
+
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| AppError::Database(format!("解析表 {table} 结构失败: {e}")))
+    }
+
+    fn legacy_columns_compatible(
+        conn: &Connection,
+        expected: &Connection,
+        table: &str,
+    ) -> Result<bool, AppError> {
+        let actual = Self::table_xinfo_signature(conn, table)?
+            .into_iter()
+            .map(|(_, name, column_type, not_null, default, pk, hidden)| {
+                (name, (column_type, not_null, default, pk, hidden))
+            })
+            .collect::<BTreeMap<_, _>>();
+        let expected = Self::table_xinfo_signature(expected, table)?
+            .into_iter()
+            .map(|(_, name, column_type, not_null, default, pk, hidden)| {
+                (name, (column_type, not_null, default, pk, hidden))
+            })
+            .collect::<BTreeMap<_, _>>();
+
+        for (name, signature) in &actual {
+            if expected.get(name) != Some(signature) {
+                return Ok(false);
+            }
+        }
+        for (name, (_, not_null, default, _, _)) in &expected {
+            if !actual.contains_key(name) && *not_null != 0 && default.is_none() {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    fn foreign_key_signature(
+        conn: &Connection,
+        table: &str,
+    ) -> Result<Vec<ForeignKeySignature>, AppError> {
+        let mut stmt = conn
+            .prepare(&format!("PRAGMA foreign_key_list(\"{table}\")"))
+            .map_err(|e| AppError::Database(format!("读取表 {table} 外键失败: {e}")))?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                ))
+            })
+            .map_err(|e| AppError::Database(format!("查询表 {table} 外键失败: {e}")))?;
+
+        let mut signature = rows
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| AppError::Database(format!("解析表 {table} 外键失败: {e}")))?;
+        signature.sort();
+        Ok(signature)
+    }
+
+    fn table_flags(conn: &Connection, table: &str) -> Result<(i64, i64), AppError> {
+        conn.query_row(
+            "SELECT wr, strict FROM pragma_table_list WHERE schema = 'main' AND name = ?1",
+            [table],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|e| AppError::Database(format!("读取表 {table} 标志失败: {e}")))
+    }
+
+    fn table_index_signature(
+        conn: &Connection,
+        table: &str,
+    ) -> Result<Vec<TableIndexSignature>, AppError> {
+        let table = table.replace('"', "\"\"");
+        let mut stmt = conn
+            .prepare(&format!("PRAGMA index_list(\"{table}\")"))
+            .map_err(|e| AppError::Database(format!("读取表 {table} 索引失败: {e}")))?;
+        let indexes = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)?,
+                ))
+            })
+            .map_err(|e| AppError::Database(format!("查询表 {table} 索引失败: {e}")))?;
+
+        let mut signature = Vec::new();
+        for index in indexes {
+            let (name, unique, origin, partial) =
+                index.map_err(|e| AppError::Database(e.to_string()))?;
+            let escaped_name = name.replace('"', "\"\"");
+            let mut columns_stmt = conn
+                .prepare(&format!("PRAGMA index_xinfo(\"{escaped_name}\")"))
+                .map_err(|e| AppError::Database(format!("读取索引 {name} 结构失败: {e}")))?;
+            let columns = columns_stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                })
+                .map_err(|e| AppError::Database(format!("查询索引 {name} 结构失败: {e}")))?
+                .collect::<Result<Vec<IndexColumnSignature>, _>>()
+                .map_err(|e| AppError::Database(format!("解析索引 {name} 结构失败: {e}")))?;
+            signature.push((name, unique, origin, partial, columns));
+        }
+        signature.sort_by(|left, right| left.0.cmp(&right.0));
+        Ok(signature)
+    }
+
+    fn validate_expression_index_semantics(conn: &Connection) -> Result<(), AppError> {
+        let mut stmt = conn
+            .prepare(
+                "EXPLAIN QUERY PLAN
+                 SELECT request_id FROM proxy_request_logs
+                 WHERE app_type = ?1
+                   AND COALESCE(data_source, 'proxy') = ?2
+                   AND input_tokens = ?3
+                   AND output_tokens = ?4
+                   AND cache_read_tokens = ?5
+                   AND created_at = ?6
+                   AND cache_creation_tokens = ?7",
+            )
+            .map_err(|e| AppError::Database(format!("准备表达式索引校验失败: {e}")))?;
+        let plans = stmt
+            .query_map(rusqlite::params!["claude", "proxy", 0, 0, 0, 0, 0], |row| {
+                row.get::<_, String>(3)
+            })
+            .map_err(|e| AppError::Database(format!("执行表达式索引校验失败: {e}")))?;
+        for plan in plans {
+            let detail = plan.map_err(|e| AppError::Database(e.to_string()))?;
+            if detail.contains("idx_request_logs_dedup_lookup_expr") && detail.contains("<expr>=?")
+            {
+                return Ok(());
+            }
+        }
+        Err(AppError::Database(
+            "表达式索引 idx_request_logs_dedup_lookup_expr 语义不匹配".to_string(),
+        ))
+    }
+
+    fn table_check_signature(conn: &Connection, table: &str) -> Result<Vec<String>, AppError> {
+        let sql = Self::table_sql(conn, table)?;
+        Ok(Self::extract_check_expressions(&sql))
+    }
+
+    fn extract_check_expressions(sql: &str) -> Vec<String> {
+        let chars = Self::strip_sql_comments(sql).chars().collect::<Vec<_>>();
+        let mut expressions = Vec::new();
+        let mut index = 0;
+
+        while index < chars.len() {
+            match chars[index] {
+                '\'' | '"' | '`' | '[' => {
+                    index = Self::skip_quoted_sql(&chars, index);
+                    continue;
+                }
+                ch if ch.is_ascii_alphabetic() || ch == '_' => {
+                    let start = index;
+                    index += 1;
+                    while chars
+                        .get(index)
+                        .is_some_and(|ch| ch.is_ascii_alphanumeric() || *ch == '_' || *ch == '$')
+                    {
+                        index += 1;
+                    }
+                    if !chars[start..index]
+                        .iter()
+                        .collect::<String>()
+                        .eq_ignore_ascii_case("check")
+                    {
+                        continue;
+                    }
+                }
+                _ => {
+                    index += 1;
+                    continue;
+                }
+            }
+
+            {
+                let mut cursor = index;
+                while chars.get(cursor).is_some_and(|ch| ch.is_whitespace()) {
+                    cursor += 1;
+                }
+                if chars.get(cursor) == Some(&'(') {
+                    let start = cursor + 1;
+                    let mut depth = 1;
+                    cursor += 1;
+                    while cursor < chars.len() && depth > 0 {
+                        match chars[cursor] {
+                            '\'' | '"' | '`' | '[' => {
+                                cursor = Self::skip_quoted_sql(&chars, cursor);
+                                continue;
+                            }
+                            '(' => depth += 1,
+                            ')' => depth -= 1,
+                            _ => {}
+                        }
+                        cursor += 1;
+                    }
+                    if depth == 0 {
+                        let expression =
+                            Self::normalize_check_expression(&chars[start..cursor - 1]);
+                        expressions.push(expression);
+                        index = cursor;
+                        continue;
+                    }
+                }
+            }
+            index += 1;
+        }
+
+        expressions.sort();
+        expressions
+    }
+
+    fn table_sql(conn: &Connection, table: &str) -> Result<String, AppError> {
+        conn.query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?1",
+            [table],
+            |row| row.get(0),
+        )
+        .map_err(|e| AppError::Database(format!("读取表 {table} SQL 失败: {e}")))
+    }
+
+    fn table_has_keyword(conn: &Connection, table: &str, keyword: &str) -> Result<bool, AppError> {
+        let sql = Self::strip_sql_comments(&Self::table_sql(conn, table)?);
+        let chars = sql.chars().collect::<Vec<_>>();
+        let mut index = 0;
+        while index < chars.len() {
+            match chars[index] {
+                '\'' | '"' | '`' | '[' => index = Self::skip_quoted_sql(&chars, index),
+                ch if ch.is_ascii_alphabetic() || ch == '_' => {
+                    let start = index;
+                    index += 1;
+                    while chars
+                        .get(index)
+                        .is_some_and(|ch| ch.is_ascii_alphanumeric() || *ch == '_' || *ch == '$')
+                    {
+                        index += 1;
+                    }
+                    if chars[start..index]
+                        .iter()
+                        .collect::<String>()
+                        .eq_ignore_ascii_case(keyword)
+                    {
+                        return Ok(true);
+                    }
+                }
+                _ => index += 1,
+            }
+        }
+        Ok(false)
+    }
+
+    fn strip_sql_comments(sql: &str) -> String {
+        let chars = sql.chars().collect::<Vec<_>>();
+        let mut output = String::with_capacity(sql.len());
+        let mut index = 0;
+        while index < chars.len() {
+            match chars[index] {
+                '\'' | '"' | '`' | '[' => {
+                    let end = Self::skip_quoted_sql(&chars, index);
+                    output.extend(chars[index..end].iter());
+                    index = end;
+                }
+                '-' if chars.get(index + 1) == Some(&'-') => {
+                    output.push(' ');
+                    index += 2;
+                    while index < chars.len() && chars[index] != '\n' {
+                        index += 1;
+                    }
+                }
+                '/' if chars.get(index + 1) == Some(&'*') => {
+                    output.push(' ');
+                    index += 2;
+                    while index + 1 < chars.len()
+                        && !(chars[index] == '*' && chars[index + 1] == '/')
+                    {
+                        index += 1;
+                    }
+                    index = (index + 2).min(chars.len());
+                }
+                ch => {
+                    output.push(ch);
+                    index += 1;
+                }
+            }
+        }
+        output
+    }
+
+    fn skip_quoted_sql(chars: &[char], start: usize) -> usize {
+        let opener = chars[start];
+        let closer = if opener == '[' { ']' } else { opener };
+        let mut index = start + 1;
+        while index < chars.len() {
+            if chars[index] == closer {
+                if opener != '[' && chars.get(index + 1) == Some(&closer) {
+                    index += 2;
+                    continue;
+                }
+                return index + 1;
+            }
+            index += 1;
+        }
+        chars.len()
+    }
+
+    fn normalize_check_expression(chars: &[char]) -> String {
+        let mut output = String::new();
+        let mut index = 0;
+        while index < chars.len() {
+            match chars[index] {
+                '\'' => {
+                    let end = Self::skip_quoted_sql(chars, index);
+                    output.extend(chars[index..end].iter());
+                    index = end;
+                }
+                ch if ch.is_whitespace() => index += 1,
+                ch => {
+                    output.extend(ch.to_lowercase());
+                    index += 1;
+                }
+            }
+        }
+        output
+    }
+
+    fn validate_database_integrity(conn: &Connection) -> Result<(), AppError> {
+        let mut integrity_stmt = conn
+            .prepare("PRAGMA integrity_check")
+            .map_err(|e| AppError::Database(format!("执行 integrity_check 失败: {e}")))?;
+        let integrity_rows = integrity_stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|e| AppError::Database(format!("查询 integrity_check 失败: {e}")))?;
+        let integrity = integrity_rows
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| AppError::Database(format!("解析 integrity_check 失败: {e}")))?;
+        if integrity.as_slice() != ["ok"] {
+            return Err(AppError::Database(format!(
+                "SQL 备份未通过 integrity_check: {}",
+                integrity.join("; ")
+            )));
+        }
+
+        let mut stmt = conn
+            .prepare("PRAGMA foreign_key_check")
+            .map_err(|e| AppError::Database(format!("执行 foreign_key_check 失败: {e}")))?;
+        let mut rows = stmt
+            .query([])
+            .map_err(|e| AppError::Database(format!("查询 foreign_key_check 失败: {e}")))?;
+        if rows
+            .next()
+            .map_err(|e| AppError::Database(e.to_string()))?
+            .is_some()
+        {
+            return Err(AppError::Database("SQL 备份包含外键完整性错误".to_string()));
+        }
+
+        Ok(())
     }
 
     /// 创建内存快照以避免长时间持有数据库锁
@@ -296,6 +992,55 @@ impl Database {
 
     /// 生成一致性快照备份，返回备份文件路径（不存在主库时返回 None）
     pub(crate) fn backup_database_file(&self) -> Result<Option<PathBuf>, AppError> {
+        let backup_path = {
+            let conn = lock_conn!(self.conn);
+            Self::backup_database_file_from_conn(&conn)?
+        };
+        if let Some(path) = backup_path.as_ref() {
+            if let Some(dir) = path.parent() {
+                Self::cleanup_db_backups(dir)?;
+            }
+        }
+        Ok(backup_path)
+    }
+
+    fn replace_main_with_safety_backup(
+        &self,
+        source_conn: &Connection,
+    ) -> Result<Option<PathBuf>, AppError> {
+        let mut main_conn = lock_conn!(self.conn);
+        let backup_path = Self::backup_database_file_from_conn(&main_conn)?;
+        if let Some(path) = backup_path.as_ref() {
+            if let Some(dir) = path.parent() {
+                Self::cleanup_db_backups(dir)?;
+            }
+        }
+        #[cfg(test)]
+        if let Some(hook) = {
+            let database_key = std::ptr::from_ref(&self.conn) as usize;
+            let mut slot = RESTORE_CRITICAL_SECTION_HOOK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if slot
+                .as_ref()
+                .is_some_and(|(target_key, _)| *target_key == database_key)
+            {
+                slot.take().map(|(_, hook)| hook)
+            } else {
+                None
+            }
+        } {
+            hook();
+        }
+        let backup = Backup::new(source_conn, &mut main_conn)
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        backup
+            .step(-1)
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(backup_path)
+    }
+
+    fn backup_database_file_from_conn(conn: &Connection) -> Result<Option<PathBuf>, AppError> {
         let db_path = get_app_config_dir().join("cc-switch.db");
         if !db_path.exists() {
             return Ok(None);
@@ -318,18 +1063,14 @@ impl Database {
             counter += 1;
         }
 
-        {
-            let conn = lock_conn!(self.conn);
-            let mut dest_conn =
-                Connection::open(&backup_path).map_err(|e| AppError::Database(e.to_string()))?;
-            let backup = Backup::new(&conn, &mut dest_conn)
-                .map_err(|e| AppError::Database(e.to_string()))?;
-            backup
-                .step(-1)
-                .map_err(|e| AppError::Database(e.to_string()))?;
-        }
+        let mut dest_conn =
+            Connection::open(&backup_path).map_err(|e| AppError::Database(e.to_string()))?;
+        let backup =
+            Backup::new(conn, &mut dest_conn).map_err(|e| AppError::Database(e.to_string()))?;
+        backup
+            .step(-1)
+            .map_err(|e| AppError::Database(e.to_string()))?;
 
-        Self::cleanup_db_backups(&backup_dir)?;
         Ok(Some(backup_path))
     }
 
@@ -378,7 +1119,7 @@ impl Database {
     }
 
     /// 导出数据库为 SQL 文本
-    fn dump_sql(conn: &Connection, skip_tables: &[&str]) -> Result<String, AppError> {
+    pub(super) fn dump_sql(conn: &Connection, skip_tables: &[&str]) -> Result<String, AppError> {
         let mut output = String::new();
         let timestamp = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
         let user_version: i64 = conn
@@ -564,26 +1305,16 @@ impl Database {
             )));
         }
 
-        // Step 1: Create safety backup of current database
-        let safety_backup = self.backup_database_file()?;
+        // Open the backup file before entering the main-connection critical section.
+        let source_conn =
+            Connection::open(&backup_path).map_err(|e| AppError::Database(e.to_string()))?;
+
+        let safety_backup = self.replace_main_with_safety_backup(&source_conn)?;
         let safety_id = safety_backup
             .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().to_string()))
             .unwrap_or_default();
 
-        // Step 2: Open the backup file and restore it to the main database
-        let source_conn =
-            Connection::open(&backup_path).map_err(|e| AppError::Database(e.to_string()))?;
-
-        {
-            let mut main_conn = lock_conn!(self.conn);
-            let backup = Backup::new(&source_conn, &mut main_conn)
-                .map_err(|e| AppError::Database(e.to_string()))?;
-            backup
-                .step(-1)
-                .map_err(|e| AppError::Database(e.to_string()))?;
-        }
-
-        // Step 3: Run schema migrations (backup may be from an older version)
+        // Run schema migrations (backup may be from an older version)
         self.create_tables()?;
         self.apply_schema_migrations()?;
         self.ensure_model_pricing_seeded()?;
@@ -683,10 +1414,12 @@ impl Database {
 
 #[cfg(test)]
 mod tests {
-    use super::Database;
+    use super::{Database, RESTORE_CRITICAL_SECTION_HOOK};
     use crate::error::AppError;
     use crate::settings::{update_settings, AppSettings};
     use serial_test::serial;
+    use std::sync::{mpsc, Arc};
+    use std::time::Duration;
 
     #[test]
     fn sync_import_preserves_local_only_tables() -> Result<(), AppError> {
@@ -773,6 +1506,65 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    #[test]
+    #[serial]
+    fn sql_import_holds_main_lock_across_safety_backup_and_replace() {
+        let db = Arc::new(Database::memory().expect("create database"));
+        let sql = db.export_sql_string().expect("export database");
+        let (hook_ready_tx, hook_ready_rx) = mpsc::channel();
+        let (continue_tx, continue_rx) = mpsc::channel();
+        let database_key = std::ptr::from_ref(&db.conn) as usize;
+        *RESTORE_CRITICAL_SECTION_HOOK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some((
+            database_key,
+            Box::new(move || {
+                hook_ready_tx.send(()).expect("signal restore hook");
+                continue_rx.recv().expect("resume restore");
+            }),
+        ));
+
+        let import_db = Arc::clone(&db);
+        let import_thread = std::thread::spawn(move || import_db.import_sql_string(&sql));
+        hook_ready_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("restore should reach critical section hook");
+
+        let (writer_started_tx, writer_started_rx) = mpsc::channel();
+        let (writer_done_tx, writer_done_rx) = mpsc::channel();
+        let writer_db = Arc::clone(&db);
+        let writer_thread = std::thread::spawn(move || {
+            writer_started_tx.send(()).expect("signal writer start");
+            writer_db
+                .set_setting("restore-concurrent-write", "survives")
+                .expect("write setting");
+            writer_done_tx.send(()).expect("signal writer done");
+        });
+        writer_started_rx.recv().expect("writer should start");
+        assert!(
+            writer_done_rx
+                .recv_timeout(Duration::from_millis(100))
+                .is_err(),
+            "writer must remain blocked while safety backup and replacement hold the main lock"
+        );
+
+        continue_tx.send(()).expect("resume restore");
+        import_thread
+            .join()
+            .expect("join import thread")
+            .expect("import database");
+        writer_done_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("writer should finish after restore unlocks");
+        writer_thread.join().expect("join writer thread");
+        assert_eq!(
+            db.get_setting("restore-concurrent-write")
+                .expect("read concurrent write")
+                .as_deref(),
+            Some("survives")
+        );
     }
 
     #[test]

@@ -1122,6 +1122,14 @@ fn import_sql_accepts_cc_switch_exported_backup() {
     }
 
     let state = create_test_state_with_config(&config).expect("create test state");
+    state
+        .db
+        .add_custom_endpoint(
+            AppType::Claude.as_str(),
+            "test-provider",
+            "https://endpoint.test",
+        )
+        .expect("add provider endpoint");
     let export_path = home.join("cc-switch-export.sql");
     state
         .db
@@ -1143,6 +1151,11 @@ fn import_sql_accepts_cc_switch_exported_backup() {
     assert!(
         providers.contains_key("test-provider"),
         "imported providers should contain test-provider"
+    );
+    let imported_sql = state.db.export_sql_string().expect("re-export imported db");
+    assert!(
+        imported_sql.contains("https://endpoint.test"),
+        "provider endpoint rows must survive SQL roundtrip"
     );
 }
 
@@ -1179,4 +1192,217 @@ fn import_sql_accepts_empty_cc_switch_export_roundtrip() {
         "fresh import should remain provider-empty"
     );
     assert!(mcp.is_empty(), "fresh import should remain MCP-empty");
+}
+
+fn inject_before_export_commit(exported: &str, sql: &str) -> String {
+    let marker = "COMMIT;\nPRAGMA foreign_keys=ON;";
+    exported.replacen(marker, &format!("{sql}\n{marker}"), 1)
+}
+
+fn config_with_import_guard_provider() -> MultiAppConfig {
+    let mut config = MultiAppConfig::default();
+    let manager = config
+        .get_manager_mut(&AppType::Claude)
+        .expect("claude manager");
+    manager.providers.insert(
+        "import-guard-provider".to_string(),
+        Provider::with_id(
+            "import-guard-provider".to_string(),
+            "Import Guard Provider".to_string(),
+            json!({"env": {"ANTHROPIC_API_KEY": "keep-me"}}),
+            None,
+        ),
+    );
+    config
+}
+
+fn assert_import_guard_provider_survives(state: &cc_switch_lib::AppState) {
+    let providers = state
+        .db
+        .get_all_providers(AppType::Claude.as_str())
+        .expect("load providers after rejected import");
+    assert!(
+        providers.contains_key("import-guard-provider"),
+        "rejected SQL import must not replace the main database"
+    );
+}
+
+#[test]
+fn import_sql_rejects_attach_without_creating_external_file_or_replacing_main_db() {
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let home = ensure_test_home();
+    let state = create_test_state_with_config(&config_with_import_guard_provider())
+        .expect("create test state");
+    let exported = state.db.export_sql_string().expect("export database");
+    let attached_path = home.join("malicious-attached.db");
+    let escaped_path = attached_path.to_string_lossy().replace('\'', "''");
+    let malicious = exported.replacen(
+        "BEGIN TRANSACTION;",
+        &format!("ATTACH DATABASE '{escaped_path}' AS malicious;\nBEGIN TRANSACTION;"),
+        1,
+    );
+
+    state
+        .db
+        .import_sql_string(&malicious)
+        .expect_err("ATTACH in a CC Switch backup must be rejected");
+
+    assert!(
+        !attached_path.exists(),
+        "rejected ATTACH must not create {}",
+        attached_path.display()
+    );
+    assert_import_guard_provider_survives(&state);
+}
+
+#[test]
+fn import_sql_rejects_executable_and_unknown_schema_objects_without_replacing_main_db() {
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let state = create_test_state_with_config(&config_with_import_guard_provider())
+        .expect("create test state");
+    let exported = state.db.export_sql_string().expect("export database");
+
+    for forbidden_sql in [
+        "CREATE TRIGGER malicious_trigger AFTER INSERT ON settings BEGIN DELETE FROM providers; END;",
+        "CREATE VIEW malicious_view AS SELECT * FROM providers;",
+        "CREATE TABLE malicious_table (id INTEGER);",
+    ] {
+        let malicious = inject_before_export_commit(&exported, forbidden_sql);
+        state
+            .db
+            .import_sql_string(&malicious)
+            .expect_err("forbidden schema objects must be rejected");
+        assert_import_guard_provider_survives(&state);
+    }
+}
+
+#[test]
+fn import_sql_rejects_tampered_schema_and_foreign_key_violations() {
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let state = create_test_state_with_config(&config_with_import_guard_provider())
+        .expect("create test state");
+    let exported = state.db.export_sql_string().expect("export database");
+
+    for (needle, replacement) in [
+        (
+            "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT);",
+            "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT, injected TEXT);",
+        ),
+        (
+            "app_type TEXT PRIMARY KEY CHECK (app_type IN ('claude','codex','gemini'))",
+            "app_type TEXT PRIMARY KEY",
+        ),
+        (
+            "app_type TEXT PRIMARY KEY CHECK (app_type IN ('claude','codex','gemini'))",
+            "app_type TEXT PRIMARY KEY /* CHECK (app_type IN ('claude','codex','gemini')) */",
+        ),
+        (
+            "app_type IN ('claude','codex','gemini')",
+            "app_type IN ('claude','codex','gemini','claude ')",
+        ),
+        (
+            "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT);",
+            "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT UNIQUE);",
+        ),
+        (
+            "id INTEGER PRIMARY KEY AUTOINCREMENT",
+            "id INTEGER PRIMARY KEY /* AUTOINCREMENT */",
+        ),
+        (
+            "CREATE TABLE stream_check_logs (\n            id INTEGER PRIMARY KEY AUTOINCREMENT",
+            "CREATE TABLE stream_check_logs (\n            id INTEGER PRIMARY KEY /* AUTOINCREMENT */",
+        ),
+    ] {
+        let tampered_schema = exported.replacen(needle, replacement, 1);
+        assert_ne!(
+            tampered_schema, exported,
+            "target schema fragment should be replaced: {needle}"
+        );
+        let schema_error = state
+            .db
+            .import_sql_string(&tampered_schema)
+            .expect_err("tampered known-table schema must be rejected");
+        assert!(
+            schema_error.to_string().contains("表结构不匹配"),
+            "unexpected schema validation error: {schema_error}"
+        );
+        assert_import_guard_provider_survives(&state);
+    }
+
+    let tampered_expression_index = exported.replacen(
+        "COALESCE(data_source, 'proxy')",
+        "COALESCE(data_source, 'session')",
+        1,
+    );
+    assert_ne!(tampered_expression_index, exported);
+    let index_error = state
+        .db
+        .import_sql_string(&tampered_expression_index)
+        .expect_err("tampered expression index must be rejected");
+    assert!(
+        index_error.to_string().contains("表达式索引"),
+        "unexpected expression-index validation error: {index_error}"
+    );
+    assert_import_guard_provider_survives(&state);
+
+    let broken_foreign_key = inject_before_export_commit(
+        &exported,
+        "INSERT INTO provider_endpoints (id, provider_id, app_type, url, added_at) VALUES (999999, 'missing-provider', 'claude', 'https://invalid.test', 0);",
+    );
+    let foreign_key_error = state
+        .db
+        .import_sql_string(&broken_foreign_key)
+        .expect_err("foreign key violations must be rejected");
+    assert!(
+        foreign_key_error.to_string().contains("外键完整性错误"),
+        "unexpected foreign key validation error: {foreign_key_error}"
+    );
+    assert_import_guard_provider_survives(&state);
+}
+
+#[test]
+fn import_sql_canonicalizes_unmodeled_table_ddl_semantics() {
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let state = create_test_state_with_config(&config_with_import_guard_provider())
+        .expect("create test state");
+    let exported = state.db.export_sql_string().expect("export database");
+
+    for (needle, replacement, forbidden) in [
+        (
+            "key TEXT PRIMARY KEY, value TEXT",
+            "key TEXT PRIMARY KEY ON CONFLICT REPLACE, value TEXT",
+            "on conflict replace",
+        ),
+        (
+            "key TEXT PRIMARY KEY, value TEXT",
+            "key TEXT PRIMARY KEY, value TEXT COLLATE NOCASE",
+            "collate nocase",
+        ),
+    ] {
+        let tampered = exported.replacen(needle, replacement, 1);
+        assert_ne!(tampered, exported, "settings DDL should be modified");
+        state
+            .db
+            .import_sql_string(&tampered)
+            .expect("safe data should import through canonical schema rebuilding");
+
+        let canonical = state.db.export_sql_string().expect("export canonical db");
+        let settings_start = canonical
+            .find("CREATE TABLE settings (")
+            .expect("find canonical settings DDL");
+        let settings_end = settings_start
+            + canonical[settings_start..]
+                .find(";\n")
+                .expect("find canonical settings DDL end");
+        let settings_ddl = canonical[settings_start..settings_end].to_ascii_lowercase();
+        assert!(
+            !settings_ddl.contains(forbidden),
+            "untrusted DDL semantic must not reach canonical schema: {settings_ddl}"
+        );
+        assert_import_guard_provider_survives(&state);
+    }
 }
