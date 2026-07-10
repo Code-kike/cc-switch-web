@@ -2,6 +2,8 @@
 
 Vocabulary for the cc-switch-web product context and upstream synchronization work.
 
+## Language
+
 **Web-first fork**:
 This repository: a browser/server-focused derivative of CC Switch that preserves remote management and long-running self-hosted deployment.
 _Avoid_: desktop app, upstream
@@ -21,6 +23,34 @@ _Avoid_: pull, merge, update
 **Product-upstream inherited bug**:
 A defect from product-upstream behavior that is present in the Web-first fork after synchronization or Web adaptation.
 _Avoid_: upstream bug, original bug
+
+**Web adaptation defect**:
+A defect introduced when shared or desktop-oriented product behavior is exposed through the standalone Web runtime, browser UI, or headless deployment model.
+_Avoid_: upstream bug, parity gap, Web-only quirk
+
+**Constrained database restore**:
+A restore that accepts only backup content belonging to declared CC Switch product state and cannot change state outside that boundary.
+_Avoid_: SQL execution, trusted dump, unrestricted import
+
+**Managed configuration target**:
+A configuration location for an external application that cc-switch-web is explicitly authorized to maintain and keep consistent with the application's managed state.
+_Avoid_: arbitrary path, file to overwrite
+
+**Common configuration**:
+Settings intentionally shared among multiple providers for the same application.
+_Avoid_: provider defaults, global provider config
+
+**Provider-scoped configuration**:
+Settings belonging to one provider only, including credentials, routing choices, and provider-specific catalogs.
+_Avoid_: common configuration, shared snippet
+
+**Provider endpoint**:
+A service address associated with one provider and application.
+_Avoid_: base URL field, endpoint row
+
+**MCP application assignment**:
+The declared association stating which supported applications should enable a managed MCP server.
+_Avoid_: MCP copy, live config entry
 
 **Functional catalog delta**:
 A product-upstream provider or preset catalog change that affects model availability, defaults, routing behavior, or usage/pricing correctness.

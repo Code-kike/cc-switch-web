@@ -83,6 +83,32 @@ After implementation:
 - [ ] Verified error handling at each boundary
 - [ ] Checked data survives round-trip
 
+### Checklist: Identity, Ownership, Projection, and Compensation
+
+Use this when asynchronous UI state, a database row, and one or more live
+configuration files participate in the same operation:
+
+- [ ] Name the identity that every asynchronous result belongs to; invalidate
+  it on selection, preset, baseline, or lifecycle changes.
+- [ ] Name the source of truth for every field. Keep provider-scoped settings,
+  common configuration, and derived MCP projections in separate owners.
+- [ ] Test the empty-source case; a row-by-row loop cannot remove live orphans
+  when the authoritative set is empty.
+- [ ] Capture the previous stored state and the union of affected external
+  applications before mutation.
+- [ ] If the Nth external write fails, define how stored state and the first
+  N-1 writes are restored, including a failed create whose row no longer exists.
+- [ ] Reject invalid source documents before overwriting them; parse failure is
+  not an empty configuration.
+- [ ] For executable import formats, copy accepted data into trusted canonical
+  structures instead of promoting imported structure directly.
+
+Executable contracts and regression points live in
+`frontend/quality-guidelines.md` under Async Workspace File Identity,
+Constrained Canonical SQL Restore, Transactional Provider Endpoint
+Reconciliation, Managed and Restricted Symbolic-Link Writes, and Codex Common
+Configuration and MCP Derived-State Atomicity.
+
 ---
 
 ## Cross-Platform Template Consistency

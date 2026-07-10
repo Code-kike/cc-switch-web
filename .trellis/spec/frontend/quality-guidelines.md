@@ -1908,6 +1908,464 @@ if req.method() == Method::OPTIONS && req.headers().contains_key(header::ORIGIN)
 
 ---
 
+### Scenario: Async Workspace File Identity
+
+#### 1. Scope / Trigger
+
+- Trigger: a workspace or Daily Memory editor starts an asynchronous read whose
+  filename, editor visibility, or selection can change before the read settles.
+- Applies to `WorkspaceFileEditor`, `DailyMemoryPanel`, and any future
+  read-edit-save flow where the write target is selected independently from the
+  read promise.
+
+#### 2. Signatures
+
+- Workspace API:
+  - `workspaceApi.readFile(filename): Promise<string | null>`
+  - `workspaceApi.writeFile(filename, content): Promise<void>`
+  - `workspaceApi.readDailyMemoryFile(filename): Promise<string | null>`
+  - `workspaceApi.writeDailyMemoryFile(filename, content): Promise<void>`
+- Identity state:
+  - `loadRequestIdRef` + `loadedFilename`
+  - `contentLoadRequestIdRef` + `loadedEditingFile`
+
+#### 3. Contracts
+
+- Opening, switching, closing, or creating a file must invalidate older load
+  generations.
+- Only the current generation may update content, loading state, errors, or the
+  loaded-file identity.
+- A selection change clears old content and loaded identity until the new read
+  succeeds.
+- Save is enabled only when the loaded identity equals the current selection,
+  and the write must use that loaded identity as its destination.
+- Creating a new Daily Memory file may bind an empty editor directly to that
+  new identity, but must not create the file before the user saves.
+
+#### 4. Validation & Error Matrix
+
+- Older success settles after a newer read -> ignore it completely.
+- Older failure settles after a newer read -> no toast, close, unlock, or
+  loading-state change for the newer file.
+- New read is pending -> old content is cleared and save remains disabled.
+- Editor closes or selection changes -> invalidate every in-flight read tied to
+  the previous identity.
+- Loaded identity differs from selected identity -> reject save without writing.
+
+#### 5. Good/Base/Bad Cases
+
+- Good: A is opened, then B; B resolves first and A resolves last. The editor
+  shows B and saving writes B.
+- Base: one file is opened, loaded, edited, and saved normally.
+- Bad: promise callbacks call `setContent` or `setLoading(false)` without an
+  identity check, or save uses the latest prop/state filename instead of the
+  filename whose content was loaded.
+
+#### 6. Tests Required
+
+- `WorkspaceFileEditor`:
+  - `keeps the latest file content and saves it to the matching filename`
+  - `ignores a stale read failure without unlocking or failing the new file`
+- `DailyMemoryPanel`:
+  - `keeps the latest daily memory content and saves it to the matching file`
+  - `ignores a stale daily memory failure without closing or unlocking the new file`
+- Assert that stale completions do not change the editor, emit an error toast,
+  enable save, or alter the filename passed to the write mock.
+
+#### 7. Wrong vs Correct
+
+##### Wrong
+
+```typescript
+workspaceApi.readFile(filename).then(setContent).finally(() => setLoading(false));
+await workspaceApi.writeFile(filename, content);
+```
+
+##### Correct
+
+```typescript
+const requestId = ++loadRequestIdRef.current;
+const loadedFile = filename;
+const data = await workspaceApi.readFile(loadedFile);
+if (loadRequestIdRef.current !== requestId) return;
+setContent(data ?? "");
+setLoadedFilename(loadedFile);
+
+if (loadedFilename !== filename) return;
+await workspaceApi.writeFile(loadedFilename, content);
+```
+
+---
+
+### Scenario: Constrained Canonical SQL Restore
+
+#### 1. Scope / Trigger
+
+- Trigger: SQL import/export, WebDAV/S3 database restore, backup schema, or
+  database migration behavior changes.
+- Applies to `Database::import_sql_string`,
+  `Database::import_sql_string_for_sync`, and every caller that can replace the
+  live CC Switch database.
+
+#### 2. Signatures
+
+- `import_sql_string_inner(&self, sql_raw: &str, preserve_tables: &[&str]) -> Result<String, AppError>`
+- Restore helpers:
+  - `install_sql_restore_authorizer`
+  - `validate_restore_objects`
+  - `validate_current_schema`
+  - `restore_tables`
+  - `validate_database_integrity`
+  - the single-lock safety-backup and live-replacement path
+
+#### 3. Contracts
+
+- A CC Switch export header identifies the format; it does not grant arbitrary
+  SQL execution authority.
+- Execute input SQL only against a temporary database with an authorizer that
+  permits known current/legacy tables, known indexes, transaction operations,
+  and narrowly approved pragmas.
+- Reject attachment, executable or virtual schema objects, unknown objects,
+  unexpected functions/actions, and external filesystem effects.
+- After legacy migration and validation, always copy allowed rows into a fresh
+  canonical schema created by the current code. Imported DDL never becomes the
+  live schema directly.
+- Sync restore may reapply only `SYNC_PRESERVE_TABLES` from the local snapshot.
+- Run `PRAGMA integrity_check` and `PRAGMA foreign_key_check` on the canonical
+  database before replacement.
+- Hold one main-database lock across safety-backup creation and replacement so
+  concurrent writes cannot fall between them.
+
+#### 4. Validation & Error Matrix
+
+- `ATTACH` or external database access -> reject; create no external file.
+- Trigger, view, virtual table, unknown table/index, or expression-index
+  tampering -> reject.
+- Foreign-key violation or failed integrity check -> reject.
+- Valid legacy v1/v2 export -> migrate and copy data into the current canonical
+  schema.
+- Any rejection or replacement failure -> preserve the previous live database
+  and its guard data.
+
+#### 5. Good/Base/Bad Cases
+
+- Good: a current CC Switch export round-trips with its providers and MCP data.
+- Base: a supported legacy export imports, migrates, and re-exports using only
+  the current schema semantics.
+- Bad: validate only the header and execute against the live database, or
+  validate a temporary database and rename that untrusted schema into place.
+
+#### 6. Tests Required
+
+- Rejection and no-side-effect tests:
+  - `import_sql_rejects_attach_without_creating_external_file_or_replacing_main_db`
+  - `import_sql_rejects_executable_and_unknown_schema_objects_without_replacing_main_db`
+  - `import_sql_rejects_tampered_schema_and_foreign_key_violations`
+- Canonicalization and compatibility tests:
+  - `import_sql_canonicalizes_unmodeled_table_ddl_semantics`
+  - `sql_import_accepts_legacy_v1_export_and_migrates_it`
+  - `sql_import_accepts_current_export_from_upgraded_legacy_schema`
+  - `sql_import_accepts_schema_v2_legacy_objects_and_normalizes_them`
+- Atomicity and sync tests:
+  - `sql_import_holds_main_lock_across_safety_backup_and_replace`
+  - `sync_import_preserves_local_only_tables`
+
+#### 7. Wrong vs Correct
+
+##### Wrong
+
+```rust
+validate_header(sql)?;
+live_connection.execute_batch(sql)?;
+replace_live_database(imported_database)?;
+```
+
+##### Correct
+
+```text
+untrusted SQL in authorized temporary DB
+  -> known-object and schema validation
+  -> copy rows into trusted current schema
+  -> integrity and foreign-key checks
+  -> one-lock safety backup and replacement
+```
+
+---
+
+### Scenario: Managed and Restricted Symbolic-Link Writes
+
+#### 1. Scope / Trigger
+
+- Trigger: an external application's live configuration/authentication/MCP
+  writer or a workspace/restricted file writer changes.
+- Applies to the atomic-write helpers in `src-tauri/src/config.rs` and every
+  call site that chooses managed or restricted path ownership.
+
+#### 2. Signatures
+
+- Restricted/default writes:
+  - `atomic_write(path, data)`
+  - `write_text_file(path, data)`
+  - `write_json_file(path, data)`
+- Managed writes:
+  - `atomic_write_managed(path, data)`
+  - `write_text_file_managed(path, data)`
+  - `write_json_file_managed(path, data)`
+- Containment guard:
+  - `ensure_write_path_within_root(root, path)`
+
+#### 3. Contracts
+
+- Managed mode may follow only an existing final symlink whose resolved target
+  is a regular file. Create the temporary file beside the resolved target and
+  atomically replace the target so the link survives.
+- Dangling links, directory links, cycles, and unsupported targets fail closed.
+- Restricted/default mode never follows a final symlink implicitly.
+- Workspace writes must first prove the resolved path remains inside the
+  allowed root, then use the final-symlink-rejecting writer. The root directory
+  itself may be a user-managed symlink.
+- On Unix, create new temporary files with `create_new` and mode `0600` before
+  writing bytes; an existing target may donate its permission bits.
+
+#### 4. Validation & Error Matrix
+
+- Managed absolute/relative link to a regular file -> preserve link and update target.
+- Managed dangling or directory link -> return an error and preserve the link.
+- Restricted final link, even to a target inside the root -> reject.
+- Nested or final link escaping the allowed root -> containment error.
+- New file under a symlinked root whose resolved parent is contained -> allow.
+
+#### 5. Good/Base/Bad Cases
+
+- Good: a dotfiles-managed `~/.codex/config.toml` link remains a link while its
+  target is atomically updated.
+- Base: a regular file uses normal sibling-temp replacement.
+- Bad: globally follow every symlink, or rename a temporary file over the link
+  path and silently replace the link itself.
+
+#### 6. Tests Required
+
+- Helper regressions:
+  - `default_atomic_write_rejects_final_symlink_without_replacing_it`
+  - `managed_atomic_write_preserves_absolute_symlink_and_updates_target`
+  - `managed_atomic_write_preserves_relative_symlink`
+  - `managed_atomic_write_rejects_dangling_symlink`
+  - `managed_atomic_write_rejects_directory_symlink`
+  - `containment_check_rejects_final_symlink_outside_root`
+  - `restricted_write_rejects_final_symlink_even_when_target_is_inside_root`
+  - `containment_check_accepts_new_file_under_symlinked_root`
+  - `atomic_write_creates_new_file_with_private_permissions`
+- Real-writer regressions include
+  `set_provider_preserves_managed_config_symlink` and
+  `write_codex_live_atomic_rolls_back_through_managed_auth_symlink`.
+- Desktop and Web workspace call sites must both retain containment plus
+  restricted-write behavior; a direct handler-level symlink integration test
+  remains desirable when the harness can isolate a real workspace root.
+
+#### 7. Wrong vs Correct
+
+##### Wrong
+
+```rust
+// One global behavior cannot safely serve both ownership models.
+fs::rename(temp_path, requested_symlink_path)?;
+```
+
+##### Correct
+
+```rust
+write_text_file_managed(external_app_config, contents)?;
+ensure_write_path_within_root(workspace_root, workspace_file)?;
+write_text_file(workspace_file, contents)?;
+```
+
+---
+
+### Scenario: Transactional Provider Endpoint Reconciliation
+
+#### 1. Scope / Trigger
+
+- Trigger: `Provider.meta.custom_endpoints`, provider persistence, or endpoint
+  DAO behavior changes.
+- Applies to provider creation/update and direct custom-endpoint insertion.
+
+#### 2. Signatures
+
+- `Database::save_provider(app_type, provider) -> Result<(), AppError>`
+- `reconcile_provider_endpoints(tx, provider_id, app_type, endpoints)`
+- `load_custom_endpoints(conn, provider_id, app_type)`
+- `Database::add_custom_endpoint(app_type, provider_id, url)`
+
+#### 3. Contracts
+
+- Persist the provider row and its endpoint snapshot in the same SQLite
+  transaction.
+- `provider.meta == None` means no endpoint snapshot was supplied and existing
+  endpoints are preserved.
+- `provider.meta == Some(...)` makes `custom_endpoints` authoritative; an empty
+  map clears all endpoints for that provider/application pair.
+- Reconciliation removes absent URLs, inserts new URLs, and collapses historical
+  duplicate rows.
+- Keep the earliest surviving non-null `added_at`; fill it only when the keeper
+  row is null. Do not refresh it on an idempotent save.
+- `add_custom_endpoint` is idempotent and also collapses historical duplicates.
+
+#### 4. Validation & Error Matrix
+
+- Provider update succeeds but endpoint reconciliation fails -> roll back both.
+- URL absent from authoritative snapshot -> delete it.
+- Existing URL remains -> preserve the keeper and earliest timestamp.
+- Duplicate historical URL rows -> retain one row.
+- Empty snapshot -> clear endpoints.
+- Missing metadata -> preserve endpoints.
+
+#### 5. Good/Base/Bad Cases
+
+- Good: `{old, keep}` updated to `{keep, new}` yields exactly `{keep, new}` in a
+  fresh database read.
+- Base: a metadata-free provider update changes ordinary provider fields without
+  touching endpoint rows.
+- Bad: commit the provider first and update endpoints later, or append new URLs
+  without deleting removed/duplicate rows.
+
+#### 6. Tests Required
+
+- `save_provider_reconciles_endpoint_snapshot_on_update`
+- `save_provider_rolls_back_provider_when_endpoint_reconcile_fails`
+- `save_provider_without_meta_preserves_existing_endpoints`
+- `save_provider_with_empty_endpoint_snapshot_clears_existing_endpoints`
+- `add_custom_endpoint_is_idempotent_and_collapses_historical_duplicates`
+- Assertions must use a fresh database read, not only the in-memory request
+  object.
+
+#### 7. Wrong vs Correct
+
+##### Wrong
+
+```text
+commit provider row -> append/replace endpoint rows -> leave removed URLs behind
+```
+
+##### Correct
+
+```text
+begin transaction -> upsert provider -> reconcile authoritative endpoint snapshot
+  -> deduplicate and preserve earliest added_at -> commit once
+```
+
+---
+
+### Scenario: Codex Common Configuration and MCP Derived-State Atomicity
+
+#### 1. Scope / Trigger
+
+- Trigger: Codex common-snippet extraction/merge/save, provider backfill, MCP
+  database mutations, or DB-to-live application projection changes.
+- Applies across frontend hooks, Desktop/Web config commands, provider live
+  configuration services, and MCP application writers.
+
+#### 2. Signatures
+
+- Frontend/backend TOML operation:
+  - `updateTomlCommonConfigSnippet(configToml, snippetToml, enabled): Promise<string>`
+  - `update_toml_common_config_snippet(&str, &str, bool) -> Result<String, AppError>`
+  - `POST /api/config/update-toml-common-config-snippet`
+- Extraction/backfill:
+  - `ProviderService::extract_common_config_snippet`
+  - `ProviderService::extract_common_config_snippet_from_settings`
+  - `strip_codex_mcp_servers_from_settings`
+- MCP mutation/projection:
+  - `McpService::{upsert_server, delete_server, toggle_app, sync_enabled_for_app}`
+  - `mcp::sync_servers_to_codex(&IndexMap<String, McpServer>)`
+
+#### 3. Contracts
+
+- Merge/remove common Codex TOML through backend `toml_edit`; preserve comments,
+  whitespace, ordering, and unrelated values as far as the edited syntax permits.
+- Invalid target or snippet TOML returns an error and must not overwrite the
+  original text or persisted snippet.
+- Common extraction excludes provider identity, credentials, routing/base URL,
+  provider tables, CC Switch-injected catalog/search artifacts, and DB-owned MCP
+  projections. It preserves genuine user common settings, including a custom
+  model catalog path and user-set Web search behavior.
+- Frontend durable snippet saves are serialized. Preset identity, config
+  baseline, operation generation, and unmount invalidate stale merge/extract
+  results.
+- The MCP database definition plus application assignments is authoritative for
+  cc-switch-web-managed operations. Codex `[mcp_servers]` is a complete derived
+  projection: replace the table, remove live orphans, and remove the table when
+  no Codex servers are enabled.
+- Invalid live TOML fails closed. A failed projection after a database mutation
+  restores the previous DB row and compensates every affected application.
+  Recovery failures are included in the returned error rather than hidden.
+- Provider backfill strips MCP projections before storing provider snapshots;
+  derived live state must not become provider-owned state.
+
+#### 4. Validation & Error Matrix
+
+- Invalid common target/snippet TOML -> reject and preserve original state.
+- Stale merge/extract settles after a preset/config/unmount change -> ignore.
+- Empty Codex MCP projection -> remove `[mcp_servers]` and legacy forms.
+- Invalid Codex live TOML during projection -> do not overwrite; roll DB state back.
+- Claude projection succeeds, then Codex projection fails -> restore or remove
+  the affected Claude entry as required by the previous DB row.
+- Failed create with no previous row -> explicitly remove any live entry already
+  written; an empty DB iteration cannot discover that orphan.
+- Provider backfill sees MCP sections -> strip them before persistence.
+
+#### 5. Good/Base/Bad Cases
+
+- Good: merging a `[tui]` snippet into a commented Codex config preserves the
+  surrounding layout and later removes only matching snippet values.
+- Good: two DB-enabled Codex MCP servers replace the full live table and remove
+  an orphan third entry.
+- Base: a user-supplied model catalog path remains part of common configuration.
+- Bad: frontend parse/stringify rewrites the whole TOML, per-entry best-effort
+  Codex sync leaves orphans, invalid TOML is replaced with a new empty document,
+  or a DB commit returns projection failure without rollback/compensation.
+
+#### 6. Tests Required
+
+- Common TOML and extraction:
+  - `update_toml_common_config_snippet_preserves_comments_and_key_order`
+  - `update_toml_common_config_snippet_overrides_and_removes_by_value`
+  - `extract_codex_common_config_strips_provider_fields_and_injected_artifacts`
+  - `extract_codex_common_config_keeps_user_set_web_search`
+  - `extract_codex_common_config_keeps_user_model_catalog_path`
+- Backfill and frontend races:
+  - `codex_backfill_strips_live_mcp_projection`
+  - `strip_mcp_servers_from_settings_removes_projection_and_legacy_form`
+  - `strip_mcp_servers_from_settings_is_byte_identical_without_mcp`
+  - latest-toggle, manual-edit baseline, serialized-save, preset-switch, and
+    unmount invalidation tests in `useCommonConfigSave.test.tsx`
+- MCP integration:
+  - full-table orphan removal and empty-database clearing
+  - fail-closed invalid-TOML projection
+  - Codex toggle/delete DB rollback
+  - multi-application create/update/delete compensation
+  - low-level single-server remove/sync fail-closed regressions
+- `6d2ee247` is not directly applicable because this fork lacks unified Codex
+  session history; test the adapted complete-projection self-healing behavior,
+  not that unrelated feature.
+
+#### 7. Wrong vs Correct
+
+##### Wrong
+
+```text
+frontend parse/stringify -> per-entry live writes -> DB remains committed on failure
+```
+
+##### Correct
+
+```text
+syntax-preserving backend operation + stale-result invalidation
+DB authoritative state -> complete live projection
+projection failure -> DB rollback + compensation of every affected application
+```
+
+---
+
 ## Testing Requirements
 
 <!-- What level of testing is expected -->
