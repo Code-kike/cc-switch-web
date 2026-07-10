@@ -1,4 +1,4 @@
-import { isWebMode, webJsonFetch } from "./adapter";
+import { isWebMode } from "./adapter";
 
 export type UpdateInfo = {
   available: boolean;
@@ -21,16 +21,9 @@ export async function checkForUpdates(): Promise<UpdateInfo> {
       : { available: false };
   }
 
-  try {
-    const data = await webJsonFetch<UpdateInfo>("/api/system/get_update_info");
-    return {
-      available: data.available,
-      version: data.version,
-      notes: data.notes,
-      downloadUrl: data.downloadUrl,
-      isWebMode: true,
-    };
-  } catch {
-    return { available: false, isWebMode: true };
-  }
+  // Web mode: this fork has no independent release channel, and the upstream
+  // update-check would steer users to upstream desktop binaries that lack this
+  // fork's changes. Report "no update available" instead of querying upstream.
+  // See docs/audit/2026-07-10-full-audit.md (L11 / H3).
+  return { available: false, isWebMode: true };
 }

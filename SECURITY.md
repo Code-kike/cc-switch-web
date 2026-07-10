@@ -56,3 +56,24 @@ Reporters will be credited in the release notes unless they prefer to remain ano
 Security fixes are released as patch versions and announced via [GitHub Releases](https://github.com/farion1231/cc-switch/releases). We recommend always updating to the latest version.
 
 安全修复通过补丁版本发布，并通过 [GitHub Releases](https://github.com/farion1231/cc-switch/releases) 通知。建议始终更新到最新版本。
+
+## Web Deployment: Sensitive Files at Rest / Web 部署：静态敏感文件
+
+When running `cc-switch-web` as an always-on service, the service account's data
+directory may contain long-lived credentials, notably:
+
+在以常驻服务方式运行 `cc-switch-web` 时，服务账号的数据目录可能包含长期有效的凭据，尤其是：
+
+- `codex_oauth_auth.json` — Codex/ChatGPT OAuth refresh tokens (`0600` on Unix).
+- Copilot OAuth auth store (same class).
+- CLI config files under `~/.claude`, `~/.codex`, `~/.gemini` that hold API keys.
+
+These files are written with `0600` permissions but are **not encrypted at rest**.
+The built-in WebDAV / S3 sync snapshot bundles only the SQLite database and the
+skills archive — it does **not** upload these OAuth files. If you run your own
+backups (rsync, snapshots, external sync), exclude these files or ensure the
+backup target is trusted, since anyone who can read them obtains long-lived tokens.
+
+这些文件以 `0600` 权限写入，但**未加密存储**。内置的 WebDAV / S3 同步快照仅打包 SQLite
+数据库与技能归档，**不会**上传这些 OAuth 文件。若你使用自有备份方案（rsync、快照、外部同步），
+请排除上述文件或确保备份目标可信——任何能读取它们的人都会获得长期有效的令牌。
