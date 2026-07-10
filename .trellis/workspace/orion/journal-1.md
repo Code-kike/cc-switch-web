@@ -855,3 +855,36 @@ Fixed stale file identity races, constrained SQL restore, transactional endpoint
 ### Next Steps
 
 - None - task complete
+
+
+## Session 25: Redeploy Web server as persistent service
+
+**Date**: 2026-07-10
+**Task**: Redeploy Web server as persistent service
+**Branch**: `fix/web-audit-phase1-2`
+
+### Summary
+
+Built and installed the current Web frontend and release server, preserved rollback artifacts, restarted the enabled systemd user service, verified Linger=yes, artifact checksums, listener/API/security behavior, and documented the persistent deployment rollback contract.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `f3631c18` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

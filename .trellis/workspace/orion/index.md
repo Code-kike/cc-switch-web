@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 24
+- **Total Sessions**: 25
 - **Last Active**: 2026-07-10
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~857 | Active |
+| `journal-1.md` | ~890 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 25 | 2026-07-10 | Redeploy Web server as persistent service | `f3631c18` | `fix/web-audit-phase1-2` |
 | 24 | 2026-07-10 | Audit and fix upstream Web integrity bugs | `6acd6097`, `a3a1ab14`, `2a84acd0`, `0370b89a`, `f35a7309`, `08a04bb5` | `fix/web-audit-phase1-2` |
 | 23 | 2026-07-10 | Deploy updated unauthenticated Web service | `76aa2b83` | `fix/web-audit-phase1-2` |
 | 22 | 2026-07-09 | Remove Web Basic Auth | `8fea1699` | `fix/web-audit-phase1-2` |
