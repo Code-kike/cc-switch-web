@@ -80,6 +80,14 @@ struct ExtractCommonConfigSnippetRequest {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct UpdateTomlCommonConfigSnippetRequest {
+    config_toml: String,
+    snippet_toml: String,
+    enabled: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct FetchModelsForConfigQuery {
     base_url: String,
     api_key: String,
@@ -189,6 +197,10 @@ pub fn router(state: ApiState) -> Router {
         .route(
             "/config/extract-common-config-snippet",
             post(extract_common_config_snippet),
+        )
+        .route(
+            "/config/update-toml-common-config-snippet",
+            post(update_toml_common_config_snippet),
         )
         .route(
             "/config/fetch-models-for-config",
@@ -449,6 +461,18 @@ async fn extract_common_config_snippet(
     )
     .map_err(ApiError::from_anyhow)?;
     Ok(json_ok(snippet))
+}
+
+async fn update_toml_common_config_snippet(
+    Json(request): Json<UpdateTomlCommonConfigSnippetRequest>,
+) -> ApiResult<String> {
+    let updated = crate::services::provider::update_toml_common_config_snippet(
+        &request.config_toml,
+        &request.snippet_toml,
+        request.enabled,
+    )
+    .map_err(|err| ApiError::bad_request(err.to_string()))?;
+    Ok(json_ok(updated))
 }
 
 async fn fetch_models_for_config(

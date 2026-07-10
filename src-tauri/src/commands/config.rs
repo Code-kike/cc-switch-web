@@ -255,6 +255,20 @@ pub async fn get_common_config_snippet(
 }
 
 #[tauri::command]
+pub async fn update_toml_common_config_snippet(
+    config_toml: String,
+    snippet_toml: String,
+    enabled: bool,
+) -> Result<String, String> {
+    crate::services::provider::update_toml_common_config_snippet(
+        &config_toml,
+        &snippet_toml,
+        enabled,
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn set_common_config_snippet(
     app_type: String,
     snippet: String,

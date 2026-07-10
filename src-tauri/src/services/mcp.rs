@@ -13,6 +13,76 @@ type AppImporter = fn(&AppState) -> Result<usize, AppError>;
 pub struct McpService;
 
 impl McpService {
+    fn rollback_server_row(
+        state: &AppState,
+        id: &str,
+        previous: Option<&McpServer>,
+    ) -> Result<(), AppError> {
+        match previous {
+            Some(server) => state.db.save_mcp_server(server),
+            None => state.db.delete_mcp_server(id).map(|_| ()),
+        }
+    }
+
+    fn rollback_and_compensate(
+        state: &AppState,
+        id: &str,
+        previous: Option<&McpServer>,
+        affected_apps: &[AppType],
+        projection_error: AppError,
+    ) -> AppError {
+        let mut recovery_errors = Vec::new();
+
+        if let Err(error) = Self::rollback_server_row(state, id, previous) {
+            recovery_errors.push(format!("database rollback failed: {error}"));
+        }
+
+        // Compensate every app involved in the attempted mutation. Codex is a
+        // whole-table projection; other apps restore/remove this exact id from
+        // the previous row. The directed remove is essential for failed creates:
+        // after rolling the new row out of DB, iterating an empty DB cannot see
+        // and remove the Claude entry that was already written.
+        for app in affected_apps {
+            let compensation = if matches!(app, AppType::Codex) {
+                Self::sync_enabled_for_app(state, app)
+            } else if previous.is_some_and(|server| server.apps.is_enabled_for(app)) {
+                Self::sync_server_to_app(
+                    state,
+                    previous.expect("previous server checked above"),
+                    app,
+                )
+            } else {
+                Self::remove_server_from_app(state, id, app)
+            };
+
+            if let Err(error) = compensation {
+                log::warn!("MCP compensation projection to {app:?} failed: {error}");
+                recovery_errors.push(format!("{} compensation failed: {error}", app.as_str()));
+            }
+        }
+
+        if recovery_errors.is_empty() {
+            projection_error
+        } else {
+            AppError::Message(format!(
+                "MCP live projection failed: {projection_error}; recovery incomplete: {}",
+                recovery_errors.join("; ")
+            ))
+        }
+    }
+
+    fn affected_apps(previous: Option<&McpServer>, next: &McpServer) -> Vec<AppType> {
+        let mut apps = previous
+            .map(|server| server.apps.enabled_apps())
+            .unwrap_or_default();
+        for app in next.apps.enabled_apps() {
+            if !apps.contains(&app) {
+                apps.push(app);
+            }
+        }
+        apps
+    }
+
     /// 获取所有 MCP 服务器（统一结构）
     pub fn get_all_servers(state: &AppState) -> Result<IndexMap<String, McpServer>, AppError> {
         state.db.get_all_mcp_servers()
@@ -21,34 +91,45 @@ impl McpService {
     /// 添加或更新 MCP 服务器
     pub fn upsert_server(state: &AppState, server: McpServer) -> Result<(), AppError> {
         // 读取旧状态：用于处理“编辑时取消勾选某个应用”的场景（需要从对应 live 配置中移除）
-        let prev_apps = state
-            .db
-            .get_all_mcp_servers()?
-            .get(&server.id)
-            .map(|s| s.apps.clone())
+        let previous = state.db.get_all_mcp_servers()?.get(&server.id).cloned();
+        let prev_apps = previous
+            .as_ref()
+            .map(|server| server.apps.clone())
             .unwrap_or_default();
+        let affected_apps = Self::affected_apps(previous.as_ref(), &server);
 
         state.db.save_mcp_server(&server)?;
 
-        // 处理禁用：若旧版本启用但新版本取消，则需要从该应用的 live 配置移除
-        if prev_apps.claude && !server.apps.claude {
-            Self::remove_server_from_app(state, &server.id, &AppType::Claude)?;
-        }
-        if prev_apps.codex && !server.apps.codex {
-            Self::remove_server_from_app(state, &server.id, &AppType::Codex)?;
-        }
-        if prev_apps.gemini && !server.apps.gemini {
-            Self::remove_server_from_app(state, &server.id, &AppType::Gemini)?;
-        }
-        if prev_apps.opencode && !server.apps.opencode {
-            Self::remove_server_from_app(state, &server.id, &AppType::OpenCode)?;
-        }
-        if prev_apps.hermes && !server.apps.hermes {
-            Self::remove_server_from_app(state, &server.id, &AppType::Hermes)?;
-        }
+        let projection = (|| {
+            // 处理禁用：若旧版本启用但新版本取消，则需要从该应用的 live 配置移除
+            if prev_apps.claude && !server.apps.claude {
+                Self::remove_server_from_app(state, &server.id, &AppType::Claude)?;
+            }
+            if prev_apps.codex && !server.apps.codex {
+                Self::remove_server_from_app(state, &server.id, &AppType::Codex)?;
+            }
+            if prev_apps.gemini && !server.apps.gemini {
+                Self::remove_server_from_app(state, &server.id, &AppType::Gemini)?;
+            }
+            if prev_apps.opencode && !server.apps.opencode {
+                Self::remove_server_from_app(state, &server.id, &AppType::OpenCode)?;
+            }
+            if prev_apps.hermes && !server.apps.hermes {
+                Self::remove_server_from_app(state, &server.id, &AppType::Hermes)?;
+            }
 
-        // 同步到各个启用的应用
-        Self::sync_server_to_apps(state, &server)?;
+            Self::sync_server_to_apps(state, &server)
+        })();
+
+        if let Err(error) = projection {
+            return Err(Self::rollback_and_compensate(
+                state,
+                &server.id,
+                previous.as_ref(),
+                &affected_apps,
+                error,
+            ));
+        }
 
         Ok(())
     }
@@ -60,8 +141,15 @@ impl McpService {
         if let Some(server) = server {
             state.db.delete_mcp_server(id)?;
 
-            // 从所有应用的 live 配置中移除
-            Self::remove_server_from_all_apps(state, id, &server)?;
+            if let Err(error) = Self::remove_server_from_all_apps(state, id, &server) {
+                return Err(Self::rollback_and_compensate(
+                    state,
+                    id,
+                    Some(&server),
+                    &server.apps.enabled_apps(),
+                    error,
+                ));
+            }
             Ok(true)
         } else {
             Ok(false)
@@ -78,14 +166,25 @@ impl McpService {
         let mut servers = state.db.get_all_mcp_servers()?;
 
         if let Some(server) = servers.get_mut(server_id) {
+            let previous = server.clone();
             server.apps.set_enabled_for(&app, enabled);
             state.db.save_mcp_server(server)?;
 
-            // 同步到对应应用
-            if enabled {
-                Self::sync_server_to_app(state, server, &app)?;
+            let projection = if matches!(app, AppType::Codex) {
+                Self::sync_enabled_for_app(state, &app)
+            } else if enabled {
+                Self::sync_server_to_app(state, server, &app)
             } else {
-                Self::remove_server_from_app(state, server_id, &app)?;
+                Self::remove_server_from_app(state, server_id, &app)
+            };
+            if let Err(error) = projection {
+                return Err(Self::rollback_and_compensate(
+                    state,
+                    server_id,
+                    Some(&previous),
+                    std::slice::from_ref(&app),
+                    error,
+                ));
             }
         }
 
@@ -93,9 +192,13 @@ impl McpService {
     }
 
     /// 将 MCP 服务器同步到所有启用的应用
-    fn sync_server_to_apps(_state: &AppState, server: &McpServer) -> Result<(), AppError> {
+    fn sync_server_to_apps(state: &AppState, server: &McpServer) -> Result<(), AppError> {
         for app in server.apps.enabled_apps() {
-            Self::sync_server_to_app_no_config(server, &app)?;
+            if matches!(app, AppType::Codex) {
+                Self::sync_enabled_for_app(state, &app)?;
+            } else {
+                Self::sync_server_to_app_no_config(server, &app)?;
+            }
         }
 
         Ok(())
@@ -149,7 +252,11 @@ impl McpService {
     ) -> Result<(), AppError> {
         // 从所有曾启用的应用中移除
         for app in server.apps.enabled_apps() {
-            Self::remove_server_from_app(state, id, &app)?;
+            if matches!(app, AppType::Codex) {
+                Self::sync_enabled_for_app(state, &app)?;
+            } else {
+                Self::remove_server_from_app(state, id, &app)?;
+            }
         }
         Ok(())
     }
@@ -173,21 +280,51 @@ impl McpService {
         Ok(())
     }
 
-    /// 手动同步所有启用的 MCP 服务器到对应的应用
+    /// 手动同步所有启用的 MCP 服务器到对应的应用。每个应用独立投影；
+    /// 单个 live 文件损坏不会阻止其它应用更新，失败在最后聚合返回。
     pub fn sync_all_enabled(state: &AppState) -> Result<(), AppError> {
         let servers = Self::get_all_servers(state)?;
 
+        let mut failures = Vec::new();
         for app in AppType::all() {
-            if matches!(app, AppType::OpenClaw) {
-                continue;
+            if let Err(err) = Self::project_servers_to_app(state, &servers, &app) {
+                log::warn!("同步 MCP 到 {app:?} 失败: {err}");
+                failures.push(format!("{}: {err}", app.as_str()));
             }
+        }
 
-            for server in servers.values() {
-                if server.apps.is_enabled_for(&app) {
-                    Self::sync_server_to_app(state, server, &app)?;
-                } else {
-                    Self::remove_server_from_app(state, &server.id, &app)?;
-                }
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(AppError::Message(format!(
+                "部分应用 MCP 同步失败: {}",
+                failures.join("; ")
+            )))
+        }
+    }
+
+    pub fn sync_enabled_for_app(state: &AppState, app: &AppType) -> Result<(), AppError> {
+        let servers = Self::get_all_servers(state)?;
+        Self::project_servers_to_app(state, &servers, app)
+    }
+
+    fn project_servers_to_app(
+        state: &AppState,
+        servers: &IndexMap<String, McpServer>,
+        app: &AppType,
+    ) -> Result<(), AppError> {
+        if matches!(app, AppType::OpenClaw) {
+            return Ok(());
+        }
+        if matches!(app, AppType::Codex) {
+            return mcp::sync_servers_to_codex(servers);
+        }
+
+        for server in servers.values() {
+            if server.apps.is_enabled_for(app) {
+                Self::sync_server_to_app(state, server, app)?;
+            } else {
+                Self::remove_server_from_app(state, &server.id, app)?;
             }
         }
 

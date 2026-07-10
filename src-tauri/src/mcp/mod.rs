@@ -24,7 +24,9 @@ pub use claude::sync_enabled_to_claude;
 pub use claude::{import_from_claude, remove_server_from_claude, sync_single_server_to_claude};
 #[cfg(feature = "desktop")]
 pub use codex::sync_enabled_to_codex;
-pub use codex::{import_from_codex, remove_server_from_codex, sync_single_server_to_codex};
+pub use codex::{
+    import_from_codex, remove_server_from_codex, sync_servers_to_codex, sync_single_server_to_codex,
+};
 #[cfg(feature = "desktop")]
 pub use gemini::sync_enabled_to_gemini;
 pub use gemini::{import_from_gemini, remove_server_from_gemini, sync_single_server_to_gemini};

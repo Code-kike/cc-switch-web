@@ -308,6 +308,38 @@ fn remove_toml_table_like(target: &mut dyn TableLike, source: &dyn TableLike) {
     }
 }
 
+/// Merge or remove a common Codex TOML snippet while preserving comments,
+/// whitespace, and user key order through toml_edit.
+pub fn update_toml_common_config_snippet(
+    config_toml: &str,
+    snippet_toml: &str,
+    enabled: bool,
+) -> Result<String, AppError> {
+    let trimmed = snippet_toml.trim();
+    if trimmed.is_empty() {
+        return Ok(config_toml.to_string());
+    }
+
+    let mut target_doc = if config_toml.trim().is_empty() {
+        DocumentMut::new()
+    } else {
+        config_toml
+            .parse::<DocumentMut>()
+            .map_err(|e| AppError::Message(format!("Invalid Codex config.toml: {e}")))?
+    };
+    let source_doc = trimmed
+        .parse::<DocumentMut>()
+        .map_err(|e| AppError::Message(format!("Invalid Codex common config snippet: {e}")))?;
+
+    if enabled {
+        merge_toml_table_like(target_doc.as_table_mut(), source_doc.as_table());
+    } else {
+        remove_toml_table_like(target_doc.as_table_mut(), source_doc.as_table());
+    }
+
+    Ok(target_doc.to_string())
+}
+
 fn settings_contain_common_config(app_type: &AppType, settings: &Value, snippet: &str) -> bool {
     let trimmed = snippet.trim();
     if trimmed.is_empty() {
@@ -611,6 +643,13 @@ fn restore_live_settings_for_provider_backfill(
     ) {
         log::warn!(
             "Failed to restore Codex settings while backfilling '{}': {err}",
+            provider.id
+        );
+    }
+
+    if let Err(err) = crate::codex_config::strip_codex_mcp_servers_from_settings(&mut settings) {
+        log::warn!(
+            "Failed to strip Codex MCP projection while backfilling '{}': {err}",
             provider.id
         );
     }
@@ -1040,7 +1079,7 @@ pub(crate) fn sync_current_provider_for_app_to_live(
         }
     }
 
-    McpService::sync_all_enabled(state)?;
+    McpService::sync_enabled_for_app(state, app_type)?;
 
     Ok(())
 }
@@ -1104,8 +1143,9 @@ pub fn sync_current_to_live(state: &AppState) -> Result<(), AppError> {
         }
     }
 
-    // MCP sync
-    McpService::sync_all_enabled(state)?;
+    // Keep syncing independent skill projections even if one MCP target is
+    // broken; surface the aggregate MCP failure after all work is attempted.
+    let mcp_result = McpService::sync_all_enabled(state);
 
     // Skill sync
     for app_type in AppType::all() {
@@ -1115,7 +1155,7 @@ pub fn sync_current_to_live(state: &AppState) -> Result<(), AppError> {
         }
     }
 
-    Ok(())
+    mcp_result
 }
 
 /// Read current live settings for an app type
@@ -1677,6 +1717,72 @@ mod tests {
     use super::*;
     use crate::config::write_json_file;
     use serde_json::json;
+
+    #[test]
+    fn update_toml_common_config_snippet_preserves_comments_and_key_order() {
+        let config = r#"# top comment
+model = "gpt-5"
+model_provider = "custom"
+disable_response_storage = true
+
+[model_providers.custom]
+# provider comment
+base_url = "https://api.example/v1"
+"#;
+        let snippet = "[tui]\nnotifications = true\n";
+
+        let merged = update_toml_common_config_snippet(config, snippet, true).unwrap();
+        assert!(merged.contains("# top comment"));
+        assert!(merged.contains("# provider comment"));
+        assert!(merged.find("model = ").unwrap() < merged.find("model_provider = ").unwrap());
+        assert!(
+            merged.find("model_provider = ").unwrap()
+                < merged.find("disable_response_storage").unwrap()
+        );
+        assert!(merged.contains("[tui]"));
+
+        let removed = update_toml_common_config_snippet(&merged, snippet, false).unwrap();
+        assert!(!removed.contains("[tui]"));
+        assert!(removed.contains("# top comment"));
+    }
+
+    #[test]
+    fn update_toml_common_config_snippet_overrides_and_removes_by_value() {
+        let snippet = "[tui]\nnotifications = true\n";
+        let merged =
+            update_toml_common_config_snippet("[tui]\nnotifications = false\n", snippet, true)
+                .unwrap();
+        assert!(merged.contains("notifications = true"));
+
+        let preserved =
+            update_toml_common_config_snippet("[tui]\nnotifications = false\n", snippet, false)
+                .unwrap();
+        assert!(preserved.contains("notifications = false"));
+    }
+
+    #[test]
+    fn codex_backfill_strips_live_mcp_projection() {
+        let provider = Provider::with_id(
+            "codex-provider".to_string(),
+            "Codex Provider".to_string(),
+            json!({
+                "auth": { "OPENAI_API_KEY": "sk-test" },
+                "config": "model = \"gpt-5\"\n"
+            }),
+            None,
+        );
+        let live = json!({
+            "auth": { "OPENAI_API_KEY": "sk-test" },
+            "config": "# keep\nmodel = \"gpt-5\"\n\n[mcp_servers.echo]\ncommand = \"echo\"\n"
+        });
+
+        let restored =
+            restore_live_settings_for_provider_backfill(&AppType::Codex, &provider, live);
+        let config = restored["config"].as_str().expect("config text");
+        assert!(!config.contains("mcp_servers"), "got: {config}");
+        assert!(config.contains("# keep"));
+        assert!(config.contains("model = \"gpt-5\""));
+    }
 
     #[test]
     fn claude_common_config_apply_and_remove_roundtrip_for_non_overlapping_fields() {

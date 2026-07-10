@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke, pickWebFile } from "@/lib/api/adapter";
 import { WebNotSupportedError } from "@/lib/api/errors";
+import { updateTomlCommonConfigSnippet } from "@/lib/api/config";
 import "@/lib/api/web-commands";
 
 afterEach(() => {
@@ -53,6 +54,35 @@ describe("web adapter DELETE encoding", () => {
         headers: expect.objectContaining({
           Accept: "application/json",
           "Content-Type": "application/json",
+        }),
+      }),
+    );
+  });
+
+  it("routes Codex common-config TOML edits through the Web backend", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify('# keep\nmodel = "gpt-5"\n'), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await expect(
+      updateTomlCommonConfigSnippet(
+        '# keep\nmodel = "gpt-5"\n',
+        "[tui]\nnotifications = true\n",
+        true,
+      ),
+    ).resolves.toContain("# keep");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/config/update-toml-common-config-snippet",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          configToml: '# keep\nmodel = "gpt-5"\n',
+          snippetToml: "[tui]\nnotifications = true\n",
+          enabled: true,
         }),
       }),
     );

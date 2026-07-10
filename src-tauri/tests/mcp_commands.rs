@@ -363,6 +363,351 @@ command = "echo"
 }
 
 #[test]
+fn sync_all_enabled_projects_codex_even_when_claude_live_is_invalid() {
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let home = ensure_test_home();
+
+    fs::write(get_claude_mcp_path(), "{ not valid json").expect("seed invalid ~/.claude.json");
+    fs::create_dir_all(home.join(".codex")).expect("create codex dir");
+    fs::write(
+        cc_switch_lib::get_codex_config_path(),
+        "model = \"gpt-5\"\n",
+    )
+    .expect("seed codex config");
+
+    let state = create_test_state().expect("create test state");
+    state
+        .db
+        .save_mcp_server(&McpServer {
+            id: "codex-only".to_string(),
+            name: "Codex Only".to_string(),
+            server: json!({ "type": "stdio", "command": "echo" }),
+            apps: McpApps {
+                claude: false,
+                codex: true,
+                gemini: false,
+                opencode: false,
+                hermes: false,
+            },
+            description: None,
+            homepage: None,
+            docs: None,
+            tags: Vec::new(),
+        })
+        .expect("save MCP server");
+
+    let err = McpService::sync_all_enabled(&state)
+        .expect_err("the broken Claude projection should remain visible");
+    assert!(err.to_string().contains("claude"));
+
+    let codex =
+        fs::read_to_string(cc_switch_lib::get_codex_config_path()).expect("read Codex config");
+    assert!(
+        codex.contains("mcp_servers.codex-only"),
+        "Codex projection must continue after the unrelated Claude failure: {codex}"
+    );
+    assert_eq!(
+        fs::read_to_string(get_claude_mcp_path()).unwrap(),
+        "{ not valid json"
+    );
+}
+
+#[test]
+fn sync_enabled_for_codex_replaces_table_and_removes_live_orphans() {
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let home = ensure_test_home();
+    fs::create_dir_all(home.join(".codex")).expect("create codex dir");
+    fs::write(
+        cc_switch_lib::get_codex_config_path(),
+        "model = \"gpt-5\"\n\n[mcp_servers.orphan]\ncommand = \"old\"\n\n[mcp_servers.kept]\ncommand = \"stale\"\n",
+    )
+    .expect("seed Codex config");
+
+    let state = create_test_state().expect("create test state");
+    state
+        .db
+        .save_mcp_server(&McpServer {
+            id: "kept".to_string(),
+            name: "Kept".to_string(),
+            server: json!({ "type": "stdio", "command": "fresh" }),
+            apps: McpApps {
+                claude: false,
+                codex: true,
+                gemini: false,
+                opencode: false,
+                hermes: false,
+            },
+            description: None,
+            homepage: None,
+            docs: None,
+            tags: Vec::new(),
+        })
+        .expect("save MCP server");
+
+    McpService::sync_enabled_for_app(&state, &AppType::Codex).expect("project Codex MCP");
+    let config = fs::read_to_string(cc_switch_lib::get_codex_config_path()).unwrap();
+    assert!(!config.contains("mcp_servers.orphan"), "got: {config}");
+    assert!(config.contains("mcp_servers.kept"), "got: {config}");
+    assert!(config.contains("command = \"fresh\""), "got: {config}");
+    assert!(config.contains("model = \"gpt-5\""));
+}
+
+#[test]
+fn sync_enabled_for_codex_clears_projection_when_database_is_empty() {
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let home = ensure_test_home();
+    fs::create_dir_all(home.join(".codex")).expect("create codex dir");
+    fs::write(
+        cc_switch_lib::get_codex_config_path(),
+        "model = \"gpt-5\"\n\n[mcp_servers.orphan]\ncommand = \"old\"\n",
+    )
+    .expect("seed Codex config");
+    let state = create_test_state().expect("create test state");
+
+    McpService::sync_enabled_for_app(&state, &AppType::Codex).expect("clear Codex MCP");
+    let config = fs::read_to_string(cc_switch_lib::get_codex_config_path()).unwrap();
+    assert!(!config.contains("mcp_servers"), "got: {config}");
+    assert!(config.contains("model = \"gpt-5\""));
+}
+
+#[test]
+fn sync_enabled_for_codex_empty_database_fails_closed_on_invalid_toml() {
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let home = ensure_test_home();
+    fs::create_dir_all(home.join(".codex")).expect("create codex dir");
+    let broken = "model = \"gpt-5\"\ninvalid = [\n";
+    fs::write(cc_switch_lib::get_codex_config_path(), broken).expect("seed broken Codex config");
+    let state = create_test_state().expect("create test state");
+
+    let err = McpService::sync_enabled_for_app(&state, &AppType::Codex)
+        .expect_err("invalid TOML must fail closed even when DB is empty");
+    assert!(err.to_string().contains("config.toml"), "got: {err}");
+    assert_eq!(
+        fs::read_to_string(cc_switch_lib::get_codex_config_path()).unwrap(),
+        broken
+    );
+}
+
+#[test]
+fn codex_toggle_rolls_back_database_when_projection_fails() {
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let home = ensure_test_home();
+    fs::create_dir_all(home.join(".codex")).expect("create codex dir");
+    fs::write(
+        cc_switch_lib::get_codex_config_path(),
+        "model = \"gpt-5\"\ninvalid = [\n",
+    )
+    .expect("seed broken Codex config");
+    let state = create_test_state().expect("create test state");
+    state
+        .db
+        .save_mcp_server(&McpServer {
+            id: "rollback".to_string(),
+            name: "Rollback".to_string(),
+            server: json!({ "type": "stdio", "command": "echo" }),
+            apps: McpApps {
+                claude: false,
+                codex: true,
+                gemini: false,
+                opencode: false,
+                hermes: false,
+            },
+            description: None,
+            homepage: None,
+            docs: None,
+            tags: Vec::new(),
+        })
+        .expect("save MCP server");
+
+    McpService::toggle_app(&state, "rollback", AppType::Codex, false)
+        .expect_err("invalid live TOML must reject the toggle");
+    let stored = state.db.get_all_mcp_servers().expect("read MCP rows");
+    assert!(stored["rollback"].apps.codex, "DB flag must roll back");
+}
+
+#[test]
+fn codex_delete_rolls_back_database_when_projection_fails() {
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let home = ensure_test_home();
+    fs::create_dir_all(home.join(".codex")).expect("create codex dir");
+    fs::write(
+        cc_switch_lib::get_codex_config_path(),
+        "model = \"gpt-5\"\ninvalid = [\n",
+    )
+    .expect("seed broken Codex config");
+    let state = create_test_state().expect("create test state");
+    state
+        .db
+        .save_mcp_server(&McpServer {
+            id: "rollback-delete".to_string(),
+            name: "Rollback Delete".to_string(),
+            server: json!({ "type": "stdio", "command": "echo" }),
+            apps: McpApps {
+                claude: false,
+                codex: true,
+                gemini: false,
+                opencode: false,
+                hermes: false,
+            },
+            description: None,
+            homepage: None,
+            docs: None,
+            tags: Vec::new(),
+        })
+        .expect("save MCP server");
+
+    McpService::delete_server(&state, "rollback-delete")
+        .expect_err("invalid live TOML must reject the delete");
+    let stored = state.db.get_all_mcp_servers().expect("read MCP rows");
+    assert!(
+        stored.contains_key("rollback-delete"),
+        "deleted DB row must roll back"
+    );
+}
+
+fn multi_app_mcp_server(command: &str) -> McpServer {
+    McpServer {
+        id: "multi-app".to_string(),
+        name: "Multi App".to_string(),
+        server: json!({ "type": "stdio", "command": command }),
+        apps: McpApps {
+            claude: true,
+            codex: true,
+            gemini: false,
+            opencode: false,
+            hermes: false,
+        },
+        description: None,
+        homepage: None,
+        docs: None,
+        tags: Vec::new(),
+    }
+}
+
+fn seed_multi_app_live_files(codex_text: &str) {
+    fs::write(
+        get_claude_mcp_path(),
+        serde_json::to_string_pretty(&json!({
+            "mcpServers": {
+                "multi-app": { "type": "stdio", "command": "old" }
+            }
+        }))
+        .unwrap(),
+    )
+    .expect("seed Claude MCP config");
+    let codex_path = cc_switch_lib::get_codex_config_path();
+    fs::create_dir_all(codex_path.parent().expect("Codex config parent"))
+        .expect("create Codex dir");
+    fs::write(codex_path, codex_text).expect("seed Codex config");
+}
+
+#[test]
+fn multi_app_upsert_compensates_claude_when_codex_projection_fails() {
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let _home = ensure_test_home();
+    let broken_codex = "model = \"gpt-5\"\ninvalid = [\n";
+    seed_multi_app_live_files(broken_codex);
+    let state = create_test_state().expect("create test state");
+    state
+        .db
+        .save_mcp_server(&multi_app_mcp_server("old"))
+        .expect("save previous MCP row");
+
+    let err = McpService::upsert_server(&state, multi_app_mcp_server("new"))
+        .expect_err("Codex failure must fail the multi-app upsert");
+    assert!(
+        err.to_string().contains("recovery incomplete"),
+        "got: {err}"
+    );
+
+    let stored = state.db.get_all_mcp_servers().expect("read MCP rows");
+    assert_eq!(stored["multi-app"].server["command"], json!("old"));
+    let claude: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(get_claude_mcp_path()).unwrap()).unwrap();
+    assert_eq!(claude["mcpServers"]["multi-app"]["command"], json!("old"));
+    assert_eq!(
+        fs::read_to_string(cc_switch_lib::get_codex_config_path()).unwrap(),
+        broken_codex
+    );
+}
+
+#[test]
+fn multi_app_create_removes_claude_entry_when_codex_projection_fails() {
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let _home = ensure_test_home();
+    let broken_codex = "model = \"gpt-5\"\ninvalid = [\n";
+    seed_multi_app_live_files(broken_codex);
+    fs::write(
+        get_claude_mcp_path(),
+        serde_json::to_string_pretty(&json!({ "mcpServers": {} })).unwrap(),
+    )
+    .expect("seed empty Claude MCP config");
+    let state = create_test_state().expect("create test state");
+
+    let err = McpService::upsert_server(&state, multi_app_mcp_server("new"))
+        .expect_err("Codex failure must fail the multi-app create");
+    assert!(
+        err.to_string().contains("recovery incomplete"),
+        "got: {err}"
+    );
+
+    let stored = state.db.get_all_mcp_servers().expect("read MCP rows");
+    assert!(
+        !stored.contains_key("multi-app"),
+        "new DB row must roll back"
+    );
+    let claude: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(get_claude_mcp_path()).unwrap()).unwrap();
+    assert!(
+        claude["mcpServers"].get("multi-app").is_none(),
+        "failed create must remove the already-written Claude entry: {claude}"
+    );
+    assert_eq!(
+        fs::read_to_string(cc_switch_lib::get_codex_config_path()).unwrap(),
+        broken_codex
+    );
+}
+
+#[test]
+fn multi_app_delete_compensates_claude_when_codex_projection_fails() {
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let _home = ensure_test_home();
+    let broken_codex = "model = \"gpt-5\"\ninvalid = [\n";
+    seed_multi_app_live_files(broken_codex);
+    let state = create_test_state().expect("create test state");
+    state
+        .db
+        .save_mcp_server(&multi_app_mcp_server("old"))
+        .expect("save previous MCP row");
+
+    let err = McpService::delete_server(&state, "multi-app")
+        .expect_err("Codex failure must fail the multi-app delete");
+    assert!(
+        err.to_string().contains("recovery incomplete"),
+        "got: {err}"
+    );
+
+    let stored = state.db.get_all_mcp_servers().expect("read MCP rows");
+    assert_eq!(stored["multi-app"].server["command"], json!("old"));
+    let claude: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(get_claude_mcp_path()).unwrap()).unwrap();
+    assert_eq!(claude["mcpServers"]["multi-app"]["command"], json!("old"));
+    assert_eq!(
+        fs::read_to_string(cc_switch_lib::get_codex_config_path()).unwrap(),
+        broken_codex
+    );
+}
+
+#[test]
 fn set_mcp_enabled_for_codex_writes_live_config() {
     let _guard = test_mutex().lock().expect("acquire test mutex");
     reset_test_fs();

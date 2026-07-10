@@ -28,6 +28,7 @@ pub use live::should_import_default_config_on_startup;
 pub use live::{
     import_default_config, import_hermes_providers_from_live, import_openclaw_providers_from_live,
     import_opencode_providers_from_live, read_live_settings, sync_current_to_live,
+    update_toml_common_config_snippet,
 };
 
 // Internal re-exports (pub(crate))
@@ -424,10 +425,14 @@ mod tests {
     }
 
     #[test]
-    fn extract_codex_common_config_preserves_mcp_servers_base_url() {
+    fn extract_codex_common_config_strips_provider_fields_and_injected_artifacts() {
         let config_toml = r#"model_provider = "azure"
 model = "gpt-4"
+wire_api = "chat"
 disable_response_storage = true
+experimental_bearer_token = "sk-live-secret"
+model_catalog_json = "cc-switch-model-catalog.json"
+web_search = "disabled"
 
 [model_providers.azure]
 name = "Azure OpenAI"
@@ -436,6 +441,9 @@ wire_api = "responses"
 
 [mcp_servers.my_server]
 base_url = "http://localhost:8080"
+
+[mcp.servers.legacy_server]
+command = "legacy-cmd"
 "#;
 
         let settings = json!({ "config": config_toml });
@@ -458,10 +466,36 @@ base_url = "http://localhost:8080"
             !extracted.contains("[model_providers"),
             "should remove entire model_providers table"
         );
+        assert!(!extracted.contains("mcp_servers"), "got: {extracted}");
+        assert!(!extracted.contains("legacy-cmd"), "got: {extracted}");
+        assert!(!extracted.contains("wire_api"), "got: {extracted}");
+        assert!(!extracted.contains("sk-live-secret"), "got: {extracted}");
         assert!(
-            extracted.contains("http://localhost:8080"),
-            "should keep mcp_servers.* base_url"
+            !extracted.contains("model_catalog_json"),
+            "got: {extracted}"
         );
+        assert!(!extracted.contains("web_search"), "got: {extracted}");
+        assert!(extracted.contains("disable_response_storage = true"));
+    }
+
+    #[test]
+    fn extract_codex_common_config_keeps_user_set_web_search() {
+        let settings = json!({
+            "config": "web_search = \"enabled\"\ndisable_response_storage = true\n"
+        });
+        let extracted = ProviderService::extract_codex_common_config(&settings)
+            .expect("extract should succeed");
+        assert!(extracted.contains("web_search = \"enabled\""));
+    }
+
+    #[test]
+    fn extract_codex_common_config_keeps_user_model_catalog_path() {
+        let settings = json!({
+            "config": "model_catalog_json = \"/home/user/custom-models.json\"\ndisable_response_storage = true\n"
+        });
+        let extracted = ProviderService::extract_codex_common_config(&settings)
+            .expect("extract should succeed");
+        assert!(extracted.contains("model_catalog_json = \"/home/user/custom-models.json\""));
     }
 
     // Desktop-only: the setup starts the proxy data plane (`proxy_service.start()`)
@@ -1724,8 +1758,11 @@ impl ProviderService {
                 }
             } else {
                 write_live_with_common_config(state.db.as_ref(), &app_type, &provider)?;
-                // Sync MCP
-                McpService::sync_all_enabled(state)?;
+                if let Err(err) = McpService::sync_enabled_for_app(state, &app_type) {
+                    log::warn!(
+                        "保存供应商后重投影 {app_type:?} MCP 失败（将在下次同步时自愈）: {err}"
+                    );
+                }
             }
         }
 
@@ -2084,8 +2121,9 @@ impl ProviderService {
             }
         }
 
-        // Sync MCP
-        McpService::sync_all_enabled(state)?;
+        if let Err(err) = McpService::sync_enabled_for_app(state, &app_type) {
+            log::warn!("切换供应商后重投影 {app_type:?} MCP 失败（将在下次同步时自愈）: {err}");
+        }
 
         Ok(result)
     }
@@ -2349,9 +2387,41 @@ impl ProviderService {
         root.remove("model_provider");
         // Legacy/alt formats might use a top-level base_url.
         root.remove("base_url");
+        root.remove("wire_api");
 
         // Remove entire model_providers table (provider-specific configuration)
         root.remove("model_providers");
+
+        // MCP tables are database-owned live projections, not provider settings.
+        root.remove("mcp_servers");
+        if let Some(mcp_table) = root
+            .get_mut("mcp")
+            .and_then(|item| item.as_table_like_mut())
+        {
+            mcp_table.remove("servers");
+            if mcp_table.is_empty() {
+                root.remove("mcp");
+            }
+        }
+
+        // Strip cc-switch injected or provider-routing artifacts. Preserve a
+        // user-selected web_search value; only the owned disabled sentinel is
+        // excluded from the shared snippet.
+        root.remove("experimental_bearer_token");
+        if root
+            .get("model_catalog_json")
+            .and_then(|item| item.as_str())
+            == Some(crate::codex_config::CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME)
+        {
+            root.remove("model_catalog_json");
+        }
+        if root
+            .get(crate::codex_config::CODEX_WEB_SEARCH_FIELD)
+            .and_then(|item| item.as_str())
+            == Some(crate::codex_config::CODEX_WEB_SEARCH_DISABLED)
+        {
+            root.remove(crate::codex_config::CODEX_WEB_SEARCH_FIELD);
+        }
 
         // Clean up multiple empty lines (keep at most one blank line).
         let mut cleaned = String::new();

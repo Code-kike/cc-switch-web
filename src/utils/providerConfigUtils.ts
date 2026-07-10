@@ -2,7 +2,7 @@
 
 import type { TemplateValueConfig } from "../config/claudeProviderPresets";
 import { normalizeTomlText } from "@/utils/textNormalization";
-import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
+import { parse as parseToml } from "smol-toml";
 
 const isPlainObject = (value: unknown): value is Record<string, any> => {
   return Object.prototype.toString.call(value) === "[object Object]";
@@ -386,10 +386,9 @@ export const setApiKeyInConfig = (
 //   setCodexGoalMode, setCodexRemoteCompaction, setCodexTopLevelInt,
 //   removeCodexTopLevelField.
 //
-// updateTomlCommonConfigSnippet is the ONE write path that uses
-// parse + deepMerge/deepRemove + stringify and therefore intentionally drops
-// comments — acceptable because it rebuilds a fully-managed snippet region, not
-// the user's hand-authored config.
+// Structural common-config merge/removal is intentionally not implemented in
+// this frontend utility. It must go through the backend toml_edit document model
+// so comments and user key order survive.
 //
 // KNOWN FRAGILITY (the line-splice helpers assume single-line `key = "value"`;
 // characterization tests live in tests/utils/providerConfigUtils.toml-edge-cases.test.ts):
@@ -409,41 +408,6 @@ export const setApiKeyInConfig = (
 // In practice the FE only ever generates the single-line `[model_providers.x]`
 // table form, so these gaps are not hit by app-generated configs; revisit only
 // if hand-authored-config support becomes a goal.
-
-export interface UpdateTomlCommonConfigResult {
-  updatedConfig: string;
-  error?: string;
-}
-
-// Write/remove common config snippet to/from TOML config (structural merge)
-export const updateTomlCommonConfigSnippet = (
-  tomlString: string,
-  snippetString: string,
-  enabled: boolean,
-): UpdateTomlCommonConfigResult => {
-  if (!snippetString.trim()) {
-    return { updatedConfig: tomlString };
-  }
-
-  try {
-    const config = parseToml(normalizeTomlText(tomlString || ""));
-    const snippet = parseToml(normalizeTomlText(snippetString));
-
-    if (enabled) {
-      const merged = deepMerge(
-        deepClone(config) as Record<string, any>,
-        deepClone(snippet) as Record<string, any>,
-      );
-      return { updatedConfig: stringifyToml(merged) };
-    } else {
-      const result = deepClone(config) as Record<string, any>;
-      deepRemove(result, snippet as Record<string, any>);
-      return { updatedConfig: stringifyToml(result) };
-    }
-  } catch (e) {
-    return { updatedConfig: tomlString, error: String(e) };
-  }
-};
 
 // Check if TOML config already contains the common config snippet (structural subset check)
 export const hasTomlCommonConfigSnippet = (

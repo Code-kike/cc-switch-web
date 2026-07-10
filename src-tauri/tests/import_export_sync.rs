@@ -408,6 +408,44 @@ fn sync_enabled_to_codex_returns_error_on_invalid_toml() {
 }
 
 #[test]
+fn sync_single_server_to_codex_fails_closed_on_invalid_toml() {
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let path = cc_switch_lib::get_codex_config_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).expect("create codex dir");
+    }
+    let broken = "model = \"gpt-5\"\ninvalid = [\n";
+    fs::write(&path, broken).expect("write invalid config");
+
+    let err = cc_switch_lib::sync_single_server_to_codex(
+        &MultiAppConfig::default(),
+        "srv",
+        &json!({ "type": "stdio", "command": "echo" }),
+    )
+    .expect_err("invalid TOML must fail closed");
+    assert!(matches!(err, cc_switch_lib::AppError::McpValidation(_)));
+    assert_eq!(fs::read_to_string(&path).unwrap(), broken);
+}
+
+#[test]
+fn remove_server_from_codex_fails_closed_on_invalid_toml() {
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let path = cc_switch_lib::get_codex_config_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).expect("create codex dir");
+    }
+    let broken = "model = \"gpt-5\"\ninvalid = [\n";
+    fs::write(&path, broken).expect("write invalid config");
+
+    let err = cc_switch_lib::remove_server_from_codex("server")
+        .expect_err("remove must not report success for invalid TOML");
+    assert!(matches!(err, cc_switch_lib::AppError::McpValidation(_)));
+    assert_eq!(fs::read_to_string(&path).unwrap(), broken);
+}
+
+#[test]
 fn sync_codex_provider_missing_auth_returns_error() {
     let _guard = test_mutex().lock().expect("acquire test mutex");
     reset_test_fs();

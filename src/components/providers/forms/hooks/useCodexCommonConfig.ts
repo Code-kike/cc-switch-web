@@ -1,13 +1,27 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { parse as parseToml } from "smol-toml";
-import {
-  updateTomlCommonConfigSnippet,
-  hasTomlCommonConfigSnippet,
-} from "@/utils/providerConfigUtils";
+import { hasTomlCommonConfigSnippet } from "@/utils/providerConfigUtils";
 import { configApi } from "@/lib/api";
 import { normalizeTomlText } from "@/utils/textNormalization";
 import { extractErrorMessage } from "@/utils/errorUtils";
+
+const applyTomlSnippet = async (
+  configToml: string,
+  snippetToml: string,
+  enabled: boolean,
+): Promise<{ updatedConfig: string; error?: unknown }> => {
+  try {
+    const updatedConfig = await configApi.updateTomlCommonConfigSnippet(
+      configToml,
+      snippetToml,
+      enabled,
+    );
+    return { updatedConfig };
+  } catch (error) {
+    return { updatedConfig: configToml, error };
+  }
+};
 
 const LEGACY_STORAGE_KEY = "cc-switch:codex-common-config-snippet";
 const DEFAULT_CODEX_COMMON_CONFIG_SNIPPET = `# Common Codex config
@@ -57,12 +71,60 @@ export function useCodexCommonConfig({
   const hasInitializedNewMode = useRef(false);
   // 用于跟踪编辑模式是否已初始化显式开关/预览
   const hasInitializedEditMode = useRef(false);
+  const tomlOpSeqRef = useRef(0);
+  const extractOpSeqRef = useRef(0);
+  const latestCodexConfigRef = useRef(codexConfig);
+  latestCodexConfigRef.current = codexConfig;
+  const snippetSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const operationIdentityRef = useRef({ selectedPresetId, initialEnabled });
 
-  // 当预设变化时，重置初始化标记，使新预设能够重新触发初始化逻辑
-  useEffect(() => {
+  if (
+    operationIdentityRef.current.selectedPresetId !== selectedPresetId ||
+    operationIdentityRef.current.initialEnabled !== initialEnabled
+  ) {
+    operationIdentityRef.current = { selectedPresetId, initialEnabled };
+    tomlOpSeqRef.current += 1;
     hasInitializedNewMode.current = false;
     hasInitializedEditMode.current = false;
-  }, [selectedPresetId, initialEnabled]);
+  }
+
+  const isTomlOpStale = useCallback(
+    (seq: number, baseConfig: string) =>
+      seq !== tomlOpSeqRef.current ||
+      baseConfig !== latestCodexConfigRef.current,
+    [],
+  );
+
+  // Unmount invalidates every pending TOML/save operation.
+  useEffect(() => {
+    return () => {
+      tomlOpSeqRef.current += 1;
+    };
+  }, []);
+
+  const persistCommonConfigSnippet = useCallback(
+    async (value: string, seq: number): Promise<boolean> => {
+      const save = snippetSaveQueueRef.current.then(() =>
+        configApi.setCommonConfigSnippet("codex", value),
+      );
+      snippetSaveQueueRef.current = save.catch(() => undefined);
+
+      try {
+        await save;
+      } catch (error) {
+        if (seq === tomlOpSeqRef.current) {
+          console.error("保存 Codex 通用配置失败:", error);
+          setCommonConfigError(
+            formatConfigError(error, "codexConfig.saveFailed"),
+          );
+        }
+        return false;
+      }
+
+      return seq === tomlOpSeqRef.current;
+    },
+    [formatConfigError],
+  );
 
   const parseCommonConfigSnippet = useCallback(
     (snippetString: string) => {
@@ -180,25 +242,34 @@ export function useCodexCommonConfig({
 
     // 如果应该启用通用配置但配置中还没有，则自动添加
     if (hasCommon && !inferredHasCommon && parsedSnippet.hasContent) {
-      const { updatedConfig, error } = updateTomlCommonConfigSnippet(
-        codexConfig,
-        commonConfigSnippet,
-        true,
-      );
-      if (error) {
-        setCommonConfigError(error);
-        setUseCommonConfig(false);
-        return;
-      }
+      let cancelled = false;
+      const seq = ++tomlOpSeqRef.current;
+      void (async () => {
+        const { updatedConfig, error } = await applyTomlSnippet(
+          codexConfig,
+          commonConfigSnippet,
+          true,
+        );
+        if (cancelled || isTomlOpStale(seq, codexConfig)) {
+          return;
+        }
+        if (error) {
+          setCommonConfigError(extractErrorMessage(error));
+          setUseCommonConfig(false);
+          return;
+        }
 
-      setCommonConfigError("");
-      setUseCommonConfig(true);
-      isUpdatingFromCommonConfig.current = true;
-      onConfigChange(updatedConfig);
-      setTimeout(() => {
-        isUpdatingFromCommonConfig.current = false;
-      }, 0);
-      return;
+        setCommonConfigError("");
+        setUseCommonConfig(true);
+        isUpdatingFromCommonConfig.current = true;
+        onConfigChange(updatedConfig);
+        setTimeout(() => {
+          isUpdatingFromCommonConfig.current = false;
+        }, 0);
+      })();
+      return () => {
+        cancelled = true;
+      };
     }
 
     setCommonConfigError("");
@@ -209,6 +280,7 @@ export function useCodexCommonConfig({
     initialData,
     initialEnabled,
     isLoading,
+    isTomlOpStale,
     onConfigChange,
     parseCommonConfigSnippet,
   ]);
@@ -233,36 +305,48 @@ export function useCodexCommonConfig({
       return;
     }
 
-    const { updatedConfig, error } = updateTomlCommonConfigSnippet(
-      codexConfig,
-      commonConfigSnippet,
-      true,
-    );
-    if (error) {
-      setCommonConfigError(error);
-      setUseCommonConfig(false);
-      return;
-    }
+    let cancelled = false;
+    const seq = ++tomlOpSeqRef.current;
+    void (async () => {
+      const { updatedConfig, error } = await applyTomlSnippet(
+        codexConfig,
+        commonConfigSnippet,
+        true,
+      );
+      if (cancelled || isTomlOpStale(seq, codexConfig)) {
+        return;
+      }
+      if (error) {
+        setCommonConfigError(extractErrorMessage(error));
+        setUseCommonConfig(false);
+        return;
+      }
 
-    setCommonConfigError("");
-    setUseCommonConfig(true);
-    isUpdatingFromCommonConfig.current = true;
-    onConfigChange(updatedConfig);
-    setTimeout(() => {
-      isUpdatingFromCommonConfig.current = false;
-    }, 0);
+      setCommonConfigError("");
+      setUseCommonConfig(true);
+      isUpdatingFromCommonConfig.current = true;
+      onConfigChange(updatedConfig);
+      setTimeout(() => {
+        isUpdatingFromCommonConfig.current = false;
+      }, 0);
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [
     initialData,
     commonConfigSnippet,
     isLoading,
     codexConfig,
+    isTomlOpStale,
     onConfigChange,
     parseCommonConfigSnippet,
   ]);
 
   // 处理通用配置开关
   const handleCommonConfigToggle = useCallback(
-    (checked: boolean) => {
+    async (checked: boolean) => {
+      const seq = ++tomlOpSeqRef.current;
       const parsedSnippet = parseCommonConfigSnippet(commonConfigSnippet);
       if (parsedSnippet.error) {
         setCommonConfigError(parsedSnippet.error);
@@ -279,15 +363,17 @@ export function useCodexCommonConfig({
         return;
       }
 
-      const { updatedConfig, error: snippetError } =
-        updateTomlCommonConfigSnippet(
-          codexConfig,
-          commonConfigSnippet,
-          checked,
-        );
+      const { updatedConfig, error: snippetError } = await applyTomlSnippet(
+        codexConfig,
+        commonConfigSnippet,
+        checked,
+      );
+      if (isTomlOpStale(seq, codexConfig)) {
+        return;
+      }
 
       if (snippetError) {
-        setCommonConfigError(snippetError);
+        setCommonConfigError(extractErrorMessage(snippetError));
         setUseCommonConfig(false);
         return;
       }
@@ -305,6 +391,7 @@ export function useCodexCommonConfig({
     [
       codexConfig,
       commonConfigSnippet,
+      isTomlOpStale,
       onConfigChange,
       parseCommonConfigSnippet,
       t,
@@ -313,42 +400,49 @@ export function useCodexCommonConfig({
 
   // 处理通用配置片段变化
   const handleCommonConfigSnippetChange = useCallback(
-    (value: string): boolean => {
+    async (value: string): Promise<boolean> => {
+      const seq = ++tomlOpSeqRef.current;
       const previousSnippet = commonConfigSnippet;
 
       if (!value.trim()) {
-        setCommonConfigError("");
+        let updatedConfig = codexConfig;
 
         if (useCommonConfig) {
           const previousParsed = parseCommonConfigSnippet(previousSnippet);
-          let updatedConfig = codexConfig;
-
           if (!previousParsed.error && previousParsed.hasContent) {
-            const removeResult = updateTomlCommonConfigSnippet(
+            const removeResult = await applyTomlSnippet(
               codexConfig,
               previousSnippet,
               false,
             );
+            if (isTomlOpStale(seq, codexConfig)) {
+              return false;
+            }
             if (removeResult.error) {
-              setCommonConfigError(removeResult.error);
+              setCommonConfigError(extractErrorMessage(removeResult.error));
               return false;
             }
             updatedConfig = removeResult.updatedConfig;
           }
-
-          onConfigChange(updatedConfig);
-          setUseCommonConfig(false);
         }
 
+        if (!(await persistCommonConfigSnippet("", seq))) {
+          return false;
+        }
+        if (isTomlOpStale(seq, codexConfig)) {
+          return false;
+        }
+
+        if (useCommonConfig) {
+          isUpdatingFromCommonConfig.current = true;
+          onConfigChange(updatedConfig);
+          setTimeout(() => {
+            isUpdatingFromCommonConfig.current = false;
+          }, 0);
+        }
+        setUseCommonConfig(false);
         setCommonConfigSnippetState("");
-        configApi
-          .setCommonConfigSnippet("codex", "")
-          .catch((error: unknown) => {
-            console.error("保存 Codex 通用配置失败:", error);
-            setCommonConfigError(
-              formatConfigError(error, "codexConfig.saveFailed"),
-            );
-          });
+        setCommonConfigError("");
         return true;
       }
 
@@ -358,39 +452,48 @@ export function useCodexCommonConfig({
         return false;
       }
 
-      // 若当前启用通用配置，需要替换为最新片段
+      let updatedConfig = codexConfig;
       if (useCommonConfig) {
-        let nextConfig = codexConfig;
         const previousParsed = parseCommonConfigSnippet(previousSnippet);
 
         if (!previousParsed.error && previousParsed.hasContent) {
-          const removeResult = updateTomlCommonConfigSnippet(
+          const removeResult = await applyTomlSnippet(
             codexConfig,
             previousSnippet,
             false,
           );
-          if (removeResult.error) {
-            setCommonConfigError(removeResult.error);
+          if (isTomlOpStale(seq, codexConfig)) {
             return false;
           }
-          nextConfig = removeResult.updatedConfig;
+          if (removeResult.error) {
+            setCommonConfigError(extractErrorMessage(removeResult.error));
+            return false;
+          }
+          updatedConfig = removeResult.updatedConfig;
         }
 
-        const addResult = updateTomlCommonConfigSnippet(
-          nextConfig,
-          value,
-          true,
-        );
-
-        if (addResult.error) {
-          setCommonConfigError(addResult.error);
+        const addResult = await applyTomlSnippet(updatedConfig, value, true);
+        if (isTomlOpStale(seq, codexConfig)) {
           return false;
         }
 
-        // 标记正在通过通用配置更新，避免触发状态检查
+        if (addResult.error) {
+          setCommonConfigError(extractErrorMessage(addResult.error));
+          return false;
+        }
+        updatedConfig = addResult.updatedConfig;
+      }
+
+      if (!(await persistCommonConfigSnippet(value, seq))) {
+        return false;
+      }
+      if (isTomlOpStale(seq, codexConfig)) {
+        return false;
+      }
+
+      if (useCommonConfig) {
         isUpdatingFromCommonConfig.current = true;
-        onConfigChange(addResult.updatedConfig);
-        // 在下一个事件循环中重置标记
+        onConfigChange(updatedConfig);
         setTimeout(() => {
           isUpdatingFromCommonConfig.current = false;
         }, 0);
@@ -398,23 +501,15 @@ export function useCodexCommonConfig({
 
       setCommonConfigError("");
       setCommonConfigSnippetState(value);
-      configApi
-        .setCommonConfigSnippet("codex", value)
-        .catch((error: unknown) => {
-          console.error("保存 Codex 通用配置失败:", error);
-          setCommonConfigError(
-            formatConfigError(error, "codexConfig.saveFailed"),
-          );
-        });
-
       return true;
     },
     [
       commonConfigSnippet,
       codexConfig,
+      isTomlOpStale,
       onConfigChange,
       parseCommonConfigSnippet,
-      t,
+      persistCommonConfigSnippet,
       useCommonConfig,
     ],
   );
@@ -425,7 +520,7 @@ export function useCodexCommonConfig({
       return;
     }
     const parsedSnippet = parseCommonConfigSnippet(commonConfigSnippet);
-    if (parsedSnippet.error) {
+    if (parsedSnippet.error || !parsedSnippet.hasContent) {
       setUseCommonConfig(false);
       return;
     }
@@ -438,35 +533,53 @@ export function useCodexCommonConfig({
 
   // 从编辑器当前内容提取通用配置片段
   const handleExtract = useCallback(async () => {
+    const seq = ++tomlOpSeqRef.current;
+    const extractSeq = ++extractOpSeqRef.current;
+    const baseConfig = codexConfig;
     setIsExtracting(true);
     setCommonConfigError("");
 
     try {
       const extracted = await configApi.extractCommonConfigSnippet("codex", {
         settingsConfig: JSON.stringify({
-          config: codexConfig ?? "",
+          config: baseConfig ?? "",
         }),
       });
+      if (isTomlOpStale(seq, baseConfig)) {
+        return;
+      }
 
       if (!extracted || !extracted.trim()) {
         setCommonConfigError(t("codexConfig.extractNoCommonConfig"));
         return;
       }
 
-      // 更新片段状态
+      if (!(await persistCommonConfigSnippet(extracted, seq))) {
+        return;
+      }
+      if (isTomlOpStale(seq, baseConfig)) {
+        return;
+      }
       setCommonConfigSnippetState(extracted);
-
-      // 保存到后端
-      await configApi.setCommonConfigSnippet("codex", extracted);
     } catch (error) {
-      console.error("提取 Codex 通用配置失败:", error);
-      setCommonConfigError(
-        formatConfigError(error, "codexConfig.extractFailed"),
-      );
+      if (seq === tomlOpSeqRef.current) {
+        console.error("提取 Codex 通用配置失败:", error);
+        setCommonConfigError(
+          formatConfigError(error, "codexConfig.extractFailed"),
+        );
+      }
     } finally {
-      setIsExtracting(false);
+      if (extractSeq === extractOpSeqRef.current) {
+        setIsExtracting(false);
+      }
     }
-  }, [codexConfig, formatConfigError, t]);
+  }, [
+    codexConfig,
+    formatConfigError,
+    isTomlOpStale,
+    persistCommonConfigSnippet,
+    t,
+  ]);
 
   const clearCommonConfigError = useCallback(() => {
     setCommonConfigError("");

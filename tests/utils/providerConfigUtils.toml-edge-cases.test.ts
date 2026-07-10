@@ -8,7 +8,6 @@ import {
   setCodexGoalMode,
   setCodexModelName,
   setCodexTopLevelInt,
-  updateTomlCommonConfigSnippet,
   isCodexGoalModeEnabled,
 } from "@/utils/providerConfigUtils";
 
@@ -22,34 +21,6 @@ import {
  * "TOML Config Utilities" section in providerConfigUtils.ts.
  */
 describe("providerConfigUtils TOML edge cases (characterization)", () => {
-  describe("smol-toml stringify drops comments (justifies the hand-rolled editors)", () => {
-    it("updateTomlCommonConfigSnippet loses comments and original layout", () => {
-      const input = [
-        "# top comment",
-        'model = "m" # inline',
-        "",
-        "[features]",
-        "# note",
-        "goals = true",
-        "",
-      ].join("\n");
-
-      const { updatedConfig, error } = updateTomlCommonConfigSnippet(
-        input,
-        "request_max_retries = 4\n",
-        true,
-      );
-
-      expect(error).toBeUndefined();
-      // Every comment is gone; this is why in-place edits are NOT done via
-      // parse→stringify.
-      expect(updatedConfig).not.toContain("#");
-      expect(updatedConfig).toBe(
-        'model = "m"\nrequest_max_retries = 4\n\n[features]\ngoals = true',
-      );
-    });
-  });
-
   describe("trailing inline comments are preserved on edit (B6g)", () => {
     it("setCodexBaseUrl preserves a trailing inline comment on the rewritten line", () => {
       const input = 'base_url = "https://old/v1" # keep me\nmodel = "m"\n';
@@ -95,7 +66,10 @@ describe("providerConfigUtils TOML edge cases (characterization)", () => {
 
     it("setCodexBaseUrl preserves a # inside the new quoted value", () => {
       expect(
-        setCodexBaseUrl('base_url = "https://x/v1?a=#frag"\n', "https://y/v1#z"),
+        setCodexBaseUrl(
+          'base_url = "https://x/v1?a=#frag"\n',
+          "https://y/v1#z",
+        ),
       ).toBe('base_url = "https://y/v1#z"\n');
     });
   });
@@ -140,7 +114,10 @@ describe("providerConfigUtils TOML edge cases (characterization)", () => {
 
     it("extractCodexTopLevelInt reads a simple top-level integer", () => {
       expect(
-        extractCodexTopLevelInt("request_max_retries = 3\n", "request_max_retries"),
+        extractCodexTopLevelInt(
+          "request_max_retries = 3\n",
+          "request_max_retries",
+        ),
       ).toBe(3);
     });
   });

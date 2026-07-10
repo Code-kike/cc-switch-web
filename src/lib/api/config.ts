@@ -49,6 +49,22 @@ export async function setCommonConfigSnippet(
 }
 
 /**
+ * Merge or remove a common Codex TOML snippet through the backend toml_edit
+ * document model so comments and key order are preserved.
+ */
+export async function updateTomlCommonConfigSnippet(
+  configToml: string,
+  snippetToml: string,
+  enabled: boolean,
+): Promise<string> {
+  return invoke<string>("update_toml_common_config_snippet", {
+    configToml,
+    snippetToml,
+    enabled,
+  });
+}
+
+/**
  * 提取通用配置片段
  *
  * 默认读取当前激活供应商的配置；若传入 `options.settingsConfig`，则从编辑器当前内容提取。

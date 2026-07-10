@@ -829,6 +829,10 @@ const cmds = defineCommands({
     method: "PUT",
     path: "/api/config/update-circuit-breaker-config",
   },
+  update_toml_common_config_snippet: {
+    method: "POST",
+    path: "/api/config/update-toml-common-config-snippet",
+  },
   update_endpoint_last_used: {
     method: "POST",
     path: "/api/system/update_endpoint_last_used",

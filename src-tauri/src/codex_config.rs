@@ -16,10 +16,10 @@ pub const CC_SWITCH_CODEX_MODEL_PROVIDER_ID: &str = "custom";
 pub const CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME: &str = "cc-switch-model-catalog.json";
 
 /// Top-level `config.toml` key that controls Codex's built-in web-search tool.
-const CODEX_WEB_SEARCH_FIELD: &str = "web_search";
+pub(crate) const CODEX_WEB_SEARCH_FIELD: &str = "web_search";
 /// Value that disables the web-search tool. Some native `/responses` gateways
 /// reject a `web_search` tool, so cc-switch owns only this sentinel value.
-const CODEX_WEB_SEARCH_DISABLED: &str = "disabled";
+pub(crate) const CODEX_WEB_SEARCH_DISABLED: &str = "disabled";
 
 /// Native `/responses` gateways whose first-party models do not support Codex's
 /// built-in `web_search` hosted tool.
@@ -1244,6 +1244,42 @@ pub fn restore_codex_settings_for_backfill(
     Ok(())
 }
 
+/// Strip MCP projections from live Codex settings before backfilling a
+/// provider snapshot. MCP servers are owned by the database; the live TOML
+/// tables are derived state and must not be persisted with a provider.
+pub fn strip_codex_mcp_servers_from_settings(settings: &mut Value) -> Result<(), AppError> {
+    let Some(config_text) = settings
+        .get("config")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+    else {
+        return Ok(());
+    };
+    if !config_text.contains("mcp") {
+        return Ok(());
+    }
+
+    let mut doc = config_text
+        .parse::<DocumentMut>()
+        .map_err(|e| AppError::Message(format!("Invalid Codex config.toml: {e}")))?;
+    let mut changed = doc.as_table_mut().remove("mcp_servers").is_some();
+
+    if let Some(mcp_table) = doc.get_mut("mcp").and_then(|item| item.as_table_like_mut()) {
+        changed |= mcp_table.remove("servers").is_some();
+        if mcp_table.is_empty() {
+            doc.as_table_mut().remove("mcp");
+        }
+    }
+
+    if changed {
+        if let Some(object) = settings.as_object_mut() {
+            object.insert("config".to_string(), Value::String(doc.to_string()));
+        }
+    }
+
+    Ok(())
+}
+
 /// Update a field in Codex config.toml using toml_edit (syntax-preserving).
 ///
 /// Supported fields:
@@ -1607,6 +1643,29 @@ experimental_bearer_token = "sk-live"
             !restored_config.contains("experimental_bearer_token"),
             "stored provider TOML should not keep the live-only token"
         );
+    }
+
+    #[test]
+    fn strip_mcp_servers_from_settings_removes_projection_and_legacy_form() {
+        let mut settings = serde_json::json!({
+            "auth": {},
+            "config": "# keep\nmodel = \"gpt-5\"\n\n[mcp_servers.echo]\ncommand = \"echo\"\n\n[mcp.servers.legacy]\ncommand = \"noop\"\n"
+        });
+
+        strip_codex_mcp_servers_from_settings(&mut settings).expect("strip projection");
+        let config = settings["config"].as_str().expect("config text");
+        assert!(!config.contains("mcp_servers"), "got: {config}");
+        assert!(!config.contains("[mcp"), "got: {config}");
+        assert!(config.contains("# keep"));
+        assert!(config.contains("model = \"gpt-5\""));
+    }
+
+    #[test]
+    fn strip_mcp_servers_from_settings_is_byte_identical_without_mcp() {
+        let original = "# keep\nmodel = \"gpt-5\"\n";
+        let mut settings = serde_json::json!({ "config": original });
+        strip_codex_mcp_servers_from_settings(&mut settings).expect("no-op strip");
+        assert_eq!(settings["config"].as_str(), Some(original));
     }
 
     #[test]
