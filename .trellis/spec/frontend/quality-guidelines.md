@@ -1365,8 +1365,9 @@ env:
 
 #### 5. Good/Base/Bad Cases
 
-- Good: `HOST=0.0.0.0` starts without auth env vars; `/api/providers` is
-  reachable without credentials; a cross-site POST still returns 403.
+- Good: `HOST=0.0.0.0` starts without auth env vars;
+  `/api/providers/get-providers?app=claude` returns 200 without credentials; a
+  cross-site POST still returns 403.
 - Base: direct clients such as curl can POST with no `Origin`; this is accepted
   because there is no application-layer access control.
 - Bad: keeping dormant Basic Auth code or env vars "just in case"; it creates

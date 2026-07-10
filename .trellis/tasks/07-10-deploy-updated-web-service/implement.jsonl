@@ -1,0 +1,2 @@
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "Deployment contract for the unauthenticated Web API, same-origin intent guard, systemd unit, installer, and required verification"}
+{"file": ".trellis/tasks/archive/2026-07/07-09-replace-persistent-web-service/prd.md", "reason": "Baseline persistent-service paths and prior deployment procedure"}
