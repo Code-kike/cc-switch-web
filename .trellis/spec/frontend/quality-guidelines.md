@@ -1401,6 +1401,128 @@ let addr = SocketAddr::new(host, port);
 
 ---
 
+### Scenario: Persistent Web Service Deployment and Rollback
+
+#### 1. Scope / Trigger
+
+- Trigger: deploying a new standalone Web binary or frontend bundle to the
+  persistent Linux service.
+- Applies to `scripts/install-cc-switch-web-service.sh`,
+  `deploy/systemd/cc-switch-web.service`, and operator-driven replacement of
+  `~/.local/bin/cc-switch-web` or
+  `~/.local/share/cc-switch-web/dist-web`.
+
+#### 2. Signatures
+
+- Supported install entry point:
+  - `./scripts/install-cc-switch-web-service.sh`
+- Installed artifacts:
+  - `%h/.local/bin/cc-switch-web`
+  - `%h/.local/share/cc-switch-web/dist-web`
+  - `%h/.config/systemd/user/cc-switch-web.service`
+- Persistent-service checks:
+  - `systemctl --user is-enabled cc-switch-web.service`
+  - `systemctl --user is-active cc-switch-web.service`
+  - `loginctl show-user "$USER" -p Linger`
+- Runtime contract:
+  - `HOST=0.0.0.0`
+  - `PORT=3010`
+  - `CC_SWITCH_DATA_DIR=%h/.cc-switch`
+  - `CC_SWITCH_WEB_DIST_DIR=%h/.local/share/cc-switch-web/dist-web`
+  - `RUST_LOG=info`
+
+#### 3. Contracts
+
+- Before replacement, copy the installed executable, complete static bundle,
+  and service unit to a timestamped rollback directory. Record the source HEAD,
+  old PID/start time, and checksums.
+- Do not delete, replace, or restore `%h/.cc-switch` as part of deployment
+  rollback; it is live application data, not a release artifact.
+- Use the repository installer. It builds successfully before replacing files,
+  installs the tracked user unit, reloads systemd, enables the unit, and uses an
+  explicit `restart` so an already-running service loads the new binary.
+- Keep a single user-scope service. Do not create a second system-scope unit on
+  the same host/port.
+- `enabled` alone is not boot persistence for a user unit: `Linger=yes` must be
+  verified when the service must start without an interactive login.
+- After restart, installed artifacts must match the fresh build/source copies,
+  the PID/start time must change, and health/security probes must pass.
+- If installation completes but required probes fail, restore the three release
+  artifacts, run `systemctl --user daemon-reload`, restart, and re-run health
+  checks.
+
+#### 4. Validation & Error Matrix
+
+- Frontend or Rust build fails before installation -> leave the old service and
+  installed artifacts unchanged; investigate the build.
+- Backup is missing or incomplete -> do not start replacement.
+- Installed checksum differs from the fresh build -> reject deployment and
+  restore the backup.
+- User unit is enabled but `Linger=no` -> deployment is not boot-persistent;
+  enable linger with appropriate host authority or report the blocker.
+- A system-scope unit and user-scope unit both target port 3010 -> reject the
+  duplicate service.
+- Service is active but health/root/security probes fail -> treat as failed
+  deployment and roll back.
+- New invocation logs contain panic, fatal startup failure, or repeated crash
+  restart -> roll back and preserve the failing logs for diagnosis.
+
+#### 5. Good/Base/Bad Cases
+
+- Good: back up the three release artifacts, run the installer, verify byte-for-
+  byte matches, enabled/active/linger/listener state, API behavior, and current
+  invocation logs.
+- Base: a first install has no prior artifacts; explicitly record that rollback
+  is unavailable, then install only after builds pass.
+- Bad: overwrite the binary and remove `dist-web` without a backup, use
+  `enable --now` without restarting an existing process, or create a root system
+  unit while the user unit is still enabled.
+
+#### 6. Tests Required
+
+- Artifact assertions:
+  - `cmp` fresh and installed binary.
+  - `cmp` fresh and installed `dist-web/index.html`.
+  - `cmp` tracked and installed service unit.
+- Persistence assertions:
+  - user unit returns `enabled` and `active`.
+  - `Linger=yes`.
+  - the new PID owns `0.0.0.0:3010`.
+- Runtime probes:
+  - `GET /api/health` -> 200 with expected payload.
+  - `GET /` -> 200.
+  - unauthenticated provider list -> 200 without `WWW-Authenticate`.
+  - cross-site mutating request -> 403.
+  - direct client without browser-origin headers reaches routing.
+- Inspect logs for the current systemd invocation ID, not unrelated historical
+  warnings, and assert no startup panic/fatal/failure marker.
+- Run `pnpm typecheck`, `pnpm check:web-routes`, `git diff --check`, and confirm
+  the source worktree contains only intended task/spec records.
+
+#### 7. Wrong vs Correct
+
+##### Wrong
+
+```bash
+cp target/release/examples/server ~/.local/bin/cc-switch-web
+systemctl --user enable --now cc-switch-web.service
+# No backup, old process may still be running, no health or linger verification.
+```
+
+##### Correct
+
+```bash
+# First preserve binary + dist-web + unit in a timestamped rollback directory.
+./scripts/install-cc-switch-web-service.sh
+cmp src-tauri/target/release/examples/server ~/.local/bin/cc-switch-web
+systemctl --user is-enabled cc-switch-web.service
+systemctl --user is-active cc-switch-web.service
+loginctl show-user "$USER" -p Linger
+curl -fsS http://127.0.0.1:3010/api/health
+```
+
+---
+
 ### Scenario: Web Request Hardening — Path Traversal + Outbound SSRF (audit C1/F3/F4/F11)
 
 #### 1. Scope / Trigger
