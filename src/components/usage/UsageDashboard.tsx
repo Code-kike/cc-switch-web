@@ -33,6 +33,7 @@ import { PricingConfigPanel } from "@/components/usage/PricingConfigPanel";
 import { cn } from "@/lib/utils";
 import { getLocaleFromLanguage } from "./format";
 import { getUsageRangePresetLabel, resolveUsageRange } from "@/lib/usageRange";
+import { useServerTimezone } from "@/lib/serverClock";
 import { UsageDateRangePicker } from "./UsageDateRangePicker";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
@@ -52,6 +53,10 @@ export function UsageDashboard() {
   // usage 查询，实现实时刷新（仅在 Dashboard 挂载时生效，离开页面自动取消监听）。
   // 桌面端经 Tauri 事件总线，Web 端经 /api/events SSE。
   useUsageEventBridge();
+
+  // M5: fetch the server's UTC offset (web mode) so usage day boundaries are
+  // computed in the server's timezone, matching server-local rollup buckets.
+  useServerTimezone();
 
   const refreshIntervalOptionsMs = [0, 5000, 10000, 30000, 60000] as const;
   const changeRefreshInterval = () => {

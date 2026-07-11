@@ -1,16 +1,32 @@
 import type { UsageRangePreset, UsageRangeSelection } from "@/types/usage";
+import { getUsageUtcOffsetMinutes } from "@/lib/serverClock";
 
 const DAY_SECONDS = 24 * 60 * 60;
 const DAY_MS = DAY_SECONDS * 1000;
+const MINUTE_MS = 60 * 1000;
 
 export interface ResolvedUsageRange {
   startDate: number;
   endDate: number;
 }
 
+/**
+ * Start-of-day, in the timezone the backend buckets usage by.
+ *
+ * M5: computes midnight in the resolved usage timezone (server-local in web
+ * mode, browser-local on desktop) rather than always browser-local, so range
+ * queries align with the server-local day bucketing used by usage rollups.
+ */
 function getStartOfLocalDayDate(nowMs: number): Date {
-  const date = new Date(nowMs);
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const offsetMs = getUsageUtcOffsetMinutes() * MINUTE_MS;
+  // Shift into the target timezone, truncate to its midnight, shift back to UTC.
+  const shifted = new Date(nowMs + offsetMs);
+  const midnightUtc = Date.UTC(
+    shifted.getUTCFullYear(),
+    shifted.getUTCMonth(),
+    shifted.getUTCDate(),
+  );
+  return new Date(midnightUtc - offsetMs);
 }
 
 function getPresetLookbackStart(

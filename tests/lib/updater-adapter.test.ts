@@ -13,34 +13,17 @@ describe("checkForUpdates in web mode", () => {
     webJsonFetchMock.mockReset();
   });
 
-  it("reads structured update metadata from the local web API", async () => {
-    webJsonFetchMock.mockResolvedValue({
-      available: true,
-      version: "3.15.0",
-      notes: "latest notes",
-      downloadUrl: "https://downloads.example.com/cc-switch/v3.15.0",
-    });
-
-    const { checkForUpdates } = await import("@/lib/api/updater-adapter");
-
-    await expect(checkForUpdates()).resolves.toEqual({
-      available: true,
-      version: "3.15.0",
-      notes: "latest notes",
-      downloadUrl: "https://downloads.example.com/cc-switch/v3.15.0",
-      isWebMode: true,
-    });
-    expect(webJsonFetchMock).toHaveBeenCalledWith("/api/system/get_update_info");
-  });
-
-  it("falls back to unavailable when the local web API probe fails", async () => {
-    webJsonFetchMock.mockRejectedValue(new Error("request failed"));
-
+  // L11 / H3: this fork has no independent release channel, and the upstream
+  // update-check would steer users to upstream desktop binaries. In web mode
+  // checkForUpdates must report "no update available" WITHOUT querying the
+  // upstream repo.
+  it("reports no update and does not query the upstream update API", async () => {
     const { checkForUpdates } = await import("@/lib/api/updater-adapter");
 
     await expect(checkForUpdates()).resolves.toEqual({
       available: false,
       isWebMode: true,
     });
+    expect(webJsonFetchMock).not.toHaveBeenCalled();
   });
 });

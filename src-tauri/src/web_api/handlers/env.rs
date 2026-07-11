@@ -54,9 +54,15 @@ async fn delete_env_vars(
 async fn platform_passthrough() -> ApiResult<serde_json::Value> {
     let (os, is_wsl) = detect_platform();
     let home = crate::config::get_home_dir();
+    // Server's current UTC offset in minutes. The web frontend uses this to
+    // compute usage day boundaries in the SERVER's timezone, so range queries
+    // align with the server-local day bucketing used by usage rollups (which
+    // are pre-aggregated server-local and cannot be re-bucketed per client).
+    let utc_offset_minutes = chrono::Local::now().offset().local_minus_utc() / 60;
     Ok(json_ok(serde_json::json!({
         "os": os,
         "isWsl": is_wsl,
+        "utcOffsetMinutes": utc_offset_minutes,
         "defaultPaths": {
             "appConfig": home.join(".cc-switch").to_string_lossy().to_string(),
             "claude": home.join(".claude").to_string_lossy().to_string(),

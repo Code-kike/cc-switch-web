@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import os from "node:os";
@@ -18,10 +19,7 @@ import "@/lib/api/web-commands";
 import { AboutSection } from "@/components/settings/AboutSection";
 import { UpdateProvider } from "@/contexts/UpdateContext";
 import { server } from "../msw/server";
-import {
-  startTestWebServer,
-  type TestWebServer,
-} from "../helpers/web-server";
+import { startTestWebServer, type TestWebServer } from "../helpers/web-server";
 
 const toastSuccessMock = vi.fn();
 const toastErrorMock = vi.fn();
@@ -61,7 +59,10 @@ type FakeToolBehavior = {
 
 type FakeToolBin = {
   binDir: string;
-  setToolBehavior: (tool: ToolName, behavior: FakeToolBehavior) => Promise<void>;
+  setToolBehavior: (
+    tool: ToolName,
+    behavior: FakeToolBehavior,
+  ) => Promise<void>;
   stop: () => Promise<void>;
 };
 
@@ -71,10 +72,24 @@ const currentRelease: LatestReleaseFixture = {
   html_url: "https://github.com/farion1231/cc-switch/releases/tag/v3.16.2",
 };
 
+// The version badge shows the running binary's own version (from /api/health =
+// CARGO_PKG_VERSION), not any release-server tag. Read it from Cargo.toml so the
+// assertion tracks the real app version across bumps instead of a stale literal.
+const APP_VERSION = ((): string => {
+  const cargoToml = readFileSync(
+    path.join(__dirname, "../../src-tauri/Cargo.toml"),
+    "utf8",
+  );
+  const match = cargoToml.match(/^version\s*=\s*"([^"]+)"/m);
+  if (!match)
+    throw new Error("could not read version from src-tauri/Cargo.toml");
+  return match[1];
+})();
+
 const newerRelease: LatestReleaseFixture = {
-  tag_name: "v3.16.3",
+  tag_name: "v3.99.0",
   body: "Newer release notes from test server",
-  html_url: "https://github.com/farion1231/cc-switch/releases/tag/v3.16.3",
+  html_url: "https://github.com/farion1231/cc-switch/releases/tag/v3.99.0",
 };
 
 const latestToolVersions: Record<ToolName, string> = {
@@ -144,7 +159,10 @@ async function startToolMetadataServer(): Promise<ToolMetadataServer> {
       res.end(JSON.stringify(payload));
     };
 
-    if (req.method === "GET" && requestUrl.pathname === "/@anthropic-ai/claude-code") {
+    if (
+      req.method === "GET" &&
+      requestUrl.pathname === "/@anthropic-ai/claude-code"
+    ) {
       sendJson({ "dist-tags": { latest: latestToolVersions.claude } });
       return;
     }
@@ -334,124 +352,140 @@ describe.sequential("AboutSection against real web server", () => {
     });
   });
 
-  it(
-    "renders real server-side tool versions, latest metadata, and refreshes the runtime cards",
-    async () => {
-      renderAboutSection();
+  it("renders real server-side tool versions, latest metadata, and refreshes the runtime cards", async () => {
+    renderAboutSection();
 
-      await expectVersionBadge("v3.16.2");
-      await waitFor(
-        () => {
-          expect(screen.getByText("1.0.0")).toBeInTheDocument();
-          expect(screen.getByText("0.9.1")).toBeInTheDocument();
-          expect(screen.getByText("5.0.0")).toBeInTheDocument();
-          expect(screen.getByText("2.4.0")).toBeInTheDocument();
-          expect(screen.getByText(latestToolVersions.claude)).toBeInTheDocument();
-        },
-        { timeout: 15_000 },
-      );
+    await expectVersionBadge(`v${APP_VERSION}`);
+    await waitFor(
+      () => {
+        expect(screen.getByText("1.0.0")).toBeInTheDocument();
+        expect(screen.getByText("0.9.1")).toBeInTheDocument();
+        expect(screen.getByText("5.0.0")).toBeInTheDocument();
+        expect(screen.getByText("2.4.0")).toBeInTheDocument();
+        expect(screen.getByText(latestToolVersions.claude)).toBeInTheDocument();
+      },
+      { timeout: 15_000 },
+    );
 
-      await fakeToolBin.setToolBehavior("claude", { stdout: "claude 1.0.1" });
+    await fakeToolBin.setToolBehavior("claude", { stdout: "claude 1.0.1" });
 
-      fireEvent.click(
-        await screen.findByRole("button", {
-          name: /^(common\.refresh|Refresh|刷新)$/,
-        }),
-      );
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: /^(common\.refresh|Refresh|刷新)$/,
+      }),
+    );
 
-      await waitFor(
-        () => {
-          expect(screen.getByText("1.0.1")).toBeInTheDocument();
-          expect(screen.queryByText("1.0.0")).not.toBeInTheDocument();
-        },
-        { timeout: 10_000 },
-      );
-    },
-    20_000,
-  );
+    await waitFor(
+      () => {
+        expect(screen.getByText("1.0.1")).toBeInTheDocument();
+        expect(screen.queryByText("1.0.0")).not.toBeInTheDocument();
+      },
+      { timeout: 10_000 },
+    );
+  }, 20_000);
 
-  it(
-    "renders server version/runtime info and opens the current release notes link",
-    async () => {
-      renderAboutSection();
+  it("renders server version/runtime info and opens the current release notes link", async () => {
+    renderAboutSection();
 
-      expect(await screen.findByText("CC Switch")).toBeInTheDocument();
-      await expectVersionBadge("v3.16.2");
-      expect(
-        await screen.findByText(
-          /^(settings\.serverEnvCheck|服务端环境检查|Server Environment Check)$/,
-        ),
-      ).toBeInTheDocument();
-      expect(
-        await screen.findByText(
-          /^(settings\.serverInstallHint|在服务端执行安装命令|Run the install commands on the server)$/,
-        ),
-      ).toBeInTheDocument();
+    expect(await screen.findByText("CC Switch")).toBeInTheDocument();
+    await expectVersionBadge(`v${APP_VERSION}`);
+    expect(
+      await screen.findByText(
+        /^(settings\.serverEnvCheck|服务端环境检查|Server Environment Check)$/,
+      ),
+    ).toBeInTheDocument();
+    expect(
+      await screen.findByText(
+        /^(settings\.serverInstallHint|在服务端执行安装命令|Run the install commands on the server)$/,
+      ),
+    ).toBeInTheDocument();
 
-      await waitFor(() => {
+    await waitFor(
+      () => {
         expect(
           screen.getByRole("button", {
             name: /^(settings\.checkForUpdates|Check for Updates|检查更新)$/,
           }),
         ).toBeEnabled();
-      }, { timeout: 10_000 });
+      },
+      { timeout: 10_000 },
+    );
 
-      fireEvent.click(
-        await screen.findByRole("button", {
-          name: /^(settings\.releaseNotes|Release Notes|发行说明)$/,
-        }),
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: /^(settings\.releaseNotes|Release Notes|发行说明)$/,
+      }),
+    );
+
+    await waitFor(() => {
+      // L11: with the web update-check disabled, the Release Notes link uses the
+      // running app's own version tag (from /api/health), not a release-server tag.
+      expect(window.open).toHaveBeenCalledWith(
+        `https://github.com/farion1231/cc-switch/releases/tag/v${APP_VERSION}`,
+        "_blank",
+        "noopener,noreferrer",
       );
+    });
 
-      await waitFor(() => {
-        expect(window.open).toHaveBeenCalledWith(
-          currentRelease.html_url,
-          "_blank",
-          "noopener,noreferrer",
-        );
-      });
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: /^(settings\.checkForUpdates|Check for Updates|检查更新)$/,
+      }),
+    );
 
-      fireEvent.click(
-        await screen.findByRole("button", {
-          name: /^(settings\.checkForUpdates|Check for Updates|检查更新)$/,
-        }),
+    await waitFor(() => {
+      expect(toastSuccessMock).toHaveBeenCalledWith(
+        expect.stringMatching(/^(settings\.upToDate|已是最新版本|Up to date)$/),
+        expect.objectContaining({ closeButton: true }),
       );
+    });
+  }, 15_000);
 
-      await waitFor(() => {
-        expect(toastSuccessMock).toHaveBeenCalledWith(
-          expect.stringMatching(/^(settings\.upToDate|已是最新版本|Up to date)$/),
-          expect.objectContaining({ closeButton: true }),
-        );
-      });
-    },
-    15_000,
-  );
-
-  it("uses server-backed update metadata and opens the newer release url", async () => {
+  it("does not surface an available update in web mode even when the server reports a newer release", async () => {
+    // L11 / H3: the web build has no independent release channel and must not
+    // steer users to upstream desktop releases. Even when a newer release is
+    // published upstream, web mode never shows an "Update to" button and
+    // reports up-to-date on an explicit check.
     releaseServer.setRelease(newerRelease);
 
     renderAboutSection();
 
-    await expectVersionBadge("v3.16.2");
+    await expectVersionBadge(`v${APP_VERSION}`);
 
-    const updateButton = await screen.findByRole("button", {
-      name: /^(settings\.updateTo|Update to|更新到)/,
-    }, {
-      timeout: 10_000,
-    });
-    fireEvent.click(updateButton);
+    // No "Update to <newer>" button appears.
+    await waitFor(
+      () => {
+        expect(
+          screen.getByRole("button", {
+            name: /^(settings\.checkForUpdates|Check for Updates|检查更新)$/,
+          }),
+        ).toBeEnabled();
+      },
+      { timeout: 10_000 },
+    );
+    expect(
+      screen.queryByRole("button", {
+        name: /^(settings\.updateTo|Update to|更新到)/,
+      }),
+    ).not.toBeInTheDocument();
+
+    // An explicit check reports up-to-date and never opens an upstream URL.
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: /^(settings\.checkForUpdates|Check for Updates|检查更新)$/,
+      }),
+    );
 
     await waitFor(() => {
-      expect(window.open).toHaveBeenCalledWith(
-        newerRelease.html_url,
-        "_blank",
-        "noopener,noreferrer",
-      );
       expect(toastSuccessMock).toHaveBeenCalledWith(
-        expect.stringMatching(
-          /^(settings\.updateDownloadOpened|已打开下载页面|Opened download page)$/,
-        ),
+        expect.stringMatching(/^(settings\.upToDate|已是最新版本|Up to date)$/),
         expect.objectContaining({ closeButton: true }),
       );
     });
+    expect(window.open).not.toHaveBeenCalledWith(
+      newerRelease.html_url,
+      "_blank",
+      "noopener,noreferrer",
+    );
   });
 });
