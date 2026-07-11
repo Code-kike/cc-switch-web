@@ -196,7 +196,8 @@ impl Database {
             duration_ms INTEGER, status_code INTEGER NOT NULL, error_message TEXT, session_id TEXT,
             provider_type TEXT, is_streaming INTEGER NOT NULL DEFAULT 0,
             cost_multiplier TEXT NOT NULL DEFAULT '1.0', created_at INTEGER NOT NULL,
-            data_source TEXT NOT NULL DEFAULT 'proxy'
+            data_source TEXT NOT NULL DEFAULT 'proxy',
+            pricing_missing INTEGER NOT NULL DEFAULT 0
         )", []).map_err(|e| AppError::Database(e.to_string()))?;
 
         conn.execute("CREATE INDEX IF NOT EXISTS idx_request_logs_provider ON proxy_request_logs(provider_id, app_type)", [])
@@ -451,6 +452,13 @@ impl Database {
                         );
                         Self::migrate_v10_to_v11(conn)?;
                         Self::set_user_version(conn, 11)?;
+                    }
+                    11 => {
+                        log::info!(
+                            "迁移数据库从 v11 到 v12（proxy_request_logs 增加 pricing_missing 标记）"
+                        );
+                        Self::migrate_v11_to_v12(conn)?;
+                        Self::set_user_version(conn, 12)?;
                     }
                     _ => {
                         return Err(AppError::Database(format!(
@@ -1277,6 +1285,24 @@ impl Database {
         log::info!(
             "v10 -> v11 迁移完成：usage_daily_rollups 已保留 request_model/pricing_model 维度"
         );
+        Ok(())
+    }
+
+    /// v11 -> v12：proxy_request_logs 增加 pricing_missing 列。
+    ///
+    /// M4: 定价查表未命中时旧逻辑会把成本写为 `0`，与真实 $0 无法区分，
+    /// 随后被 rollup 冻结。此列在写入时标记（1=定价缺失），rollup 排除这类行，
+    /// 使其可在补齐定价后重算。
+    fn migrate_v11_to_v12(conn: &Connection) -> Result<(), AppError> {
+        if Self::table_exists(conn, "proxy_request_logs")? {
+            Self::add_column_if_missing(
+                conn,
+                "proxy_request_logs",
+                "pricing_missing",
+                "INTEGER NOT NULL DEFAULT 0",
+            )?;
+        }
+        log::info!("v11 -> v12 迁移完成：proxy_request_logs 已添加 pricing_missing 列");
         Ok(())
     }
 

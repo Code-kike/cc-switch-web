@@ -481,6 +481,8 @@ fn insert_codex_session_entry(
 
     let pricing = find_codex_pricing(&conn, model);
     let multiplier = Decimal::from(1);
+    // M4: 定价缺失标记，供 rollup 排除，避免未知成本被冻结为真实 $0。
+    let pricing_missing = if pricing.is_some() { 0i64 } else { 1i64 };
     let (input_cost, output_cost, cache_read_cost, cache_creation_cost, total_cost) = match pricing
     {
         Some(p) => {
@@ -509,8 +511,8 @@ fn insert_codex_session_entry(
             input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
             input_cost_usd, output_cost_usd, cache_read_cost_usd, cache_creation_cost_usd, total_cost_usd,
             latency_ms, first_token_ms, status_code, error_message, session_id,
-            provider_type, is_streaming, cost_multiplier, created_at, data_source
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)",
+            provider_type, is_streaming, cost_multiplier, created_at, data_source, pricing_missing
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)",
             rusqlite::params![
                 request_id,
                 "_codex_session",    // provider_id
@@ -537,6 +539,7 @@ fn insert_codex_session_entry(
                 "1.0",               // cost_multiplier
                 created_at,
                 "codex_session",     // data_source
+                pricing_missing,     // pricing_missing
             ],
         )
         .map_err(|e| AppError::Database(format!("插入 Codex 会话日志失败: {e}")))?;

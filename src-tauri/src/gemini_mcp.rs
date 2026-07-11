@@ -142,15 +142,32 @@ pub fn set_mcp_servers_map(
 
         // 分别收集 startup 和 tool timeout，未设置时使用默认值
         let startup_ms = extract_timeout(&mut obj, "startup_timeout_sec", 1000)
-            .or_else(|| extract_timeout(&mut obj, "startup_timeout_ms", 1))
-            .unwrap_or(DEFAULT_STARTUP_MS);
+            .or_else(|| extract_timeout(&mut obj, "startup_timeout_ms", 1));
         let tool_ms = extract_timeout(&mut obj, "tool_timeout_sec", 1000)
-            .or_else(|| extract_timeout(&mut obj, "tool_timeout_ms", 1))
-            .unwrap_or(DEFAULT_TOOL_MS);
+            .or_else(|| extract_timeout(&mut obj, "tool_timeout_ms", 1));
 
-        // 取最大值作为 Gemini timeout
-        let final_timeout = startup_ms.max(tool_ms);
-        obj.insert("timeout".to_string(), Value::Number(final_timeout.into()));
+        // M2: 尊重用户在 spec 上已有的原生 `timeout`（单位 ms）。
+        // 仅当 timeout / startup_* / tool_* 全部缺失时才写入计算出的默认值，
+        // 避免每次投影都把用户调优过的 timeout 覆盖为 60000。
+        let existing_timeout = extract_timeout(&mut obj, "timeout", 1);
+        match (existing_timeout, startup_ms, tool_ms) {
+            (Some(existing), _, _) => {
+                // 用户显式提供了 timeout：原样保留
+                obj.insert("timeout".to_string(), Value::Number(existing.into()));
+            }
+            (None, None, None) => {
+                // 没有任何 timeout 相关字段：使用默认（startup=10s, tool=60s 取最大）
+                let final_timeout = DEFAULT_STARTUP_MS.max(DEFAULT_TOOL_MS);
+                obj.insert("timeout".to_string(), Value::Number(final_timeout.into()));
+            }
+            (None, s, t) => {
+                // 提供了 startup/tool 之一或全部：取最大值（缺省填默认）
+                let final_timeout = s
+                    .unwrap_or(DEFAULT_STARTUP_MS)
+                    .max(t.unwrap_or(DEFAULT_TOOL_MS));
+                obj.insert("timeout".to_string(), Value::Number(final_timeout.into()));
+            }
+        }
 
         out.insert(id.clone(), Value::Object(obj));
     }
@@ -164,4 +181,84 @@ pub fn set_mcp_servers_map(
 
     write_json_value(&path, &root)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::gemini_config::get_gemini_settings_path;
+    use std::collections::HashMap;
+
+    /// 在隔离的临时 HOME 中运行闭包，避免污染真实 ~/.gemini。
+    fn with_temp_home<F: FnOnce()>(f: F) {
+        use std::sync::Mutex;
+        static LOCK: Mutex<()> = Mutex::new(());
+        let _guard = LOCK.lock().unwrap();
+
+        let tmp =
+            std::env::temp_dir().join(format!("cc_switch_gemini_mcp_test_{}", std::process::id()));
+        let _ = fs::create_dir_all(&tmp);
+
+        let old_home = std::env::var_os("HOME");
+        let old_userprofile = std::env::var_os("USERPROFILE");
+        std::env::set_var("HOME", &tmp);
+        std::env::set_var("USERPROFILE", &tmp);
+
+        f();
+
+        match old_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+        match old_userprofile {
+            Some(v) => std::env::set_var("USERPROFILE", v),
+            None => std::env::remove_var("USERPROFILE"),
+        }
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_existing_timeout_survives_projection() {
+        // M2: 用户在 spec 上显式提供的 timeout 应被保留，不被 60000 覆盖。
+        with_temp_home(|| {
+            let mut servers: HashMap<String, Value> = HashMap::new();
+            servers.insert(
+                "srv".to_string(),
+                serde_json::json!({
+                    "type": "stdio",
+                    "command": "node",
+                    "timeout": 300000
+                }),
+            );
+
+            set_mcp_servers_map(&servers).expect("set_mcp_servers_map should succeed");
+
+            let path = get_gemini_settings_path();
+            let content = fs::read_to_string(&path).expect("settings.json should exist");
+            let root: Value = serde_json::from_str(&content).unwrap();
+            assert_eq!(root["mcpServers"]["srv"]["timeout"], 300000);
+        });
+    }
+
+    #[test]
+    fn test_default_timeout_when_none_present() {
+        // M2: 没有任何 timeout 字段时使用默认（60000）。
+        with_temp_home(|| {
+            let mut servers: HashMap<String, Value> = HashMap::new();
+            servers.insert(
+                "srv".to_string(),
+                serde_json::json!({
+                    "type": "stdio",
+                    "command": "node"
+                }),
+            );
+
+            set_mcp_servers_map(&servers).expect("set_mcp_servers_map should succeed");
+
+            let path = get_gemini_settings_path();
+            let content = fs::read_to_string(&path).unwrap();
+            let root: Value = serde_json::from_str(&content).unwrap();
+            assert_eq!(root["mcpServers"]["srv"]["timeout"], 60000);
+        });
+    }
 }

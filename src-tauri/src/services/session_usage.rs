@@ -408,6 +408,9 @@ fn insert_session_log_entry(
 
     let pricing = find_model_pricing_for_session(&conn, &msg.model);
     let multiplier = Decimal::from(1);
+    // M4: 记录定价查表是否命中；未命中时仍写入成本 0 但打上 pricing_missing 标记，
+    // 供 rollup 排除，避免把未知成本冻结为真实 $0。
+    let pricing_missing = if pricing.is_some() { 0i64 } else { 1i64 };
     let (input_cost, output_cost, cache_read_cost, cache_creation_cost, total_cost) = match pricing
     {
         Some(p) => {
@@ -436,8 +439,8 @@ fn insert_session_log_entry(
             input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
             input_cost_usd, output_cost_usd, cache_read_cost_usd, cache_creation_cost_usd, total_cost_usd,
             latency_ms, first_token_ms, status_code, error_message, session_id,
-            provider_type, is_streaming, cost_multiplier, created_at, data_source
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)",
+            provider_type, is_streaming, cost_multiplier, created_at, data_source, pricing_missing
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)",
             rusqlite::params![
                 request_id,
                 "_session",         // provider_id: 标记为会话来源
@@ -464,6 +467,7 @@ fn insert_session_log_entry(
                 "1.0",              // cost_multiplier
                 created_at,
                 "session_log",      // data_source
+                pricing_missing,    // pricing_missing: 定价查表未命中标记
             ],
         )
         .map_err(|e| AppError::Database(format!("插入会话日志失败: {e}")))?;

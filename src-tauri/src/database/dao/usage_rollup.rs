@@ -142,7 +142,7 @@ impl Database {
                     COALESCE(SUM(CAST(l.total_cost_usd AS REAL)), 0) as new_cost,
                     COALESCE(AVG(l.latency_ms), 0) as new_lat
                 FROM proxy_request_logs l
-                WHERE l.created_at < ?1 AND {effective_filter}
+                WHERE l.created_at < ?1 AND l.pricing_missing = 0 AND {effective_filter}
                 GROUP BY d, a, p, m, rm, pm
             ) agg
             LEFT JOIN usage_daily_rollups old
@@ -155,9 +155,13 @@ impl Database {
             .map_err(|e| AppError::Database(format!("Rollup aggregation failed: {e}")))?;
 
         // Aggregation excludes duplicate session rows; pruning removes all old details.
+        // M4: rows with pricing_missing = 1 (pricing lookup missed → cost stored as 0)
+        // are excluded from BOTH aggregation and pruning, so their unknown cost is never
+        // frozen as a real $0 into the rollups and the detail row survives to be
+        // recomputed once the user adds the missing model_pricing entry.
         let deleted = conn
             .execute(
-                "DELETE FROM proxy_request_logs WHERE created_at < ?1",
+                "DELETE FROM proxy_request_logs WHERE created_at < ?1 AND pricing_missing = 0",
                 [cutoff],
             )
             .map_err(|e| AppError::Database(format!("Pruning old logs failed: {e}")))?;
@@ -331,6 +335,66 @@ mod tests {
     fn test_rollup_noop_when_no_old_data() -> Result<(), AppError> {
         let db = Database::memory()?;
         assert_eq!(db.rollup_and_prune(30)?, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn test_rollup_excludes_and_preserves_pricing_missing_rows() -> Result<(), AppError> {
+        // M4: rows with pricing_missing = 1 must NOT be aggregated (their $0 is an
+        // unknown cost, not a real free request) and must NOT be pruned, so they
+        // survive to be recomputed after the user adds the missing model_pricing row.
+        let db = Database::memory()?;
+        let now = chrono::Utc::now().timestamp();
+        let old_ts = now - 40 * 86400;
+
+        {
+            let conn = crate::database::lock_conn!(db.conn);
+            // Known-cost old row (should aggregate + prune).
+            conn.execute(
+                "INSERT INTO proxy_request_logs (
+                    request_id, provider_id, app_type, model,
+                    input_tokens, output_tokens, total_cost_usd,
+                    latency_ms, status_code, created_at, pricing_missing
+                ) VALUES (?1, 'p1', 'claude', 'claude-3', 100, 50, '0.01', 100, 200, ?2, 0)",
+                rusqlite::params!["known-old", old_ts],
+            )?;
+            // Pricing-missing old row (should be skipped by both aggregation and prune).
+            conn.execute(
+                "INSERT INTO proxy_request_logs (
+                    request_id, provider_id, app_type, model,
+                    input_tokens, output_tokens, total_cost_usd,
+                    latency_ms, status_code, created_at, pricing_missing
+                ) VALUES (?1, 'p1', 'claude', 'mystery-model', 999, 999, '0', 100, 200, ?2, 1)",
+                rusqlite::params!["missing-old", old_ts + 60],
+            )?;
+        }
+
+        // Only the known-cost row is pruned; the pricing-missing row survives.
+        let deleted = db.rollup_and_prune(30)?;
+        assert_eq!(deleted, 1);
+
+        let conn = crate::database::lock_conn!(db.conn);
+        // The mystery-model row was NOT aggregated into rollups.
+        let rollup_models: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM usage_daily_rollups WHERE model = 'mystery-model'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(rollup_models, 0);
+        // The known row WAS aggregated.
+        let known_count: i64 = conn.query_row(
+            "SELECT request_count FROM usage_daily_rollups WHERE model = 'claude-3'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(known_count, 1);
+        // The pricing-missing detail row is preserved for later recompute.
+        let surviving: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM proxy_request_logs WHERE request_id = 'missing-old'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(surviving, 1);
         Ok(())
     }
 

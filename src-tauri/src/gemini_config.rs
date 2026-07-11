@@ -122,6 +122,76 @@ pub fn parse_env_file_strict(content: &str) -> Result<HashMap<String, String>, A
     Ok(map)
 }
 
+/// 以行级保留的方式将 `updates` 应用到已有的 .env 文件内容上。
+///
+/// M3: 之前的实现通过 `HashMap` 往返读写，会永久丢弃注释、空行以及
+/// 非 `[A-Za-z0-9_]` 的行（如 `export FOO=bar`、带点/连字符的键）。
+/// 本函数逐行遍历原始内容：
+/// - 注释行、空行和无法识别的行原样保留；
+/// - 命中受管理键（`updates` 中的键）的行，在原位替换其值；
+/// - `removals` 中的键对应的行被删除；
+/// - `updates` 中在原文件里未出现的新键，追加到末尾。
+///
+/// 只有形如 `KEY=VALUE` 且 KEY 只包含字母/数字/下划线的行才被视为
+/// “受管理键行”，与 `parse_env_file` 的宽松识别规则保持一致；
+/// 其他所有行（含 `export`、带连字符键等）都逐字保留。
+pub fn apply_env_updates(
+    existing_content: &str,
+    updates: &HashMap<String, String>,
+    removals: &[String],
+) -> String {
+    let is_managed_key = |key: &str| -> bool {
+        !key.is_empty() && key.chars().all(|c| c.is_alphanumeric() || c == '_')
+    };
+
+    let removal_set: std::collections::HashSet<&str> =
+        removals.iter().map(|s| s.as_str()).collect();
+
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut out_lines: Vec<String> = Vec::new();
+
+    for line in existing_content.lines() {
+        let trimmed = line.trim();
+
+        // 注释与空行原样保留
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            out_lines.push(line.to_string());
+            continue;
+        }
+
+        // 尝试识别受管理键行
+        if let Some((raw_key, _)) = trimmed.split_once('=') {
+            let key = raw_key.trim();
+            if is_managed_key(key) {
+                if removal_set.contains(key) {
+                    // 删除该键行
+                    continue;
+                }
+                if let Some(new_value) = updates.get(key) {
+                    seen.insert(key.to_string());
+                    out_lines.push(format!("{key}={new_value}"));
+                    continue;
+                }
+                // 受管理键但未在 updates 中：保持原行不变
+            }
+        }
+
+        // 其他所有行（export、带连字符键、无法解析等）逐字保留
+        out_lines.push(line.to_string());
+    }
+
+    // 追加原文件中不存在的新键（按键排序保证稳定输出）
+    let mut new_keys: Vec<&String> = updates.keys().filter(|k| !seen.contains(*k)).collect();
+    new_keys.sort();
+    for key in new_keys {
+        if let Some(value) = updates.get(key) {
+            out_lines.push(format!("{key}={value}"));
+        }
+    }
+
+    out_lines.join("\n")
+}
+
 /// 将键值对序列化为 .env 格式
 pub fn serialize_env_file(map: &HashMap<String, String>) -> String {
     let mut lines = Vec::new();
@@ -152,11 +222,51 @@ pub fn read_gemini_env() -> Result<HashMap<String, String>, AppError> {
     Ok(parse_env_file(&content))
 }
 
-/// 写入 Gemini .env 文件（原子操作）
-pub fn write_gemini_env_atomic(map: &HashMap<String, String>) -> Result<(), AppError> {
+/// 写入 Gemini .env 文件（原子操作，行级保留）
+///
+/// M3: 保留原文件中的注释、空行以及非受管理键行（如 `export FOO=bar`）。
+/// `desired` 表示期望的受管理键最终状态：
+/// - 原文件中存在但不在 `desired` 中的受管理键会被删除（保持切换语义）；
+/// - 其余非受管理行原样保留。
+///
+/// 当原文件不存在时，退化为按键排序的全量序列化输出。
+pub fn write_gemini_env_atomic(desired: &HashMap<String, String>) -> Result<(), AppError> {
     let path = get_gemini_env_path();
 
-    // 确保目录存在
+    ensure_gemini_env_dir(&path)?;
+
+    let content = if path.exists() {
+        let existing = fs::read_to_string(&path).map_err(|e| AppError::io(&path, e))?;
+        // 计算需要删除的受管理键：原文件中有、但期望状态中没有的键
+        let existing_map = parse_env_file(&existing);
+        let removals: Vec<String> = existing_map
+            .keys()
+            .filter(|k| !desired.contains_key(*k))
+            .cloned()
+            .collect();
+        apply_env_updates(&existing, desired, &removals)
+    } else {
+        serialize_env_file(desired)
+    };
+
+    write_text_file_managed(&path, &content)?;
+
+    // 设置文件权限为 600（仅所有者可读写）
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&path)
+            .map_err(|e| AppError::io(&path, e))?
+            .permissions();
+        perms.set_mode(0o600);
+        fs::set_permissions(&path, perms).map_err(|e| AppError::io(&path, e))?;
+    }
+
+    Ok(())
+}
+
+/// 确保 Gemini .env 所在目录存在并具有 700 权限
+fn ensure_gemini_env_dir(path: &std::path::Path) -> Result<(), AppError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| AppError::io(parent, e))?;
 
@@ -171,21 +281,6 @@ pub fn write_gemini_env_atomic(map: &HashMap<String, String>) -> Result<(), AppE
             fs::set_permissions(parent, perms).map_err(|e| AppError::io(parent, e))?;
         }
     }
-
-    let content = serialize_env_file(map);
-    write_text_file_managed(&path, &content)?;
-
-    // 设置文件权限为 600（仅所有者可读写）
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&path)
-            .map_err(|e| AppError::io(&path, e))?
-            .permissions();
-        perms.set_mode(0o600);
-        fs::set_permissions(&path, perms).map_err(|e| AppError::io(&path, e))?;
-    }
-
     Ok(())
 }
 
@@ -300,31 +395,41 @@ fn update_selected_type(selected_type: &str) -> Result<(), AppError> {
     }
 
     // 读取现有的 settings.json（如果存在）
+    // M1: 解析失败时返回错误，避免用不完整的 `{}` 覆盖用户已有配置。
+    // 仅当文件不存在时才使用空对象作为初始值。
     let mut settings_content = if settings_path.exists() {
         let content =
             fs::read_to_string(&settings_path).map_err(|e| AppError::io(&settings_path, e))?;
-        serde_json::from_str::<Value>(&content).unwrap_or_else(|_| serde_json::json!({}))
+        serde_json::from_str::<Value>(&content).map_err(|e| AppError::json(&settings_path, e))?
     } else {
         serde_json::json!({})
     };
 
+    // M16: 根 JSON 必须是对象；否则更新会被静默跳过但仍写回，导致
+    // selectedType 从未被设置而 provider 切换却报告成功。
+    let obj = settings_content.as_object_mut().ok_or_else(|| {
+        AppError::localized(
+            "gemini.settings.root_not_object",
+            "Gemini settings.json 根节点必须是对象",
+            "Gemini settings.json root must be an object",
+        )
+    })?;
+
     // 只更新 security.auth.selectedType 字段
-    if let Some(obj) = settings_content.as_object_mut() {
-        let security = obj
-            .entry("security")
+    let security = obj
+        .entry("security")
+        .or_insert_with(|| serde_json::json!({}));
+
+    if let Some(security_obj) = security.as_object_mut() {
+        let auth = security_obj
+            .entry("auth")
             .or_insert_with(|| serde_json::json!({}));
 
-        if let Some(security_obj) = security.as_object_mut() {
-            let auth = security_obj
-                .entry("auth")
-                .or_insert_with(|| serde_json::json!({}));
-
-            if let Some(auth_obj) = auth.as_object_mut() {
-                auth_obj.insert(
-                    "selectedType".to_string(),
-                    Value::String(selected_type.to_string()),
-                );
-            }
+        if let Some(auth_obj) = auth.as_object_mut() {
+            auth_obj.insert(
+                "selectedType".to_string(),
+                Value::String(selected_type.to_string()),
+            );
         }
     }
 
@@ -647,5 +752,66 @@ KEY_WITH-DASH=value";
         });
 
         assert!(validate_gemini_settings(&settings).is_err());
+    }
+
+    #[test]
+    fn test_apply_env_updates_preserves_comments_and_export_lines() {
+        // M3: 注释、空行、export 行、带连字符键的行都应逐字保留，
+        // 且受管理键的值应被原位更新。
+        let existing = "# leading comment\n\
+export GEMINI_LEGACY=keepme\n\
+GEMINI_API_KEY=old-key\n\
+\n\
+# trailing note\n\
+WEIRD-KEY=untouched";
+
+        let mut updates = HashMap::new();
+        updates.insert("GEMINI_API_KEY".to_string(), "new-key".to_string());
+        updates.insert("GEMINI_MODEL".to_string(), "gemini-3.5-flash".to_string());
+
+        let result = apply_env_updates(existing, &updates, &[]);
+
+        // 注释与空行保留
+        assert!(result.contains("# leading comment"));
+        assert!(result.contains("# trailing note"));
+        // export 行逐字保留
+        assert!(result.contains("export GEMINI_LEGACY=keepme"));
+        // 带连字符键逐字保留（非受管理键）
+        assert!(result.contains("WEIRD-KEY=untouched"));
+        // 受管理键原位更新，旧值消失
+        assert!(result.contains("GEMINI_API_KEY=new-key"));
+        assert!(!result.contains("GEMINI_API_KEY=old-key"));
+        // 新键追加到末尾
+        assert!(result.contains("GEMINI_MODEL=gemini-3.5-flash"));
+    }
+
+    #[test]
+    fn test_apply_env_updates_removals() {
+        // M3: removals 中的受管理键行应被删除，其他行保留。
+        let existing = "# header\n\
+GEMINI_API_KEY=k\n\
+GEMINI_MODEL=m";
+
+        let mut updates = HashMap::new();
+        updates.insert("GEMINI_API_KEY".to_string(), "k2".to_string());
+
+        let result = apply_env_updates(existing, &updates, &["GEMINI_MODEL".to_string()]);
+
+        assert!(result.contains("# header"));
+        assert!(result.contains("GEMINI_API_KEY=k2"));
+        assert!(!result.contains("GEMINI_MODEL"));
+    }
+
+    #[test]
+    fn test_apply_env_updates_no_managed_change_roundtrip() {
+        // M3: 若受管理键值未变，非受管理内容应完全不变。
+        let existing = "# c1\nexport FOO=bar\nGEMINI_API_KEY=k\n";
+        let mut updates = HashMap::new();
+        updates.insert("GEMINI_API_KEY".to_string(), "k".to_string());
+
+        let result = apply_env_updates(existing, &updates, &[]);
+        assert!(result.contains("# c1"));
+        assert!(result.contains("export FOO=bar"));
+        assert!(result.contains("GEMINI_API_KEY=k"));
     }
 }
