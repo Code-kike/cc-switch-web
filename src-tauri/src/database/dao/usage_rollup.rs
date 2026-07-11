@@ -159,6 +159,19 @@ impl Database {
         // are excluded from BOTH aggregation and pruning, so their unknown cost is never
         // frozen as a real $0 into the rollups and the detail row survives to be
         // recomputed once the user adds the missing model_pricing entry.
+        //
+        // L18: first delete session "twins" whose dedup-matching proxy row is about to
+        // be pruned. Otherwise the twin (created_at >= cutoff) survives, loses its proxy
+        // anchor, and gets counted again by the next rollup — double-counting a request
+        // already aggregated via its proxy row.
+        let twin_delete_sql = format!(
+            "DELETE FROM proxy_request_logs WHERE rowid IN ({})",
+            crate::services::usage_stats::orphaned_session_twin_rowids_sql()
+        );
+        conn.execute(&twin_delete_sql, [cutoff]).map_err(|e| {
+            AppError::Database(format!("Pruning orphaned session twins failed: {e}"))
+        })?;
+
         let deleted = conn
             .execute(
                 "DELETE FROM proxy_request_logs WHERE created_at < ?1 AND pricing_missing = 0",
@@ -328,6 +341,65 @@ mod tests {
             })?;
         assert_eq!(remaining, 0);
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_rollup_deletes_orphaned_session_twin_across_cutoff() -> Result<(), AppError> {
+        // L18: a proxy row just before the cutoff and its duplicate session row just
+        // after (within the dedup window) must not double-count. The proxy row is
+        // aggregated+pruned; the session twin must be deleted with it, not left to be
+        // re-counted by the next rollup.
+        let db = Database::memory()?;
+        let now = chrono::Utc::now().timestamp();
+        // rollup_and_prune(1) → cutoff is local-midnight after (now - 1 day), so a row
+        // ~2 days old is safely before the cutoff and ~30 days is irrelevant here.
+        let cutoff_ref = now - 2 * 86400;
+        let proxy_ts = cutoff_ref; // before cutoff (pruned)
+        let twin_ts = cutoff_ref + 60; // within 600s dedup window, may straddle cutoff
+
+        {
+            let conn = crate::database::lock_conn!(db.conn);
+            // proxy row (authoritative, counted + pruned)
+            conn.execute(
+                "INSERT INTO proxy_request_logs (
+                    request_id, provider_id, app_type, model,
+                    input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+                    total_cost_usd, latency_ms, status_code, created_at, data_source
+                ) VALUES (?1, 'p1', 'claude', 'claude-3', 100, 50, 0, 0, '0.01', 100, 200, ?2, 'proxy')",
+                rusqlite::params!["proxy-x", proxy_ts],
+            )?;
+            // session twin of the SAME request (dedup-matches the proxy row)
+            conn.execute(
+                "INSERT INTO proxy_request_logs (
+                    request_id, provider_id, app_type, model,
+                    input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+                    total_cost_usd, latency_ms, status_code, created_at, data_source
+                ) VALUES (?1, '_session', 'claude', 'claude-3', 100, 50, 0, 0, '0.01', 0, 200, ?2, 'session_log')",
+                rusqlite::params!["session-twin", twin_ts],
+            )?;
+        }
+
+        db.rollup_and_prune(1)?;
+
+        let conn = crate::database::lock_conn!(db.conn);
+        // The proxy row was counted exactly once.
+        let rollup_count: i64 = conn.query_row(
+            "SELECT COALESCE(SUM(request_count), 0) FROM usage_daily_rollups WHERE app_type = 'claude'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(rollup_count, 1, "request must be counted exactly once");
+        // The orphaned session twin must be gone (not left to be re-counted).
+        let twin_left: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM proxy_request_logs WHERE request_id = 'session-twin'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(
+            twin_left, 0,
+            "orphaned session twin must be deleted with its anchor"
+        );
         Ok(())
     }
 

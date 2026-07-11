@@ -163,14 +163,11 @@ pub fn write_codex_live_atomic(
         std::fs::create_dir_all(parent).map_err(|e| AppError::io(parent, e))?;
     }
 
-    // 读取旧内容用于回滚
+    // 读取旧内容用于回滚。config.toml 是第二步（最后）写入的，写它失败时
+    // auth.json 才需要回滚；config.toml 自身无需回滚，因此不预读它（L15：
+    // 删除原先未被使用的 _old_config 死读）。
     let old_auth = if auth_path.exists() {
         Some(fs::read(&auth_path).map_err(|e| AppError::io(&auth_path, e))?)
-    } else {
-        None
-    };
-    let _old_config = if config_path.exists() {
-        Some(fs::read(&config_path).map_err(|e| AppError::io(&config_path, e))?)
     } else {
         None
     };
@@ -189,11 +186,18 @@ pub fn write_codex_live_atomic(
 
     // 第二步：写 config.toml（失败则回滚 auth.json）
     if let Err(e) = write_text_file_managed(&config_path, &cfg_text) {
-        // 回滚 auth.json
-        if let Some(bytes) = old_auth {
-            let _ = atomic_write_managed(&auth_path, &bytes);
+        // 回滚 auth.json。回滚本身失败时不要静默吞掉——记录日志，否则
+        // auth.json/config.toml 会不一致且无从排查（L15）。
+        let rollback = if let Some(bytes) = old_auth {
+            atomic_write_managed(&auth_path, &bytes)
         } else {
-            let _ = delete_file(&auth_path);
+            delete_file(&auth_path)
+        };
+        if let Err(rollback_err) = rollback {
+            log::error!(
+                "codex auth.json rollback failed after config.toml write error \
+                 (auth/config now inconsistent): {rollback_err}"
+            );
         }
         return Err(e);
     }

@@ -228,6 +228,53 @@ pub(crate) fn effective_usage_log_filter(log_alias: &str) -> String {
     )
 }
 
+/// L18: SQL selecting rowids of session-source rows whose dedup-matching proxy
+/// row is about to be pruned (proxy `created_at < ?1` and `pricing_missing = 0`,
+/// i.e. exactly the rows `rollup_and_prune` deletes). Such a session "twin"
+/// survives the prune (its own `created_at >= ?1`) but then loses the proxy
+/// anchor that `effective_usage_log_filter` used to suppress it, so the next
+/// rollup counts it again — double-counting a request already aggregated via its
+/// proxy row. Deleting these twins together with their anchor prevents that.
+/// `?1` is the prune cutoff (bound twice).
+pub(crate) fn orphaned_session_twin_rowids_sql() -> String {
+    let data_source = data_source_expr("l");
+    let proxy_data_source = data_source_expr("proxy_dedup");
+    format!(
+        "SELECT l.rowid
+         FROM proxy_request_logs l
+         WHERE {data_source} IN ('session_log', 'codex_session', 'gemini_session', 'opencode_session')
+           AND l.created_at >= ?1
+           AND EXISTS (
+               SELECT 1
+               FROM proxy_request_logs proxy_dedup
+               WHERE {proxy_data_source} = 'proxy'
+                 AND proxy_dedup.created_at < ?1
+                 AND proxy_dedup.pricing_missing = 0
+                 AND proxy_dedup.app_type = l.app_type
+                 AND proxy_dedup.status_code >= 200
+                 AND proxy_dedup.status_code < 300
+                 AND proxy_dedup.input_tokens = l.input_tokens
+                 AND proxy_dedup.output_tokens = l.output_tokens
+                 AND proxy_dedup.cache_read_tokens = l.cache_read_tokens
+                 AND (
+                     proxy_dedup.cache_creation_tokens = l.cache_creation_tokens
+                     OR (
+                         l.cache_creation_tokens = 0
+                         AND {data_source} IN ('codex_session', 'gemini_session', 'opencode_session')
+                     )
+                 )
+                 AND proxy_dedup.created_at BETWEEN
+                     l.created_at - {SESSION_PROXY_DEDUP_WINDOW_SECONDS}
+                     AND l.created_at + {SESSION_PROXY_DEDUP_WINDOW_SECONDS}
+                 AND (
+                     LOWER(proxy_dedup.model) = LOWER(l.model)
+                     OR LOWER(proxy_dedup.model) = 'unknown'
+                     OR LOWER(l.model) = 'unknown'
+                 )
+           )"
+    )
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct DedupKey<'a> {
     pub app_type: &'a str,

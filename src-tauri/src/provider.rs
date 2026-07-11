@@ -571,19 +571,33 @@ impl UniversalProvider {
             base_trimmed.to_string()
         };
 
-        // 生成 Codex 的 config.toml 内容
-        let config_toml = format!(
-            r#"model_provider = "custom"
-model = "{model}"
-model_reasoning_effort = "{reasoning_effort}"
-disable_response_storage = true
+        // 生成 Codex 的 config.toml 内容。
+        // L13: 用 toml_edit 构建而非 format! 字符串插值——model / reasoning_effort /
+        // base_url 都是用户可控字段，直接插入 TOML 字符串字面量会因内嵌引号损坏
+        // 文档，甚至注入额外的顶层键（如 notify 执行钩子）。toml_edit 的 value()
+        // 会正确转义并保持键顺序。
+        let config_toml = {
+            use toml_edit::{value, DocumentMut, Item, Table};
+            let mut doc = DocumentMut::new();
+            doc["model_provider"] = value("custom");
+            doc["model"] = value(model.as_str());
+            doc["model_reasoning_effort"] = value(reasoning_effort.as_str());
+            doc["disable_response_storage"] = value(true);
 
-[model_providers.custom]
-name = "NewAPI"
-base_url = "{codex_base_url}"
-wire_api = "responses"
-requires_openai_auth = true"#
-        );
+            let mut custom = Table::new();
+            custom["name"] = value("NewAPI");
+            custom["base_url"] = value(codex_base_url.as_str());
+            custom["wire_api"] = value("responses");
+            custom["requires_openai_auth"] = value(true);
+
+            let mut providers = Table::new();
+            // 隐式父表：只输出 [model_providers.custom]，不额外输出 [model_providers]
+            providers.set_implicit(true);
+            providers.insert("custom", Item::Table(custom));
+            doc.insert("model_providers", Item::Table(providers));
+
+            doc.to_string()
+        };
 
         let settings_config = serde_json::json!({
             "auth": {
@@ -945,6 +959,51 @@ mod tests {
         );
 
         assert!(universal.to_codex_provider().is_none());
+    }
+
+    #[test]
+    fn universal_provider_to_codex_provider_escapes_injection_in_model() {
+        // L13: a model value containing a double quote + newline must NOT corrupt
+        // the TOML or inject extra top-level keys (e.g. a `notify` exec hook). The
+        // generated config must still be valid TOML whose `model` round-trips to
+        // exactly the input, with no injected key.
+        let mut universal = UniversalProvider::new(
+            "u1".to_string(),
+            "Universal".to_string(),
+            "newapi".to_string(),
+            "https://api.example.com".to_string(),
+            "api-key".to_string(),
+        );
+        universal.apps.codex = true;
+        let malicious = "gpt\"\nnotify = [\"/bin/sh\",\"-c\",\"touch /tmp/pwned\"]\nx = \"";
+        universal.models.codex = Some(CodexModelConfig {
+            model: Some(malicious.to_string()),
+            reasoning_effort: Some("high".to_string()),
+        });
+
+        let provider = universal.to_codex_provider().expect("codex provider");
+        let config = provider
+            .settings_config
+            .get("config")
+            .and_then(|item| item.as_str())
+            .expect("config toml");
+
+        // Must parse as valid TOML.
+        let parsed: toml::Table =
+            toml::from_str(config).expect("generated config must be valid TOML");
+        // model round-trips exactly, with no injected top-level keys.
+        assert_eq!(
+            parsed.get("model").and_then(|v| v.as_str()),
+            Some(malicious)
+        );
+        assert!(
+            parsed.get("notify").is_none(),
+            "injection must not add a `notify` key"
+        );
+        assert!(
+            parsed.get("x").is_none(),
+            "injection must not add stray keys"
+        );
     }
 
     #[test]

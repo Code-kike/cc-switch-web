@@ -911,6 +911,9 @@ impl MultiAppConfig {
         self.mcp.claude = McpConfig::default();
         self.mcp.codex = McpConfig::default();
         self.mcp.gemini = McpConfig::default();
+        // L14: opencode 也参与了上面的合并（collect 循环包含 AppType::OpenCode），
+        // 必须一并清空，否则旧的 mcp.opencode 会与统一存储重复残留并被永久回写。
+        self.mcp.opencode = McpConfig::default();
 
         Ok(true)
     }

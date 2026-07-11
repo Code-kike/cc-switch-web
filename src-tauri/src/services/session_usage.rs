@@ -507,29 +507,14 @@ fn find_model_pricing_for_session(
         }
     }
 
-    // 尝试 LIKE 匹配
-    let pattern = format!("{model_id}%");
-    let result = conn.query_row(
-        "SELECT input_cost_per_million, output_cost_per_million,
-                cache_read_cost_per_million, cache_creation_cost_per_million
-         FROM model_pricing WHERE model_id LIKE ?1 LIMIT 1",
-        rusqlite::params![pattern],
-        |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-            ))
-        },
-    );
-
-    match result {
-        Ok((input, output, cache_read, cache_creation)) => {
-            ModelPricing::from_strings(&input, &output, &cache_read, &cache_creation).ok()
-        }
-        Err(_) => None,
-    }
+    // L17: 之前这里有一个 `LIKE '{model_id}%' LIMIT 1` 回退——它没有 ORDER BY
+    // （多行共享前缀时命中哪一行不确定），也不转义 model_id 里的 `%`/`_`
+    // （它们会被当作 SQL 通配符匹配到无关行），且 proxy 实时计费路径
+    // （find_model_pricing_row）根本没有这个回退，导致同一模型串在会话导入行
+    // 与 proxy 行之间被计成不同价格。已删除：pricing_lookup_candidates + 上面的
+    // 去日期后缀已覆盖归一化场景；仍查不到就返回 None，让上层把该行标记为
+    // pricing_missing（未知，待补齐后重算），而不是猜一个错误价格。
+    None
 }
 
 fn try_find_pricing(
