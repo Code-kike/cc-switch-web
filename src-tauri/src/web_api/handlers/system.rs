@@ -7,25 +7,13 @@ use async_stream::stream;
 use axum::{
     extract::State,
     response::sse::{Event, KeepAlive, Sse},
-    routing::{get, post, put},
+    routing::{get, post},
     Json, Router,
 };
 use serde::Deserialize;
 
 use super::super::ApiState;
-use super::common::{json_ok, validate_outbound_url, ApiError, ApiResult};
-
-#[derive(Deserialize)]
-struct WebCredentials {
-    #[allow(dead_code)]
-    new_password: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct OpenExternalRequest {
-    url: String,
-}
+use super::common::{json_ok, validate_outbound_url, web_desktop_only, ApiError, ApiResult};
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -50,7 +38,6 @@ struct CircuitBreakerActionRequest {
 
 pub fn router(state: ApiState) -> Router {
     Router::new()
-        .route("/system/web-credentials", put(web_credentials))
         .route("/system/get_migration_result", post(get_migration_result))
         .route("/system/get_init_error", post(get_init_error))
         .route(
@@ -58,8 +45,11 @@ pub fn router(state: ApiState) -> Router {
             post(is_live_takeover_active),
         )
         .route("/system/is_portable_mode", post(is_portable_mode))
-        .route("/system/restart_app", post(restart_app))
-        .route("/system/open_external", post(open_external))
+        // Desktop-only shell operations: return an explicit desktop_only error
+        // rather than a silent no-op (restart_app) or a guaranteed-failing sink
+        // call (open_external). The web frontend already gates these in web mode.
+        .route("/system/restart_app", post(web_desktop_only))
+        .route("/system/open_external", post(web_desktop_only))
         .route(
             "/system/apply_claude_onboarding_skip",
             post(apply_claude_onboarding_skip),
@@ -87,12 +77,6 @@ pub fn router(state: ApiState) -> Router {
         .with_state(state)
 }
 
-async fn web_credentials(Json(_creds): Json<WebCredentials>) -> axum::http::StatusCode {
-    // Placeholder: real implementation rotates `~/.cc-switch/web_password`
-    // and invalidates all sessions (`DELETE FROM web_sessions`).
-    axum::http::StatusCode::NOT_IMPLEMENTED
-}
-
 async fn get_migration_result() -> ApiResult<bool> {
     Ok(json_ok(crate::init_status::take_migration_success()))
 }
@@ -118,26 +102,6 @@ async fn is_portable_mode() -> ApiResult<bool> {
         .map(|dir| dir.join("portable.ini").is_file())
         .unwrap_or(false);
     Ok(json_ok(portable))
-}
-
-async fn restart_app() -> ApiResult<bool> {
-    Ok(json_ok(true))
-}
-
-async fn open_external(
-    State(state): State<ApiState>,
-    Json(request): Json<OpenExternalRequest>,
-) -> ApiResult<bool> {
-    let url = if request.url.starts_with("http://") || request.url.starts_with("https://") {
-        request.url
-    } else {
-        format!("https://{}", request.url)
-    };
-    state
-        .sink
-        .open_url(&url)
-        .map_err(ApiError::from_service_message)?;
-    Ok(json_ok(true))
 }
 
 async fn apply_claude_onboarding_skip() -> ApiResult<bool> {

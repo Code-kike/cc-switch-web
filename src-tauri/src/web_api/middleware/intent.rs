@@ -31,6 +31,7 @@ fn is_state_changing(method: &Method) -> bool {
 /// - `Sec-Fetch-Site: same-origin` or `none`
 /// - absent Fetch Metadata with `Origin` host matching `Host`
 /// - absent `Origin` and absent Fetch Metadata, for direct clients like curl
+#[allow(clippy::result_large_err)] // Err is a ready-to-return axum Response, not stored/propagated far
 fn check_same_origin_intent(req: &Request<Body>) -> Result<(), Response> {
     let headers = req.headers();
 

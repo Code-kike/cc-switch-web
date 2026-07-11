@@ -155,6 +155,21 @@ export function SettingsPage({
       return;
     }
 
+    // In web mode the server cannot restart itself (restart_app is desktop-only);
+    // the operator must bounce the cc-switch-web service. Show that instruction
+    // instead of calling the endpoint (which would return a desktop_only error).
+    if (webMode) {
+      toast.info(
+        t("settings.webRestartHint", {
+          defaultValue:
+            "设置已保存。请重启 cc-switch-web 服务以使需要重启的更改生效。",
+        }),
+        { closeButton: true },
+      );
+      closeAfterSave();
+      return;
+    }
+
     try {
       await settingsApi.restart();
     } catch (error) {
@@ -165,7 +180,7 @@ export function SettingsPage({
     } finally {
       closeAfterSave();
     }
-  }, [closeAfterSave, t]);
+  }, [closeAfterSave, t, webMode]);
 
   // 通用设置即时保存（无需手动点击）
   // 使用 autoSaveSettings 避免误触发系统 API（开机自启、Claude 插件等）

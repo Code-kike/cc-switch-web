@@ -26,12 +26,12 @@
 //! **Invariant — keep reachable `src` modules `tauri`-free.** Any `src` module
 //! reachable from this file (directly, or transitively through another
 //! `#[path]`-included module) MUST NOT reference `tauri`/`tauri_plugin_*`, or
-//! the web build breaks. There is currently NO default-CI coverage that would
-//! catch such a regression — the desktop `cargo clippy`/`cargo test` gates only
-//! build the `desktop` feature. The real safety net is wiring this web build
-//! (`cargo check --no-default-features --features web-server --example server`)
-//! into CI (deep-read finding H4, Batch 7); until then, run it manually after
-//! touching any backend module.
+//! the web build breaks. This IS now CI-enforced: `.github/workflows/ci.yml`
+//! runs `cargo check`/`cargo clippy --no-default-features --features web-server
+//! --example server` (backend job) plus the full web-server job (build +
+//! `web_api:: dual_runtime_parity::` tests + smoke/integration), so a `tauri`
+//! reference sneaking into a reachable module fails CI. Still run that command
+//! locally after touching any backend module for a fast signal.
 //!
 //! **Why `app_store` is reimplemented inline below instead of `#[path]`-included:**
 //! the desktop `src/app_store.rs` is Tauri-coupled — it persists the

@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { useQueryClient } from "@tanstack/react-query";
 import { providersApi, settingsApi, type AppId } from "@/lib/api";
+import { isWebMode } from "@/lib/api/adapter";
 import { syncCurrentProvidersLiveSafe } from "@/utils/postChangeSync";
 import { extractErrorMessage } from "@/utils/errorUtils";
 import { useSettingsQuery, useSaveSettingsMutation } from "@/lib/query";
@@ -227,7 +228,11 @@ export function useSettings(): UseSettingsResult {
         await saveMutation.mutateAsync(payload);
 
         // 如果开机自启状态改变，调用系统 API
+        // auto-launch is desktop-only (no auto_launch in the web binary; the
+        // route is a 501 stub). Skip it in web mode so importing/syncing a
+        // desktop-authored settings payload doesn't raise a spurious error toast.
         if (
+          !isWebMode() &&
           payload.launchOnStartup !== undefined &&
           payload.launchOnStartup !== prevSettings?.launchOnStartup
         ) {
@@ -369,7 +374,11 @@ export function useSettings(): UseSettingsResult {
         await settingsApi.setAppConfigDirOverride(sanitizedAppDir ?? null);
 
         // 只在开机自启状态真正改变时调用系统 API
+        // auto-launch is desktop-only (no auto_launch in the web binary; the
+        // route is a 501 stub). Skip it in web mode so importing/syncing a
+        // desktop-authored settings payload doesn't raise a spurious error toast.
         if (
+          !isWebMode() &&
           payload.launchOnStartup !== undefined &&
           payload.launchOnStartup !== prevSettings?.launchOnStartup
         ) {

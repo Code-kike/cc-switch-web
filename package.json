@@ -14,7 +14,7 @@
     "preview:web": "vite preview --config vite.config.web.mts",
     "smoke:web-server": "node scripts/smoke-web-server.mjs",
     "typecheck": "tsc --noEmit",
-    "check:web-routes": "node scripts/check-web-route-coverage.mjs",
+    "check:web-routes": "node scripts/check-web-route-coverage.mjs --fail-on-parity-fallback",
     "check:web-parity": "node scripts/check-web-route-coverage.mjs --list-parity",
     "check:locales": "node scripts/check-locale-parity.mjs",
     "format": "prettier --write \"src/**/*.{js,jsx,ts,tsx,css,json}\"",

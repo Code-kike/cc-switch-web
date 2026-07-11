@@ -7,12 +7,14 @@ import { SettingsPage } from "@/components/settings/SettingsPage";
 
 const toastSuccessMock = vi.fn();
 const toastErrorMock = vi.fn();
+const toastInfoMock = vi.fn();
 const isDevModeMock = vi.fn(() => true);
 
 vi.mock("sonner", () => ({
   toast: {
     success: (...args: unknown[]) => toastSuccessMock(...args),
     error: (...args: unknown[]) => toastErrorMock(...args),
+    info: (...args: unknown[]) => toastInfoMock(...args),
   },
 }));
 
@@ -373,9 +375,7 @@ describe("SettingsPage Component", () => {
     fireEvent.click(screen.getByText("settings.advanced.data.title"));
 
     // 有文件时，点击导入按钮执行 importConfig
-    fireEvent.click(
-      screen.getByRole("button", { name: /settings\.import/ }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: /settings\.import/ }));
     expect(importExportMock.importConfig).toHaveBeenCalled();
 
     fireEvent.click(
@@ -473,6 +473,13 @@ describe("SettingsPage Component", () => {
   });
 
   it("shows structured detail when restart fails", async () => {
+    // Desktop mode: restart_app actually runs here (in web mode it is gated to a
+    // manual service-restart hint). A truthy __TAURI_INTERNALS__ makes
+    // isWebMode() false.
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: {},
+    });
     settingsMock = createSettingsMock({ requiresRestart: true });
     settingsApi.restart.mockRejectedValueOnce({ detail: "restart denied" });
     isDevModeMock.mockReturnValue(false);
@@ -490,6 +497,35 @@ describe("SettingsPage Component", () => {
         description: "restart denied",
       });
     });
+
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: undefined,
+    });
+  });
+
+  it("shows a service-restart hint instead of restarting in web mode", async () => {
+    // L10: in web mode the server cannot restart itself; restart_app is gated to
+    // an informational hint and settingsApi.restart() must not be called.
+    // jsdom defaults to web mode (no __TAURI_INTERNALS__).
+    settingsMock = createSettingsMock({ requiresRestart: true });
+    isDevModeMock.mockReturnValue(false);
+
+    renderSettingsPage();
+
+    expect(
+      await screen.findByText("settings.restartRequired"),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("settings.restartNow"));
+
+    await waitFor(() => {
+      expect(toastInfoMock).toHaveBeenCalledWith(
+        "settings.webRestartHint",
+        expect.objectContaining({ closeButton: true }),
+      );
+    });
+    expect(settingsApi.restart).not.toHaveBeenCalled();
   });
 
   it("should allow postponing restart and close dialog without restarting", async () => {

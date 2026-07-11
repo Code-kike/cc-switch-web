@@ -30,6 +30,12 @@ vi.mock("sonner", () => ({
   },
 }));
 
+// These tests exercise desktop-mode side effects (auto-launch); force
+// non-web mode so the isWebMode() gate in useSettings does not skip them.
+vi.mock("@/lib/api/adapter", () => ({
+  isWebMode: () => false,
+}));
+
 vi.mock("@/hooks/useSettingsForm", () => ({
   useSettingsForm: () => settingsFormMock,
 }));
@@ -424,7 +430,9 @@ describe("useSettings hook", () => {
     });
 
     // 修复生效：读的是缓存实时值 true，payload=false，差异触发 clear_claude_config
-    expect(applyClaudePluginConfigMock).toHaveBeenCalledWith({ official: true });
+    expect(applyClaudePluginConfigMock).toHaveBeenCalledWith({
+      official: true,
+    });
     expect(syncCurrentProvidersLiveMock).toHaveBeenCalled();
   });
 

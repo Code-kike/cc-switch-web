@@ -392,13 +392,8 @@ fn insert_opencode_message(
 
     // M4: 定价缺失标记。opencode 自带 cost>0 时视为已知；否则回退查表，
     // 查表未命中（成本仍为 0）则标记为定价缺失，供 rollup 排除。
-    let pricing_missing = if msg.cost > 0.0 {
-        0i64
-    } else if find_model_pricing(&conn, &msg.model_id).is_some() {
-        0i64
-    } else {
-        1i64
-    };
+    let pricing_known = msg.cost > 0.0 || find_model_pricing(&conn, &msg.model_id).is_some();
+    let pricing_missing = if pricing_known { 0i64 } else { 1i64 };
 
     let inserted_rows = conn.execute(
         "INSERT OR IGNORE INTO proxy_request_logs (

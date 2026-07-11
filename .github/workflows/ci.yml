@@ -123,6 +123,16 @@ jobs:
       - name: Web-server example compile check
         run: cargo check --no-default-features --features web-server --example server --locked --manifest-path src-tauri/Cargo.toml
 
+      # Lint gate for web-only Rust (web_api/, examples/server.rs, and
+      # cfg(not(desktop)) branches). The desktop Clippy step above builds default
+      # features, so the `server` example (required-features = ["web-server"]) is
+      # skipped and lib.rs's #![cfg(feature = "desktop")] excludes web_api there.
+      # dead_code + duplicate_mod are allowed: the example pulls shared modules in
+      # via #[path] shims, so many shared items are legitimately unused here and
+      # env_checker is reachable through two shim paths. Everything else is denied.
+      - name: Clippy (web-server)
+        run: cargo clippy --no-default-features --features web-server --example server --locked --manifest-path src-tauri/Cargo.toml -- -D warnings -A dead_code -A clippy::duplicate_mod
+
       # commands.manifest.json is a gitignored generated artifact, so it never
       # exists on a fresh checkout. Regenerate it (verifies the `manifest`
       # feature compiles + the AST generator runs without panicking), then

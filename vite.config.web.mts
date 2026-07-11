@@ -13,12 +13,17 @@ import { visualizer } from "rollup-plugin-visualizer";
 //   shaking out Tauri-only branches at build time.
 // - Output goes to dist-web/ (used by rust-embed).
 // - Manual chunks split heavy vendors so the main bundle stays small.
-// - Bundle treemap emitted to dist-web/treemap.html for inspection.
+// - Bundle treemap emitted to build-reports/treemap.html (OUTSIDE the served
+//   dist-web/, so the running web server does not expose the dependency map).
 
-export default defineConfig(({ mode }) => {
+export default defineConfig(() => {
   const distDir = path.resolve(__dirname, "dist-web");
-  const treemapFile = path.join(distDir, "treemap.html");
+  // Emit the bundle treemap OUTSIDE dist-web so it is never served as a static
+  // asset (the web server serves everything under dist-web). See audit L20.
+  const reportsDir = path.resolve(__dirname, "build-reports");
+  const treemapFile = path.join(reportsDir, "treemap.html");
   fs.mkdirSync(distDir, { recursive: true });
+  fs.mkdirSync(reportsDir, { recursive: true });
 
   return {
     root: "src",
@@ -39,7 +44,11 @@ export default defineConfig(({ mode }) => {
     outDir: distDir,
     emptyOutDir: true,
     target: "es2022",
-    sourcemap: mode !== "production",
+    // Never ship source maps in the served output: the web server serves .map
+    // files from dist-web, which would leak source. Prod builds already omit
+    // them; this makes the served artifact map-free regardless of mode (audit
+    // L20). Use a separate desktop build (vite.config.ts) for debug maps.
+    sourcemap: false,
     rollupOptions: {
       output: {
         manualChunks: {

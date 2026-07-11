@@ -762,6 +762,7 @@
     "restartLater": "後で再起動",
     "restartFailed": "アプリの再起動に失敗しました。手動で閉じて再度開いてください。",
     "devModeRestartHint": "開発モードでは自動再起動をサポートしていません。手動で再起動してください。",
+    "webRestartHint": "設定を保存しました。再起動が必要な変更を適用するには、cc-switch-web サービスを再起動してください。",
     "saving": "保存中...",
     "globalProxy": {
       "label": "グローバルプロキシ",

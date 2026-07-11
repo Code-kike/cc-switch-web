@@ -7,7 +7,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use super::super::ApiState;
-use super::common::{json_ok, validate_outbound_url, ApiError, ApiResult};
+use super::common::{json_ok, validate_outbound_url, web_desktop_only, ApiError, ApiResult};
 
 #[derive(Deserialize)]
 struct AppQuery {
@@ -182,7 +182,7 @@ pub fn router(state: ApiState) -> Router {
             "/system/update_endpoint_last_used",
             post(update_endpoint_last_used),
         )
-        .route("/system/update_tray_menu", post(update_tray_menu))
+        .route("/system/update_tray_menu", post(web_desktop_only))
         .route("/providers/get-provider-health", get(get_provider_health))
         .route("/providers/get-provider-stats", get(get_provider_stats))
         .route("/providers/queryproviderusage", post(query_provider_usage))
@@ -471,10 +471,6 @@ async fn update_endpoint_last_used(
     )
     .map_err(ApiError::from_anyhow)?;
     Ok(json_ok(()))
-}
-
-async fn update_tray_menu() -> ApiResult<bool> {
-    Ok(json_ok(true))
 }
 
 async fn get_provider_health(

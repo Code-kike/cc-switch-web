@@ -30,4 +30,5 @@ copilot-api
 CODEBUDDY.md
 .serena/
 dist-web/
+build-reports/
 commands.manifest.json

@@ -41,6 +41,7 @@ pub fn acquire_data_dir_lock(data_dir: &Path) -> Result<std::fs::File, String> {
         .create(true)
         .write(true)
         .read(true)
+        .truncate(false)
         .open(&lock_path)
         .map_err(|e| format!("open {}: {}", lock_path.display(), e))?;
     file.try_lock_exclusive()

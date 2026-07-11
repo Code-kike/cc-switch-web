@@ -5,11 +5,11 @@
 //! the Layer 1 / Task 2 wrap-up work (lib.rs setup() refactor).
 //!
 //! Architecture:
-//!   - `handlers/`   — one file per Web sub-resource (25 modules). Each
-//!                     exports `pub fn router(state: ApiState) -> Router`.
+//!   - `handlers/` — one file per Web sub-resource (25 modules). Each exports
+//!     `pub fn router(state: ApiState) -> Router`.
 //!   - `middleware/` — same-origin intent guard, CORS (same-origin default), and
-//!                     security headers (CSP/HSTS/Permissions-Policy). Body
-//!                     limit is applied in `routes.rs` via `DefaultBodyLimit`.
+//!     security headers (CSP/HSTS/Permissions-Policy). Body limit is applied in
+//!     `routes.rs` via `DefaultBodyLimit`.
 //!   - `state.rs`    — shared `ApiState` (DB pool + sink + cancel token).
 //!   - `routes.rs`   — root router assembly + SPA fallback.
 

@@ -254,10 +254,9 @@ async function parseWebResponse<T>(
   commandOrPath: string,
   responseType: "json" | "blob" = "json",
 ): Promise<T> {
-  // A 401 from the Basic-Auth-gated `/api` is handled natively by the browser
-  // (it re-prompts for credentials before the response ever reaches JS), so we
-  // do not surface a bespoke auth error here — a stale/forbidden 401 just falls
-  // through to the generic error path below.
+  // The Web API is unauthenticated by design (only a same-origin intent guard
+  // for state-changing requests); there is no auth gate here, so a 401 is not
+  // expected and just falls through to the generic error path below.
   if (!resp.ok) {
     let errBody: { code?: string; message?: string; details?: unknown } = {};
     try {

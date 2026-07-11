@@ -137,24 +137,90 @@ for (const property of commandMap.properties) {
   });
 }
 
+// Extract each `.route("path", <args>)` call's argument string using a balanced
+// paren scan, so multi-line route registrations and chained method routers
+// (`get(h).post(h2)`) are captured. Route path literals never contain parens.
+function extractRouteArgStrings(source) {
+  const args = [];
+  const marker = ".route(";
+  let i = 0;
+  while ((i = source.indexOf(marker, i)) !== -1) {
+    let depth = 0;
+    let j = i + marker.length - 1; // position of the opening '('
+    const start = j;
+    do {
+      const ch = source[j];
+      if (ch === "(") depth++;
+      else if (ch === ")") depth--;
+      j++;
+    } while (j < source.length && depth > 0);
+    args.push(source.slice(start + 1, j - 1));
+    i = j;
+  }
+  return args;
+}
+
+const HTTP_METHOD_WRAPPERS = new Set([
+  "get",
+  "post",
+  "put",
+  "delete",
+  "patch",
+  "head",
+  "options",
+  "any",
+]);
+// Handler symbols that are known "not implemented on web" stubs (parity 501 /
+// desktop-only responders). Routes wired to these are parity stubs regardless
+// of which handler file registers them (L4). NOTE: a handful of desktop-only
+// stubs use named local fns returning `ApiError::desktop_only` (e.g. the
+// lightweight-mode routes) rather than these shared symbols; those are still
+// classified by file (parity.rs) only. A fuller fix would inspect handler
+// return types.
+const STUB_HANDLER_SYMBOLS = new Set([
+  "web_not_supported",
+  "web_desktop_only",
+  "web_upload_required",
+]);
+
+// routes: path -> { file, methods:Set<string>, handlers:Set<string> }
 const routes = new Map();
 const wildcardPrefixes = [];
-const routeRe = /\.route\s*\(\s*"([^"]+)"/g;
 for (const file of fs.readdirSync(handlersDir)) {
   if (!file.endsWith(".rs")) continue;
   const source = fs.readFileSync(path.join(handlersDir, file), "utf8");
-  let routeMatch;
-  while ((routeMatch = routeRe.exec(source)) !== null) {
-    const route = `/api${routeMatch[1]}`;
+  for (const argStr of extractRouteArgStrings(source)) {
+    const pathMatch = argStr.match(/"([^"]+)"/);
+    if (!pathMatch) continue;
+    const route = `/api${pathMatch[1]}`;
+    const methods = new Set();
+    const handlers = new Set();
+    const wrapperRe = /\b([a-z]+)\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)/g;
+    let m;
+    while ((m = wrapperRe.exec(argStr)) !== null) {
+      if (!HTTP_METHOD_WRAPPERS.has(m[1])) continue;
+      methods.add(m[1]);
+      handlers.add(m[2]);
+    }
     if (route.endsWith("/*path")) {
       wildcardPrefixes.push({
         prefix: route.slice(0, -"*path".length),
         file,
+        handlers,
       });
     } else {
-      routes.set(route, file);
+      routes.set(route, { file, methods, handlers });
     }
   }
+}
+
+function isStubRoute(entry) {
+  if (!entry) return false;
+  if (entry.file === "parity.rs") return true;
+  for (const handler of entry.handlers) {
+    if (STUB_HANDLER_SYMBOLS.has(handler)) return true;
+  }
+  return false;
 }
 
 const missing = commands.filter(
@@ -163,6 +229,50 @@ const missing = commands.filter(
     !command.webReplacement &&
     !routes.has(command.path) &&
     !wildcardPrefixes.some((route) => command.path.startsWith(route.prefix)),
+);
+
+// L2: a command whose HTTP method the matching route does not serve would pass
+// path-only coverage but 405 at runtime. `any` matches every method.
+const methodMismatch = commands
+  .filter(
+    (command) =>
+      !command.unsupported && !command.webReplacement && routes.has(command.path),
+  )
+  .map((command) => ({ command, entry: routes.get(command.path) }))
+  .filter(
+    ({ command, entry }) =>
+      entry.methods.size > 0 &&
+      !entry.methods.has("any") &&
+      !entry.methods.has(command.method.toLowerCase()),
+  );
+
+// L3: `webReplacement` commands are exempt from the missing check because their
+// real endpoint is a hardcoded webFetch literal in src/, not the placeholder
+// `path` in web-commands.ts. Scan src/ for those literals and assert each
+// resolves to a real Rust route so a rename/typo on either side fails the gate.
+const srcDir = path.join(root, "src");
+const webFetchLiteralRe =
+  /\b(?:webJsonFetch|webUpload|webDownload|webFetch)\s*(?:<[^>]*>)?\s*\(\s*"(\/api\/[^"]+)"/g;
+const replacementPaths = new Set();
+function scanSrcForWebFetchLiterals(dir) {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      scanSrcForWebFetchLiterals(full);
+    } else if (/\.(ts|tsx)$/.test(entry.name)) {
+      const source = fs.readFileSync(full, "utf8");
+      let m;
+      while ((m = webFetchLiteralRe.exec(source)) !== null) {
+        replacementPaths.add(m[1]);
+      }
+    }
+  }
+}
+scanSrcForWebFetchLiterals(srcDir);
+const danglingReplacementPaths = [...replacementPaths].filter(
+  (p) =>
+    !routes.has(p) &&
+    !wildcardPrefixes.some((route) => p.startsWith(route.prefix)),
 );
 
 const parityFallback = commands.filter(
@@ -176,11 +286,14 @@ const parityFallback = commands.filter(
     ),
 );
 
+// L4: classify parity stubs by handler symbol (not just parity.rs filename), so
+// a 501/desktop-only stub registered in a concrete handler file is still counted
+// as a parity stub rather than masquerading as real coverage.
 const parityExact = commands.filter(
   (command) =>
     !command.unsupported &&
     !command.webReplacement &&
-    routes.get(command.path) === "parity.rs",
+    isStubRoute(routes.get(command.path)),
 );
 
 const webReplacements = commands.filter((command) => command.webReplacement);
@@ -193,7 +306,10 @@ console.log(
       wildcardRoutes: wildcardPrefixes.length,
       unsupported: commands.filter((command) => command.unsupported).length,
       webReplacements: webReplacements.length,
+      webFetchLiteralPaths: replacementPaths.size,
       missing: missing.length,
+      methodMismatch: methodMismatch.length,
+      danglingReplacementPaths: danglingReplacementPaths.length,
       parityExact: parityExact.length,
       parityFallback: parityFallback.length,
     },
@@ -202,12 +318,34 @@ console.log(
   ),
 );
 
+let failed = false;
+
 if (missing.length > 0) {
   console.error("Missing Web routes:");
   for (const command of missing) {
     console.error(`${command.name}\t${command.method}\t${command.path}`);
   }
-  process.exit(1);
+  failed = true;
+}
+
+if (methodMismatch.length > 0) {
+  console.error("HTTP method mismatch (command method not served by route):");
+  for (const { command, entry } of methodMismatch) {
+    console.error(
+      `${command.name}\t${command.method}\t${command.path}\t(route serves: ${[...entry.methods]
+        .map((m) => m.toUpperCase())
+        .join(",")})`,
+    );
+  }
+  failed = true;
+}
+
+if (danglingReplacementPaths.length > 0) {
+  console.error("webFetch literal paths with no matching Rust route:");
+  for (const p of danglingReplacementPaths) {
+    console.error(p);
+  }
+  failed = true;
 }
 
 if (process.argv.includes("--list-parity")) {
@@ -229,6 +367,10 @@ if (process.argv.includes("--list-parity")) {
       console.error(`${command.name}\t${command.method}\t${command.path}`);
     }
   }
+}
+
+if (failed) {
+  process.exit(1);
 }
 
 if (

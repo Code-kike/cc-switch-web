@@ -762,6 +762,7 @@
     "restartLater": "Restart Later",
     "restartFailed": "Application restart failed, please manually close and reopen.",
     "devModeRestartHint": "Dev Mode: Automatic restart not supported, please manually restart the application.",
+    "webRestartHint": "Settings saved. Restart the cc-switch-web service to apply changes that require a restart.",
     "saving": "Saving...",
     "globalProxy": {
       "label": "Global Proxy",

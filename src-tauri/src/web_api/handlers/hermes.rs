@@ -6,7 +6,7 @@ use axum::{
 use serde::Deserialize;
 
 use super::super::ApiState;
-use super::common::{json_ok, ApiError, ApiResult};
+use super::common::{json_ok, web_desktop_only, ApiError, ApiResult};
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -32,12 +32,6 @@ struct SetMemoryRequest {
 struct SetMemoryEnabledRequest {
     kind: crate::hermes_config::MemoryKind,
     enabled: bool,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct OpenHermesWebUiRequest {
-    path: Option<String>,
 }
 
 pub fn router(state: ApiState) -> Router {
@@ -68,7 +62,7 @@ pub fn router(state: ApiState) -> Router {
             "/hermes/set-hermes-memory-enabled",
             put(set_hermes_memory_enabled),
         )
-        .route("/hermes/open-hermes-web-ui", post(open_hermes_web_ui))
+        .route("/hermes/open-hermes-web-ui", post(web_desktop_only))
         .route(
             "/hermes/launch-hermes-dashboard",
             post(launch_hermes_dashboard),
@@ -125,27 +119,6 @@ async fn set_hermes_memory_enabled(
     let result = crate::hermes_config::set_memory_enabled(request.kind, request.enabled)
         .map_err(ApiError::from_anyhow)?;
     Ok(json_ok(result))
-}
-
-async fn open_hermes_web_ui(
-    State(state): State<ApiState>,
-    Json(request): Json<OpenHermesWebUiRequest>,
-) -> ApiResult<()> {
-    let port = std::env::var("HERMES_WEB_PORT")
-        .ok()
-        .and_then(|raw| raw.trim().parse::<u16>().ok())
-        .unwrap_or(9119);
-    let base = format!("http://127.0.0.1:{port}");
-    let target = match request.path.as_deref() {
-        Some(path) if path.starts_with('/') => format!("{base}{path}"),
-        Some(path) if !path.is_empty() => format!("{base}/{path}"),
-        _ => format!("{base}/"),
-    };
-    state
-        .sink
-        .open_url(&target)
-        .map_err(ApiError::from_service_message)?;
-    Ok(json_ok(()))
 }
 
 async fn launch_hermes_dashboard() -> Result<Json<()>, ApiError> {
