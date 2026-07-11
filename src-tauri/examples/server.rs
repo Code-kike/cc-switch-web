@@ -204,7 +204,7 @@ use tokio::signal;
 use tokio::sync::RwLock;
 
 use crate::runtime::{ChannelEventSink, UiEventSink};
-use crate::web_api::{build_router, ApiState};
+use crate::web_api::{build_degraded_router, build_router, ApiState};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -282,10 +282,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             db_version: Some(version),
             supported_version: Some(database::SCHEMA_VERSION),
         });
-        return Err(message.into());
+        // M7: do NOT exit here. The full API needs a compatible DB to build
+        // ApiState, but exiting would leave the SPA's DatabaseUpgrade recovery
+        // screen unreachable (connection refused + systemd restart loop). Bind a
+        // degraded server that serves only the init-error probe + static assets
+        // so the browser can render the recovery UI headlessly. The data-dir
+        // lock stays held for the lifetime of the degraded server.
+        log::error!("{message}");
+        log::warn!("starting in DEGRADED mode (recovery UI only) on http://{addr}");
+        run_degraded_server(addr).await?;
+        return Ok(());
     }
 
     let db = Arc::new(database::Database::init()?);
+
+    // M8: apply the persisted log level (mirrors desktop lib.rs). init_logging()
+    // set a permissive env_logger base + interim Info cap; now that the DB is
+    // available, honor the user's saved LogConfig so the FE Log Settings panel
+    // has a durable effect across restarts. The runtime `set_log_config` API
+    // likewise calls log::set_max_level, which is now effective.
+    if let Ok(log_config) = db.get_log_config() {
+        log::set_max_level(log_config.to_level_filter());
+        log::info!(
+            "applied persisted log config: enabled={}, level={}",
+            log_config.enabled,
+            log_config.level
+        );
+    }
 
     if let Some(config) = migration_config {
         bootstrap::apply_legacy_json_migration(&db, &config, &json_path);
@@ -437,8 +460,43 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 }
 
 fn init_logging() {
-    let env = env_logger::Env::default().filter_or("RUST_LOG", "info,cc_switch=debug");
+    // M8: use a PERMISSIVE base filter so that a later `log::set_max_level(...)`
+    // — applied from the persisted DB log config below and from the runtime
+    // `set_log_config` API — actually governs the level. env_logger fixes its
+    // directive at init, so with a restrictive base (`info`) `set_max_level`
+    // could only LOWER, never raise, verbosity, and FE "enable debug logging"
+    // was a silent no-op. An explicit RUST_LOG still wins when set (and then
+    // caps the level, honoring the operator's intent). The old default also
+    // targeted `cc_switch=debug`, which is dead in the web binary (its modules
+    // are compiled into the `server` example crate, not the `cc_switch` crate).
+    let env = env_logger::Env::default().filter_or("RUST_LOG", "trace");
     let _ = env_logger::Builder::from_env(env).try_init();
+    // Interim cap until the persisted DB log config is applied (see main());
+    // avoids trace-spam during pre-DB startup while keeping the ceiling open.
+    log::set_max_level(log::LevelFilter::Info);
+}
+
+/// M7: serve the degraded recovery server (init-error probe + SPA static assets
+/// only) until a shutdown signal. Used when the database is too new to build the
+/// full API state; keeps the recovery UI reachable instead of exiting at boot.
+async fn run_degraded_server(
+    addr: SocketAddr,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let degraded = build_degraded_router();
+    let listener = TcpListener::bind(addr).await?;
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    tokio::spawn(async move {
+        shutdown_signal().await;
+        let _ = shutdown_tx.send(true);
+    });
+    axum::serve(listener, degraded)
+        .with_graceful_shutdown(async move {
+            let mut rx = shutdown_rx.clone();
+            let _ = rx.changed().await;
+        })
+        .await?;
+    log::info!("cc-switch-web (degraded) stopped");
+    Ok(())
 }
 
 /// Period between automatic DB backup checks (mirrors desktop `lib.rs`

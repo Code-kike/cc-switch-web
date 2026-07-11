@@ -18,5 +18,5 @@ pub mod middleware;
 pub mod routes;
 pub mod state;
 
-pub use routes::build_router;
+pub use routes::{build_degraded_router, build_router};
 pub use state::ApiState;

@@ -6,7 +6,8 @@ use axum::{
     http::{header, HeaderValue, Method, StatusCode, Uri},
     middleware::from_fn,
     response::{IntoResponse, Response},
-    Router,
+    routing::post,
+    Json, Router,
 };
 use std::path::{Path, PathBuf};
 use tower::ServiceBuilder;
@@ -34,6 +35,42 @@ pub fn build_router(state: ApiState) -> Router {
                 // and /api/health stay public.
                 .layer(from_fn(mw::intent::require_same_origin_intent)),
         )
+}
+
+/// Minimal router served when the database is too new to initialize (M7).
+///
+/// Building the full API needs a compatible DB to construct `ApiState`, so on a
+/// `db_version_too_new` failure the server would otherwise `return Err` and exit
+/// before ever binding a listener — leaving the purpose-built `DatabaseUpgrade`
+/// recovery screen (which the SPA renders from the `get_init_error` probe)
+/// unreachable and systemd in a connection-refused restart loop. This degraded
+/// router requires no `ApiState`/DB: it binds normally and serves ONLY the
+/// init-error probe, `/api/health`, and the SPA static assets, so the browser
+/// can display the headless recovery UI. Every other `/api/*` path 404s.
+pub fn build_degraded_router() -> Router {
+    let api = Router::new()
+        .merge(handlers::health::router())
+        // The SPA bootstrap probes this (POST per web-commands.ts); also accept
+        // GET so a direct browser hit works.
+        .route(
+            "/system/get_init_error",
+            post(degraded_get_init_error).get(degraded_get_init_error),
+        )
+        .layer(mw::cors::layer())
+        .fallback(api_404);
+    Router::new()
+        .nest("/api", api)
+        .fallback(serve_spa_fallback)
+        .layer(
+            ServiceBuilder::new()
+                .layer(TraceLayer::new_for_http())
+                .layer(from_fn(mw::security_headers::add_security_headers))
+                .layer(from_fn(mw::intent::require_same_origin_intent)),
+        )
+}
+
+async fn degraded_get_init_error() -> Json<Option<crate::init_status::InitErrorPayload>> {
+    Json(crate::init_status::get_init_error())
 }
 
 fn api_router(state: ApiState) -> Router {
@@ -232,6 +269,48 @@ async fn read_dist_web_file(path: &Path) -> Option<Response> {
 mod tests {
     use super::*;
     use serial_test::serial;
+
+    #[tokio::test]
+    #[serial]
+    async fn degraded_router_serves_init_error_probe() {
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        crate::init_status::set_init_error(crate::init_status::InitErrorPayload {
+            path: "/tmp/cc-switch.db".to_string(),
+            error: "database version is too new".to_string(),
+            kind: Some("db_version_too_new".to_string()),
+            db_version: Some(999),
+            supported_version: Some(1),
+        });
+
+        let router = build_degraded_router();
+        // Direct client (no Origin / Sec-Fetch-*) passes the same-origin intent
+        // guard, mirroring the SPA bootstrap probe.
+        let response = router
+            .oneshot(
+                axum::http::Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/system/get_init_error")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("degraded router response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body")
+            .to_bytes();
+        let body = String::from_utf8_lossy(&bytes);
+        assert!(
+            body.contains("db_version_too_new"),
+            "degraded init-error probe should surface the recovery payload: {body}"
+        );
+    }
 
     #[tokio::test]
     #[serial]
