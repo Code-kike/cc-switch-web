@@ -1576,7 +1576,8 @@ impl Database {
         // 1. 历史 Codex/Gemini 行只包含 cache read；新 total 行还包含 cache write。
         // 2. Claude/Anthropic 的 input_tokens 已经是 fresh input，不能再次扣减
         // 3. 各项成本是基础成本（不含倍率），倍率只作用于最终总价
-        let cache_inclusive_app = matches!(log.app_type.as_str(), "codex" | "gemini");
+        let cache_inclusive_app =
+            crate::services::sql_helpers::is_cache_inclusive_app(log.app_type.as_str());
         let billable_input_tokens =
             if !cache_inclusive_app || log.input_token_semantics == INPUT_TOKEN_SEMANTICS_FRESH {
                 log.input_tokens as u64
@@ -1996,6 +1997,51 @@ mod tests {
         };
         assert!(has_matching_proxy_usage_log(&conn, &key)?);
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_backfill_deducts_cache_read_for_grokbuild_total_rows() -> Result<(), AppError> {
+        // TOTAL rows include cache read/write in input_tokens. Grok Build must
+        // use the same shared cache-inclusive taxonomy as the live calculator.
+        let db = Database::memory()?;
+        {
+            let conn = lock_conn!(db.conn);
+            insert_usage_log(
+                &conn,
+                "grokbuild-total-backfill",
+                "grokbuild",
+                "_grok_session",
+                "grok-4.5",
+                "grok_session",
+                1000,
+                700,
+                100,
+                250,
+                0,
+                200,
+                "0",
+            )?;
+            conn.execute(
+                "UPDATE proxy_request_logs
+                 SET input_token_semantics = ?1
+                 WHERE request_id = 'grokbuild-total-backfill'",
+                [INPUT_TOKEN_SEMANTICS_TOTAL],
+            )?;
+        }
+
+        assert_eq!(db.backfill_missing_usage_costs()?, 1);
+
+        let conn = lock_conn!(db.conn);
+        let (input_cost, cache_read_cost, total_cost): (String, String, String) = conn.query_row(
+            "SELECT input_cost_usd, cache_read_cost_usd, total_cost_usd
+             FROM proxy_request_logs WHERE request_id = 'grokbuild-total-backfill'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        assert_eq!(input_cost, "0.000900");
+        assert_eq!(cache_read_cost, "0.000125");
+        assert_eq!(total_cost, "0.001625");
         Ok(())
     }
 
