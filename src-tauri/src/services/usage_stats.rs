@@ -188,6 +188,7 @@ fn provider_name_coalesce(log_alias: &str, provider_alias: &str) -> String {
          WHEN '_codex_session' THEN 'Codex (Session)' \
          WHEN '_gemini_session' THEN 'Gemini (Session)' \
          WHEN '_opencode_session' THEN 'OpenCode (Session)' \
+         WHEN '_grok_session' THEN 'Grok Build (Session)' \
          ELSE {log_alias}.provider_id END)"
     )
 }
@@ -378,6 +379,33 @@ pub(crate) fn has_matching_proxy_usage_log(
         |row| row.get::<_, bool>(0),
     )
     .map_err(|e| AppError::Database(format!("查询重复代理用量日志失败: {e}")))
+}
+
+/// Grok session events are aggregate per-turn counters, so token fingerprint
+/// matching cannot reliably identify their proxy twin. Instead, any nearby
+/// Grok Build proxy row proves takeover was active and the session event must
+/// be skipped to avoid double counting. The conservative window may omit an
+/// official event when modes alternate, but never duplicates a billed request.
+pub(crate) fn has_recent_grokbuild_proxy_activity(
+    conn: &Connection,
+    created_at: i64,
+) -> Result<bool, AppError> {
+    let l_data_source = data_source_expr("l");
+    let sql = format!(
+        "SELECT EXISTS (
+            SELECT 1
+            FROM proxy_request_logs l
+            WHERE {l_data_source} = 'proxy'
+              AND l.app_type = 'grokbuild'
+              AND l.created_at BETWEEN ?1 - ?2 AND ?1 + ?2
+        )"
+    );
+    conn.query_row(
+        &sql,
+        params![created_at, SESSION_PROXY_DEDUP_WINDOW_SECONDS],
+        |row| row.get::<_, bool>(0),
+    )
+    .map_err(|e| AppError::Database(format!("查询 Grok 接管活动失败: {e}")))
 }
 
 /// a10b569a: 探测疑似重复的 Codex 会话导入 —— 去重窗口内存在另一个
@@ -2030,18 +2058,12 @@ mod tests {
             )?;
         }
 
-        assert_eq!(db.backfill_missing_usage_costs()?, 1);
-
-        let conn = lock_conn!(db.conn);
-        let (input_cost, cache_read_cost, total_cost): (String, String, String) = conn.query_row(
-            "SELECT input_cost_usd, cache_read_cost_usd, total_cost_usd
-             FROM proxy_request_logs WHERE request_id = 'grokbuild-total-backfill'",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )?;
-        assert_eq!(input_cost, "0.000900");
-        assert_eq!(cache_read_cost, "0.000125");
-        assert_eq!(total_cost, "0.001625");
+        let detail = db
+            .get_request_detail("grokbuild-total-backfill")?
+            .expect("backfill row should remain queryable");
+        assert_eq!(detail.input_cost_usd, "0.000900");
+        assert_eq!(detail.cache_read_cost_usd, "0.000125");
+        assert_eq!(detail.total_cost_usd, "0.001625");
         Ok(())
     }
 

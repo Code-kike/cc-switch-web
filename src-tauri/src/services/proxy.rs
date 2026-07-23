@@ -1610,7 +1610,9 @@ impl ProxyService {
 
     /// Whether the Grok live document has a custom model table that can accept
     /// proxy endpoint/token placeholders. Official native-login state has no
-    /// such table and must never be taken over.
+    /// such table and must never be taken over. Grok CLI distinguishes these
+    /// modes by whether its config contains a model table; official-mode usage
+    /// is imported from `session_usage_grokbuild` instead of the proxy path.
     fn grok_live_config_supports_takeover(config: &Value) -> bool {
         config
             .get("config")
