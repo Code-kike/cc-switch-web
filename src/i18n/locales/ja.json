@@ -1355,7 +1355,8 @@
       "claude": "Claude Code",
       "codex": "Codex",
       "gemini": "Gemini",
-      "opencode": "OpenCode"
+      "opencode": "OpenCode",
+      "grokbuild": "Grok Build"
     },
     "rebuildCodex": {
       "title": "Codex 使用量メンテナンス",
@@ -1452,7 +1453,8 @@
       "codex_db": "Codex DB",
       "codex_session": "Codex セッション",
       "gemini_session": "Gemini セッション",
-      "opencode_session": "OpenCode セッション"
+      "opencode_session": "OpenCode セッション",
+      "grok_session": "Grok Build セッション"
     },
     "sessionSync": {
       "trigger": "セッションログを同期",

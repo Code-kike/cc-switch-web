@@ -1355,7 +1355,8 @@
       "claude": "Claude Code",
       "codex": "Codex",
       "gemini": "Gemini",
-      "opencode": "OpenCode"
+      "opencode": "OpenCode",
+      "grokbuild": "Grok Build"
     },
     "rebuildCodex": {
       "title": "Codex Usage Maintenance",
@@ -1452,7 +1453,8 @@
       "codex_db": "Codex DB",
       "codex_session": "Codex Session",
       "gemini_session": "Gemini Session",
-      "opencode_session": "OpenCode Session"
+      "opencode_session": "OpenCode Session",
+      "grok_session": "Grok Build Session"
     },
     "sessionSync": {
       "trigger": "Sync session logs",
