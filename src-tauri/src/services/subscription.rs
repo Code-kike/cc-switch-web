@@ -324,9 +324,15 @@ pub const TIER_SEVEN_DAY_SONNET: &str = "seven_day_sonnet";
 /// seven-day secondary window, but free accounts report 2,592,000 seconds.
 pub const TIER_THIRTY_DAY: &str = "30_day";
 
+/// 月窗口 tier 名。Coding Plan 与 Grok credit 查询共用此显示分类。
+pub const TIER_MONTHLY: &str = "monthly";
+
 /// Coding Plan（Kimi / MiniMax）的周窗口 tier 名。与 `coding_plan::query_*`
 /// 写入、tray 渲染、commands::provider 扁平化三处共用同一标识。
 pub const TIER_WEEKLY_LIMIT: &str = "weekly_limit";
+
+/// Grok credit 额度窗口的兜底 tier 名。
+pub const TIER_CREDITS: &str = "credits";
 
 /// Gemini 用量分组名称（按模型而非时间窗口）。`classify_gemini_model` 输出。
 pub const TIER_GEMINI_PRO: &str = "gemini_pro";
@@ -1337,6 +1343,7 @@ pub async fn get_subscription_quota(tool: &str) -> Result<SubscriptionQuota, Str
                 }
             }
         }
+        "grokbuild" => crate::services::subscription_grok::get_grok_subscription_quota().await,
         _ => Ok(SubscriptionQuota::not_found(tool)),
     }
 }

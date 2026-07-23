@@ -281,6 +281,10 @@ const cmds = defineCommands({
     method: "GET",
     path: "/api/auth/get-xai-oauth-models",
   },
+  get_xai_oauth_quota: {
+    method: "GET",
+    path: "/api/auth/get-xai-oauth-quota",
+  },
   get_coding_plan_quota: {
     method: "POST",
     path: "/api/usage/get-coding-plan-quota",

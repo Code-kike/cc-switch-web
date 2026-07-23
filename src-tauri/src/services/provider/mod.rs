@@ -3954,6 +3954,9 @@ impl ProviderService {
         copilot_auth: Option<
             &tokio::sync::RwLock<crate::proxy::providers::copilot_auth::CopilotAuthManager>,
         >,
+        xai_auth: Option<
+            &tokio::sync::RwLock<crate::proxy::providers::xai_oauth_auth::XaiOAuthManager>,
+        >,
         enforce_outbound_guard: bool,
     ) -> Result<UsageResult, AppError> {
         usage::query_usage_with_templates(
@@ -3961,6 +3964,7 @@ impl ProviderService {
             app_type,
             provider_id,
             copilot_auth,
+            xai_auth,
             enforce_outbound_guard,
         )
         .await

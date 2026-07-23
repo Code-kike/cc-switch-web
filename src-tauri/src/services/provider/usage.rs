@@ -6,6 +6,7 @@ use crate::app_config::AppType;
 use crate::error::AppError;
 use crate::provider::{Provider, UsageData, UsageResult, UsageScript};
 use crate::proxy::providers::copilot_auth::CopilotAuthManager;
+use crate::proxy::providers::xai_oauth_auth::XaiOAuthManager;
 use crate::settings;
 use crate::store::AppState;
 use crate::usage_script;
@@ -638,9 +639,17 @@ pub async fn query_usage_with_templates(
     app_type: AppType,
     provider_id: &str,
     copilot_auth: Option<&RwLock<CopilotAuthManager>>,
+    xai_auth: Option<&RwLock<XaiOAuthManager>>,
     enforce_outbound_guard: bool,
 ) -> Result<UsageResult, AppError> {
-    let (template_type, credentials, coding_plan_routing, copilot_account_id) = {
+    let (
+        template_type,
+        credentials,
+        coding_plan_routing,
+        copilot_account_id,
+        xai_account_id,
+        is_xai_oauth,
+    ) = {
         let providers = state.db.get_all_providers(app_type.as_str())?;
         let provider = providers.get(provider_id).ok_or_else(|| {
             AppError::localized(
@@ -685,6 +694,11 @@ pub async fn query_usage_with_templates(
                 .meta
                 .as_ref()
                 .and_then(|m| m.managed_account_id_for(TEMPLATE_TYPE_GITHUB_COPILOT)),
+            provider
+                .meta
+                .as_ref()
+                .and_then(|m| m.managed_account_id_for("xai_oauth")),
+            provider.is_xai_oauth(),
         )
     };
 
@@ -716,11 +730,21 @@ pub async fn query_usage_with_templates(
         // enabled 已在上方统一校验（禁用脚本直接返回 usage disabled），
         // 与上游 query_provider_usage_inner 的深度防护等效。
         TEMPLATE_TYPE_OFFICIAL_SUBSCRIPTION => {
-            let quota = crate::services::subscription::get_subscription_quota(app_type.as_str())
-                .await
-                .map_err(|e| {
-                    AppError::Message(format!("Failed to query subscription quota: {e}"))
+            let quota = if is_xai_oauth {
+                let auth = xai_auth.ok_or_else(|| {
+                    AppError::Message("xAI OAuth auth manager is unavailable".to_string())
                 })?;
+                let manager = auth.read().await;
+                crate::services::xai_oauth::query_quota(&manager, xai_account_id.as_deref())
+                    .await
+                    .map_err(AppError::Message)?
+            } else {
+                crate::services::subscription::get_subscription_quota(app_type.as_str())
+                    .await
+                    .map_err(|e| {
+                        AppError::Message(format!("Failed to query subscription quota: {e}"))
+                    })?
+            };
 
             if !quota.success {
                 return Ok(UsageResult {

@@ -70,6 +70,9 @@ pub mod stream_check;
 #[path = "../src/services/subscription.rs"]
 pub mod subscription;
 
+#[path = "../src/services/subscription_grok.rs"]
+pub mod subscription_grok;
+
 #[path = "../src/services/sync_protocol.rs"]
 pub mod sync_protocol;
 

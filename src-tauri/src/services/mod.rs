@@ -26,6 +26,7 @@ pub mod speedtest;
 pub mod sql_helpers;
 pub mod stream_check;
 pub mod subscription;
+pub mod subscription_grok;
 pub mod sync_protocol;
 pub mod tool_version;
 pub mod usage_cache;

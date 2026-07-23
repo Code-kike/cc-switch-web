@@ -3,6 +3,7 @@ use tauri::{Emitter, State};
 
 use crate::app_config::AppType;
 use crate::commands::copilot::CopilotAuthState;
+use crate::commands::xai_oauth::XaiOAuthState;
 use crate::error::AppError;
 use crate::provider::Provider;
 use crate::services::{
@@ -137,6 +138,7 @@ pub async fn queryProviderUsage(
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
     copilot_state: State<'_, CopilotAuthState>,
+    xai_state: State<'_, XaiOAuthState>,
     #[allow(non_snake_case)] providerId: String, // 使用 camelCase 匹配前端
     app: String,
 ) -> Result<crate::provider::UsageResult, String> {
@@ -154,6 +156,7 @@ pub async fn queryProviderUsage(
         app_type.clone(),
         &providerId,
         Some(copilot_state.0.as_ref()),
+        Some(xai_state.0.as_ref()),
         // Desktop runtime: local dials stay unrestricted (no SSRF guard).
         false,
     )

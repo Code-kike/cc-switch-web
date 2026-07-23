@@ -104,6 +104,7 @@ pub fn router(state: ApiState) -> Router {
         .route("/auth/get-codex-oauth-models", get(get_codex_oauth_models))
         .route("/auth/get-codex-oauth-quota", get(get_codex_oauth_quota))
         .route("/auth/get-xai-oauth-models", get(get_xai_oauth_models))
+        .route("/auth/get-xai-oauth-quota", get(get_xai_oauth_quota))
         .with_state(state)
 }
 
@@ -487,6 +488,17 @@ async fn get_xai_oauth_models(
         .await
         .map_err(ApiError::bad_request)?;
     Ok(json_ok(models))
+}
+
+async fn get_xai_oauth_quota(
+    State(state): State<ApiState>,
+    Query(query): Query<XaiOauthModelsQuery>,
+) -> ApiResult<crate::services::subscription::SubscriptionQuota> {
+    let manager = state.xai_oauth.read().await;
+    let quota = crate::services::xai_oauth::query_quota(&manager, query.account_id.as_deref())
+        .await
+        .map_err(ApiError::from_service_message)?;
+    Ok(json_ok(quota))
 }
 
 async fn get_codex_oauth_quota(

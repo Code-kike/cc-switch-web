@@ -14,6 +14,7 @@ import UsageFooter from "@/components/UsageFooter";
 import SubscriptionQuotaFooter from "@/components/SubscriptionQuotaFooter";
 import CopilotQuotaFooter from "@/components/CopilotQuotaFooter";
 import CodexOauthQuotaFooter from "@/components/CodexOauthQuotaFooter";
+import XaiOauthQuotaFooter from "@/components/XaiOauthQuotaFooter";
 import { PROVIDER_TYPES, TEMPLATE_TYPES } from "@/config/constants";
 import { isHermesReadOnlyProvider } from "@/config/hermesProviderPresets";
 import { FailoverPriorityBadge } from "@/components/providers/FailoverPriorityBadge";
@@ -69,6 +70,13 @@ interface ProviderCardProps {
 
 /** 判断是否为官方供应商（无自定义 base URL / API key，直连官方 API） */
 function isOfficialProvider(provider: Provider, appId: AppId): boolean {
+  // Grok Build's official seed is identified by its explicit category. Do not
+  // infer it from an empty config: custom Grok endpoints may intentionally use
+  // the same shape while still requiring script credentials.
+  if (appId === "grokbuild") {
+    return provider.category === "official";
+  }
+
   const config = provider.settingsConfig as Record<string, any>;
   if (appId === "claude") {
     const baseUrl = config?.env?.ANTHROPIC_BASE_URL;
@@ -260,7 +268,7 @@ export function ProviderCard({
   //  3) 预设导入的官方一定带 category="official"，category 缺失的「真官方」现实中≈不存在。
   // 真官方就该有显式 category；手动新建官方应引导标注，而不是靠空字段猜。
   const supportsOfficialSubscription =
-    isOfficial && ["claude", "codex", "gemini"].includes(appId);
+    isOfficial && ["claude", "codex", "gemini", "grokbuild"].includes(appId);
   const isOfficialSubscriptionUsage =
     provider.meta?.usage_script?.templateType ===
     TEMPLATE_TYPES.OFFICIAL_SUBSCRIPTION;
@@ -277,6 +285,7 @@ export function ProviderCard({
     appId === "hermes" && isHermesReadOnlyProvider(provider.settingsConfig);
   const isCodexOauth =
     provider.meta?.providerType === PROVIDER_TYPES.CODEX_OAUTH;
+  const isXaiOauth = provider.meta?.providerType === PROVIDER_TYPES.XAI_OAUTH;
   const isClaudeThirdParty =
     appId === "claude" && provider.category === "third_party";
   const needsRouting = providerNeedsRouting(appId, provider);
@@ -673,6 +682,12 @@ export function ProviderCard({
                   inline={true}
                   isCurrent={isCurrent}
                 />
+              ) : isXaiOauth ? (
+                <XaiOauthQuotaFooter
+                  meta={provider.meta}
+                  inline={true}
+                  isCurrent={isCurrent}
+                />
               ) : isOfficial ? (
                 officialSubscriptionEnabled ? (
                   <SubscriptionQuotaFooter
@@ -754,7 +769,8 @@ export function ProviderCard({
               onConfigureUsage={
                 (isOfficial && !supportsOfficialSubscription) ||
                 isCopilot ||
-                isCodexOauth
+                isCodexOauth ||
+                isXaiOauth
                   ? undefined
                   : () => onConfigureUsage(provider)
               }
