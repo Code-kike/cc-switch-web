@@ -888,3 +888,41 @@ Built and installed the current Web frontend and release server, preserved rollb
 ### Next Steps
 
 - None - task complete
+
+
+## Session 26: Close out web-bug audit fixes (batches A'-E)
+
+**Date**: 2026-07-25
+**Task**: Close out web-bug audit fixes (batches A'-E)
+**Branch**: `fix/web-audit-phase1-2`
+
+### Summary
+
+Archived 07-10-web-bug: all 5 fix batches (A' supply-chain/secrets, B upstream data-loss + TZ skew, C web dead-wiring, D gate hardening/CI, E upstream-core correctness & pricing) landed on fix/web-audit-phase1-2 and verified. Branch ready to merge into main ahead of the v3.18.0 upstream sync.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `0a82bfb1` | (see git log) |
+| `6bb1f70b` | (see git log) |
+| `06e84520` | (see git log) |
+| `9714c727` | (see git log) |
+| `17c0bf80` | (see git log) |
+| `9e483c97` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
