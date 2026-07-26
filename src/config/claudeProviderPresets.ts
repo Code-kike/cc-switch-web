@@ -618,18 +618,18 @@ export const providerPresets: ProviderPreset[] = [
   },
   {
     name: "PackyCode",
-    websiteUrl: "https://www.packyapi.com",
-    apiKeyUrl: "https://www.packyapi.com/register?aff=cc-switch",
+    websiteUrl: "https://www.packyapi.ai",
+    apiKeyUrl: "https://www.packyapi.ai/register?aff=cc-switch",
     settingsConfig: {
       env: {
-        ANTHROPIC_BASE_URL: "https://www.packyapi.com",
+        ANTHROPIC_BASE_URL: "https://www.packyapi.ai",
         ANTHROPIC_AUTH_TOKEN: "",
       },
     },
     // 请求地址候选（用于地址管理/测速）
     endpointCandidates: [
-      "https://www.packyapi.com",
-      "https://api-slb.packyapi.com",
+      "https://www.packyapi.ai",
+      "https://api-slb.packyapi.ai",
     ],
     category: "third_party",
     isPartner: true, // 合作伙伴
@@ -638,11 +638,11 @@ export const providerPresets: ProviderPreset[] = [
   },
   {
     name: "ClaudeAPI",
-    websiteUrl: "https://claudeapi.com",
-    apiKeyUrl: "https://console.claudeapi.com/register?aff=pCLD",
+    websiteUrl: "https://www.apito.ai",
+    apiKeyUrl: "https://console.apito.ai/agent/register/pQBql2buaqiX3dDS",
     settingsConfig: {
       env: {
-        ANTHROPIC_BASE_URL: "https://gw.claudeapi.com",
+        ANTHROPIC_BASE_URL: "https://gw.apito.ai",
         ANTHROPIC_AUTH_TOKEN: "",
       },
     },
@@ -736,11 +736,11 @@ export const providerPresets: ProviderPreset[] = [
   },
   {
     name: "RightCode",
-    websiteUrl: "https://www.right.codes",
-    apiKeyUrl: "https://www.right.codes/register?aff=CCSWITCH",
+    websiteUrl: "https://www.rightapi.ai",
+    apiKeyUrl: "https://www.rightapi.ai/register?aff=CCSWITCH",
     settingsConfig: {
       env: {
-        ANTHROPIC_BASE_URL: "https://www.right.codes/claude",
+        ANTHROPIC_BASE_URL: "https://www.rightapi.ai/claude",
         ANTHROPIC_AUTH_TOKEN: "",
       },
     },

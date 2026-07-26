@@ -748,11 +748,11 @@ export const hermesProviderPresets: HermesProviderPreset[] = [
   },
   {
     name: "PackyCode",
-    websiteUrl: "https://www.packyapi.com",
-    apiKeyUrl: "https://www.packyapi.com/register?aff=cc-switch",
+    websiteUrl: "https://www.packyapi.ai",
+    apiKeyUrl: "https://www.packyapi.ai/register?aff=cc-switch",
     settingsConfig: {
       name: "packycode",
-      base_url: "https://www.packyapi.com",
+      base_url: "https://www.packyapi.ai",
       api_key: "",
       api_mode: "anthropic_messages",
       models: [
@@ -879,11 +879,11 @@ export const hermesProviderPresets: HermesProviderPreset[] = [
   },
   {
     name: "RightCode",
-    websiteUrl: "https://www.right.codes",
-    apiKeyUrl: "https://www.right.codes/register?aff=CCSWITCH",
+    websiteUrl: "https://www.rightapi.ai",
+    apiKeyUrl: "https://www.rightapi.ai/register?aff=CCSWITCH",
     settingsConfig: {
       name: "rightcode",
-      base_url: "https://www.right.codes/claude",
+      base_url: "https://www.rightapi.ai/claude",
       api_key: "",
       api_mode: "anthropic_messages",
       models: [

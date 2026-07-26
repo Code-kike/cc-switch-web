@@ -1196,13 +1196,13 @@ export const opencodeProviderPresets: OpenCodeProviderPreset[] = [
 
   {
     name: "PackyCode",
-    websiteUrl: "https://www.packyapi.com",
-    apiKeyUrl: "https://www.packyapi.com/register?aff=cc-switch",
+    websiteUrl: "https://www.packyapi.ai",
+    apiKeyUrl: "https://www.packyapi.ai/register?aff=cc-switch",
     settingsConfig: {
       npm: "@ai-sdk/anthropic",
       name: "PackyCode",
       options: {
-        baseURL: "https://www.packyapi.com/v1",
+        baseURL: "https://www.packyapi.ai/v1",
         apiKey: "",
         setCacheKey: true,
       },
@@ -1285,13 +1285,13 @@ export const opencodeProviderPresets: OpenCodeProviderPreset[] = [
   },
   {
     name: "RightCode",
-    websiteUrl: "https://www.right.codes",
-    apiKeyUrl: "https://www.right.codes/register?aff=CCSWITCH",
+    websiteUrl: "https://www.rightapi.ai",
+    apiKeyUrl: "https://www.rightapi.ai/register?aff=CCSWITCH",
     settingsConfig: {
       npm: "@ai-sdk/openai",
       name: "RightCode",
       options: {
-        baseURL: "https://right.codes/codex/v1",
+        baseURL: "https://www.rightapi.ai/codex/v1",
         apiKey: "",
         setCacheKey: true,
       },

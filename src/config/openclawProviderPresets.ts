@@ -1427,10 +1427,10 @@ export const openclawProviderPresets: OpenClawProviderPreset[] = [
   // ========== Third Party Partners ==========
   {
     name: "PackyCode",
-    websiteUrl: "https://www.packyapi.com",
-    apiKeyUrl: "https://www.packyapi.com/register?aff=cc-switch",
+    websiteUrl: "https://www.packyapi.ai",
+    apiKeyUrl: "https://www.packyapi.ai/register?aff=cc-switch",
     settingsConfig: {
-      baseUrl: "https://www.packyapi.com",
+      baseUrl: "https://www.packyapi.ai",
       apiKey: "",
       api: "anthropic-messages",
       models: [
@@ -1564,10 +1564,10 @@ export const openclawProviderPresets: OpenClawProviderPreset[] = [
   },
   {
     name: "RightCode",
-    websiteUrl: "https://www.right.codes",
-    apiKeyUrl: "https://www.right.codes/register?aff=CCSWITCH",
+    websiteUrl: "https://www.rightapi.ai",
+    apiKeyUrl: "https://www.rightapi.ai/register?aff=CCSWITCH",
     settingsConfig: {
-      baseUrl: "https://www.right.codes/claude",
+      baseUrl: "https://www.rightapi.ai/claude",
       apiKey: "",
       api: "anthropic-messages",
       models: [
