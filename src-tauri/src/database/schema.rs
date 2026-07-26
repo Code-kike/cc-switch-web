@@ -1561,6 +1561,25 @@ impl Database {
     /// 注意: model_id 使用短横线格式（如 claude-haiku-4-5），与 API 返回的模型名称标准化后一致
     fn seed_model_pricing(conn: &Connection) -> Result<(), AppError> {
         let pricing_data = [
+            // Claude Fable 5（Opus 之上的新档）
+            (
+                "claude-fable-5",
+                "Claude Fable 5",
+                "10",
+                "50",
+                "1.00",
+                "12.50",
+            ),
+            (
+                "claude-mythos-5",
+                "Claude Mythos 5",
+                "10",
+                "50",
+                "1.00",
+                "12.50",
+            ),
+            // Claude Opus 5（与 Opus 4.8 同价位；fast mode $10/$50 不入表）
+            ("claude-opus-5", "Claude Opus 5", "5", "25", "0.50", "6.25"),
             // Claude 4.8 系列
             (
                 "claude-opus-4-8",
