@@ -174,6 +174,9 @@ impl Database {
         let temp_conn =
             Connection::open(&temp_path).map_err(|e| AppError::Database(e.to_string()))?;
 
+        // The authorizer covers external SQL only. Clear it before trusted schema
+        // maintenance so migrations are checked by the canonical-schema pipeline,
+        // rather than by rules intended for untrusted backup text.
         Self::install_sql_restore_authorizer(&temp_conn);
         let import_result = temp_conn
             .execute_batch(sql_content)
@@ -228,11 +231,36 @@ impl Database {
         Ok(backup_id)
     }
 
+    /// Install the authorizer used only while executing untrusted backup SQL.
+    ///
+    /// The upstream escape boundary denies parsed actions that can leave the temporary
+    /// database: ATTACH (also emitted by VACUUM/VACUUM INTO), virtual tables, unknown
+    /// future actions, and unsafe PRAGMAs. This fork intentionally keeps the stricter
+    /// canonical-restore allow-list as a second boundary so imported executable schema
+    /// and non-canonical objects can never become live database state.
     fn install_sql_restore_authorizer(conn: &Connection) {
         conn.authorizer(Some(|ctx: AuthContext<'_>| {
-            if ctx.accessor.is_some()
-                || matches!(ctx.database_name, Some(database) if database != "main")
-            {
+            let escapes_temp_db = matches!(
+                ctx.action,
+                AuthAction::Attach { .. }
+                    | AuthAction::Detach { .. }
+                    | AuthAction::CreateVtable { .. }
+                    | AuthAction::DropVtable { .. }
+                    | AuthAction::Unknown { .. }
+            ) || matches!(
+                ctx.action,
+                AuthAction::Pragma {
+                    pragma_name,
+                    pragma_value,
+                } if !Self::is_allowed_restore_pragma(pragma_name, pragma_value)
+            ) || ctx.accessor.is_some()
+                || matches!(ctx.database_name, Some(database) if database != "main");
+
+            if escapes_temp_db {
+                // Do not include filenames or SQL text in logs: imported paths may be sensitive.
+                log::warn!(
+                    "SQL import rejected a statement outside the temporary restore database"
+                );
                 return Authorization::Deny;
             }
 
@@ -1421,6 +1449,72 @@ mod tests {
     use serial_test::serial;
     use std::sync::{mpsc, Arc};
     use std::time::Duration;
+
+    #[test]
+    fn import_rejects_cross_file_statements_and_leaves_no_file_behind() -> Result<(), AppError> {
+        // `VACUUM INTO` 是关键字扫描方案最容易漏的一条：它不含 "ATTACH" 字样，
+        // 却和 ATTACH 一样落到 `AuthAction::Attach`（实测），因此同一条规则挡住两者。
+        let cases: [(&str, &str); 2] = [
+            ("attach", "ATTACH DATABASE '{path}' AS evil;"),
+            ("vacuum-into", "VACUUM INTO '{path}';"),
+        ];
+
+        for (label, template) in cases {
+            let target = std::env::temp_dir().join(format!("cc-switch-authorizer-{label}.sqlite"));
+            let _ = std::fs::remove_file(&target);
+
+            // 合法的导出头 + 越界语句。头部校验只比前缀，这份输入过得了它，
+            // 真正拦下来的必须是 authorizer。
+            let malicious = format!(
+                "{}\n{}\n",
+                super::CC_SWITCH_SQL_EXPORT_HEADER,
+                template.replace("{path}", &target.display().to_string())
+            );
+
+            let db = Database::memory()?;
+            let result = db.import_sql_string(&malicious);
+
+            assert!(result.is_err(), "{label} 必须被拒绝");
+            // 光报错不够：文件创建发生在 prepare 之后、`validate_basic_state` 之前，
+            // 守卫若失效，即便导入整体失败，文件也已经躺在磁盘上了。
+            assert!(
+                !target.exists(),
+                "被拒绝的 {label} 不得在磁盘上留下文件: {}",
+                target.display()
+            );
+
+            let _ = std::fs::remove_file(&target);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn import_still_accepts_a_genuine_export() -> Result<(), AppError> {
+        // 白名单收得紧，必须有一条回归防线证明它没误伤自家导出格式——
+        // 这条测试红了就说明 dump_sql 写出了白名单没覆盖的语句。
+        let source = Database::memory()?;
+        {
+            let conn = crate::database::lock_conn!(source.conn);
+            conn.execute(
+                "INSERT INTO providers (id, app_type, name, settings_config, meta)
+                 VALUES ('p1', 'claude', 'Provider One', '{}', '{}')",
+                [],
+            )?;
+        }
+        let exported = source.export_sql_string()?;
+
+        let target = Database::memory()?;
+        target.import_sql_string(&exported)?;
+
+        let conn = crate::database::lock_conn!(target.conn);
+        let name: String = conn.query_row(
+            "SELECT name FROM providers WHERE id = 'p1' AND app_type = 'claude'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(name, "Provider One");
+        Ok(())
+    }
 
     #[test]
     fn sync_import_preserves_local_only_tables() -> Result<(), AppError> {
