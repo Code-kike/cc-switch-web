@@ -108,12 +108,14 @@ interface ClaudeFormFieldsProps {
   defaultHaikuModel: string;
   defaultSonnetModel: string;
   defaultOpusModel: string;
+  subagentModel: string;
   onModelChange: (
     field:
       | "ANTHROPIC_MODEL"
       | "ANTHROPIC_DEFAULT_HAIKU_MODEL"
       | "ANTHROPIC_DEFAULT_SONNET_MODEL"
-      | "ANTHROPIC_DEFAULT_OPUS_MODEL",
+      | "ANTHROPIC_DEFAULT_OPUS_MODEL"
+      | "CLAUDE_CODE_SUBAGENT_MODEL",
     value: string,
   ) => void;
 
@@ -174,6 +176,7 @@ export function ClaudeFormFields({
   defaultHaikuModel,
   defaultSonnetModel,
   defaultOpusModel,
+  subagentModel,
   onModelChange,
   speedTestEndpoints,
   apiFormat,
@@ -190,6 +193,7 @@ export function ClaudeFormFields({
     defaultHaikuModel ||
     defaultSonnetModel ||
     defaultOpusModel ||
+    subagentModel ||
     apiFormat !== "anthropic" ||
     apiKeyField !== "ANTHROPIC_AUTH_TOKEN"
   );
@@ -699,12 +703,14 @@ export function ClaudeFormFields({
                         claudeModel ||
                         defaultHaikuModel ||
                         defaultSonnetModel ||
-                        defaultOpusModel;
+                        defaultOpusModel ||
+                        subagentModel;
                       if (value) {
                         onModelChange("ANTHROPIC_MODEL", value);
                         onModelChange("ANTHROPIC_DEFAULT_HAIKU_MODEL", value);
                         onModelChange("ANTHROPIC_DEFAULT_SONNET_MODEL", value);
                         onModelChange("ANTHROPIC_DEFAULT_OPUS_MODEL", value);
+                        onModelChange("CLAUDE_CODE_SUBAGENT_MODEL", value);
                         toast.success(
                           t("providerForm.quickSetSuccess", {
                             defaultValue: "已将模型名称应用到所有字段",
@@ -716,7 +722,8 @@ export function ClaudeFormFields({
                       !claudeModel &&
                       !defaultHaikuModel &&
                       !defaultSonnetModel &&
-                      !defaultOpusModel
+                      !defaultOpusModel &&
+                      !subagentModel
                     }
                     className="h-7 gap-1"
                   >
@@ -804,6 +811,23 @@ export function ClaudeFormFields({
                   defaultOpusModel,
                   "ANTHROPIC_DEFAULT_OPUS_MODEL",
                   t("providerForm.modelPlaceholder", { defaultValue: "" }),
+                )}
+              </div>
+
+              {/* 子代理模型 */}
+              <div className="space-y-2">
+                <FormLabel htmlFor="claudeCodeSubagentModel">
+                  {t("providerForm.claudeCodeSubagentModel", {
+                    defaultValue: "子代理模型",
+                  })}
+                </FormLabel>
+                {renderModelInput(
+                  "claudeCodeSubagentModel",
+                  subagentModel,
+                  "CLAUDE_CODE_SUBAGENT_MODEL",
+                  t("providerForm.subagentModelPlaceholder", {
+                    defaultValue: "",
+                  }),
                 )}
               </div>
             </div>

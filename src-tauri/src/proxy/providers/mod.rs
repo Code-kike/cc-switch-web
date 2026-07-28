@@ -27,6 +27,7 @@ pub mod gemini_oauth;
 pub(crate) mod gemini_schema;
 pub mod gemini_shadow;
 pub mod models;
+pub(crate) mod reasoning_bridge;
 pub mod streaming;
 pub mod streaming_gemini;
 pub mod streaming_responses;

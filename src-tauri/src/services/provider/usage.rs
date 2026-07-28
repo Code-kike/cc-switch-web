@@ -365,6 +365,26 @@ fn resolve_coding_plan_credentials(
     }
 }
 
+/// Explicit routing hints a coding-plan query needs beyond `(base_url, api_key)`.
+///
+/// Zhipu's team plan shares `open.bigmodel.cn` with the personal plan, so
+/// `detect_provider` cannot tell them apart — the saved script's explicit
+/// `codingPlanProvider` plus the organization/project IDs are what route it.
+#[derive(Default)]
+struct CodingPlanRouting {
+    provider: Option<String>,
+    team_organization_id: Option<String>,
+    team_project_id: Option<String>,
+}
+
+fn coding_plan_routing(usage_script: &UsageScript) -> CodingPlanRouting {
+    CodingPlanRouting {
+        provider: non_empty_opt_string(usage_script.coding_plan_provider.as_ref()),
+        team_organization_id: non_empty_opt_string(usage_script.team_organization_id.as_ref()),
+        team_project_id: non_empty_opt_string(usage_script.team_project_id.as_ref()),
+    }
+}
+
 /// Flatten a coding-plan `SubscriptionQuota` into the shared `UsageResult`
 /// shape used by both the saved-query and test-query paths.
 ///
@@ -605,7 +625,7 @@ pub async fn query_usage_with_templates(
     copilot_auth: Option<&RwLock<CopilotAuthManager>>,
     enforce_outbound_guard: bool,
 ) -> Result<UsageResult, AppError> {
-    let (template_type, credentials, copilot_account_id) = {
+    let (template_type, credentials, coding_plan_routing, copilot_account_id) = {
         let providers = state.db.get_all_providers(app_type.as_str())?;
         let provider = providers.get(provider_id).ok_or_else(|| {
             AppError::localized(
@@ -645,6 +665,7 @@ pub async fn query_usage_with_templates(
         (
             template_type,
             credentials,
+            coding_plan_routing(usage_script),
             provider
                 .meta
                 .as_ref()
@@ -661,6 +682,9 @@ pub async fn query_usage_with_templates(
             let quota = crate::services::coding_plan::get_coding_plan_quota(
                 &credentials.base_url,
                 &credentials.api_key,
+                coding_plan_routing.provider.as_deref(),
+                coding_plan_routing.team_organization_id.as_deref(),
+                coding_plan_routing.team_project_id.as_deref(),
             )
             .await
             .map_err(|e| AppError::Message(format!("Failed to query coding plan: {e}")))?;
@@ -778,6 +802,8 @@ pub async fn test_usage_script(
                 template_type: template_type.map(str::to_string),
                 auto_query_interval: None,
                 coding_plan_provider: None,
+                team_organization_id: None,
+                team_project_id: None,
             });
         test_script.enabled = true;
         test_script.timeout = Some(timeout);
@@ -803,11 +829,15 @@ pub async fn test_usage_script(
         };
         return match template_type {
             Some(TEMPLATE_TYPE_TOKEN_PLAN) => {
+                let routing = coding_plan_routing(&test_script);
                 guard_native_template_base_url(&credentials.base_url, enforce_outbound_guard)
                     .await?;
                 let quota = crate::services::coding_plan::get_coding_plan_quota(
                     &credentials.base_url,
                     &credentials.api_key,
+                    routing.provider.as_deref(),
+                    routing.team_organization_id.as_deref(),
+                    routing.team_project_id.as_deref(),
                 )
                 .await
                 .map_err(|e| AppError::Message(format!("Failed to query coding plan: {e}")))?;
@@ -928,6 +958,8 @@ mod tests {
             template_type: None,
             auto_query_interval: None,
             coding_plan_provider: None,
+            team_organization_id: None,
+            team_project_id: None,
         }
     }
 

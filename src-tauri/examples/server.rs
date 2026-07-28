@@ -166,6 +166,8 @@ mod init_status;
 mod json5_doc;
 #[path = "../src/mcp/mod.rs"]
 mod mcp;
+#[path = "../src/model_capabilities.rs"]
+mod model_capabilities;
 #[path = "../src/openclaw_config.rs"]
 mod openclaw_config;
 #[path = "../src/opencode_config.rs"]

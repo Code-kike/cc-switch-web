@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
@@ -77,6 +77,16 @@ export function CodexFormFields({
   const [fetchedModels, setFetchedModels] = useState<FetchedModel[]>([]);
   const [isFetchingModels, setIsFetchingModels] = useState(false);
 
+  // 拉取请求序号：请求身份（Base URL / 完整地址开关 / API Key）一变即自增，
+  // 清空旧列表并作废在途响应——/models 结果可能按 Key 的模型授权返回，
+  // 换号后残留旧列表会误导选择
+  const fetchModelsSeqRef = useRef(0);
+
+  useEffect(() => {
+    fetchModelsSeqRef.current += 1;
+    setFetchedModels((prev) => (prev.length === 0 ? prev : []));
+  }, [codexBaseUrl, codexApiKey, isFullUrl]);
+
   const handleFetchModels = useCallback(() => {
     if (!codexBaseUrl || !codexApiKey) {
       showFetchModelsError(null, t, {
@@ -85,9 +95,11 @@ export function CodexFormFields({
       });
       return;
     }
+    const seq = ++fetchModelsSeqRef.current;
     setIsFetchingModels(true);
     fetchModelsForConfig(codexBaseUrl, codexApiKey, isFullUrl)
       .then((models) => {
+        if (seq !== fetchModelsSeqRef.current) return;
         setFetchedModels(models);
         if (models.length === 0) {
           toast.info(t("providerForm.fetchModelsEmpty"));
@@ -98,6 +110,7 @@ export function CodexFormFields({
         }
       })
       .catch((err) => {
+        if (seq !== fetchModelsSeqRef.current) return;
         console.warn("[ModelFetch] Failed:", err);
         showFetchModelsError(err, t);
       })

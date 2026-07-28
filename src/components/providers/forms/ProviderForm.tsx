@@ -323,6 +323,7 @@ export function ProviderForm({
     defaultHaikuModel,
     defaultSonnetModel,
     defaultOpusModel,
+    subagentModel,
     handleModelChange,
   } = useModelState({
     settingsConfig: form.getValues("settingsConfig"),
@@ -1757,6 +1758,7 @@ export function ProviderForm({
               defaultHaikuModel={defaultHaikuModel}
               defaultSonnetModel={defaultSonnetModel}
               defaultOpusModel={defaultOpusModel}
+              subagentModel={subagentModel}
               onModelChange={handleModelChange}
               speedTestEndpoints={speedTestEndpoints}
               apiFormat={localApiFormat}

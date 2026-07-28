@@ -62,6 +62,8 @@ export interface UsageScript {
   baseUrl?: string; // 用量查询专用的 Base URL（通用和 NewAPI 模板使用）
   accessToken?: string; // 访问令牌（NewAPI 模板使用）
   userId?: string; // 用户ID（NewAPI 模板使用）
+  teamOrganizationId?: string; // 智谱团队套餐组织 ID（请求头 bigmodel-organization）
+  teamProjectId?: string; // 智谱团队套餐项目 ID（请求头 bigmodel-project）
   codingPlanProvider?: string; // Coding Plan 供应商标识（如 "kimi", "zhipu", "minimax"）
   autoQueryInterval?: number; // 自动查询间隔（单位：分钟，0 表示禁用）
   autoIntervalMinutes?: number; // 自动查询间隔（分钟）- 别名字段
@@ -207,6 +209,9 @@ export interface CodexCatalogModel {
   model: string;
   displayName?: string;
   contextWindow?: string | number;
+  // Hidden provider capability metadata for the generated model catalog.
+  // supportsParallelToolCalls is native-profile-only; inputModalities wins over
+  // automatic text-only model detection for every profile.
   supportsParallelToolCalls?: boolean;
   inputModalities?: string[];
   baseInstructions?: string;

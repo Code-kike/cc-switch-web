@@ -7,6 +7,7 @@ use crate::config::{
     write_json_file_managed, write_text_file_managed,
 };
 use crate::error::AppError;
+use crate::model_capabilities::{image_input_capability_from_modalities, ImageInputCapability};
 use serde_json::{json, Value};
 use std::fs;
 use toml_edit::DocumentMut;
@@ -383,12 +384,26 @@ fn extract_codex_top_level_u64(config_text: &str, field: &str) -> Option<u64> {
         .filter(|value| *value > 0)
 }
 
+fn codex_catalog_input_modalities(
+    model: &str,
+    declared_modalities: Option<&[String]>,
+) -> Vec<String> {
+    let modalities = match image_input_capability_from_modalities(model, declared_modalities) {
+        ImageInputCapability::Unsupported => &["text"][..],
+        ImageInputCapability::Supported | ImageInputCapability::Unknown => &["text", "image"][..],
+    };
+    modalities.iter().map(|item| (*item).to_string()).collect()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CodexCatalogModelSpec {
     model: String,
     display_name: String,
     context_window: u64,
     supports_parallel_tool_calls: Option<bool>,
+    /// Hidden per-row capability declaration from built-in provider metadata.
+    /// When omitted, all catalog profiles consult the shared text-only model
+    /// registry and otherwise default to `["text", "image"]`.
     input_modalities: Option<Vec<String>>,
     base_instructions: Option<String>,
 }
@@ -415,6 +430,18 @@ fn codex_catalog_model_entry(
     entry_obj.insert("availability_nux".to_string(), Value::Null);
     entry_obj.insert("upgrade".to_string(), Value::Null);
 
+    // Image support is a model capability, not a tool-profile capability.
+    // Trust hidden preset metadata first, then the confirmed text-only registry;
+    // every unknown model fails open so GPT/relay aliases are never declared
+    // text-only merely because a template had a conservative default.
+    entry_obj.insert(
+        "input_modalities".to_string(),
+        json!(codex_catalog_input_modalities(
+            &spec.model,
+            spec.input_modalities.as_deref(),
+        )),
+    );
+
     if profile == CodexCatalogToolProfile::NativeResponses {
         for key in [
             "apply_patch_tool_type",
@@ -436,9 +463,6 @@ fn codex_catalog_model_entry(
         }
         if let Some(parallel) = spec.supports_parallel_tool_calls {
             entry_obj.insert("supports_parallel_tool_calls".to_string(), json!(parallel));
-        }
-        if let Some(modalities) = &spec.input_modalities {
-            entry_obj.insert("input_modalities".to_string(), json!(modalities));
         }
     }
 
@@ -974,7 +998,8 @@ fn build_simplified_catalog_from_texts(config_text: &str, catalog_text: &str) ->
                 .filter_map(|m| m.as_str())
                 .map(str::to_string)
                 .collect();
-            if !modalities.is_empty() {
+            let inferred = codex_catalog_input_modalities(model, None);
+            if !modalities.is_empty() && modalities != inferred {
                 obj.insert("inputModalities".to_string(), json!(modalities));
             }
         }
@@ -1480,6 +1505,40 @@ model = "gpt-5.5""#,
     }
 
     #[test]
+    fn build_simplified_catalog_squashes_inferred_modalities_and_keeps_overrides() {
+        let catalog = r#"{
+            "models": [
+                { "slug": "gpt-5.4", "input_modalities": ["text", "image"] },
+                { "slug": "deepseek-v4-pro", "input_modalities": ["text"] },
+                { "slug": "gpt-text-override", "input_modalities": ["text"] },
+                { "slug": "deepseek-v4-flash", "input_modalities": ["text", "image"] }
+            ]
+        }"#;
+
+        let result = build_simplified_catalog_from_texts("", catalog).expect("entries");
+        let models = result.get("models").unwrap().as_array().unwrap();
+
+        assert!(
+            models[0].get("inputModalities").is_none(),
+            "GPT text+image is inferred and must not become a sticky hidden override"
+        );
+        assert!(
+            models[1].get("inputModalities").is_none(),
+            "confirmed text-only capability is inferred and must remain registry-driven"
+        );
+        assert_eq!(
+            models[2].get("inputModalities"),
+            Some(&json!(["text"])),
+            "an unknown model explicitly forced to text-only must round-trip"
+        );
+        assert_eq!(
+            models[3].get("inputModalities"),
+            Some(&json!(["text", "image"])),
+            "an explicit image override for a registered text-only model must round-trip"
+        );
+    }
+
+    #[test]
     fn simplified_catalog_exposes_codex_model_metadata_for_models_endpoint() {
         let catalog_text = serde_json::json!({
             "models": [
@@ -1528,10 +1587,11 @@ model_context_window = 128000"#,
                 .and_then(Value::as_bool),
             Some(true)
         );
-        assert_eq!(
-            models[0].get("inputModalities"),
-            Some(&serde_json::json!(["text", "image"]))
-        );
+        // `["text","image"]` is what the shared inference already yields for an
+        // unregistered model, so it is collapsed rather than frozen into a hidden
+        // row override (see `build_simplified_catalog_squashes_inferred_modalities_
+        // and_keeps_overrides`).
+        assert!(models[0].get("inputModalities").is_none());
         assert!(
             models[1].get("displayName").is_none(),
             "displayName is omitted when it duplicates model"

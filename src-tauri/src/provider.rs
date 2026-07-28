@@ -152,6 +152,14 @@ pub struct UsageScript {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "codingPlanProvider")]
     pub coding_plan_provider: Option<String>,
+    /// 智谱团队套餐（Team Plan）的组织 ID（用量查询请求头 bigmodel-organization）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "teamOrganizationId")]
+    pub team_organization_id: Option<String>,
+    /// 智谱团队套餐（Team Plan）的项目 ID（用量查询请求头 bigmodel-project）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "teamProjectId")]
+    pub team_project_id: Option<String>,
 }
 
 /// 用量数据
@@ -304,6 +312,10 @@ pub struct ProviderMeta {
     /// conversions fall back to provider ID.
     #[serde(rename = "promptCacheKey", skip_serializing_if = "Option::is_none")]
     pub prompt_cache_key: Option<String>,
+    /// Session-based prompt-cache routing for Codex Responses -> Chat conversions.
+    /// "auto" enables known-compatible upstreams; "enabled" / "disabled" are overrides.
+    #[serde(rename = "promptCacheRouting", skip_serializing_if = "Option::is_none")]
+    pub prompt_cache_routing: Option<String>,
     /// Codex OAuth FAST mode: inject `service_tier = "priority"` for ChatGPT Codex requests.
     #[serde(rename = "codexFastMode", skip_serializing_if = "Option::is_none")]
     pub codex_fast_mode: Option<bool>,

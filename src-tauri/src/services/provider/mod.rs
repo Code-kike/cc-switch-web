@@ -266,6 +266,56 @@ mod tests {
         );
     }
 
+    /// Regression for issue #4272: Fable tier env keys must not enter the shared
+    /// Claude common-config snippet (same class as haiku/sonnet/opus model pins).
+    #[test]
+    fn extract_claude_common_config_strips_fable_model_env_keys() {
+        let settings = json!({
+            "env": {
+                "ANTHROPIC_DEFAULT_HAIKU_MODEL": "haiku-mapped",
+                "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME": "Haiku Mapped",
+                "ANTHROPIC_DEFAULT_SONNET_MODEL": "sonnet-mapped[1M]",
+                "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME": "Sonnet Mapped",
+                "ANTHROPIC_DEFAULT_OPUS_MODEL": "opus-mapped[1M]",
+                "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME": "Opus Mapped",
+                "ANTHROPIC_DEFAULT_FABLE_MODEL": "deepseek-v4-flash[1M]",
+                "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME": "deepseek-v4-flash",
+                "ANTHROPIC_MODEL": "default-mapped",
+                "ENABLE_TOOL_SEARCH": "true"
+            },
+            "theme": "dark"
+        });
+
+        let snippet = ProviderService::extract_claude_common_config(&settings)
+            .expect("extract should succeed");
+        let value: Value = serde_json::from_str(&snippet).expect("snippet is valid JSON");
+        let env = value.get("env");
+
+        for stripped in [
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME",
+            "ANTHROPIC_DEFAULT_OPUS_MODEL",
+            "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME",
+            "ANTHROPIC_DEFAULT_FABLE_MODEL",
+            "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME",
+            "ANTHROPIC_MODEL",
+        ] {
+            assert!(
+                env.and_then(|e| e.get(stripped)).is_none(),
+                "provider-specific model key {stripped} must not enter common config"
+            );
+        }
+
+        assert_eq!(
+            env.and_then(|e| e.get("ENABLE_TOOL_SEARCH"))
+                .and_then(|v| v.as_str()),
+            Some("true")
+        );
+        assert_eq!(value.get("theme").and_then(|v| v.as_str()), Some("dark"));
+    }
+
     #[test]
     fn validate_provider_settings_rejects_negative_cost_multiplier() {
         let mut provider = Provider::with_id(
@@ -356,6 +406,7 @@ mod tests {
                 "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME": "Opus",
                 "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-sonnet-4-5",
                 "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME": "Sonnet",
+                "CLAUDE_CODE_SUBAGENT_MODEL": "gpt-5.4-mini",
                 "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"
             },
             "includeCoAuthoredBy": false
@@ -381,6 +432,7 @@ mod tests {
             "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME",
             "ANTHROPIC_DEFAULT_SONNET_MODEL",
             "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME",
+            "CLAUDE_CODE_SUBAGENT_MODEL",
         ] {
             assert!(
                 !env.contains_key(provider_specific),
@@ -1746,15 +1798,28 @@ impl ProviderService {
                 )
                 .map_err(|e| AppError::Message(format!("更新 Live 备份失败: {e}")))?;
 
-                if matches!(app_type, AppType::Claude)
-                    && futures::executor::block_on(state.proxy_service.is_running())
-                {
-                    futures::executor::block_on(
-                        state
-                            .proxy_service
-                            .sync_claude_live_from_provider_while_proxy_active(&provider),
-                    )
-                    .map_err(|e| AppError::Message(format!("同步 Claude Live 配置失败: {e}")))?;
+                if futures::executor::block_on(state.proxy_service.is_running()) {
+                    if matches!(app_type, AppType::Claude) {
+                        futures::executor::block_on(
+                            state
+                                .proxy_service
+                                .sync_claude_live_from_provider_while_proxy_active(&provider),
+                        )
+                        .map_err(|e| {
+                            AppError::Message(format!("同步 Claude Live 配置失败: {e}"))
+                        })?;
+                    } else if live_taken_over && matches!(app_type, AppType::Codex) {
+                        // Codex model mappings are projected into a generated
+                        // model_catalog_json file. Refresh takeover-owned Live
+                        // immediately so adding/removing mappings cannot leave
+                        // the previous catalog pointer and capabilities active.
+                        futures::executor::block_on(
+                            state
+                                .proxy_service
+                                .sync_codex_live_from_provider_while_proxy_active(&provider),
+                        )
+                        .map_err(|e| AppError::Message(format!("同步 Codex Live 配置失败: {e}")))?;
+                    }
                 }
             } else {
                 write_live_with_common_config(state.db.as_ref(), &app_type, &provider)?;
@@ -2312,6 +2377,11 @@ impl ProviderService {
             "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME",
             "ANTHROPIC_DEFAULT_SONNET_MODEL",
             "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME",
+            // Fable 是 v3.16.3 新增的第四档模型映射，与 haiku/sonnet/opus 同属供应商专属，
+            // 不得进入通用配置片段，否则会污染其它供应商（issue #4272）。
+            "ANTHROPIC_DEFAULT_FABLE_MODEL",
+            "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME",
+            "CLAUDE_CODE_SUBAGENT_MODEL",
             // Context limits follow the actual upstream model. Sharing these
             // across providers can cap GPT/Kimi to the wrong window and make
             // Claude Code compact too early or miss the upstream limit.
