@@ -108,7 +108,6 @@ mod tests {
             enabled: true,
             thinking_optimizer: true,
             cache_injection: true,
-            cache_ttl: "1h".to_string(),
         }
     }
 
@@ -117,7 +116,6 @@ mod tests {
             enabled: true,
             thinking_optimizer: false,
             cache_injection: true,
-            cache_ttl: "1h".to_string(),
         }
     }
 

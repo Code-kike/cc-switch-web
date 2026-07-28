@@ -253,7 +253,22 @@ pub(crate) fn map_responses_stop_reason(
 /// - input tokens: (`input_tokens` → `prompt_tokens` → 0) 再减去缓存命中得到 fresh input
 /// - output tokens: `output_tokens` → `completion_tokens` → 0
 /// - cache read tokens: direct field or nested OpenAI cached token details
-/// - cache creation tokens: direct field only
+/// - cache creation tokens: direct field or nested OpenAI cache-write details
+///
+/// **Field Name Resolution Priority**:
+/// 1. input_tokens: Anthropic `input_tokens` → OpenAI `prompt_tokens` → default 0
+/// 2. output_tokens: Anthropic `output_tokens` → OpenAI `completion_tokens` → default 0
+/// 3. cache_read_input_tokens: Direct field → nested input_tokens_details.cached_tokens → prompt_tokens_details.cached_tokens
+/// 4. cache_creation_input_tokens: Direct field → nested
+///    input_tokens_details.cache_write_tokens → prompt_tokens_details.cache_write_tokens
+///
+/// **Cache Token Priority Order**:
+/// 1. OpenAI nested details (`cached_tokens`, `cache_write_tokens`) as initial values
+/// 2. Direct Anthropic-style fields (`cache_read_input_tokens`, `cache_creation_input_tokens`) override if present
+///
+/// **Logging**:
+/// - Warns on empty objects {} or partial objects (only one field present)
+/// - Debug logs when using OpenAI field name fallbacks
 ///
 /// 关键：OpenAI Responses/Codex 的输入 token 含缓存命中，而该结果会被当作
 /// Anthropic（claude，cache-exclusive）计费，故 input_tokens 必须扣除缓存命中，
@@ -309,38 +324,66 @@ pub(crate) fn build_anthropic_usage_from_responses(usage: Option<&Value>) -> Val
         log::debug!("[Responses] Partial usage object: {:?}", u);
     }
 
-    // 先解析缓存命中数（与下方写入 cache_read_input_tokens 的优先级一致）：
-    // 直接的 Anthropic 风格字段（兼容服务端）最权威，其次 Responses 的
-    // input_tokens_details.cached_tokens，再次 Chat Completions 的
-    // prompt_tokens_details.cached_tokens。
-    let cached = u
-        .get("cache_read_input_tokens")
-        .and_then(|v| v.as_u64())
-        .or_else(|| {
-            u.pointer("/input_tokens_details/cached_tokens")
-                .and_then(|v| v.as_u64())
-        })
-        .or_else(|| {
-            u.pointer("/prompt_tokens_details/cached_tokens")
-                .and_then(|v| v.as_u64())
-        });
-
-    // OpenAI Responses/Codex 的 input_tokens 含缓存命中；Anthropic 语义里
-    // input_tokens 是不含缓存的 fresh input，且成本计算器对 claude 不扣减缓存
-    // （app_type=="claude"），故此处减去缓存命中，避免缓存部分被「input 价 +
-    // cache_read 价」重复计费。与 transform::openai_to_anthropic 口径一致。
-    let fresh_input = input.saturating_sub(cached.unwrap_or(0));
-
     let mut result = json!({
-        "input_tokens": fresh_input,
+        "input_tokens": input,
         "output_tokens": output
     });
 
-    if let Some(cached) = cached {
+    // Step 1: OpenAI nested details as fallback for cache tokens
+    // OpenAI Responses API: input_tokens_details.cached_tokens
+    if let Some(cached) = u
+        .pointer("/input_tokens_details/cached_tokens")
+        .and_then(|v| v.as_u64())
+    {
         result["cache_read_input_tokens"] = json!(cached);
+    }
+    // OpenAI standard: prompt_tokens_details.cached_tokens
+    if let Some(cached) = u
+        .pointer("/prompt_tokens_details/cached_tokens")
+        .and_then(|v| v.as_u64())
+    {
+        if result.get("cache_read_input_tokens").is_none() {
+            result["cache_read_input_tokens"] = json!(cached);
+        }
+    }
+    // GPT-5.6+ reports cache writes in the nested OpenAI token-details object.
+    // Treat writes as Anthropic cache creation so the downstream client and
+    // billing layer can distinguish them from fresh input.
+    let nested_cache_write = u
+        .pointer("/input_tokens_details/cache_write_tokens")
+        .and_then(|v| v.as_u64())
+        .or_else(|| {
+            u.pointer("/prompt_tokens_details/cache_write_tokens")
+                .and_then(|v| v.as_u64())
+        });
+    if let Some(cache_write) = nested_cache_write {
+        result["cache_creation_input_tokens"] = json!(cache_write);
+    }
+
+    // Step 2: Direct Anthropic-style fields override (authoritative if present)
+    // These preserve cache tokens even if input/output_tokens are missing
+    if let Some(v) = u.get("cache_read_input_tokens") {
+        result["cache_read_input_tokens"] = v.clone();
     }
     if let Some(v) = u.get("cache_creation_input_tokens") {
         result["cache_creation_input_tokens"] = v.clone();
+    }
+
+    // OpenAI/Responses 的 input(prompt_tokens/input_tokens)含缓存命中，Anthropic input_tokens 不含
+    // → 减去 cache_read 与 cache_creation，使其成为 fresh input。本函数在计量意义上是 claude 专属
+    // （Codex Responses 透传走 from_codex_response_*，不调用本函数），故可安全在此扣减。三桶互斥，
+    // 恒等：input + cache_read + cache_creation == 上游 input(inclusive)。与 build_anthropic_usage_json
+    // (#2774) 及 transform_gemini 的 saturating_sub 对称；一处同时覆盖非流式与流式(streaming_responses)。
+    let cached = result
+        .get("cache_read_input_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let cache_creation = result
+        .get("cache_creation_input_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    if cached > 0 || cache_creation > 0 {
+        result["input_tokens"] = json!(input.saturating_sub(cached).saturating_sub(cache_creation));
     }
 
     result
@@ -1170,8 +1213,9 @@ mod tests {
         });
 
         let result = responses_to_anthropic(input).unwrap();
-        // 直接字段 cache_read=60 → input_tokens = 100 - 60 = 40（fresh input）。
-        assert_eq!(result["usage"]["input_tokens"], 40);
+        // cache_read(60)+cache_creation(20) 均从 input(100) 扣除，fresh = 100 - 60 - 20 = 20
+        // 守恒：input(20) + cache_read(60) + cache_creation(20) == 上游 input(100)
+        assert_eq!(result["usage"]["input_tokens"], 20);
         assert_eq!(result["usage"]["cache_read_input_tokens"], 60);
         assert_eq!(result["usage"]["cache_creation_input_tokens"], 20);
     }
@@ -1639,6 +1683,21 @@ mod tests {
         assert_eq!(result["input_tokens"], json!(20));
         assert_eq!(result["output_tokens"], json!(50));
         assert_eq!(result["cache_read_input_tokens"], json!(80));
+    }
+
+    #[test]
+    fn test_build_usage_cache_write_tokens_from_nested_details() {
+        let result = build_anthropic_usage_from_responses(Some(&json!({
+            "input_tokens": 100,
+            "output_tokens": 10,
+            "input_tokens_details": {
+                "cached_tokens": 30,
+                "cache_write_tokens": 20
+            }
+        })));
+        assert_eq!(result["input_tokens"], json!(50));
+        assert_eq!(result["cache_read_input_tokens"], json!(30));
+        assert_eq!(result["cache_creation_input_tokens"], json!(20));
     }
 
     #[test]

@@ -58,6 +58,9 @@ pub mod skill;
 #[path = "../src/services/speedtest.rs"]
 pub mod speedtest;
 
+#[path = "../src/services/sql_helpers.rs"]
+pub mod sql_helpers;
+
 #[path = "../src/services/stream_check.rs"]
 pub mod stream_check;
 

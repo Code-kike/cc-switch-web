@@ -683,22 +683,13 @@ pub fn openai_to_anthropic(body: Value) -> Result<Value, ProxyError> {
 
     // usage — map cache tokens from OpenAI format to Anthropic format
     let usage = body.get("usage").cloned().unwrap_or(json!({}));
-    let prompt_tokens = usage
-        .get("prompt_tokens")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
-    let output_tokens = usage
-        .get("completion_tokens")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0) as u32;
-
-    // OpenAI 的 prompt_tokens 已包含缓存命中部分；Anthropic 语义里 input_tokens
-    // 是不含缓存的 fresh input，且成本计算器对 app_type=="claude" 不再扣减缓存。
-    // 若原样照搬 prompt_tokens 到 input_tokens，再单独发出 cache_read_input_tokens，
-    // 缓存命中部分会被「按 input 价 + 按 cache_read 价」重复计费两次。
-    // 先解析缓存命中数，再令 input_tokens = prompt_tokens - cached，对齐原生 Anthropic。
-    // 直接字段（兼容服务端）优先于 OpenAI 标准的 prompt_tokens_details.cached_tokens。
-    let cached_tokens = usage
+    // OpenAI prompt_tokens 含缓存命中，Anthropic input_tokens 不含 → 减去 cache_read 与
+    // cache_creation，使 input 成为 fresh input。本路径以 app_type="claude" 记账（calculator
+    // 不再扣减），若不减则缓存会被计入 input 与各 cache 桶两次。三桶互斥，恒等：
+    // input + cache_read + cache_creation == prompt_tokens（inclusive 上游）。
+    // 与流式 build_anthropic_usage_json (#2774) 及 transform_gemini 的 saturating_sub 对称。
+    // 最终 cache_read/cache_creation：直传字段优先于 OpenAI nested details。
+    let cached = usage
         .get("cache_read_input_tokens")
         .and_then(|v| v.as_u64())
         .or_else(|| {
@@ -707,18 +698,37 @@ pub fn openai_to_anthropic(body: Value) -> Result<Value, ProxyError> {
                 .and_then(|v| v.as_u64())
         })
         .unwrap_or(0);
-    let input_tokens = prompt_tokens.saturating_sub(cached_tokens) as u32;
+    let cache_creation = usage
+        .get("cache_creation_input_tokens")
+        .and_then(|v| v.as_u64())
+        .or_else(|| {
+            usage
+                .pointer("/prompt_tokens_details/cache_write_tokens")
+                .or_else(|| usage.pointer("/input_tokens_details/cache_write_tokens"))
+                .and_then(|v| v.as_u64())
+        })
+        .unwrap_or(0);
+    let input_tokens = usage
+        .get("prompt_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0)
+        .saturating_sub(cached)
+        .saturating_sub(cache_creation) as u32;
+    let output_tokens = usage
+        .get("completion_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as u32;
 
     let mut usage_json = json!({
         "input_tokens": input_tokens,
         "output_tokens": output_tokens
     });
 
-    if cached_tokens > 0 {
-        usage_json["cache_read_input_tokens"] = json!(cached_tokens);
+    if cached > 0 {
+        usage_json["cache_read_input_tokens"] = json!(cached);
     }
-    if let Some(v) = usage.get("cache_creation_input_tokens") {
-        usage_json["cache_creation_input_tokens"] = v.clone();
+    if cache_creation > 0 {
+        usage_json["cache_creation_input_tokens"] = json!(cache_creation);
     }
 
     let result = json!({

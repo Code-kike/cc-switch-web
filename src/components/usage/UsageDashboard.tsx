@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { UsageHero } from "./UsageHero";
 import { UsageTrendChart } from "./UsageTrendChart";
@@ -41,13 +41,40 @@ const APP_FILTER_OPTIONS: AppTypeFilter[] = ["all", ...KNOWN_APP_TYPES];
 
 type UsageDashboardTab = "logs" | "providers" | "models";
 
-export function UsageDashboard() {
+// 0 表示关闭自动刷新（refetchInterval=false）
+const DEFAULT_REFRESH_INTERVAL_MS = 30000;
+const REFRESH_INTERVAL_OPTIONS_MS = [0, 5000, 10000, 30000, 60000] as const;
+type RefreshIntervalOption = (typeof REFRESH_INTERVAL_OPTIONS_MS)[number];
+
+const isRefreshIntervalOption = (
+  value: number | undefined,
+): value is RefreshIntervalOption =>
+  REFRESH_INTERVAL_OPTIONS_MS.includes(value as RefreshIntervalOption);
+
+const normalizeRefreshInterval = (value: number | undefined) =>
+  isRefreshIntervalOption(value) ? value : DEFAULT_REFRESH_INTERVAL_MS;
+
+interface UsageDashboardProps {
+  refreshIntervalMs?: number;
+  onRefreshIntervalChange?: (next: number) => Promise<boolean> | boolean | void;
+}
+
+export function UsageDashboard({
+  refreshIntervalMs: savedRefreshIntervalMs,
+  onRefreshIntervalChange,
+}: UsageDashboardProps = {}) {
   const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
   const [range, setRange] = useState<UsageRangeSelection>({ preset: "today" });
   const [appType, setAppType] = useState<AppTypeFilter>("all");
-  const [refreshIntervalMs, setRefreshIntervalMs] = useState(30000);
+  const [refreshIntervalMs, setRefreshIntervalMs] = useState(() =>
+    normalizeRefreshInterval(savedRefreshIntervalMs),
+  );
   const [activeTab, setActiveTab] = useState<UsageDashboardTab>("logs");
+
+  useEffect(() => {
+    setRefreshIntervalMs(normalizeRefreshInterval(savedRefreshIntervalMs));
+  }, [savedRefreshIntervalMs]);
 
   // 后端写入新日志时 emit `usage-log-recorded`，本 hook 立刻 invalidate 所有
   // usage 查询，实现实时刷新（仅在 Dashboard 挂载时生效，离开页面自动取消监听）。
@@ -58,16 +85,29 @@ export function UsageDashboard() {
   // computed in the server's timezone, matching server-local rollup buckets.
   useServerTimezone();
 
-  const refreshIntervalOptionsMs = [0, 5000, 10000, 30000, 60000] as const;
-  const changeRefreshInterval = () => {
-    const currentIndex = refreshIntervalOptionsMs.indexOf(
-      refreshIntervalMs as (typeof refreshIntervalOptionsMs)[number],
+  // 刷新间隔是一个循环按钮（非下拉），点击推进到下一档并持久化。
+  const changeRefreshInterval = async () => {
+    const currentIndex = REFRESH_INTERVAL_OPTIONS_MS.indexOf(
+      refreshIntervalMs as RefreshIntervalOption,
     );
     const safeIndex = currentIndex >= 0 ? currentIndex : 3;
-    const nextIndex = (safeIndex + 1) % refreshIntervalOptionsMs.length;
-    const next = refreshIntervalOptionsMs[nextIndex];
-    setRefreshIntervalMs(next);
+    const nextIndex = (safeIndex + 1) % REFRESH_INTERVAL_OPTIONS_MS.length;
+    const normalized = REFRESH_INTERVAL_OPTIONS_MS[nextIndex];
+    const previous = refreshIntervalMs;
+    setRefreshIntervalMs(normalized);
     queryClient.invalidateQueries({ queryKey: usageKeys.all });
+    try {
+      const saved = await onRefreshIntervalChange?.(normalized);
+      if (saved === false) {
+        setRefreshIntervalMs(previous);
+      }
+    } catch (error) {
+      console.error(
+        "[UsageDashboard] Failed to persist refresh interval",
+        error,
+      );
+      setRefreshIntervalMs(previous);
+    }
   };
 
   const language = i18n.resolvedLanguage || i18n.language || "en";

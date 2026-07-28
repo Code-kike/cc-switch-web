@@ -131,10 +131,13 @@ pub async fn queryProviderUsage(
 ) -> Result<crate::provider::UsageResult, String> {
     let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
     // inner 可能以两种形式失败：
-    //   1) 返回 Ok(UsageResult { success: false, .. }) —— 确定性失败（401、脚本报错等）。
-    //      写进 UsageCache 并刷新托盘，让 suffix 自然消失。
-    //   2) 返回 Err(String) —— 瞬时传输失败或 DB/Copilot fetch 等。不要写失败快照，
-    //      否则 usage-cache-updated 会覆盖前端保留的 last-good 值。
+    //   1) 返回 Ok(UsageResult { success: false, .. }) —— 确定性失败（401、脚本
+    //      报错、未知供应商等）。写进 UsageCache 并刷新托盘，让
+    //      format_script_summary 的 success 守卫生效、suffix 自然消失。
+    //   2) 返回 Err(String) —— 瞬时传输失败（网络/超时）及 DB/Copilot fetch 等。
+    //      不写失败快照、不 emit：保留上一份托盘快照，与前端 react-query reject
+    //      保留上次 data 的语义一致；否则失败快照会经 useUsageCacheBridge 盲写
+    //      回 query 缓存，抹掉 reject 本该保留的旧值。
     let inner = ProviderService::query_usage_with_templates(
         &state,
         app_type.clone(),

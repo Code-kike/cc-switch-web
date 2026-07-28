@@ -2312,6 +2312,11 @@ impl ProviderService {
             "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME",
             "ANTHROPIC_DEFAULT_SONNET_MODEL",
             "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME",
+            // Context limits follow the actual upstream model. Sharing these
+            // across providers can cap GPT/Kimi to the wrong window and make
+            // Claude Code compact too early or miss the upstream limit.
+            "CLAUDE_CODE_MAX_CONTEXT_TOKENS",
+            "CLAUDE_CODE_AUTO_COMPACT_WINDOW",
             // Endpoint
             "ANTHROPIC_BASE_URL",
         ];

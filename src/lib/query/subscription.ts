@@ -16,6 +16,11 @@ export const subscriptionKeys = {
   quota: (appId: AppId) => [...subscriptionKeys.all, "quota", appId] as const,
 };
 
+/**
+ * reject 且无可展示值时的失败占位：首次查询就失败（data 为 undefined），或
+ * react-query 保留的旧成功已超出 keep-last-good 窗口——合成一个失败结果，让
+ * 订阅视图仍渲染「查询失败」+ 刷新按钮，而不是 footer 整体消失、无从手动重查。
+ */
 const QUERY_REJECTED_PLACEHOLDER: SubscriptionQuota = {
   tool: "",
   credentialStatus: "valid",
@@ -27,6 +32,18 @@ const QUERY_REJECTED_PLACEHOLDER: SubscriptionQuota = {
   queriedAt: null,
 };
 
+/**
+ * Keep-last-good：与 useUsageQuery 同一策略（resolveDisplayUsage）。
+ *
+ * 后端对纯传输失败（网络/超时/读体中断）已 reject——react-query 保留上次 data
+ * 并触发 retry，但那份 data 是陈旧的：以 `rejected` 标志交给 resolveDisplayUsage
+ * 按同一窗口处理（窗口内继续展示，超窗透出失败），与仍以 `Ok(success:false)`
+ * 返回的瞬时失败（HTTP 5xx/429）行为一致。确定性失败（过期/鉴权/解析）不掩盖，
+ * 立即透出。
+ *
+ * `scopeKey` 标识查询身份（appId / 绑定的账号 id）：身份变化时丢弃旧快照，
+ * 避免用上一个账号的额度掩盖新账号的瞬时失败。
+ */
 function useQuotaKeepLastGood(
   query: UseQueryResult<SubscriptionQuota>,
   scopeKey: string,

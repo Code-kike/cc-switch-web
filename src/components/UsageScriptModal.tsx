@@ -666,6 +666,8 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
         );
       }
     } catch (error: any) {
+      // 后端命令 Err(String) 时 invoke 以裸字符串 reject（如瞬时网络失败），
+      // 直接读 .message 会得到 undefined。
       toast.error(
         `${t("usageScript.testFailed")}: ${extractErrorMessage(error) || t("common.unknown")}`,
         {

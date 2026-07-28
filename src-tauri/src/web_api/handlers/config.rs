@@ -633,14 +633,6 @@ async fn set_optimizer_config(
     State(state): State<ApiState>,
     Json(request): Json<SetOptimizerConfigRequest>,
 ) -> ApiResult<bool> {
-    match request.config.cache_ttl.as_str() {
-        "5m" | "1h" => {}
-        other => {
-            return Err(ApiError::bad_request(format!(
-                "Invalid cache_ttl value: '{other}'. Allowed values: '5m', '1h'"
-            )));
-        }
-    }
     state
         .app_state
         .db
