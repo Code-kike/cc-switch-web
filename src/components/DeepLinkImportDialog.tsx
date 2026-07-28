@@ -26,6 +26,12 @@ import { McpConfirmation } from "./deeplink/McpConfirmation";
 import { SkillConfirmation } from "./deeplink/SkillConfirmation";
 import { ProviderIcon } from "./ProviderIcon";
 import { extractErrorMessage } from "@/utils/errorUtils";
+import {
+  classifyEndpoint,
+  classifyEnvKey,
+  maskValue,
+  riskI18nKey,
+} from "@/utils/deeplinkRisk";
 
 interface DeeplinkError {
   url: string;
@@ -338,16 +344,30 @@ export const DeepLinkImportDialog = forwardRef<DeepLinkImportDialogHandle>(
       }
     }, [request?.config, request?.app]);
 
-    // Helper to mask sensitive values
-    const maskValue = (key: string, value: string): string => {
-      const sensitiveKeys = ["TOKEN", "KEY", "SECRET", "PASSWORD"];
-      const isSensitive = sensitiveKeys.some((k) =>
-        key.toUpperCase().includes(k),
+    /**
+     * Config env row. Values share the deeplink redaction helper, while keys
+     * that can alter process code loading are visibly classified as risky.
+     * `break-all` is intentional: imported payloads must not be hidden by CSS.
+     */
+    const EnvRow = ({ envKey, value }: { envKey: string; value: string }) => {
+      const risk = classifyEnvKey(envKey);
+      return (
+        <div className="grid grid-cols-2 gap-2 text-xs">
+          <span
+            className={`font-mono break-all ${
+              risk
+                ? "text-yellow-700 dark:text-yellow-500 font-semibold"
+                : "text-muted-foreground"
+            }`}
+          >
+            {risk && <span aria-hidden="true">⚠ </span>}
+            {envKey}
+          </span>
+          <span className="font-mono break-all">
+            {maskValue(envKey, value)}
+          </span>
+        </div>
       );
-      if (isSensitive && value.length > 8) {
-        return `${value.substring(0, 8)}${"*".repeat(12)}`;
-      }
-      return value;
     };
 
     const getTitle = () => {
@@ -494,24 +514,37 @@ export const DeepLinkImportDialog = forwardRef<DeepLinkImportDialogHandle>(
                         {t("deeplink.endpoint")}
                       </div>
                       <div className="col-span-2 text-sm break-all space-y-1">
-                        {request.endpoint?.split(",").map((ep, idx) => (
-                          <div
-                            key={idx}
-                            className={
-                              idx === 0
-                                ? "font-medium"
-                                : "text-muted-foreground"
-                            }
-                          >
-                            {idx === 0 ? "🔹 " : "└ "}
-                            {ep.trim()}
-                            {idx === 0 && request.endpoint?.includes(",") && (
-                              <span className="text-xs text-muted-foreground ml-2">
-                                ({t("deeplink.primaryEndpoint")})
-                              </span>
-                            )}
-                          </div>
-                        ))}
+                        {request.endpoint?.split(",").map((ep, idx) => {
+                          const endpointRisk = classifyEndpoint(ep.trim());
+                          return (
+                            <div
+                              key={idx}
+                              className={
+                                endpointRisk
+                                  ? "text-yellow-700 dark:text-yellow-500 font-semibold"
+                                  : idx === 0
+                                    ? "font-medium"
+                                    : "text-muted-foreground"
+                              }
+                            >
+                              {idx === 0 ? "🔹 " : "└ "}
+                              {endpointRisk && (
+                                <span aria-hidden="true">⚠ </span>
+                              )}
+                              {ep.trim()}
+                              {idx === 0 && request.endpoint?.includes(",") && (
+                                <span className="text-xs text-muted-foreground ml-2">
+                                  ({t("deeplink.primaryEndpoint")})
+                                </span>
+                              )}
+                              {endpointRisk && (
+                                <div className="text-xs font-normal mt-0.5">
+                                  {t(riskI18nKey(endpointRisk))}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
                       </div>
                     </div>
 
@@ -632,17 +665,11 @@ export const DeepLinkImportDialog = forwardRef<DeepLinkImportDialogHandle>(
                                 <div className="space-y-1.5">
                                   {Object.entries(parsedConfig.env).map(
                                     ([key, value]) => (
-                                      <div
+                                      <EnvRow
                                         key={key}
-                                        className="grid grid-cols-2 gap-2 text-xs"
-                                      >
-                                        <span className="font-mono text-muted-foreground truncate">
-                                          {key}
-                                        </span>
-                                        <span className="font-mono truncate">
-                                          {maskValue(key, String(value))}
-                                        </span>
-                                      </div>
+                                        envKey={key}
+                                        value={String(value)}
+                                      />
                                     ),
                                   )}
                                 </div>
@@ -657,21 +684,17 @@ export const DeepLinkImportDialog = forwardRef<DeepLinkImportDialogHandle>(
                                       <div className="text-xs text-muted-foreground">
                                         Auth:
                                       </div>
-                                      {Object.entries(parsedConfig.auth).map(
-                                        ([key, value]) => (
-                                          <div
-                                            key={key}
-                                            className="grid grid-cols-2 gap-2 text-xs pl-2"
-                                          >
-                                            <span className="font-mono text-muted-foreground truncate">
-                                              {key}
-                                            </span>
-                                            <span className="font-mono truncate">
-                                              {maskValue(key, String(value))}
-                                            </span>
-                                          </div>
-                                        ),
-                                      )}
+                                      <div className="pl-2 space-y-1.5">
+                                        {Object.entries(parsedConfig.auth).map(
+                                          ([key, value]) => (
+                                            <EnvRow
+                                              key={key}
+                                              envKey={key}
+                                              value={String(value)}
+                                            />
+                                          ),
+                                        )}
+                                      </div>
                                     </div>
                                   )}
                                 {parsedConfig.tomlConfig && (
@@ -698,17 +721,11 @@ export const DeepLinkImportDialog = forwardRef<DeepLinkImportDialogHandle>(
                                 <div className="space-y-1.5">
                                   {Object.entries(parsedConfig.env).map(
                                     ([key, value]) => (
-                                      <div
+                                      <EnvRow
                                         key={key}
-                                        className="grid grid-cols-2 gap-2 text-xs"
-                                      >
-                                        <span className="font-mono text-muted-foreground truncate">
-                                          {key}
-                                        </span>
-                                        <span className="font-mono truncate">
-                                          {maskValue(key, String(value))}
-                                        </span>
-                                      </div>
+                                        envKey={key}
+                                        value={String(value)}
+                                      />
                                     ),
                                   )}
                                 </div>
