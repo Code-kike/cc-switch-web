@@ -185,6 +185,47 @@ fn get_primary_endpoint(request: &DeepLinkImportRequest) -> String {
         .unwrap_or_default()
 }
 
+fn normalize_deeplink_api_key(api_key: &str) -> String {
+    api_key.trim().to_string()
+}
+
+fn normalize_deeplink_base_url(base_url: &str) -> String {
+    base_url.trim().trim_end_matches('/').to_string()
+}
+
+fn usage_api_key_override(request: &DeepLinkImportRequest) -> Option<String> {
+    let usage_api_key = normalize_deeplink_api_key(request.usage_api_key.as_deref()?);
+    if usage_api_key.is_empty() {
+        return None;
+    }
+
+    let provider_api_key = request
+        .api_key
+        .as_deref()
+        .map(normalize_deeplink_api_key)
+        .unwrap_or_default();
+
+    if !provider_api_key.is_empty() && usage_api_key == provider_api_key {
+        None
+    } else {
+        Some(usage_api_key)
+    }
+}
+
+fn usage_base_url_override(request: &DeepLinkImportRequest) -> Option<String> {
+    let usage_base_url = normalize_deeplink_base_url(request.usage_base_url.as_deref()?);
+    if usage_base_url.is_empty() {
+        return None;
+    }
+
+    let provider_base_url = normalize_deeplink_base_url(&get_primary_endpoint(request));
+    if !provider_base_url.is_empty() && usage_base_url == provider_base_url {
+        None
+    } else {
+        Some(usage_base_url)
+    }
+}
+
 /// Build provider meta with usage script configuration
 fn build_provider_meta(request: &DeepLinkImportRequest) -> Result<Option<ProviderMeta>, AppError> {
     // Check if any usage script fields are provided
@@ -208,28 +249,29 @@ fn build_provider_meta(request: &DeepLinkImportRequest) -> Result<Option<Provide
         String::new()
     };
 
-    // Determine enabled state: explicit param > has code > false
-    let enabled = request.usage_enabled.unwrap_or(!code.is_empty());
+    // Determine enabled state: explicit param only, defaulting to disabled.
+    //
+    // 「携带了代码」不构成用户的启用决定。此处的输入来自 deeplink——即第三方
+    // 构造、经浏览器抵达的不可信载荷——而 `code` 是一段会在查询用量时执行的
+    // JavaScript。若以 `!code.is_empty()` 作默认，一条链接就能让脚本在用户
+    // 从未勾选过的情况下进入启用态。
+    //
+    // 要启用，链接必须显式携带 `usageEnabled=true`。注意该参数是**链接作者**的
+    // 请求，不构成用户的同意；用户的同意体现在确认框展示了完整脚本正文与启用
+    // 徽章之后仍点了导入——所以那两处展示是本设计的承重部分，不可省略。
+    // 用户在应用内手动配置的脚本不走这条路径。
+    let enabled = request.usage_enabled.unwrap_or(false);
 
-    // Build UsageScript - use provider's API key and endpoint as defaults
-    // Note: use primary endpoint only (first one if comma-separated)
+    // Usage credentials are explicit overrides. Provider credentials remain in
+    // settings_config and are resolved by the live usage path when needed; do
+    // not duplicate them into the imported script metadata.
     let usage_script = UsageScript {
         enabled,
         language: "javascript".to_string(),
         code,
         timeout: Some(10),
-        api_key: request
-            .usage_api_key
-            .clone()
-            .or_else(|| request.api_key.clone()),
-        base_url: request.usage_base_url.clone().or_else(|| {
-            let primary = get_primary_endpoint(request);
-            if primary.is_empty() {
-                None
-            } else {
-                Some(primary)
-            }
-        }),
+        api_key: usage_api_key_override(request),
+        base_url: usage_base_url_override(request),
         access_token: request.usage_access_token.clone(),
         user_id: request.usage_user_id.clone(),
         template_type: None, // Deeplink providers don't specify template type (will use backward compatibility logic)

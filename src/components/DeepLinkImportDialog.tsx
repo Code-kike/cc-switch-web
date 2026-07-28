@@ -29,9 +29,11 @@ import { extractErrorMessage } from "@/utils/errorUtils";
 import {
   classifyEndpoint,
   classifyEnvKey,
+  decodeDeeplinkPayload,
   maskValue,
   riskI18nKey,
 } from "@/utils/deeplinkRisk";
+import { decodeBase64Utf8 } from "@/lib/utils/base64";
 
 interface DeeplinkError {
   url: string;
@@ -782,6 +784,29 @@ export const DeepLinkImportDialog = forwardRef<DeepLinkImportDialogHandle>(
                               </span>
                             </div>
                           </div>
+                        )}
+
+                        {request.usageScript && (
+                          <>
+                            {/* The complete executable payload must stay visible; never truncate it. */}
+                            <div className="space-y-1">
+                              <div className="font-medium text-sm text-muted-foreground">
+                                {t("deeplink.usageScriptCode")}
+                              </div>
+                              <pre className="max-h-48 overflow-auto rounded border border-border-default bg-muted/40 p-2 text-xs font-mono whitespace-pre-wrap break-all">
+                                {decodeDeeplinkPayload(
+                                  request.usageScript,
+                                  decodeBase64Utf8,
+                                )}
+                              </pre>
+                            </div>
+
+                            {/* Code is persisted even while disabled, so the warning is unconditional. */}
+                            <div className="text-yellow-600 dark:text-yellow-500 text-sm flex items-start gap-2">
+                              <span aria-hidden="true">⚠️</span>
+                              <span>{t("deeplink.usageScriptWarning")}</span>
+                            </div>
+                          </>
                         )}
 
                         {request.usageApiKey &&
