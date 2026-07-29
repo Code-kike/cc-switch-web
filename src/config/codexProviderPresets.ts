@@ -283,6 +283,9 @@ requires_openai_auth = true`,
     endpointCandidates: [
       "https://www.packyapi.ai/v1",
       "https://api-slb.packyapi.ai/v1",
+      "https://cf.api.fan",
+      "https://slb-v1.api.fan",
+      "https://www.packyapi.com",
     ],
     isPartner: true, // 合作伙伴
     partnerPromotionKey: "packycode", // 促销信息 i18n key

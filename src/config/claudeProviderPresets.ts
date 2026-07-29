@@ -630,6 +630,9 @@ export const providerPresets: ProviderPreset[] = [
     endpointCandidates: [
       "https://www.packyapi.ai",
       "https://api-slb.packyapi.ai",
+      "https://cf.api.fan",
+      "https://slb-v1.api.fan",
+      "https://www.packyapi.com",
     ],
     category: "third_party",
     isPartner: true, // 合作伙伴

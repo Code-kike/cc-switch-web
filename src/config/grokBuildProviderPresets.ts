@@ -290,6 +290,9 @@ export const grokBuildProviderPresets: GrokBuildProviderPreset[] = [
     endpointCandidates: [
       "https://www.packyapi.ai/v1",
       "https://api-slb.packyapi.ai/v1",
+      "https://cf.api.fan",
+      "https://slb-v1.api.fan",
+      "https://www.packyapi.com",
     ],
     category: "third_party",
     isPartner: true,

@@ -88,6 +88,9 @@ export const geminiProviderPresets: GeminiProviderPreset[] = [
     endpointCandidates: [
       "https://api-slb.packyapi.ai",
       "https://www.packyapi.ai",
+      "https://cf.api.fan",
+      "https://slb-v1.api.fan",
+      "https://www.packyapi.com",
     ],
     icon: "packycode",
   },
