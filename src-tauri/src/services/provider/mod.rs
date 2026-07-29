@@ -478,6 +478,9 @@ mod tests {
 
     #[test]
     fn extract_codex_common_config_strips_provider_fields_and_injected_artifacts() {
+        // Top-level bearer_token/wire_api model fallback injection paths;
+        // `web_search = "disabled"` is cc-switch's owned sentinel; and legacy
+        // `[mcp.servers]` cannot be cleaned by the authoritative projection.
         let config_toml = r#"model_provider = "azure"
 model = "gpt-4"
 wire_api = "chat"
@@ -518,16 +521,36 @@ command = "legacy-cmd"
             !extracted.contains("[model_providers"),
             "should remove entire model_providers table"
         );
-        assert!(!extracted.contains("mcp_servers"), "got: {extracted}");
-        assert!(!extracted.contains("legacy-cmd"), "got: {extracted}");
-        assert!(!extracted.contains("wire_api"), "got: {extracted}");
-        assert!(!extracted.contains("sk-live-secret"), "got: {extracted}");
+        // MCP belongs to the database SSOT, including the legacy form.
+        assert!(
+            !extracted.contains("mcp_servers") && !extracted.contains("http://localhost:8080"),
+            "should strip mcp_servers from the shared snippet, got: {extracted}"
+        );
+        assert!(
+            !extracted.contains("[mcp") && !extracted.contains("legacy-cmd"),
+            "should strip legacy [mcp.servers], got: {extracted}"
+        );
+        assert!(
+            !extracted.contains("wire_api"),
+            "should strip top-level routing protocol, got: {extracted}"
+        );
+        assert!(
+            !extracted.contains("experimental_bearer_token")
+                && !extracted.contains("sk-live-secret"),
+            "should strip top-level fallback bearer token, got: {extracted}"
+        );
         assert!(
             !extracted.contains("model_catalog_json"),
-            "got: {extracted}"
+            "should strip the cc-switch catalog projection, got: {extracted}"
         );
-        assert!(!extracted.contains("web_search"), "got: {extracted}");
-        assert!(extracted.contains("disable_response_storage = true"));
+        assert!(
+            !extracted.contains("web_search"),
+            "should strip the cc-switch disabled sentinel, got: {extracted}"
+        );
+        assert!(
+            extracted.contains("disable_response_storage = true"),
+            "shareable keys must survive extraction, got: {extracted}"
+        );
     }
 
     #[test]
@@ -911,6 +934,40 @@ command = "legacy-cmd"
 
     #[test]
     #[serial]
+    fn import_opencode_providers_from_live_updates_existing_provider_from_live() {
+        with_test_home(|state, _| {
+            let provider = opencode_provider("existing-opencode");
+            state
+                .db
+                .save_provider(AppType::OpenCode.as_str(), &provider)
+                .expect("seed existing opencode provider");
+
+            let mut live_settings = provider.settings_config.clone();
+            live_settings.as_object_mut().unwrap().remove("name");
+            live_settings["npm"] = Value::String("@ai-sdk/anthropic".to_string());
+            live_settings["models"]["gpt-4o"]["name"] = Value::String("Claude Sonnet".to_string());
+            crate::opencode_config::set_provider(&provider.id, live_settings)
+                .expect("seed edited live opencode provider");
+
+            let updated = import_opencode_providers_from_live(state)
+                .expect("import opencode providers from live");
+            assert_eq!(updated, 1);
+
+            let saved = state
+                .db
+                .get_provider_by_id(&provider.id, AppType::OpenCode.as_str())
+                .expect("query updated opencode provider")
+                .expect("opencode provider should exist");
+            assert_eq!(saved.name, provider.name);
+            assert_eq!(saved.settings_config["npm"], json!("@ai-sdk/anthropic"));
+            assert_eq!(
+                saved.settings_config["models"]["gpt-4o"]["name"],
+                json!("Claude Sonnet")
+            );
+        });
+    }
+    #[test]
+    #[serial]
     fn import_openclaw_providers_from_live_marks_provider_as_live_managed() {
         with_test_home(|state, _| {
             let mut provider = openclaw_provider("imported-openclaw");
@@ -940,6 +997,101 @@ command = "legacy-cmd"
                 Some(true),
                 "providers imported from live should be treated as live-managed"
             );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn import_openclaw_providers_from_live_updates_existing_provider_from_live() {
+        with_test_home(|state, _| {
+            let mut provider = openclaw_provider("existing-openclaw");
+            provider.settings_config["models"] = json!([
+                {
+                    "id": "claude-sonnet-4",
+                    "name": "Claude Sonnet 4"
+                }
+            ]);
+            state
+                .db
+                .save_provider(AppType::OpenClaw.as_str(), &provider)
+                .expect("seed existing openclaw provider");
+
+            let mut live_settings = provider.settings_config.clone();
+            live_settings["baseUrl"] = Value::String("https://api.example.com/v1".to_string());
+            live_settings["models"][0]["name"] = Value::String("Claude Sonnet 4.1".to_string());
+            crate::openclaw_config::set_provider(&provider.id, live_settings)
+                .expect("seed edited live openclaw provider");
+
+            let updated = import_openclaw_providers_from_live(state)
+                .expect("import openclaw providers from live");
+            assert_eq!(updated, 1);
+
+            let saved = state
+                .db
+                .get_provider_by_id(&provider.id, AppType::OpenClaw.as_str())
+                .expect("query updated openclaw provider")
+                .expect("openclaw provider should exist");
+            assert_eq!(saved.name, provider.name);
+            assert_eq!(
+                saved.settings_config["baseUrl"],
+                json!("https://api.example.com/v1")
+            );
+            assert_eq!(
+                saved.settings_config["models"][0]["name"],
+                json!("Claude Sonnet 4.1")
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn import_hermes_providers_from_live_updates_existing_provider_from_live() {
+        with_test_home(|state, _| {
+            let provider = hermes_provider(
+                "existing-hermes",
+                json!({
+                    "api": "openai-chat",
+                    "base_url": "https://api.example.com/v1",
+                    "api_key": "test-key",
+                    "models": {
+                        "gpt-4o": {
+                            "name": "GPT-4o"
+                        }
+                    }
+                }),
+            );
+            state
+                .db
+                .save_provider(AppType::Hermes.as_str(), &provider)
+                .expect("seed existing hermes provider");
+
+            let mut live_settings = provider.settings_config.clone();
+            live_settings["base_url"] = Value::String("https://api.hermes.example/v1".to_string());
+            live_settings["models"]["gpt-4o"]["name"] = Value::String("GPT-4o Updated".to_string());
+            crate::hermes_config::set_provider(&provider.id, live_settings)
+                .expect("seed edited live hermes provider");
+
+            let updated = import_hermes_providers_from_live(state)
+                .expect("import hermes providers from live");
+            assert_eq!(updated, 1);
+
+            let saved = state
+                .db
+                .get_provider_by_id(&provider.id, AppType::Hermes.as_str())
+                .expect("query updated hermes provider")
+                .expect("hermes provider should exist");
+            assert_eq!(saved.name, provider.name);
+            assert_eq!(
+                saved.settings_config["base_url"],
+                json!("https://api.hermes.example/v1")
+            );
+            // models are denormalized from YAML dict to UI-friendly array by
+            // get_providers(), so access by index rather than dict key
+            assert_eq!(
+                saved.settings_config["models"][0]["name"],
+                json!("GPT-4o Updated")
+            );
+            assert_eq!(saved.settings_config["models"][0]["id"], json!("gpt-4o"));
         });
     }
 
@@ -1823,6 +1975,10 @@ impl ProviderService {
                 }
             } else {
                 write_live_with_common_config(state.db.as_ref(), &app_type, &provider)?;
+                // The provider save and live rewrite already succeeded. Project
+                // only this app; unrelated broken live files must not turn that
+                // success into a false failure. Projection errors are warnings
+                // and self-heal on the next switch or MCP mutation.
                 if let Err(err) = McpService::sync_enabled_for_app(state, &app_type) {
                     log::warn!(
                         "保存供应商后重投影 {app_type:?} MCP 失败（将在下次同步时自愈）: {err}"
@@ -2099,6 +2255,17 @@ impl ProviderService {
                     // Only backfill when switching to a different provider
                     if let Ok(live_config) = read_live_settings(app_type.clone()) {
                         if let Some(mut current_provider) = providers.get(&current_id).cloned() {
+                            // Re-extract shareable live edits before stripping them from the
+                            // outgoing provider snapshot. The newly persisted snippet then
+                            // drives both value-matched backfill cleanup and the target write.
+                            Self::sync_common_config_snippet_from_live(
+                                state,
+                                &app_type,
+                                &current_provider,
+                                &live_config,
+                                &mut result,
+                            );
+
                             current_provider.settings_config =
                                 strip_common_config_from_live_settings(
                                     state.db.as_ref(),
@@ -2186,6 +2353,11 @@ impl ProviderService {
             }
         }
 
+        // Switching rewrote only the target app's live state. Re-project only
+        // that app (Codex needs its `[mcp_servers]` table restored), and keep
+        // unrelated live failures out of the path. DB current-state and live
+        // are already committed, so projection failure is a warning rather
+        // than a false "switch failed" result; later MCP operations self-heal.
         if let Err(err) = McpService::sync_enabled_for_app(state, &app_type) {
             log::warn!("切换供应商后重投影 {app_type:?} MCP 失败（将在下次同步时自愈）: {err}");
         }
@@ -2313,6 +2485,105 @@ impl ProviderService {
         }
 
         Self::migrate_legacy_common_config_usage(state, app_type, &snippet)
+    }
+
+    /// 切走某供应商前，把它 live 配置里的可共享部分重新提取并**整体替换**到
+    /// 通用配置片段，使在 live 应用里直接做的改动不会因切换而丢失。
+    ///
+    /// 采用"整体重提取 + 替换"而非"只合并新增"，是为了同时覆盖三种情况：
+    /// - **新增**：用户直接在应用里装了插件、加了 hook、改了 env/主题/权限等共享
+    ///   偏好，被捕获进通用配置，切到别的供应商也带得过去；
+    /// - **删除**：被删掉的键不在新提取结果里，于是从片段里消失、下次切换不会被
+    ///   重新注入——否则会出现"插件怎么删也删不掉"的反直觉 bug；
+    /// - **密钥安全**：Codex 提取器会剥掉 auth / model / endpoint，密钥不进入共享片段。
+    ///
+    /// 之所以"整体替换"是安全的：每次写 live 都会把当前片段合并进去，所以切走时
+    /// 读到的 live 一定是"片段 + 本地改动"的超集，重提取只会丢掉用户真正删掉的键，
+    /// 不会误删其它供应商共享的内容。
+    ///
+    /// **Fork 作用域：仅 Codex。** Codex 提取器（`extract_codex_common_config`）
+    /// 已剥离供应商专属与 cc-switch 注入内容：`model` / `model_provider` /
+    /// 顶层 `base_url` / 整张 `model_providers` 表、数据库拥有的 `mcp_servers`、
+    /// 顶层 `experimental_bearer_token` fallback、cc-switch 生成的 catalog 指针，
+    /// 以及 `web_search = "disabled"` 哨兵；用户自定义 catalog 路径仍保留。
+    /// 上游同一路径也覆盖 Claude，但本 fork 的 Claude extractor 尚缺通用
+    /// OPENROUTER/GOOGLE/OPENAI/GEMINI/AWS 凭据清洗；在该安全缺口关闭前不启用
+    /// Claude 自动回写。Gemini 同样未纳入。
+    ///
+    /// 仅对**显式勾选"写入通用配置"**（`meta.common_config_enabled == Some(true)`）的
+    /// 供应商生效；用户**显式清空**过片段（`_cleared`）时跳过，避免把用户主动清掉的
+    /// 配置又塞回来。所有失败均为非致命，只记 warning，绝不阻断切换。
+    fn sync_common_config_snippet_from_live(
+        state: &AppState,
+        app_type: &AppType,
+        provider: &Provider,
+        live_config: &Value,
+        result: &mut SwitchResult,
+    ) {
+        // Fork scope is Codex only until Claude's generic credential scrub lands.
+        if !matches!(app_type, AppType::Codex) {
+            return;
+        }
+
+        let opted_in = provider
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.common_config_enabled)
+            == Some(true);
+        if !opted_in {
+            return;
+        }
+
+        match state.db.is_config_snippet_cleared(app_type.as_str()) {
+            Ok(true) => return, // 用户显式清空过通用配置，尊重其选择，不再自动塞回
+            Ok(false) => {}
+            Err(err) => {
+                log::warn!(
+                    "Failed to read common config cleared flag for {}: {err}",
+                    app_type.as_str()
+                );
+                return;
+            }
+        }
+
+        let new_snippet = match Self::extract_common_config_snippet_from_settings(
+            app_type.clone(),
+            live_config,
+        ) {
+            Ok(snippet) => snippet,
+            Err(err) => {
+                log::warn!(
+                    "Failed to extract common config from live for {} provider '{}': {err}",
+                    app_type.as_str(),
+                    provider.id
+                );
+                return;
+            }
+        };
+
+        // 未变化则跳过，避免无谓写库（不切 live 配置时这是常态路径）。
+        let current = state
+            .db
+            .get_config_snippet(app_type.as_str())
+            .ok()
+            .flatten();
+        if current.as_deref() == Some(new_snippet.as_str()) {
+            return;
+        }
+
+        if let Err(err) = state
+            .db
+            .set_config_snippet(app_type.as_str(), Some(new_snippet))
+        {
+            log::warn!(
+                "Failed to persist synced common config for {} provider '{}': {err}",
+                app_type.as_str(),
+                provider.id
+            );
+            result
+                .warnings
+                .push(format!("common_config_sync_failed:{}", provider.id));
+        }
     }
 
     /// Extract common config snippet from current provider
@@ -2462,12 +2733,16 @@ impl ProviderService {
         root.remove("model_provider");
         // Legacy/alt formats might use a top-level base_url.
         root.remove("base_url");
+        // `wire_api` has the same provider-routing semantics as `base_url`:
+        // top-level fallback writes must not change another provider's protocol.
         root.remove("wire_api");
 
         // Remove entire model_providers table (provider-specific configuration)
         root.remove("model_providers");
 
-        // MCP tables are database-owned live projections, not provider settings.
+        // MCP tables are database-owned live projections. Strip both the
+        // current form and legacy `[mcp.servers]`, which no projection pass can
+        // clean once it leaks into every provider's shared snippet.
         root.remove("mcp_servers");
         if let Some(mcp_table) = root
             .get_mut("mcp")
@@ -2479,9 +2754,11 @@ impl ProviderService {
             }
         }
 
-        // Strip cc-switch injected or provider-routing artifacts. Preserve a
-        // user-selected web_search value; only the owned disabled sentinel is
-        // excluded from the shared snippet.
+        // Strip cc-switch-injected or provider-routing artifacts. A top-level
+        // bearer token is a credential leak; the generated catalog pointer is
+        // provider-owned, while a user's custom catalog path must remain
+        // shareable. Likewise, only the owned disabled web-search sentinel is
+        // excluded; user-selected values remain.
         root.remove("experimental_bearer_token");
         if root
             .get("model_catalog_json")

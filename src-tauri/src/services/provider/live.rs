@@ -863,6 +863,8 @@ fn restore_live_settings_for_provider_backfill(
         );
     }
 
+    // MCP 服务器归 DB mcp_servers 表所有，live 里的 [mcp_servers] 是同步投影；
+    // 回填时剥掉，否则已删除的服务器会随供应商快照复活（逐条 reconcile 清不掉孤儿）。
     if let Err(err) = crate::codex_config::strip_codex_mcp_servers_from_settings(&mut settings) {
         log::warn!(
             "Failed to strip Codex MCP projection while backfilling '{}': {err}",
@@ -1295,6 +1297,9 @@ pub(crate) fn sync_current_provider_for_app_to_live(
         }
     }
 
+    // This operation synchronizes one app, so project MCP only for that app;
+    // unrelated live-file failures must not become part of its error surface.
+    // A target-app failure still propagates because the caller can retry.
     McpService::sync_enabled_for_app(state, app_type)?;
 
     Ok(())
@@ -1359,8 +1364,9 @@ pub fn sync_current_to_live(state: &AppState) -> Result<(), AppError> {
         }
     }
 
-    // Keep syncing independent skill projections even if one MCP target is
-    // broken; surface the aggregate MCP failure after all work is attempted.
+    // Best-effort per-app MCP projection reports aggregate failures. Defer
+    // that error until after independent Skill projections have run, while
+    // still telling import/restore callers that the result is incomplete.
     let mcp_result = McpService::sync_all_enabled(state);
 
     // Skill sync
@@ -1714,15 +1720,10 @@ pub fn import_opencode_providers_from_live(state: &AppState) -> Result<usize, Ap
     }
 
     let mut imported = 0;
+    let mut updated = 0;
     let existing_ids = state.db.get_provider_ids("opencode")?;
 
     for (id, config) in providers {
-        // Skip if already exists in database
-        if existing_ids.contains(&id) {
-            log::debug!("OpenCode provider '{id}' already exists in database, skipping");
-            continue;
-        }
-
         // Convert to Value for settings_config
         let settings_config = match serde_json::to_value(&config) {
             Ok(v) => v,
@@ -1732,13 +1733,36 @@ pub fn import_opencode_providers_from_live(state: &AppState) -> Result<usize, Ap
             }
         };
 
+        if existing_ids.contains(&id) {
+            match state.db.get_provider_by_id(&id, "opencode") {
+                Ok(Some(existing)) => {
+                    let display_name = config.name.clone().unwrap_or_else(|| existing.name.clone());
+                    if existing.settings_config != settings_config || existing.name != display_name
+                    {
+                        let mut provider = existing;
+                        provider.name = display_name;
+                        provider.settings_config = settings_config;
+                        if let Err(e) = state.db.save_provider("opencode", &provider) {
+                            log::warn!(
+                                "Failed to update OpenCode provider '{id}' from live config: {e}"
+                            );
+                        } else {
+                            updated += 1;
+                            log::info!("Updated OpenCode provider '{id}' from live config");
+                        }
+                    }
+                }
+                Ok(None) => {
+                    log::warn!("OpenCode provider '{id}' disappeared while importing live config")
+                }
+                Err(e) => log::warn!("Failed to look up OpenCode provider '{id}': {e}"),
+            }
+            continue;
+        }
+
         // Create provider
-        let mut provider = Provider::with_id(
-            id.clone(),
-            config.name.clone().unwrap_or_else(|| id.clone()),
-            settings_config,
-            None,
-        );
+        let display_name = config.name.clone().unwrap_or_else(|| id.clone());
+        let mut provider = Provider::with_id(id.clone(), display_name, settings_config, None);
         provider.meta = Some(crate::provider::ProviderMeta {
             live_config_managed: Some(true),
             ..Default::default()
@@ -1754,7 +1778,7 @@ pub fn import_opencode_providers_from_live(state: &AppState) -> Result<usize, Ap
         log::info!("Imported OpenCode provider '{id}' from live config");
     }
 
-    Ok(imported)
+    Ok(imported + updated)
 }
 
 /// Import all providers from OpenClaw live config to database
@@ -1771,6 +1795,7 @@ pub fn import_openclaw_providers_from_live(state: &AppState) -> Result<usize, Ap
     }
 
     let mut imported = 0;
+    let mut updated = 0;
     let existing_ids = state.db.get_provider_ids("openclaw")?;
 
     for (id, config) in providers {
@@ -1784,12 +1809,6 @@ pub fn import_openclaw_providers_from_live(state: &AppState) -> Result<usize, Ap
             continue;
         }
 
-        // Skip if already exists in database
-        if existing_ids.contains(&id) {
-            log::debug!("OpenClaw provider '{id}' already exists in database, skipping");
-            continue;
-        }
-
         // Convert to Value for settings_config
         let settings_config = match serde_json::to_value(&config) {
             Ok(v) => v,
@@ -1798,6 +1817,30 @@ pub fn import_openclaw_providers_from_live(state: &AppState) -> Result<usize, Ap
                 continue;
             }
         };
+
+        if existing_ids.contains(&id) {
+            match state.db.get_provider_by_id(&id, "openclaw") {
+                Ok(Some(existing)) => {
+                    if existing.settings_config != settings_config {
+                        let mut provider = existing;
+                        provider.settings_config = settings_config;
+                        if let Err(e) = state.db.save_provider("openclaw", &provider) {
+                            log::warn!(
+                                "Failed to update OpenClaw provider '{id}' from live config: {e}"
+                            );
+                        } else {
+                            updated += 1;
+                            log::info!("Updated OpenClaw provider '{id}' from live config");
+                        }
+                    }
+                }
+                Ok(None) => {
+                    log::warn!("OpenClaw provider '{id}' disappeared while importing live config")
+                }
+                Err(e) => log::warn!("Failed to look up OpenClaw provider '{id}': {e}"),
+            }
+            continue;
+        }
 
         // Determine display name: use first model name if available, otherwise use id
         let display_name = config
@@ -1823,7 +1866,7 @@ pub fn import_openclaw_providers_from_live(state: &AppState) -> Result<usize, Ap
         log::info!("Imported OpenClaw provider '{id}' from live config");
     }
 
-    Ok(imported)
+    Ok(imported + updated)
 }
 
 /// Import all providers from Hermes live config to database
@@ -1840,6 +1883,7 @@ pub fn import_hermes_providers_from_live(state: &AppState) -> Result<usize, AppE
     }
 
     let mut imported = 0;
+    let mut updated = 0;
     let existing_ids = state.db.get_provider_ids("hermes")?;
 
     for (name, mut config) in providers {
@@ -1849,16 +1893,34 @@ pub fn import_hermes_providers_from_live(state: &AppState) -> Result<usize, AppE
             continue;
         }
 
-        // Skip if already exists in database
+        // Drop runtime-only markers (`_cc_source`, `provider_key`) before
+        // comparison or persistence — the provider service re-injects
+        // `_cc_source` on read by consulting the live YAML state.
+        crate::hermes_config::strip_runtime_markers(&mut config);
+
         if existing_ids.contains(&name) {
-            log::debug!("Hermes provider '{name}' already exists in database, skipping");
+            match state.db.get_provider_by_id(&name, "hermes") {
+                Ok(Some(existing)) => {
+                    if existing.settings_config != config {
+                        let mut provider = existing;
+                        provider.settings_config = config;
+                        if let Err(e) = state.db.save_provider("hermes", &provider) {
+                            log::warn!(
+                                "Failed to update Hermes provider '{name}' from live config: {e}"
+                            );
+                        } else {
+                            updated += 1;
+                            log::info!("Updated Hermes provider '{name}' from live config");
+                        }
+                    }
+                }
+                Ok(None) => {
+                    log::warn!("Hermes provider '{name}' disappeared while importing live config")
+                }
+                Err(e) => log::warn!("Failed to look up Hermes provider '{name}': {e}"),
+            }
             continue;
         }
-
-        // Drop runtime-only markers (`_cc_source`, `provider_key`) before
-        // persistence — the provider service re-injects `_cc_source` on read
-        // by consulting the live YAML state.
-        crate::hermes_config::strip_runtime_markers(&mut config);
 
         // Create provider
         let mut provider = Provider::with_id(name.clone(), name.clone(), config, None);
@@ -1877,7 +1939,7 @@ pub fn import_hermes_providers_from_live(state: &AppState) -> Result<usize, AppE
         log::info!("Imported Hermes provider '{name}' from live config");
     }
 
-    Ok(imported)
+    Ok(imported + updated)
 }
 
 /// Remove a Hermes provider from live config
@@ -2271,24 +2333,39 @@ base_url = "https://api.example/v1"
                 < merged.find("disable_response_storage").unwrap()
         );
         assert!(merged.contains("[tui]"));
+        assert!(merged.contains("notifications = true"));
+        assert!(
+            !merged.contains("[model_providers]\n"),
+            "merge must not synthesize an empty parent table header, got: {merged}"
+        );
 
         let removed = update_toml_common_config_snippet(&merged, snippet, false).unwrap();
-        assert!(!removed.contains("[tui]"));
+        assert!(!removed.contains("[tui]"), "snippet keys must be stripped");
         assert!(removed.contains("# top comment"));
+        assert!(removed.contains("disable_response_storage = true"));
     }
 
+    /// 合并时标量=片段覆盖供应商值（与 Claude 侧 deepMerge 一致）；
+    /// 剥离按值匹配：用户改过的值不删（与 strip 路径的
+    /// toml_value_is_subset 语义一致）。
     #[test]
     fn update_toml_common_config_snippet_overrides_and_removes_by_value() {
         let snippet = "[tui]\nnotifications = true\n";
         let merged =
             update_toml_common_config_snippet("[tui]\nnotifications = false\n", snippet, true)
                 .unwrap();
-        assert!(merged.contains("notifications = true"));
+        assert!(
+            merged.contains("notifications = true"),
+            "snippet scalar should override provider value, got: {merged}"
+        );
 
         let preserved =
             update_toml_common_config_snippet("[tui]\nnotifications = false\n", snippet, false)
                 .unwrap();
-        assert!(preserved.contains("notifications = false"));
+        assert!(
+            preserved.contains("notifications = false"),
+            "user-modified value must survive removal, got: {preserved}"
+        );
     }
 
     #[test]

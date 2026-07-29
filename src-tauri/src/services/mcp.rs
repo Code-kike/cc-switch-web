@@ -280,12 +280,14 @@ impl McpService {
         Ok(())
     }
 
-    /// 手动同步所有启用的 MCP 服务器到对应的应用。每个应用独立投影；
-    /// 单个 live 文件损坏不会阻止其它应用更新，失败在最后聚合返回。
+    /// Manually project all enabled MCP servers. Best effort: a broken live
+    /// file for one application must not block independent applications.
+    /// After every target is attempted, failures are returned as one aggregate
+    /// so callers still see incomplete projection.
     pub fn sync_all_enabled(state: &AppState) -> Result<(), AppError> {
         let servers = Self::get_all_servers(state)?;
 
-        let mut failures = Vec::new();
+        let mut failures: Vec<String> = Vec::new();
         for app in AppType::all() {
             if let Err(err) = Self::project_servers_to_app(state, &servers, &app) {
                 log::warn!("同步 MCP 到 {app:?} 失败: {err}");
@@ -303,6 +305,10 @@ impl McpService {
         }
     }
 
+    /// Project the authoritative database MCP set to one application after a
+    /// full live rewrite, without exposing the target path to unrelated live
+    /// failures. Codex receives a complete table replacement so stale orphans
+    /// are removed even when the authoritative set is empty.
     pub fn sync_enabled_for_app(state: &AppState, app: &AppType) -> Result<(), AppError> {
         let servers = Self::get_all_servers(state)?;
         Self::project_servers_to_app(state, &servers, app)
@@ -569,46 +575,41 @@ impl McpService {
         Ok(new_count)
     }
 
-    /// 从所有支持的应用导入 MCP。部分来源失败时保留成功导入的结果；
-    /// 若所有来源都失败且没有导入任何服务器，则向 UI 暴露失败原因。
+    /// Import MCP servers from every supported application.
+    ///
+    /// Best effort: one malformed source does not block successful imports from
+    /// other applications. After all importers run, any failures are returned
+    /// together with the number already persisted so the UI cannot misreport a
+    /// partial result as an unqualified success.
     pub fn import_from_all_apps(state: &AppState) -> Result<usize, AppError> {
         let importers: [(&str, AppImporter); 5] = [
-            ("Claude", Self::import_from_claude),
-            ("Codex", Self::import_from_codex),
-            ("Gemini", Self::import_from_gemini),
-            ("OpenCode", Self::import_from_opencode),
-            ("Hermes", Self::import_from_hermes),
+            ("claude", Self::import_from_claude),
+            ("codex", Self::import_from_codex),
+            ("gemini", Self::import_from_gemini),
+            ("opencode", Self::import_from_opencode),
+            ("hermes", Self::import_from_hermes),
         ];
 
         let mut total = 0usize;
-        let mut errors = Vec::new();
+        let mut failures: Vec<String> = Vec::new();
 
         for (app, importer) in importers {
             match importer(state) {
-                Ok(count) => {
-                    total += count;
-                }
-                Err(error) => {
-                    errors.push(format!("{app}: {error}"));
+                Ok(count) => total += count,
+                Err(err) => {
+                    log::warn!("从 {app} 导入 MCP 失败: {err}");
+                    failures.push(format!("{app}: {err}"));
                 }
             }
         }
 
-        if !errors.is_empty() {
-            log::warn!(
-                "MCP import from apps completed with {} failures: {}",
-                errors.len(),
-                errors.join("; ")
-            );
+        if failures.is_empty() {
+            Ok(total)
+        } else {
+            Err(AppError::Message(format!(
+                "已导入 {total} 个，部分应用导入失败: {}",
+                failures.join("; ")
+            )))
         }
-
-        if total == 0 && !errors.is_empty() {
-            return Err(AppError::McpValidation(format!(
-                "从应用导入 MCP 失败: {}",
-                errors.join("; ")
-            )));
-        }
-
-        Ok(total)
     }
 }

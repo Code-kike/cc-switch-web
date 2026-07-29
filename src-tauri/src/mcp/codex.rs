@@ -372,6 +372,8 @@ pub fn sync_single_server_to_codex(
     let mut doc = if config_path.exists() {
         let content =
             std::fs::read_to_string(&config_path).map_err(|e| AppError::io(&config_path, e))?;
+        // 解析失败必须报错而不是用空文档顶替：写回空文档会把用户
+        // config.toml 里的其它段落（model/model_providers/注释等）整体清空
         content
             .parse::<toml_edit::DocumentMut>()
             .map_err(|e| AppError::McpValidation(format!("解析 config.toml 失败: {e}")))?

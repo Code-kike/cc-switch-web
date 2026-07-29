@@ -286,6 +286,56 @@ fn import_mcp_from_claude_invalid_json_preserves_state() {
     );
 }
 
+/// "从应用导入"是 best-effort：单个应用的坏配置文件不阻断其余应用的
+/// 导入，但失败必须聚合上报——历史实现逐应用 `unwrap_or(0)` 吞错，
+/// 坏 config.toml 只会表现为"导入成功 0 个"，用户无从得知出了什么问题。
+#[test]
+fn import_from_all_apps_reports_broken_app_but_imports_the_rest() {
+    use support::create_test_state;
+
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let home = ensure_test_home();
+
+    // 好的 ~/.claude.json：应正常导入
+    let claude_json = json!({
+        "mcpServers": {
+            "alpha": { "type": "stdio", "command": "echo" }
+        }
+    });
+    fs::write(
+        get_claude_mcp_path(),
+        serde_json::to_string_pretty(&claude_json).expect("serialize claude mcp"),
+    )
+    .expect("seed ~/.claude.json");
+
+    // 坏的 ~/.codex/config.toml：解析必然失败
+    let codex_dir = home.join(".codex");
+    fs::create_dir_all(&codex_dir).expect("create codex dir");
+    fs::write(codex_dir.join("config.toml"), "not = = valid toml")
+        .expect("seed broken codex config");
+
+    let state = create_test_state().expect("create test state");
+
+    let err = McpService::import_from_all_apps(&state)
+        .expect_err("broken codex config must surface, not be swallowed as zero imports");
+    let message = err.to_string();
+    assert!(
+        message.contains("codex"),
+        "aggregated error should name the failing app, got: {message}"
+    );
+
+    // Codex 的失败不阻断 Claude：alpha 应已入库并启用 Claude
+    let servers = state.db.get_all_mcp_servers().expect("get all mcp servers");
+    let entry = servers
+        .get("alpha")
+        .expect("claude server imported despite codex failure");
+    assert!(
+        entry.apps.claude,
+        "imported server should have Claude app enabled"
+    );
+}
+
 #[test]
 fn import_mcp_from_all_apps_surfaces_error_when_every_source_fails() {
     use support::create_test_state;
@@ -301,23 +351,19 @@ fn import_mcp_from_all_apps_surfaces_error_when_every_source_fails() {
 
     let err = McpService::import_from_all_apps(&state)
         .expect_err("all-source import should surface parse failures");
-    match err {
-        AppError::McpValidation(msg) => {
-            assert!(
-                msg.contains("从应用导入 MCP 失败"),
-                "unexpected error message: {msg}"
-            );
-            assert!(
-                msg.contains("Claude"),
-                "error should identify the failed source: {msg}"
-            );
-            assert!(
-                msg.contains("解析 ~/.claude.json 失败"),
-                "error should preserve backend detail: {msg}"
-            );
-        }
-        other => panic!("unexpected error variant: {other:?}"),
-    }
+    let message = err.to_string();
+    assert!(
+        message.contains("已导入 0 个"),
+        "error should report the persisted count: {message}"
+    );
+    assert!(
+        message.contains("claude"),
+        "error should identify the failed source: {message}"
+    );
+    assert!(
+        message.contains("解析 ~/.claude.json 失败"),
+        "error should preserve backend detail: {message}"
+    );
 
     let servers = state.db.get_all_mcp_servers().expect("get all mcp servers");
     assert!(
@@ -327,7 +373,7 @@ fn import_mcp_from_all_apps_surfaces_error_when_every_source_fails() {
 }
 
 #[test]
-fn import_mcp_from_all_apps_keeps_partial_success_when_one_source_fails() {
+fn import_mcp_from_all_apps_reports_partial_failure_and_keeps_success() {
     use support::create_test_state;
 
     let _guard = test_mutex().lock().expect("acquire test mutex");
@@ -350,9 +396,17 @@ command = "echo"
 
     let state = create_test_state().expect("create test state");
 
-    let imported = McpService::import_from_all_apps(&state)
-        .expect("partial import should preserve successful sources");
-    assert_eq!(imported, 1);
+    let err = McpService::import_from_all_apps(&state)
+        .expect_err("partial import must surface the failed source");
+    let message = err.to_string();
+    assert!(
+        message.contains("已导入 1 个"),
+        "error should report the successful import count: {message}"
+    );
+    assert!(
+        message.contains("claude"),
+        "error should name the failed source: {message}"
+    );
 
     let servers = state.db.get_all_mcp_servers().expect("get all mcp servers");
     let partial = servers
