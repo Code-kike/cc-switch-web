@@ -1,1 +1,12 @@
-{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python3 .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file":".trellis/spec/frontend/index.md","reason":"Frontend spec index and mandatory component/type/state/quality conventions for S3 provider UI changes."}
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"S3 changes AddProviderDialog and OpenCode provider editors; preserve component composition and behavior conventions."}
+{"file":".trellis/spec/frontend/state-management.md","reason":"Provider add/switch autosync changes must preserve established state and cache invalidation patterns."}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"Provider/config synchronization code and editor fields require strict TypeScript contracts."}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Required project quality gates and regression expectations for implementation."}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"Reconcile upstream config-sync implementations with existing fork helpers instead of duplicating logic."}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"S3 spans React commands, Tauri backend config mutation, web shims, and route parity."}
+{"file":".trellis/tasks/07-25-sync-upstream-v3-18-0/research/S3-brief.md","reason":"Authoritative S3 commit order, fork-local invariants, exclusions, checkpoint discipline, and light gate."}
+{"file":".trellis/tasks/07-25-sync-upstream-v3-18-0/research/S3-progress.md","reason":"Resume the partially applied S3 batch at the exact checkpoint without redoing or losing work."}
+{"file":".trellis/tasks/07-25-sync-upstream-v3-18-0/research/S1-report.md","reason":"Prior conflict resolutions and web-first adaptation precedents that S3 must preserve."}
+{"file":".trellis/tasks/07-25-sync-upstream-v3-18-0/research/S2-report.md","reason":"Immediate prior Codex/provider bridge adaptations and deferred areas overlapping S3."}
+{"file":".trellis/tasks/07-25-sync-upstream-v3-18-0/research/S2-progress.md","reason":"Detailed S2 per-commit state for overlapping provider/common-config code."}
