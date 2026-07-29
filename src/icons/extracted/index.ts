@@ -1,6 +1,7 @@
 // Auto-generated icon index
 // Do not edit manually
 
+import _a6api from "./a6-icon.png";
 import _claudeapi from "./ClaudeApi.png";
 import _byteplus from "./byteplus.png";
 import _claudecn from "./claudecn.png";
@@ -89,6 +90,7 @@ export const icons: Record<string, string> = {
 };
 
 export const iconUrls: Record<string, string> = {
+  a6api: _a6api,
   byteplus: _byteplus,
   claudeapi: _claudeapi,
   claudecn: _claudecn,

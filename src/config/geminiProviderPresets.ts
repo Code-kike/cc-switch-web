@@ -378,6 +378,24 @@ export const geminiProviderPresets: GeminiProviderPreset[] = [
     description: "自定义 Gemini API 端点",
     category: "custom",
   },
+  {
+    name: "A6API",
+    websiteUrl: "https://www.a6api.com",
+    apiKeyUrl: "https://a6api.com/register?aff=AqNr",
+    settingsConfig: {
+      env: {
+        GOOGLE_GEMINI_BASE_URL: "https://api.a6api.com",
+        GEMINI_MODEL: "gemini-3.6-flash",
+      },
+    },
+    baseURL: "https://api.a6api.com",
+    model: "gemini-3.6-flash",
+    description: "A6API",
+    category: "aggregator",
+    isPartner: true,
+    partnerPromotionKey: "a6api",
+    icon: "a6api",
+  },
 ];
 
 export function getGeminiPresetByName(

@@ -475,6 +475,18 @@ export const grokBuildProviderPresets: GrokBuildProviderPreset[] = [
     iconColor: "#000000",
   },
   {
+    name: "A6API",
+    websiteUrl: "https://www.a6api.com",
+    apiKeyUrl: "https://a6api.com/register?aff=AqNr",
+    auth: grokAuth(),
+    config: grokPresetConfig("A6API", "https://api.a6api.com/v1"),
+    endpointCandidates: ["https://api.a6api.com/v1"],
+    category: "aggregator",
+    isPartner: true,
+    partnerPromotionKey: "a6api",
+    icon: "a6api",
+  },
+  {
     name: "Compshare",
     nameKey: "providerForm.presets.ucloud",
     websiteUrl: "https://www.compshare.cn",
