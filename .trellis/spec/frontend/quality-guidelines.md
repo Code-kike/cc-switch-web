@@ -2131,6 +2131,8 @@ await workspaceApi.writeFile(loadedFilename, content);
 
 #### 2. Signatures
 
+- `database::SCHEMA_VERSION: i32 = 15`
+- `Database::migrate_v14_to_v15(conn) -> Result<(), AppError>`
 - `import_sql_string_inner(&self, sql_raw: &str, preserve_tables: &[&str]) -> Result<String, AppError>`
 - Restore helpers:
   - `install_sql_restore_authorizer`
@@ -2152,6 +2154,15 @@ await workspaceApi.writeFile(loadedFilename, content);
 - After legacy migration and validation, always copy allowed rows into a fresh
   canonical schema created by the current code. Imported DDL never becomes the
   live schema directly.
+- Fresh-schema DDL and migration-rebuilt DDL must define `proxy_config` with the
+  same columns in the same canonical order. A table rebuild must project every
+  existing field by name and use a default only when the old column is truly
+  absent.
+- The v14 -> v15 rebuild adds the `grokbuild` proxy row plus Grok MCP/Skills
+  flags while preserving existing values including `failover_strategy`,
+  `live_takeover_active`, retry/circuit settings, pricing fields, and timeouts.
+- SQLite may emit `CREATE TABLE "proxy_config"` after a rename/rebuild. Current
+  exports from upgraded databases must accept this quoted canonical form.
 - Sync restore may reapply only `SYNC_PRESERVE_TABLES` from the local snapshot.
 - Run `PRAGMA integrity_check` and `PRAGMA foreign_key_check` on the canonical
   database before replacement.
@@ -2166,16 +2177,24 @@ await workspaceApi.writeFile(loadedFilename, content);
 - Foreign-key violation or failed integrity check -> reject.
 - Valid legacy v1/v2 export -> migrate and copy data into the current canonical
   schema.
+- v14 row with `failover_strategy = 'random'` or active takeover -> preserve the
+  values through v15; resetting them to defaults is a migration failure.
+- Current export containing quoted `CREATE TABLE "proxy_config"` -> accept and
+  canonicalize it rather than rejecting a valid upgraded database.
 - Any rejection or replacement failure -> preserve the previous live database
   and its guard data.
 
 #### 5. Good/Base/Bad Cases
 
 - Good: a current CC Switch export round-trips with its providers and MCP data.
+- Good: v14 -> v15 retains random failover, takeover state, retries, MCP flags,
+  and Skills flags while adding the Grok row.
 - Base: a supported legacy export imports, migrates, and re-exports using only
   the current schema semantics.
 - Bad: validate only the header and execute against the live database, or
   validate a temporary database and rename that untrusted schema into place.
+- Bad: rebuild `proxy_config` with a partial `INSERT ... SELECT` that silently
+  replaces existing columns with their defaults.
 
 #### 6. Tests Required
 
@@ -2188,6 +2207,10 @@ await workspaceApi.writeFile(loadedFilename, content);
   - `sql_import_accepts_legacy_v1_export_and_migrates_it`
   - `sql_import_accepts_current_export_from_upgraded_legacy_schema`
   - `sql_import_accepts_schema_v2_legacy_objects_and_normalizes_them`
+- Migration regression:
+  - `migrate_v14_to_v15_adds_grokbuild_proxy_row_and_enablement_flags`
+  - assert preservation of random failover, live takeover, retry count, MCP
+    enablement, and Skills enablement, not only the new Grok defaults.
 - Atomicity and sync tests:
   - `sql_import_holds_main_lock_across_safety_backup_and_replace`
   - `sync_import_preserves_local_only_tables`
@@ -2621,6 +2644,163 @@ await queryClient.invalidateQueries({ queryKey: ["profiles"] });
 if (payload.scope === activeApp) {
   await promptPanelRef.current?.reload();
 }
+```
+
+---
+
+### Scenario: Grok Build Official State and xAI Managed OAuth
+
+#### 1. Scope / Trigger
+
+- Trigger: changing Grok Build application wiring, the canonical Grok Official
+  provider, xAI OAuth account storage, managed-auth routing, or their Tauri/Web
+  command surfaces.
+- Applies across application parsing, provider seed/import flows, frontend
+  presets/mutations, auth managers, proxy transforms, and both runtime roots.
+
+#### 2. Signatures
+
+- Canonical provider:
+  - `GROKBUILD_OFFICIAL_PROVIDER_ID = "grokbuild-official"`
+  - `Database::ensure_official_seed_by_id(id, AppType::GrokBuild) -> Result<bool, AppError>`
+  - `ProviderService::import_default_config_with_snippet_extraction(state, AppType::GrokBuild)`
+- Dual-runtime seed command:
+  - Tauri `ensure_grokbuild_official_provider() -> Result<bool, String>`
+  - Web `POST /api/providers/ensure-grokbuild-official-provider`
+  - frontend `providersApi.ensureGrokBuildOfficialProvider(): Promise<boolean>`
+  - add payload marker `ensureGrokBuildOfficialSeed?: boolean`
+- Managed xAI auth:
+  - provider discriminator `"xai_oauth"`
+  - generic `auth_start_login`, `auth_poll_for_account`, `auth_list_accounts`,
+    `auth_get_status`, `auth_remove_account`, `auth_set_default_account`, and
+    `auth_logout` commands use POST in Web mode.
+  - `GET /api/auth/get-xai-oauth-models?accountId=<id>` carries only an account
+    identifier, not a secret.
+- Routing/storage:
+  - `XAI_API_BASE_URL = "https://api.x.ai/v1"`
+  - `providerNeedsRouting(appId, provider)`
+  - `XaiOAuthManager::write_store_atomic` uses restricted
+    `config::write_text_file`.
+
+#### 3. Contracts
+
+- Grok Build is a first-class application across Rust `AppType`, SQLite rows,
+  services, proxy lifecycle, MCP/Skills/prompts/sessions, frontend navigation,
+  API types, and retained locales. Do not implement it as a Codex-only UI alias.
+- Grok Official represents the Grok CLI's native OAuth state. Its stored config
+  is `{ "config": "" }`; CC Switch must not read, persist, overwrite, delete,
+  or proxy-take over the CLI's sibling native credential file.
+- Ordinary startup respects a user-deleted official row. Explicit import of a
+  syntax-valid no-model live config may recreate the canonical row and set it
+  current; it must not materialize an ordinary custom `default` provider.
+- Selecting the Grok Official preset in the add dialog sets only the seed marker.
+  The mutation ensures and returns `grokbuild-official` before UUID generation
+  or `providersApi.add`, preventing duplicate provider rows.
+- xAI managed OAuth is a credential source for Claude and Codex providers, not
+  the native Grok Official row. Token injection is allowed only for the exact
+  pinned `https://api.x.ai/v1` origin.
+- Discovery issuer must be `https://auth.x.ai`. Discovered device/token
+  endpoints require HTTPS, exact host `auth.x.ai`, effective port 443, and no
+  userinfo. Attacker suffixes, alternate ports, and HTTP fail closed.
+- The xAI account store uses the restricted atomic writer: regular files are
+  written privately and atomically; a final symlink is rejected rather than
+  followed. Persist `requires_reauth` and exclude such accounts from usable
+  default-account selection.
+- Managed OAuth providers require routing through takeover for the current
+  application. A merely running proxy owned by another app is not readiness.
+- A managed placeholder must never reach the pinned upstream. Local account or
+  token `AuthError` is terminal for that request and must not poison provider
+  health or silently fail over; an actual upstream 401/403 retains ordinary
+  retry/failover behavior.
+- New proxy transform modules must be declared in both `src/proxy/mod.rs` and
+  `examples/web_proxy.rs`; xAI auth/model services must likewise remain
+  available to the standalone Web runtime.
+
+#### 4. Validation & Error Matrix
+
+- Missing canonical seed + explicit ensure -> insert `grokbuild-official` and
+  return `true`.
+- Existing canonical seed, including user-renamed metadata -> return `false`
+  and preserve the row without overwriting it.
+- Missing seed during normal startup -> leave it missing.
+- Explicit import sees native official live state -> recreate/select the
+  canonical row and return success.
+- Official row requested for proxy takeover -> reject in strict per-app flows;
+  skip in best-effort/global restoration.
+- Seed marker falls through to UUID generation or ordinary `add_provider` ->
+  reject; this creates a duplicate official-looking row.
+- xAI discovery endpoint uses HTTP, userinfo, a non-443 port, or a different
+  host -> reject before sending credentials.
+- Base URL is an attacker suffix, a v2 path, or another origin -> do not inject
+  a managed token; reject a remaining proxy placeholder before the network.
+- Refresh response invalidates authentication -> persist `requires_reauth` and
+  surface it through both Tauri and Web status serialization.
+- Tauri command added without matching Axum route and `web-commands.ts` entry ->
+  reject through route-parity checks.
+
+#### 5. Good/Base/Bad Cases
+
+- Good: a user selects Grok Official after deleting it; the UI calls the exact
+  POST ensure route, returns the canonical seed, invalidates provider queries,
+  and never calls ordinary provider creation.
+- Good: a Codex xAI OAuth request uses a usable linked account, pins the xAI v1
+  Responses origin, applies namespace/sanitization transforms, and injects the
+  token locally.
+- Base: an editable xAI API-key provider may use the pinned origin without
+  inheriting managed-account requirements unless its provider metadata says so.
+- Bad: copying the native Grok credential into SQLite, accepting
+  `https://auth.x.ai.attacker.example`, following a symlinked account store, or
+  treating any running proxy as sufficient routing readiness.
+
+#### 6. Tests Required
+
+- Canonical seed/import:
+  - `ensure_recreates_grokbuild_official_seed_after_deletion`
+  - `ensure_preserves_existing_grokbuild_official_customization`
+  - `import_default_config_grokbuild_official_live_selects_official`
+  - `startup_import_grokbuild_official_live_does_not_resurrect_official`
+  - frontend mutation regression proving `providersApi.add` is not called.
+- Native-state/takeover:
+  - `grok_official_live_has_no_proxy_takeover_target`
+  - native credential preservation while writing official live config.
+- xAI security/state:
+  - `discovery_endpoints_must_stay_on_xai_origin`
+  - `account_store_round_trips_and_persists_reauth_state`
+  - `account_store_rejects_final_symlink_without_replacing_it`
+  - `managed_proxy_placeholder_is_rejected_for_pinned_xai_upstream`
+  - `proxy_placeholder_guard_does_not_expand_beyond_managed_upstreams`
+  - `xai_oauth_local_auth_failures_are_not_retryable`
+- Gates: desktop and Web cargo check/clippy, Web route/shim parity, TypeScript,
+  retained-locale parity, full Vitest, and a real Web-server fixture when the
+  user-visible tool/version surface changes.
+
+#### 7. Wrong vs Correct
+
+##### Wrong
+
+```typescript
+const provider = { ...formValues, id: generateUUID() };
+await providersApi.add(provider, "grokbuild");
+// Creates an ordinary duplicate instead of restoring the canonical seed.
+```
+
+```rust
+// Following a final symlink is wrong for the private xAI account store.
+write_text_file_managed(&storage_path, json)?;
+```
+
+##### Correct
+
+```typescript
+if (ensureGrokBuildOfficialSeed) {
+  await providersApi.ensureGrokBuildOfficialProvider();
+  return (await providersApi.getAll("grokbuild"))[GROKBUILD_OFFICIAL_PROVIDER_ID];
+}
+```
+
+```rust
+// Restricted writer: atomic/private regular-file write, final symlink rejected.
+write_text_file(&storage_path, json)?;
 ```
 
 ---
