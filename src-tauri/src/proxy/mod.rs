@@ -15,7 +15,6 @@ pub mod gemini_url;
 pub mod handler_config;
 pub mod handler_context;
 mod handlers;
-mod health;
 pub mod http_client;
 pub mod hyper_client;
 pub mod ip_guard;
@@ -50,9 +49,7 @@ pub use error::ProxyError;
 #[allow(unused_imports)]
 pub use provider_router::ProviderRouter;
 #[allow(unused_imports)]
-pub use session::{
-    extract_session_id, ClientFormat, ProxySession, SessionIdResult, SessionIdSource,
-};
+pub use session::{extract_session_id, SessionIdResult, SessionIdSource};
 #[allow(unused_imports)]
 pub use types::{ProxyConfig, ProxyServerInfo, ProxyStatus};
 

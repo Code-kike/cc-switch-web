@@ -102,6 +102,9 @@ pub mod thinking_optimizer;
 #[path = "../src/proxy/thinking_rectifier.rs"]
 pub mod thinking_rectifier;
 
+#[path = "../src/proxy/tool_media.rs"]
+pub(crate) mod tool_media;
+
 #[path = "../src/proxy/transform_codex_responses_namespace.rs"]
 pub(crate) mod transform_codex_responses_namespace;
 
@@ -124,9 +127,7 @@ pub use error::ProxyError;
 #[allow(unused_imports)]
 pub use provider_router::ProviderRouter;
 #[allow(unused_imports)]
-pub use session::{
-    extract_session_id, ClientFormat, ProxySession, SessionIdResult, SessionIdSource,
-};
+pub use session::{extract_session_id, SessionIdResult, SessionIdSource};
 #[allow(unused_imports)]
 pub use types::{ProxyConfig, ProxyServerInfo, ProxyStatus};
 
