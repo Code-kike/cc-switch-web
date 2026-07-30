@@ -298,6 +298,35 @@ impl Database {
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
 
+        // 19. Profiles 表（全应用共享的项目实体，payload 按 app 分槽快照
+        //     供应商/MCP/Skills/Prompt；各应用分组的 current 标记在 settings 表）
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS profiles (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                sort_order INTEGER,
+                created_at INTEGER,
+                updated_at INTEGER
+            )",
+            [],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+        // 修复跑过未发布开发版的库：current 标记曾是全局 key，现按应用分组
+        // （随 v14 定稿为 current_profile_id_<scope>，不单独 bump 版本）
+        if conn
+            .execute(
+                "INSERT OR REPLACE INTO settings (key, value)
+                 SELECT 'current_profile_id_claude', value FROM settings
+                 WHERE key = 'current_profile_id'",
+                [],
+            )
+            .is_ok()
+        {
+            let _ = conn.execute("DELETE FROM settings WHERE key = 'current_profile_id'", []);
+        }
+
         // 尝试添加 live_takeover_active 列到 proxy_config 表
         let _ = conn.execute(
             "ALTER TABLE proxy_config ADD COLUMN live_takeover_active INTEGER NOT NULL DEFAULT 0",
@@ -466,6 +495,11 @@ impl Database {
                         log::info!("迁移数据库从 v12 到 v13（记录输入 token 缓存语义）");
                         Self::migrate_v12_to_v13(conn)?;
                         Self::set_user_version(conn, 13)?;
+                    }
+                    13 => {
+                        log::info!("迁移数据库从 v13 到 v14（添加项目 Profiles 表）");
+                        Self::migrate_v13_to_v14(conn)?;
+                        Self::set_user_version(conn, 14)?;
                     }
                     _ => {
                         return Err(AppError::Database(format!(
@@ -1335,6 +1369,26 @@ impl Database {
                 "INTEGER NOT NULL DEFAULT 0",
             )?;
         }
+        Ok(())
+    }
+
+    /// v13 -> v14：添加项目 Profiles 表。
+    ///
+    /// 与 `create_tables_on_conn` 中的建表语句保持一致；`IF NOT EXISTS`
+    /// 让迁移在开发版已提前创建该表的数据库上仍然幂等。
+    fn migrate_v13_to_v14(conn: &Connection) -> Result<(), AppError> {
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS profiles (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                sort_order INTEGER,
+                created_at INTEGER,
+                updated_at INTEGER
+            )",
+            [],
+        )
+        .map_err(|e| AppError::Database(format!("v13 -> v14 创建 profiles 表失败: {e}")))?;
         Ok(())
     }
 
@@ -2514,7 +2568,7 @@ mod tests {
 
         Database::apply_schema_migrations_on_conn(&conn)?;
 
-        assert_eq!(Database::get_user_version(&conn)?, 13);
+        assert_eq!(Database::get_user_version(&conn)?, 14);
         assert!(Database::has_column(
             &conn,
             "proxy_request_logs",
@@ -2525,6 +2579,7 @@ mod tests {
             "usage_daily_rollups",
             "input_token_semantics"
         )?);
+        assert!(Database::table_exists(&conn, "profiles")?);
         let log_default: i64 = conn.query_row(
             "SELECT dflt_value = '0' FROM pragma_table_info('proxy_request_logs')
              WHERE name = 'input_token_semantics'",
@@ -2533,6 +2588,35 @@ mod tests {
         )?;
         assert_eq!(log_default, 1);
 
+        Ok(())
+    }
+
+    #[test]
+    fn migrate_v13_to_v14_adds_profiles_table() -> Result<(), AppError> {
+        let conn = Connection::open_in_memory()?;
+        conn.execute(
+            "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT)",
+            [],
+        )?;
+        Database::set_user_version(&conn, 13)?;
+
+        Database::apply_schema_migrations_on_conn(&conn)?;
+
+        assert_eq!(Database::get_user_version(&conn)?, 14);
+        assert!(Database::table_exists(&conn, "profiles")?);
+        for column in [
+            "id",
+            "name",
+            "payload",
+            "sort_order",
+            "created_at",
+            "updated_at",
+        ] {
+            assert!(
+                Database::has_column(&conn, "profiles", column)?,
+                "profiles.{column} should exist after migration"
+            );
+        }
         Ok(())
     }
 }

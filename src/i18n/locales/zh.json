@@ -48,6 +48,39 @@
     "bodyOfficial": "列表里还预置了 “官方（Official）” 供应商，随时点一下即可切回官方默认配置。切换前 CC Switch 会自动把当前配置备份回 default，可以放心来回切。CC Switch 就是这样工作的 😊",
     "confirm": "我知道了"
   },
+  "profiles": {
+    "switcherTooltip": {
+      "claude": "项目：一键切换 Claude Code 的供应商 / MCP / Skills / 记忆文件",
+      "codex": "项目：一键切换 Codex 的供应商 / MCP / Skills / 记忆文件"
+    },
+    "none": "不使用项目",
+    "searchPlaceholder": "搜索项目",
+    "empty": "暂无项目",
+    "createFromCurrent": "新建项目",
+    "createDescription": {
+      "claude": "把 Claude Code 当前的供应商、MCP、Skills、记忆文件保存为一个项目，之后可一键切换。",
+      "codex": "把 Codex 当前的供应商、MCP、Skills 和记忆文件配置保存为一个项目，之后可一键切换。"
+    },
+    "manage": "管理项目…",
+    "manageTitle": "管理项目",
+    "manageDescription": "项目是配置快照。切换项目时，当前配置会自动保存回原项目。",
+    "namePlaceholder": "例如：开发、绘图",
+    "rename": "重命名",
+    "noSnapshotForScope": "本侧未保存",
+    "delete": "删除",
+    "deleteConfirmTitle": "确认删除",
+    "deleteConfirmMessage": "确定要删除项目 \"{{name}}\" 吗？不会改动任何现有配置。",
+    "createSuccess": "项目已创建",
+    "createFailed": "创建项目失败: {{detail}}",
+    "updateSuccess": "项目已更新",
+    "updateFailed": "更新项目失败: {{detail}}",
+    "deleteSuccess": "项目已删除",
+    "deleteFailed": "删除项目失败: {{detail}}",
+    "applySuccess": "项目已应用",
+    "applyFailed": "应用项目失败: {{detail}}",
+    "applyWarnings": "项目已应用，{{warningCount}} 条警告：\n{{details}}",
+    "clearSuccess": "已切换为不使用项目"
+  },
   "apiKeyInput": {
     "placeholder": "请输入API Key",
     "show": "显示API Key",
@@ -289,9 +322,9 @@
         "running": "运行中",
         "stopped": "已停止"
       },
-      "modelTest": {
-        "title": "模型测试配置",
-        "description": "配置模型测试使用的默认模型和提示词"
+      "connectivityCheck": {
+        "title": "连通性检查设置",
+        "description": "配置供应商检查使用的默认模型、提示词、超时、重试和慢响应阈值"
       },
       "failover": {
         "title": "自动故障转移",
@@ -641,7 +674,9 @@
       "claudeDesc": "Anthropic Claude Code CLI",
       "codexDesc": "OpenAI Codex CLI",
       "geminiDesc": "Google Gemini CLI",
-      "opencodeDesc": "OpenCode CLI"
+      "opencodeDesc": "OpenCode CLI",
+      "showProfileSwitcher": "显示项目切换",
+      "showProfileSwitcherDescription": "在主页面顶部显示项目切换入口"
     },
     "skillStorage": {
       "title": "Skills 存储位置",
@@ -1103,15 +1138,6 @@
     "empty": "暂无端点"
   },
   "providerAdvanced": {
-    "testConfig": "模型测试配置",
-    "useCustomConfig": "使用单独配置",
-    "testConfigDesc": "为此供应商配置单独的模型测试参数，不启用时使用全局配置。",
-    "testModel": "测试模型",
-    "testModelPlaceholder": "留空使用全局配置",
-    "timeoutSecs": "超时时间（秒）",
-    "testPrompt": "测试提示词",
-    "degradedThreshold": "降级阈值（毫秒）",
-    "maxRetries": "最大重试次数",
     "pricingConfig": "计费配置",
     "useCustomPricing": "使用单独配置",
     "pricingConfigDesc": "为此供应商配置单独的计费参数，不启用时使用全局默认配置。",
@@ -2208,9 +2234,6 @@
     "comingSoonTitle": "敬请期待",
     "comingSoonDescription": "Agents 管理页当前在 Web 模式下有意保留为稳定占位页，用来保持导航结构一致；在完整功能收口前，这里不会暴露半成品操作。"
   },
-  "modelTest": {
-    "testProvider": "测试模型"
-  },
   "health": {
     "operational": "正常",
     "degraded": "降级",
@@ -2420,10 +2443,10 @@
     "stopWithRestoreFailed": "停止失败: {{detail}}"
   },
   "streamCheck": {
-    "configSaved": "健康检查配置已保存",
+    "configSaved": "连通性检查设置已保存",
     "configSaveFailed": "保存失败",
     "configSaveFailedDetail": "保存失败：{{error}}",
-    "loadFailed": "加载健康检查配置失败：{{error}}",
+    "loadFailed": "加载连通性检查设置失败：{{error}}",
     "testModels": "测试模型",
     "claudeModel": "Claude 模型",
     "codexModel": "Codex 模型",
@@ -2439,7 +2462,7 @@
     "rejected": "{{providerName}} 检查被拒: {{message}}",
     "error": "{{providerName}} 检查出错: {{error}}",
     "modelNotFound": "{{providerName}} 测试模型 {{model}} 不存在或已下架",
-    "modelNotFoundHint": "该模型可能已被供应商弃用。请在\"模型测试配置\"中更新默认测试模型。",
+    "modelNotFoundHint": "该模型可能已被供应商弃用。请在\"连通性检查设置\"中更新默认测试模型。",
     "quotaExceeded": "{{providerName}} Coding Plan 额度已用尽",
     "quotaExceededHint": "百度千帆返回了 Coding Plan 超额错误。请等待 5 小时/每周/每月额度刷新，或在千帆控制台切换套餐。",
     "httpHint": {

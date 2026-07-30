@@ -25,6 +25,9 @@ pub mod omo;
 #[path = "../src/services/prompt.rs"]
 pub mod prompt;
 
+#[path = "../src/services/profile.rs"]
+pub mod profile;
+
 #[path = "../src/services/proxy.rs"]
 pub mod proxy;
 
@@ -96,6 +99,7 @@ pub use omo::OmoService;
 pub use prompt::PromptService;
 pub use provider::{ProviderService, ProviderSortUpdate, SwitchResult};
 pub use proxy::ProxyService;
+pub use skill::SkillService;
 pub use speedtest::{EndpointLatency, SpeedtestService};
 pub use tool_version::{ToolVersion, WslShellPreferenceInput};
 pub use usage_cache::UsageCache;

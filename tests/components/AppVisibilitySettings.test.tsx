@@ -77,4 +77,28 @@ describe("AppVisibilitySettings", () => {
     fireEvent.click(claudeButton);
     expect(onChange).not.toHaveBeenCalled();
   });
+
+  it("persists the project switcher visibility independently of app tabs", () => {
+    const onChange = vi.fn();
+
+    render(
+      <AppVisibilitySettings
+        settings={{
+          showInTray: true,
+          minimizeToTrayOnClose: true,
+          language: "zh",
+          showProfileSwitcher: true,
+        }}
+        onChange={onChange}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("switch", {
+        name: "settings.appVisibility.showProfileSwitcher",
+      }),
+    );
+
+    expect(onChange).toHaveBeenCalledWith({ showProfileSwitcher: false });
+  });
 });

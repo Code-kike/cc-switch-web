@@ -310,6 +310,9 @@ pub struct AppSettings {
     /// Whether to show the failover toggle independently on the main page
     #[serde(default)]
     pub enable_failover_toggle: bool,
+    /// Whether to show the project profile switcher on the main page header
+    #[serde(default = "default_show_profile_switcher")]
+    pub show_profile_switcher: bool,
     /// Keep Codex ChatGPT login material in auth.json when switching to third-party providers.
     /// Opt-in: defaults to false so third-party switches cleanly overwrite auth.json.
     #[serde(default)]
@@ -409,6 +412,10 @@ fn default_minimize_to_tray_on_close() -> bool {
     true
 }
 
+fn default_show_profile_switcher() -> bool {
+    true
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
@@ -425,6 +432,7 @@ impl Default for AppSettings {
             usage_dashboard_refresh_interval_ms: None,
             stream_check_confirmed: None,
             enable_failover_toggle: false,
+            show_profile_switcher: true,
             preserve_codex_official_auth_on_switch: false,
             failover_confirmed: None,
             first_run_notice_confirmed: None,
@@ -1030,6 +1038,15 @@ mod tests {
         let path = AppSettings::settings_path().expect("settings path");
         let content = std::fs::read_to_string(&path).expect("read settings file");
         serde_json::from_str(&content).expect("parse settings file")
+    }
+
+    /// Project switcher is opt-out: old settings files that predate the field
+    /// must retain the visible main-page control.
+    #[test]
+    fn show_profile_switcher_defaults_true_for_legacy_settings() {
+        let settings: AppSettings = serde_json::from_str("{}").expect("legacy settings");
+        assert!(settings.show_profile_switcher);
+        assert!(AppSettings::default().show_profile_switcher);
     }
 
     /// L14: many concurrent `update_settings` calls must not deadlock, and the

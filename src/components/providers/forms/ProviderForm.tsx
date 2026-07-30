@@ -16,7 +16,6 @@ import { generateUUID } from "@/utils/uuid";
 import type {
   ProviderCategory,
   ProviderMeta,
-  ProviderTestConfig,
   ClaudeApiFormat,
   CodexApiFormat,
   ClaudeApiKeyField,
@@ -181,9 +180,6 @@ export function ProviderForm({
     return initialData?.meta?.isFullUrl ?? false;
   });
 
-  const [testConfig, setTestConfig] = useState<ProviderTestConfig>(
-    () => initialData?.meta?.testConfig ?? { enabled: false },
-  );
   const [pricingConfig, setPricingConfig] = useState<{
     enabled: boolean;
     costMultiplier?: string;
@@ -219,7 +215,6 @@ export function ProviderForm({
     setLocalIsFullUrl(
       supportsFullUrl ? (initialData?.meta?.isFullUrl ?? false) : false,
     );
-    setTestConfig(initialData?.meta?.testConfig ?? { enabled: false });
     setPricingConfig({
       enabled:
         initialData?.meta?.costMultiplier !== undefined ||
@@ -1143,7 +1138,6 @@ export function ProviderForm({
           ? selectedGitHubAccountId
           : undefined,
       codexFastMode: isCodexOauthProvider ? codexFastMode : undefined,
-      testConfig: testConfig.enabled ? testConfig : undefined,
       costMultiplier: pricingConfig.enabled
         ? pricingConfig.costMultiplier
         : undefined,
@@ -2066,9 +2060,7 @@ export function ProviderForm({
             appId !== "openclaw" &&
             appId !== "hermes" && (
               <ProviderAdvancedConfig
-                testConfig={testConfig}
                 pricingConfig={pricingConfig}
-                onTestConfigChange={setTestConfig}
                 onPricingConfigChange={setPricingConfig}
               />
             )}

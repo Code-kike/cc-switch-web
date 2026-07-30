@@ -887,6 +887,49 @@ impl ProxyService {
         Ok(())
     }
 
+    /// 同步关闭指定应用的 Live 接管（恢复配置并清标志，不停止代理服务）。
+    ///
+    /// 用于 `ProfileService::apply` 等同步路径：调用者所在线程可能没有 Tokio
+    /// runtime，无法执行 `set_takeover_for_app(false)` 里的停止服务/等待任务等
+    /// Tokio IO。这里只恢复 Live 文件、删除备份、清除 DB 接管标志，让后续
+    /// `ProviderService::switch` 能按普通路径写入目标供应商配置。
+    ///
+    /// 恢复仍走本 fork 的 backup → SSOT → placeholder cleanup 三层兜底；最终
+    /// 写入继续使用 managed atomic writers，不会绕过符号链接/回滚保护。
+    pub fn disable_takeover_for_app_sync(&self, app_type: &AppType) -> Result<(), String> {
+        let app_type_str = app_type.as_str();
+
+        // Profile apply runs on a blocking worker and does not already hold this
+        // lock. Keep restore -> backup deletion -> flag cleanup atomic with the
+        // existing takeover/hot-switch paths. Call the `_inner` restore below so
+        // this guard is not acquired recursively (tokio Mutex is non-reentrant).
+        let _guard = futures::executor::block_on(self.lock_switch_for_app(app_type_str));
+
+        futures::executor::block_on(self.restore_live_config_for_app_with_fallback_inner(app_type))
+            .map_err(|e| format!("恢复 {app_type_str} Live 配置失败: {e}"))?;
+
+        futures::executor::block_on(self.db.delete_live_backup(app_type_str))
+            .map_err(|e| format!("删除 {app_type_str} Live 备份失败: {e}"))?;
+
+        let mut config =
+            futures::executor::block_on(self.db.get_proxy_config_for_app(app_type_str))
+                .map_err(|e| format!("获取 {app_type_str} 配置失败: {e}"))?;
+        if config.enabled {
+            config.enabled = false;
+            futures::executor::block_on(self.db.update_proxy_config_for_app(config))
+                .map_err(|e| format!("清除 {app_type_str} enabled 状态失败: {e}"))?;
+        }
+
+        futures::executor::block_on(self.db.clear_provider_health_for_app(app_type_str))
+            .map_err(|e| format!("清除 {app_type_str} 健康状态失败: {e}"))?;
+
+        // 兼容旧 any-of 标志；当前 DAO 中该写入是 no-op，真实状态由各 app
+        // 的 proxy_config.enabled 决定。
+        let _ = futures::executor::block_on(self.db.set_live_takeover_active(false));
+
+        Ok(())
+    }
+
     /// 同步 Live 配置中的 Token 到数据库
     ///
     /// 在清空 Live Token 之前调用，确保数据库中的 Provider 配置有最新的 Token。
@@ -1685,7 +1728,7 @@ impl ProxyService {
             .await
     }
 
-    async fn restore_live_config_for_app_with_fallback_inner(
+    pub(crate) async fn restore_live_config_for_app_with_fallback_inner(
         &self,
         app_type: &AppType,
     ) -> Result<(), String> {
@@ -5452,6 +5495,80 @@ model = "gpt-5.1-codex"
         assert!(
             ProxyService::is_claude_live_taken_over(&live),
             "Claude Live should be taken over once the switch lock is released"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn profile_takeover_disable_serializes_on_switch_lock() {
+        use tokio::time::{sleep, Duration};
+
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let service = ProxyService::new(db.clone());
+        let original = json!({ "env": { "ANTHROPIC_API_KEY": "original" } });
+        let taken_over = json!({
+            "env": {
+                "ANTHROPIC_BASE_URL": "http://127.0.0.1:15721",
+                "ANTHROPIC_AUTH_TOKEN": PROXY_TOKEN_PLACEHOLDER
+            }
+        });
+
+        db.save_live_backup(
+            "claude",
+            &serde_json::to_string(&original).expect("serialize original"),
+        )
+        .await
+        .expect("seed live backup");
+        service
+            .write_claude_live(&taken_over)
+            .expect("seed taken-over live file");
+        let mut config = db
+            .get_proxy_config_for_app("claude")
+            .await
+            .expect("read Claude proxy config");
+        config.enabled = true;
+        db.update_proxy_config_for_app(config)
+            .await
+            .expect("mark Claude takeover enabled");
+
+        let guard = service.lock_switch_for_test("claude").await;
+        let service_for_disable = service.clone();
+        let disable = tokio::task::spawn_blocking(move || {
+            service_for_disable.disable_takeover_for_app_sync(&AppType::Claude)
+        });
+
+        sleep(Duration::from_millis(30)).await;
+        assert!(
+            !disable.is_finished(),
+            "profile takeover disable must wait for the per-app switch lock"
+        );
+
+        drop(guard);
+        disable
+            .await
+            .expect("join profile takeover disable")
+            .expect("disable takeover");
+
+        assert_eq!(
+            service.read_claude_live().expect("read restored live file"),
+            original
+        );
+        assert!(
+            db.get_live_backup("claude")
+                .await
+                .expect("read live backup")
+                .is_none(),
+            "successful disable should delete the consumed backup"
+        );
+        assert!(
+            !db.get_proxy_config_for_app("claude")
+                .await
+                .expect("read final Claude proxy config")
+                .enabled,
+            "successful disable should clear the per-app takeover flag"
         );
     }
 

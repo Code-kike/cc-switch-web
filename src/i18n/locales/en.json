@@ -48,6 +48,39 @@
     "bodyOfficial": "An “Official” preset is also included in the list — click it any time you want to switch back to the official default. CC Switch automatically backs up your current config to “default” before switching, so you can move back and forth freely. That's how CC Switch works 😊",
     "confirm": "Got it"
   },
+  "profiles": {
+    "switcherTooltip": {
+      "claude": "Projects: switch the Claude Code provider / MCP / Skills / memory files in one click",
+      "codex": "Projects: switch the Codex provider / MCP / Skills / memory files in one click"
+    },
+    "none": "No project",
+    "searchPlaceholder": "Search projects",
+    "empty": "No projects yet",
+    "createFromCurrent": "New project",
+    "createDescription": {
+      "claude": "Save the current Claude Code provider, MCP, Skills and memory file as a project you can switch to later.",
+      "codex": "Save the current Codex provider, MCP, Skills and memory file configuration as a project you can switch to later."
+    },
+    "manage": "Manage projects…",
+    "manageTitle": "Manage Projects",
+    "manageDescription": "Projects are configuration snapshots. When you switch projects, the current configuration is automatically saved back to the project you are leaving.",
+    "namePlaceholder": "e.g. Development, Drawing",
+    "rename": "Rename",
+    "noSnapshotForScope": "Not saved for this app yet",
+    "delete": "Delete",
+    "deleteConfirmTitle": "Confirm Delete",
+    "deleteConfirmMessage": "Are you sure you want to delete project \"{{name}}\"? Your current configuration will not be changed.",
+    "createSuccess": "Project created",
+    "createFailed": "Failed to create project: {{detail}}",
+    "updateSuccess": "Project updated",
+    "updateFailed": "Failed to update project: {{detail}}",
+    "deleteSuccess": "Project deleted",
+    "deleteFailed": "Failed to delete project: {{detail}}",
+    "applySuccess": "Project applied",
+    "applyFailed": "Failed to apply project: {{detail}}",
+    "applyWarnings": "Project applied with {{warningCount}} warning(s):\n{{details}}",
+    "clearSuccess": "Switched to no project"
+  },
   "apiKeyInput": {
     "placeholder": "Enter API Key",
     "show": "Show API Key",
@@ -289,9 +322,9 @@
         "running": "Running",
         "stopped": "Stopped"
       },
-      "modelTest": {
-        "title": "Model Test Config",
-        "description": "Configure default models and prompts for model testing"
+      "connectivityCheck": {
+        "title": "Connectivity Check Settings",
+        "description": "Configure the default models, prompt, timeout, retries, and slow-response threshold for provider checks"
       },
       "failover": {
         "title": "Auto Failover",
@@ -641,7 +674,9 @@
       "claudeDesc": "Anthropic Claude Code CLI",
       "codexDesc": "OpenAI Codex CLI",
       "geminiDesc": "Google Gemini CLI",
-      "opencodeDesc": "OpenCode CLI"
+      "opencodeDesc": "OpenCode CLI",
+      "showProfileSwitcher": "Show project switcher",
+      "showProfileSwitcherDescription": "Show the project switcher in the main page header"
     },
     "skillStorage": {
       "title": "Skill Storage Location",
@@ -1103,15 +1138,6 @@
     "empty": "No endpoints"
   },
   "providerAdvanced": {
-    "testConfig": "Model Test Config",
-    "useCustomConfig": "Use separate config",
-    "testConfigDesc": "Configure separate model testing parameters for this provider. Uses global settings when disabled.",
-    "testModel": "Test Model",
-    "testModelPlaceholder": "Leave empty to use global config",
-    "timeoutSecs": "Timeout (seconds)",
-    "testPrompt": "Test Prompt",
-    "degradedThreshold": "Degraded Threshold (ms)",
-    "maxRetries": "Max Retries",
     "pricingConfig": "Pricing Config",
     "useCustomPricing": "Use separate config",
     "pricingConfigDesc": "Configure separate pricing parameters for this provider. Uses global defaults when disabled.",
@@ -2208,9 +2234,6 @@
     "comingSoonTitle": "Coming Soon",
     "comingSoonDescription": "The Agents management feature is intentionally kept as a placeholder in Web mode for now. This page remains visible so the navigation stays stable, but it does not expose any partial actions yet."
   },
-  "modelTest": {
-    "testProvider": "Test model"
-  },
   "health": {
     "operational": "Operational",
     "degraded": "Degraded",
@@ -2420,10 +2443,10 @@
     "stopWithRestoreFailed": "Stop failed: {{detail}}"
   },
   "streamCheck": {
-    "configSaved": "Health check config saved",
+    "configSaved": "Connectivity check settings saved",
     "configSaveFailed": "Save failed",
     "configSaveFailedDetail": "Save failed: {{error}}",
-    "loadFailed": "Failed to load health check config: {{error}}",
+    "loadFailed": "Failed to load connectivity check settings: {{error}}",
     "testModels": "Test Models",
     "claudeModel": "Claude Model",
     "codexModel": "Codex Model",
@@ -2439,7 +2462,7 @@
     "rejected": "{{providerName}} check rejected: {{message}}",
     "error": "{{providerName}} check error: {{error}}",
     "modelNotFound": "{{providerName}} test model {{model}} does not exist or has been deprecated",
-    "modelNotFoundHint": "This model may have been retired by the provider. Update the default test model in \"Model Test Config\".",
+    "modelNotFoundHint": "This model may have been retired by the provider. Update the default test model in \"Connectivity Check Settings\".",
     "quotaExceeded": "{{providerName}} Coding Plan quota has been exceeded",
     "quotaExceededHint": "Baidu Qianfan returned a Coding Plan quota-limit error. Wait for the 5-hour, weekly, or monthly quota refresh, or adjust the plan in the Qianfan console.",
     "httpHint": {

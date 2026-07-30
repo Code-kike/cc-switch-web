@@ -1,26 +1,31 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 
 import "@/lib/api/web-commands";
 import { LogConfigPanel } from "@/components/settings/LogConfigPanel";
-import { ModelTestConfigPanel } from "@/components/usage/ModelTestConfigPanel";
+import { ConnectivityCheckConfigPanel } from "@/components/usage/ConnectivityCheckConfigPanel";
 import {
   getStreamCheckConfig,
   saveStreamCheckConfig,
   type StreamCheckConfig,
-} from "@/lib/api/model-test";
+} from "@/lib/api/connectivity-check";
 import { settingsApi } from "@/lib/api/settings";
 import { server } from "../msw/server";
-import {
-  startTestWebServer,
-  type TestWebServer,
-} from "../helpers/web-server";
+import { startTestWebServer, type TestWebServer } from "../helpers/web-server";
 
-const timeoutRegex = /^(streamCheck\.timeout|超时时间（秒）|Timeout \(seconds\))$/;
+const timeoutRegex =
+  /^(streamCheck\.timeout|超时时间（秒）|Timeout \(seconds\))$/;
 const claudeModelRegex =
   /^(streamCheck\.claudeModel|Claude 模型|Claude Model)$/;
-const testPromptRegex =
-  /^(streamCheck\.testPrompt|检查提示词|Test Prompt)$/;
+const testPromptRegex = /^(streamCheck\.testPrompt|检查提示词|Test Prompt)$/;
 const saveRegex = /^(common\.save|保存|Save)$/;
 const logDebugRegex =
   /^(settings\.advanced\.logConfig\.levels\.debug|调试|Debug)$/;
@@ -87,8 +92,8 @@ describe.sequential("Advanced config panels against real web server", () => {
     await settingsApi.setLogConfig({ enabled: true, level: "info" });
   });
 
-  it("loads, saves, and reloads the stream-check config through the rendered model test panel", async () => {
-    const { unmount } = render(<ModelTestConfigPanel />);
+  it("loads, saves, and reloads the stream-check config through the rendered connectivity check panel", async () => {
+    const { unmount } = render(<ConnectivityCheckConfigPanel />);
 
     const timeout = await screen.findByLabelText(timeoutRegex);
     const claudeModel = screen.getByLabelText(claudeModelRegex);
@@ -117,7 +122,7 @@ describe.sequential("Advanced config panels against real web server", () => {
     });
 
     unmount();
-    render(<ModelTestConfigPanel />);
+    render(<ConnectivityCheckConfigPanel />);
 
     expect(await screen.findByLabelText(timeoutRegex)).toHaveValue(77);
     expect(screen.getByLabelText(claudeModelRegex)).toHaveValue(

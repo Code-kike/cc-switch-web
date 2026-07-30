@@ -48,6 +48,39 @@
     "bodyOfficial": "リストには「Official（公式）」プリセットも用意されており、公式バージョンに戻したくなったらクリックするだけで切り替えられます。切り替える前に現在の設定は自動で default にバックアップされるので、自由に行き来できます。これが CC Switch の仕組みです 😊",
     "confirm": "了解しました"
   },
+  "profiles": {
+    "switcherTooltip": {
+      "claude": "プロジェクト：Claude Code のプロバイダー / MCP / Skills / メモリファイルをワンクリックで切り替え",
+      "codex": "プロジェクト：Codex のプロバイダー / MCP / Skills / メモリファイルをワンクリックで切り替え"
+    },
+    "none": "プロジェクトを使用しない",
+    "searchPlaceholder": "プロジェクトを検索",
+    "empty": "プロジェクトはまだありません",
+    "createFromCurrent": "新規プロジェクト",
+    "createDescription": {
+      "claude": "Claude Code の現在のプロバイダー、MCP、Skills、メモリファイルをプロジェクトとして保存し、後からワンクリックで切り替えられます。",
+      "codex": "Codex の現在のプロバイダー、MCP、Skills、メモリファイルの設定をプロジェクトとして保存し、後からワンクリックで切り替えられます。"
+    },
+    "manage": "プロジェクトを管理…",
+    "manageTitle": "プロジェクト管理",
+    "manageDescription": "プロジェクトは設定のスナップショットです。プロジェクトを切り替えると、現在の設定は元のプロジェクトに自動的に保存されます。",
+    "namePlaceholder": "例：開発、イラスト",
+    "rename": "名前を変更",
+    "noSnapshotForScope": "このアプリ側は未保存",
+    "delete": "削除",
+    "deleteConfirmTitle": "削除の確認",
+    "deleteConfirmMessage": "プロジェクト「{{name}}」を削除してもよろしいですか？現在の設定は変更されません。",
+    "createSuccess": "プロジェクトを作成しました",
+    "createFailed": "プロジェクトの作成に失敗しました: {{detail}}",
+    "updateSuccess": "プロジェクトを更新しました",
+    "updateFailed": "プロジェクトの更新に失敗しました: {{detail}}",
+    "deleteSuccess": "プロジェクトを削除しました",
+    "deleteFailed": "プロジェクトの削除に失敗しました: {{detail}}",
+    "applySuccess": "プロジェクトを適用しました",
+    "applyFailed": "プロジェクトの適用に失敗しました: {{detail}}",
+    "applyWarnings": "プロジェクトを適用しました（警告 {{warningCount}} 件）：\n{{details}}",
+    "clearSuccess": "プロジェクトを使用しない状態に切り替えました"
+  },
   "apiKeyInput": {
     "placeholder": "API Key を入力",
     "show": "API Key を表示",
@@ -289,9 +322,9 @@
         "running": "実行中",
         "stopped": "停止中"
       },
-      "modelTest": {
-        "title": "モデルテスト設定",
-        "description": "モデルテストで使用するデフォルトモデルとプロンプトを設定"
+      "connectivityCheck": {
+        "title": "接続チェック設定",
+        "description": "プロバイダーチェック用のデフォルトモデル、プロンプト、タイムアウト、リトライ、低速判定の閾値を設定"
       },
       "failover": {
         "title": "自動フェイルオーバー",
@@ -641,7 +674,9 @@
       "claudeDesc": "Anthropic Claude Code CLI",
       "codexDesc": "OpenAI Codex CLI",
       "geminiDesc": "Google Gemini CLI",
-      "opencodeDesc": "OpenCode CLI"
+      "opencodeDesc": "OpenCode CLI",
+      "showProfileSwitcher": "プロジェクト切り替えを表示",
+      "showProfileSwitcherDescription": "メイン画面上部にプロジェクト切り替えを表示します"
     },
     "skillStorage": {
       "title": "スキル保存場所",
@@ -1103,15 +1138,6 @@
     "empty": "エンドポイントがありません"
   },
   "providerAdvanced": {
-    "testConfig": "モデルテスト設定",
-    "useCustomConfig": "個別設定を使用",
-    "testConfigDesc": "このプロバイダーに個別のモデルテストパラメータを設定します。無効の場合はグローバル設定を使用します。",
-    "testModel": "テストモデル",
-    "testModelPlaceholder": "空白の場合はグローバル設定を使用",
-    "timeoutSecs": "タイムアウト（秒）",
-    "testPrompt": "テストプロンプト",
-    "degradedThreshold": "低下閾値（ミリ秒）",
-    "maxRetries": "最大リトライ回数",
     "pricingConfig": "課金設定",
     "useCustomPricing": "個別設定を使用",
     "pricingConfigDesc": "このプロバイダーに個別の課金パラメータを設定します。無効の場合はグローバル設定を使用します。",
@@ -2208,9 +2234,6 @@
     "comingSoonTitle": "準備中",
     "comingSoonDescription": "Agents 管理ページは、Web モードでは意図的に安定したプレースホルダーとして残しています。ナビゲーション構造は維持しますが、機能が収束するまで中途半端な操作は表示しません。"
   },
-  "modelTest": {
-    "testProvider": "モデルテスト"
-  },
   "health": {
     "operational": "正常",
     "degraded": "低下",
@@ -2420,10 +2443,10 @@
     "stopWithRestoreFailed": "停止に失敗しました: {{detail}}"
   },
   "streamCheck": {
-    "configSaved": "ヘルスチェック設定を保存しました",
+    "configSaved": "接続チェック設定を保存しました",
     "configSaveFailed": "保存に失敗しました",
     "configSaveFailedDetail": "保存に失敗しました: {{error}}",
-    "loadFailed": "ヘルスチェック設定の読み込みに失敗しました: {{error}}",
+    "loadFailed": "接続チェック設定の読み込みに失敗しました: {{error}}",
     "testModels": "テストモデル",
     "claudeModel": "Claude モデル",
     "codexModel": "Codex モデル",
@@ -2439,7 +2462,7 @@
     "rejected": "{{providerName}} のチェックが拒否されました: {{message}}",
     "error": "{{providerName}} のチェックでエラーが発生しました: {{error}}",
     "modelNotFound": "{{providerName}} のテストモデル {{model}} は存在しないか廃止されています",
-    "modelNotFoundHint": "このモデルはプロバイダーにより廃止された可能性があります。「モデルテスト設定」でデフォルトのテストモデルを更新してください。",
+    "modelNotFoundHint": "このモデルはプロバイダーにより廃止された可能性があります。「接続チェック設定」でデフォルトのテストモデルを更新してください。",
     "quotaExceeded": "{{providerName}} の Coding Plan 利用枠を超過しました",
     "quotaExceededHint": "Baidu Qianfan が Coding Plan の利用枠超過エラーを返しました。5時間・週次・月次の利用枠更新を待つか、Qianfan コンソールでプランを確認してください。",
     "httpHint": {

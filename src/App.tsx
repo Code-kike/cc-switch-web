@@ -64,6 +64,7 @@ import {
   DRAG_REGION_STYLE,
 } from "@/lib/platform";
 import { AppSwitcher } from "@/components/AppSwitcher";
+import { ProfileSwitcher } from "@/components/profiles/ProfileSwitcher";
 import { ProviderList } from "@/components/providers/ProviderList";
 import { AddProviderDialog } from "@/components/providers/AddProviderDialog";
 import { EditProviderDialog } from "@/components/providers/EditProviderDialog";
@@ -360,6 +361,59 @@ function App() {
       unsubscribe?.();
     };
   }, [activeApp, refetch]);
+
+  // Profile application can originate from this window, another Web client,
+  // or the desktop tray. Refresh every derived cache changed by the snapshot;
+  // takeover flags are written directly by the backend and do not pass through
+  // the normal proxy mutations.
+  useEffect(() => {
+    let unsubscribe: (() => void) | undefined;
+    let active = true;
+
+    const setupListener = async () => {
+      try {
+        const off = await listen("profile-applied", async (event) => {
+          const payload = (event.payload ?? {}) as {
+            profileId?: string | null;
+            scope?: "claude" | "codex";
+          };
+          const scopedInvalidations = payload.scope
+            ? [
+                queryClient.invalidateQueries({
+                  queryKey: ["providers", payload.scope],
+                }),
+              ]
+            : [];
+          await Promise.all([
+            queryClient.invalidateQueries({ queryKey: ["profiles"] }),
+            queryClient.invalidateQueries({ queryKey: ["mcp", "all"] }),
+            queryClient.invalidateQueries({ queryKey: ["skills"] }),
+            queryClient.invalidateQueries({
+              queryKey: ["proxyTakeoverStatus"],
+            }),
+            queryClient.invalidateQueries({ queryKey: ["proxyStatus"] }),
+            ...scopedInvalidations,
+          ]);
+          if (payload.scope === activeApp) {
+            await promptPanelRef.current?.reload();
+          }
+        });
+        if (!active) {
+          off();
+          return;
+        }
+        unsubscribe = off;
+      } catch (error) {
+        console.error("[App] Failed to subscribe profile-applied event", error);
+      }
+    };
+
+    void setupListener();
+    return () => {
+      active = false;
+      unsubscribe?.();
+    };
+  }, [activeApp, queryClient]);
 
   useEffect(() => {
     let unsubscribe: (() => void) | undefined;
@@ -1308,6 +1362,15 @@ function App() {
                   {settingsData?.enableFailoverToggle && (
                     <FailoverToggle activeApp={activeApp} />
                   )}
+                </div>
+              )}
+            {currentView === "providers" &&
+              (settingsData?.showProfileSwitcher ?? true) && (
+                <div
+                  className="flex shrink-0 items-center"
+                  style={{ WebkitAppRegion: "no-drag" } as any}
+                >
+                  <ProfileSwitcher activeApp={activeApp} />
                 </div>
               )}
             <div

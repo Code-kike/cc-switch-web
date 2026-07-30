@@ -86,6 +86,7 @@ export function useSettingsForm(): UseSettingsFormResult {
         data.enableClaudePluginIntegration ?? false,
       silentStartup: data.silentStartup ?? false,
       skipClaudeOnboarding: data.skipClaudeOnboarding ?? false,
+      showProfileSwitcher: data.showProfileSwitcher ?? true,
       preserveCodexOfficialAuthOnSwitch:
         data.preserveCodexOfficialAuthOnSwitch ?? false,
       claudeConfigDir: sanitizeDir(data.claudeConfigDir),
@@ -112,6 +113,7 @@ export function useSettingsForm(): UseSettingsFormResult {
             useAppWindowControls: false,
             enableClaudePluginIntegration: false,
             skipClaudeOnboarding: false,
+            showProfileSwitcher: true,
             preserveCodexOfficialAuthOnSwitch: false,
             language: readPersistedLanguage(),
           } as SettingsFormState);
@@ -150,6 +152,7 @@ export function useSettingsForm(): UseSettingsFormResult {
           serverData.enableClaudePluginIntegration ?? false,
         silentStartup: serverData.silentStartup ?? false,
         skipClaudeOnboarding: serverData.skipClaudeOnboarding ?? false,
+        showProfileSwitcher: serverData.showProfileSwitcher ?? true,
         preserveCodexOfficialAuthOnSwitch:
           serverData.preserveCodexOfficialAuthOnSwitch ?? false,
         claudeConfigDir: sanitizeDir(serverData.claudeConfigDir),

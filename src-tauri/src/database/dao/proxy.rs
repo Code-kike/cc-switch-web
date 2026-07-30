@@ -502,6 +502,25 @@ impl Database {
         Ok(count > 0)
     }
 
+    /// 同步版本：检查是否有任一 app 的 enabled = true。
+    ///
+    /// Profile apply 运行在阻塞线程中，用它判断关闭当前 scope 后是否还需
+    /// 保持代理服务；锁毒化时保守返回 false，让调用方尝试停止而不是留下
+    /// 一个没有接管目标的监听器。
+    pub fn is_live_takeover_active_sync(&self) -> bool {
+        let conn = match self.conn.lock() {
+            Ok(conn) => conn,
+            Err(_) => return false,
+        };
+        conn.query_row(
+            "SELECT COUNT(*) FROM proxy_config WHERE enabled = 1",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap_or(0)
+            > 0
+    }
+
     // ==================== Provider Health ====================
 
     /// 获取Provider健康状态

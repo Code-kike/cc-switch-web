@@ -33,6 +33,7 @@ const SQL_RESTORE_TABLES: &[&str] = &[
     "proxy_live_backup",
     "usage_daily_rollups",
     "session_log_sync",
+    "profiles",
 ];
 
 const LEGACY_SQL_RESTORE_TABLES: &[&str] = &["circuit_breaker_config", "failover_queue"];

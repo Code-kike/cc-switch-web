@@ -327,6 +327,7 @@ fn build_owner_map() -> OwnerMap {
     m.insert("mcp", ("mcp", "Task 5"));
     m.insert("skill", ("skills", "Task 5"));
     m.insert("prompt", ("prompts", "Task 5"));
+    m.insert("profile", ("profiles", "Task 5"));
     m.insert("setting", ("settings", "Task 5"));
     m.insert("config", ("config", "Task 5"));
     m.insert("import_export", ("config", "Task 5"));
@@ -397,9 +398,8 @@ fn classify_handler(fn_name: &str, owner_map: &OwnerMap) -> (String, String, Str
 fn owner_for_handler(handler: &str) -> String {
     match handler {
         "health" | "system" => "Task 4".into(),
-        "providers" | "universal" | "mcp" | "prompts" | "skills" | "settings" | "config" => {
-            "Task 5".into()
-        }
+        "providers" | "universal" | "mcp" | "prompts" | "profiles" | "skills" | "settings"
+        | "config" => "Task 5".into(),
         "proxy" | "global_proxy" | "failover" | "usage" | "subscription" => "Task 6".into(),
         _ => "Task 7".into(),
     }

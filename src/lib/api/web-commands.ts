@@ -26,6 +26,7 @@ const cmds = defineCommands({
     method: "POST",
     path: "/api/config/apply-claude-plugin-config",
   },
+  apply_profile: { method: "POST", path: "/api/profiles/apply-profile" },
   auth_get_status: { method: "POST", path: "/api/auth/auth-get-status" },
   auth_list_accounts: { method: "POST", path: "/api/auth/auth-list-accounts" },
   auth_logout: { method: "POST", path: "/api/auth/auth-logout" },
@@ -55,6 +56,10 @@ const cmds = defineCommands({
   clear_claude_onboarding_skip: {
     method: "POST",
     path: "/api/system/clear_claude_onboarding_skip",
+  },
+  clear_current_profile: {
+    method: "DELETE",
+    path: "/api/profiles/clear-current-profile",
   },
   copilot_get_auth_status: {
     method: "POST",
@@ -137,6 +142,7 @@ const cmds = defineCommands({
     unsupported: true as const,
   },
   create_db_backup: { method: "POST", path: "/api/backups/create-db-backup" },
+  create_profile: { method: "POST", path: "/api/profiles/create-profile" },
   delete_claude_mcp_server: {
     method: "DELETE",
     path: "/api/mcp/delete-claude-mcp-server",
@@ -161,6 +167,7 @@ const cmds = defineCommands({
     path: "/api/system/delete_model_pricing",
   },
   delete_prompt: { method: "DELETE", path: "/api/prompts/delete-prompt" },
+  delete_profile: { method: "DELETE", path: "/api/profiles/delete-profile" },
   delete_provider: { method: "DELETE", path: "/api/providers/delete-provider" },
   delete_session: { method: "DELETE", path: "/api/sessions/delete-session" },
   delete_sessions: {
@@ -542,6 +549,7 @@ const cmds = defineCommands({
     path: "/api/system/list_daily_memory_files",
   },
   list_db_backups: { method: "GET", path: "/api/backups/list-db-backups" },
+  list_profiles: { method: "GET", path: "/api/profiles/list-profiles" },
   list_sessions: { method: "GET", path: "/api/sessions/list-sessions" },
   merge_deeplink_config: {
     method: "POST",
@@ -846,6 +854,7 @@ const cmds = defineCommands({
     path: "/api/system/update_model_pricing",
   },
   update_provider: { method: "PUT", path: "/api/providers/update-provider" },
+  update_profile: { method: "PUT", path: "/api/profiles/update-profile" },
   update_providers_sort_order: {
     method: "PUT",
     path: "/api/providers/update-providers-sort-order",

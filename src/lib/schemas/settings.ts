@@ -16,6 +16,7 @@ export const settingsSchema = z.object({
   launchOnStartup: z.boolean().optional(),
   enableLocalProxy: z.boolean().optional(),
   usageDashboardRefreshIntervalMs: z.number().optional(),
+  showProfileSwitcher: z.boolean().optional(),
   preserveCodexOfficialAuthOnSwitch: z.boolean().optional(),
   language: z.enum(["en", "zh", "ja"]).optional(),
 

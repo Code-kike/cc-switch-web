@@ -18,6 +18,7 @@ pub mod mcp;
 pub mod omo;
 pub mod openclaw;
 pub mod parity;
+pub mod profiles;
 pub mod prompts;
 pub mod providers;
 pub mod proxy;
