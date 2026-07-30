@@ -164,6 +164,7 @@ function App() {
     claude: true,
     codex: true,
     gemini: true,
+    grokbuild: true,
     opencode: true,
     openclaw: true,
     hermes: true,
@@ -173,6 +174,7 @@ function App() {
     if (visibleApps.claude) return "claude";
     if (visibleApps.codex) return "codex";
     if (visibleApps.gemini) return "gemini";
+    if (visibleApps.grokbuild) return "grokbuild";
     if (visibleApps.opencode) return "opencode";
     if (visibleApps.openclaw) return "openclaw";
     if (visibleApps.hermes) return "hermes";
@@ -278,6 +280,7 @@ function App() {
   const hasSessionSupport =
     activeApp === "claude" ||
     activeApp === "codex" ||
+    activeApp === "grokbuild" ||
     activeApp === "opencode" ||
     activeApp === "openclaw" ||
     activeApp === "gemini" ||
@@ -1523,7 +1526,9 @@ function App() {
                               ? "openclaw"
                               : activeApp === "hermes"
                                 ? "hermes"
-                                : "default"
+                                : activeApp === "grokbuild"
+                                  ? "grokbuild"
+                                  : "default"
                           }
                           className="flex items-center gap-1"
                           initial={{ opacity: 0 }}

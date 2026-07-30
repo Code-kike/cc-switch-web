@@ -97,7 +97,7 @@ pub struct TrayAppSection {
 pub const AUTO_SUFFIX: &str = "auto";
 pub const TRAY_ID: &str = "cc-switch";
 
-pub const TRAY_SECTIONS: [TrayAppSection; 3] = [
+pub const TRAY_SECTIONS: [TrayAppSection; 4] = [
     TrayAppSection {
         app_type: AppType::Claude,
         prefix: "claude_",
@@ -118,6 +118,13 @@ pub const TRAY_SECTIONS: [TrayAppSection; 3] = [
         empty_id: "gemini_empty",
         header_label: "Gemini",
         log_name: "Gemini",
+    },
+    TrayAppSection {
+        app_type: AppType::GrokBuild,
+        prefix: "grokbuild_",
+        empty_id: "grokbuild_empty",
+        header_label: "Grok Build",
+        log_name: "Grok Build",
     },
 ];
 
@@ -1031,7 +1038,8 @@ pub(crate) async fn refresh_all_usage_in_tray(app: &tauri::AppHandle) {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_script_summary, format_subscription_summary, TRAY_ID};
+    use super::{format_script_summary, format_subscription_summary, TRAY_ID, TRAY_SECTIONS};
+    use crate::app_config::AppType;
     use crate::provider::{UsageData, UsageResult};
     use crate::services::subscription::{
         CredentialStatus, QuotaTier, SubscriptionQuota, TIER_FIVE_HOUR, TIER_GEMINI_FLASH,
@@ -1043,6 +1051,18 @@ mod tests {
     fn tray_id_is_unique_to_app() {
         assert_eq!(TRAY_ID, "cc-switch");
         assert_ne!(TRAY_ID, "main");
+    }
+
+    #[test]
+    fn tray_sections_include_grokbuild_provider_switching() {
+        let section = TRAY_SECTIONS
+            .iter()
+            .find(|section| section.app_type == AppType::GrokBuild)
+            .expect("Grok Build tray section should exist");
+
+        assert_eq!(section.prefix, "grokbuild_");
+        assert_eq!(section.empty_id, "grokbuild_empty");
+        assert_eq!(section.header_label, "Grok Build");
     }
 
     fn make_quota(tool: &str, success: bool, tiers: Vec<QuotaTier>) -> SubscriptionQuota {

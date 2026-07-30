@@ -141,9 +141,10 @@ function renderWithQueryClient(ui: ReactElement) {
     defaultOptions: { queries: { retry: false } },
   });
 
-  return render(
+  const result = render(
     <QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>,
   );
+  return { ...result, queryClient };
 }
 
 beforeEach(() => {
@@ -361,11 +362,11 @@ describe("ProviderList Component", () => {
     importHermesSpy.mockRestore();
   });
 
-  it("shows extracted detail when importing current config fails", async () => {
+  it("shows serialized import errors and refreshes providers after failure", async () => {
     vi.spyOn(
       importCurrentConfigModule,
       "importCurrentProviderConfig",
-    ).mockRejectedValueOnce({ detail: "current config import failed" });
+    ).mockRejectedValueOnce("current config import failed");
 
     useDragSortMock.mockReturnValueOnce({
       sortedProviders: [],
@@ -373,7 +374,7 @@ describe("ProviderList Component", () => {
       handleDragEnd: vi.fn(),
     });
 
-    renderWithQueryClient(
+    const { queryClient } = renderWithQueryClient(
       <ProviderList
         providers={{}}
         currentProviderId=""
@@ -385,6 +386,7 @@ describe("ProviderList Component", () => {
         onOpenWebsite={vi.fn()}
       />,
     );
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
 
     fireEvent.click(
       screen.getByRole("button", { name: "provider.importCurrent" }),
@@ -394,6 +396,9 @@ describe("ProviderList Component", () => {
       expect(toastErrorMock).toHaveBeenCalledWith(
         "current config import failed",
       );
+      expect(invalidateSpy).toHaveBeenCalledWith({
+        queryKey: ["providers", "claude"],
+      });
     });
   });
 

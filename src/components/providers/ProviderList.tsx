@@ -248,7 +248,13 @@ export function ProviderList({
       }
     },
     onError: (error: unknown) => {
-      toast.error(extractErrorMessage(error) || t("common.unknown"));
+      // Tauri invoke rejects with a serialized string rather than an Error in
+      // common failure paths; extract it explicitly so the toast is not empty.
+      toast.error(extractErrorMessage(error) || t("settings.importFailed"));
+      // A failed import may still have created or reconciled provider rows
+      // before the live config was found non-importable. Refresh the list so
+      // those durable side effects are visible immediately.
+      queryClient.invalidateQueries({ queryKey: ["providers", appId] });
     },
   });
 

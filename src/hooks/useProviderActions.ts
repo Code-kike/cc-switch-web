@@ -20,6 +20,8 @@ import {
 import { extractErrorMessage } from "@/utils/errorUtils";
 import { openclawKeys } from "@/hooks/useOpenClaw";
 import { usageKeys } from "@/lib/query/usage";
+import { providerNeedsRouting } from "@/utils/providerCapabilities";
+import { isOAuthProviderType } from "@/config/constants";
 
 /**
  * Hook for managing provider actions (add, update, delete, switch)
@@ -72,6 +74,7 @@ export function useProviderActions(
         providerKey?: string;
         suggestedDefaults?: OpenClawSuggestedDefaults;
         addToLive?: boolean;
+        ensureGrokBuildOfficialSeed?: boolean;
       },
     ) => {
       const enhanced = injectCodingPlanUsageScript(activeApp, provider);
@@ -151,12 +154,20 @@ export function useProviderActions(
         activeApp === "claude" &&
         provider.meta?.providerType === "github_copilot";
 
-      // Determine why this provider requires the proxy
+      // A running proxy process is not enough: another app may own the active
+      // takeover. The selected app must itself be routed through that process.
+      const routingReady = isProxyTakeover === true && isProxyRunning !== false;
+
+      // Determine why this provider requires the proxy.
       let proxyRequiredReason: string | null = null;
-      if (!isProxyRunning && provider.category !== "official") {
+      if (!routingReady && providerNeedsRouting(activeApp, provider)) {
         if (isCopilotProvider) {
           proxyRequiredReason = t("notifications.proxyReasonCopilot", {
             defaultValue: "使用 GitHub Copilot 作为 Claude 供应商",
+          });
+        } else if (isOAuthProviderType(provider.meta?.providerType)) {
+          proxyRequiredReason = t("notifications.proxyReasonManagedOAuth", {
+            defaultValue: "使用托管 OAuth 登录（令牌由本地路由注入）",
           });
         } else if (
           provider.meta?.apiFormat === "openai_chat" &&
@@ -173,11 +184,32 @@ export function useProviderActions(
             defaultValue: "使用 OpenAI Responses 接口格式",
           });
         } else if (
+          provider.meta?.apiFormat === "openai_chat" &&
+          activeApp === "grokbuild"
+        ) {
+          proxyRequiredReason = t("notifications.proxyReasonOpenAIChat", {
+            defaultValue: "使用 OpenAI Chat 接口格式",
+          });
+        } else if (
+          provider.meta?.apiFormat === "anthropic" &&
+          activeApp === "grokbuild"
+        ) {
+          proxyRequiredReason = t(
+            "notifications.proxyReasonAnthropicMessages",
+            { defaultValue: "使用 Anthropic Messages 接口格式" },
+          );
+        } else if (
           provider.meta?.isFullUrl &&
-          (activeApp === "claude" || activeApp === "codex")
+          (activeApp === "claude" ||
+            activeApp === "codex" ||
+            activeApp === "grokbuild")
         ) {
           proxyRequiredReason = t("notifications.proxyReasonFullUrl", {
             defaultValue: "开启了完整 URL 连接模式",
+          });
+        } else {
+          proxyRequiredReason = t("notifications.proxyReasonRoutingRequired", {
+            defaultValue: "需要本地路由处理请求",
           });
         }
       }
@@ -226,6 +258,9 @@ export function useProviderActions(
           if (activeApp === "codex") {
             messageKey = "notifications.codexRestartRequired";
             defaultMessage = "切换成功，请重启客户端以生效";
+          } else if (activeApp === "grokbuild") {
+            messageKey = "notifications.grokBuildRestartRequired";
+            defaultMessage = "切换成功，请重启 Grok Build 以生效";
           } else if (activeApp === "opencode" || activeApp === "openclaw") {
             // OpenCode/OpenClaw: show "added to config" message instead of "switched"
             messageKey = "notifications.addToConfigSuccess";

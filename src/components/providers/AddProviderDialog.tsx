@@ -18,6 +18,8 @@ import { providerPresets } from "@/config/claudeProviderPresets";
 import { codexProviderPresets } from "@/config/codexProviderPresets";
 import { geminiProviderPresets } from "@/config/geminiProviderPresets";
 import { extractCodexBaseUrl } from "@/utils/providerConfigUtils";
+import { extractGrokBuildBaseUrl } from "@/utils/grokBuildConfig";
+import { GROKBUILD_OFFICIAL_PROVIDER_ID } from "@/utils/providerCapabilities";
 import type { OpenClawSuggestedDefaults } from "@/config/openclawProviderPresets";
 import type { UniversalProviderPreset } from "@/config/universalProviderPresets";
 
@@ -29,6 +31,7 @@ interface AddProviderDialogProps {
     provider: Omit<Provider, "id"> & {
       providerKey?: string;
       suggestedDefaults?: OpenClawSuggestedDefaults;
+      ensureGrokBuildOfficialSeed?: boolean;
     },
   ) => Promise<void> | void;
 }
@@ -42,7 +45,10 @@ export function AddProviderDialog({
   const { t } = useTranslation();
   // OpenCode and OpenClaw don't support universal providers
   const showUniversalTab =
-    appId !== "opencode" && appId !== "openclaw" && appId !== "hermes";
+    appId !== "opencode" &&
+    appId !== "openclaw" &&
+    appId !== "hermes" &&
+    appId !== "grokbuild";
   const [activeTab, setActiveTab] = useState<"app-specific" | "universal">(
     "app-specific",
   );
@@ -114,6 +120,7 @@ export function AddProviderDialog({
       const providerData: Omit<Provider, "id"> & {
         providerKey?: string;
         suggestedDefaults?: OpenClawSuggestedDefaults;
+        ensureGrokBuildOfficialSeed?: boolean;
       } = {
         name: values.name.trim(),
         notes: values.notes?.trim() || undefined,
@@ -124,6 +131,12 @@ export function AddProviderDialog({
         ...(values.presetCategory ? { category: values.presetCategory } : {}),
         ...(values.meta ? { meta: values.meta } : {}),
       };
+
+      if (appId === "grokbuild" && values.presetId) {
+        providerData.ensureGrokBuildOfficialSeed =
+          values.presetCategory === "official" &&
+          values.presetId === GROKBUILD_OFFICIAL_PROVIDER_ID;
+      }
 
       // OpenCode/OpenClaw: pass providerKey for ID generation
       if (
@@ -211,6 +224,11 @@ export function AddProviderDialog({
           const env = parsedConfig.env as Record<string, any> | undefined;
           if (env?.GOOGLE_GEMINI_BASE_URL) {
             addUrl(env.GOOGLE_GEMINI_BASE_URL);
+          }
+        } else if (appId === "grokbuild") {
+          const config = parsedConfig.config as string | undefined;
+          if (config) {
+            addUrl(extractGrokBuildBaseUrl(config));
           }
         } else if (appId === "opencode") {
           const options = parsedConfig.options as

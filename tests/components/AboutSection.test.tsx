@@ -171,7 +171,7 @@ describe("AboutSection", () => {
 
     await waitFor(() => {
       expect(getToolVersionsMock).toHaveBeenCalledWith(
-        ["claude", "codex", "gemini", "opencode"],
+        ["claude", "codex", "gemini", "grok", "opencode"],
         {},
       );
     });
@@ -181,6 +181,18 @@ describe("AboutSection", () => {
     expect(screen.getByText("settings.serverEnvCheck")).toBeInTheDocument();
     expect(screen.getByText("settings.serverEnvCheckHint")).toBeInTheDocument();
     expect(screen.getByText("settings.serverInstallHint")).toBeInTheDocument();
+    const installCommands = screen.getByText((_, element) =>
+      Boolean(
+        element?.tagName === "PRE" &&
+          element.textContent?.includes("https://x.ai/cli/install.sh"),
+      ),
+    );
+    expect(installCommands).toHaveTextContent(
+      "|| npm i -g @xai-official/grok@latest",
+    );
+    expect(installCommands).not.toHaveTextContent(
+      "https://x.ai/cli/install.sh | bash",
+    );
     expect(screen.getByText("0.9.0")).toBeInTheDocument();
   });
 
@@ -301,7 +313,9 @@ describe("AboutSection", () => {
       hasUpdate: false,
       updateInfo: null,
       updateHandle: null,
-      checkUpdate: vi.fn().mockRejectedValue({ detail: "update endpoint down" }),
+      checkUpdate: vi
+        .fn()
+        .mockRejectedValue({ detail: "update endpoint down" }),
       resetDismiss: vi.fn(),
       isChecking: false,
     });
@@ -358,7 +372,7 @@ describe("AboutSection", () => {
 
     await waitFor(() => {
       expect(getToolVersionsMock).toHaveBeenCalledWith(
-        ["claude", "codex", "gemini", "opencode"],
+        ["claude", "codex", "gemini", "grok", "opencode"],
         {},
       );
     });

@@ -76,6 +76,10 @@ export const providersApi = {
     return await invoke("import_default_config", { app: appId });
   },
 
+  async ensureGrokBuildOfficialProvider(): Promise<boolean> {
+    return await invoke("ensure_grokbuild_official_provider");
+  },
+
   async updateTrayMenu(): Promise<boolean> {
     if (isWebMode()) {
       return true;

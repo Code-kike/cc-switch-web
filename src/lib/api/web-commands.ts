@@ -193,6 +193,10 @@ const cmds = defineCommands({
     path: "/api/skills/discover-available-skills",
   },
   enable_prompt: { method: "POST", path: "/api/prompts/enable-prompt" },
+  ensure_grokbuild_official_provider: {
+    method: "POST",
+    path: "/api/providers/ensure-grokbuild-official-provider",
+  },
   enter_lightweight_mode: {
     method: "POST",
     path: "/api/system/enter-lightweight-mode",
@@ -272,6 +276,10 @@ const cmds = defineCommands({
   get_codex_oauth_models: {
     method: "GET",
     path: "/api/auth/get-codex-oauth-models",
+  },
+  get_xai_oauth_models: {
+    method: "GET",
+    path: "/api/auth/get-xai-oauth-models",
   },
   get_coding_plan_quota: {
     method: "POST",

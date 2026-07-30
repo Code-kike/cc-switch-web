@@ -93,6 +93,7 @@ describe("useProxyStatus", () => {
           claude: false,
           codex: false,
           gemini: false,
+          grokbuild: false,
           opencode: false,
           openclaw: false,
         });

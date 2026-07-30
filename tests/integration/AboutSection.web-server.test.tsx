@@ -43,7 +43,7 @@ type ReleaseServer = {
   stop: () => Promise<void>;
 };
 
-const TOOL_NAMES = ["claude", "codex", "gemini", "opencode"] as const;
+const TOOL_NAMES = ["claude", "codex", "gemini", "grok", "opencode"] as const;
 type ToolName = (typeof TOOL_NAMES)[number];
 
 type ToolMetadataServer = {
@@ -96,6 +96,7 @@ const latestToolVersions: Record<ToolName, string> = {
   claude: "9.9.9",
   codex: "7.7.7",
   gemini: "8.8.8",
+  grok: "5.5.5",
   opencode: "6.6.6",
 };
 
@@ -174,6 +175,11 @@ async function startToolMetadataServer(): Promise<ToolMetadataServer> {
 
     if (req.method === "GET" && requestUrl.pathname === "/@google/gemini-cli") {
       sendJson({ "dist-tags": { latest: latestToolVersions.gemini } });
+      return;
+    }
+
+    if (req.method === "GET" && requestUrl.pathname === "/@xai-official/grok") {
+      sendJson({ "dist-tags": { latest: latestToolVersions.grok } });
       return;
     }
 
@@ -327,6 +333,7 @@ describe.sequential("AboutSection against real web server", () => {
     await fakeToolBin.setToolBehavior("claude", { stdout: "claude 1.0.0" });
     await fakeToolBin.setToolBehavior("codex", { stdout: "codex 0.9.1" });
     await fakeToolBin.setToolBehavior("gemini", { stdout: "gemini 5.0.0" });
+    await fakeToolBin.setToolBehavior("grok", { stdout: "grok 0.5.0" });
     await fakeToolBin.setToolBehavior("opencode", { stdout: "opencode 2.4.0" });
     localStorage.clear();
 
@@ -361,6 +368,7 @@ describe.sequential("AboutSection against real web server", () => {
         expect(screen.getByText("1.0.0")).toBeInTheDocument();
         expect(screen.getByText("0.9.1")).toBeInTheDocument();
         expect(screen.getByText("5.0.0")).toBeInTheDocument();
+        expect(screen.getByText("0.5.0")).toBeInTheDocument();
         expect(screen.getByText("2.4.0")).toBeInTheDocument();
         expect(screen.getByText(latestToolVersions.claude)).toBeInTheDocument();
       },

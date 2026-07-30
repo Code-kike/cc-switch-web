@@ -531,6 +531,11 @@ impl SkillService {
                     return Ok(custom.join("skills"));
                 }
             }
+            AppType::GrokBuild => {
+                if let Some(custom) = crate::settings::get_grok_override_dir() {
+                    return Ok(custom.join("skills"));
+                }
+            }
             AppType::OpenCode => {
                 if let Some(custom) = crate::settings::get_opencode_override_dir() {
                     return Ok(custom.join("skills"));
@@ -555,6 +560,7 @@ impl SkillService {
             AppType::Claude => home.join(".claude").join("skills"),
             AppType::Codex => home.join(".codex").join("skills"),
             AppType::Gemini => home.join(".gemini").join("skills"),
+            AppType::GrokBuild => home.join(".grok").join("skills"),
             AppType::OpenCode => home.join(".config").join("opencode").join("skills"),
             AppType::OpenClaw => home.join(".openclaw").join("skills"),
             AppType::Hermes => crate::hermes_config::get_hermes_dir().join("skills"),

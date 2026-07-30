@@ -74,11 +74,24 @@ export const handlers = [
       claude: false,
       codex: false,
       gemini: false,
+      grokbuild: false,
       opencode: false,
       openclaw: false,
       hermes: false,
     }),
   ),
+  http.post("/api/auth/auth-get-status", async ({ request }) => {
+    const { authProvider = "xai_oauth" } = await withJson<{
+      authProvider?: "github_copilot" | "codex_oauth" | "xai_oauth";
+    }>(request);
+    return success({
+      provider: authProvider,
+      authenticated: false,
+      default_account_id: null,
+      migration_error: null,
+      accounts: [],
+    });
+  }),
   http.get("/api/providers/get-providers", ({ request }) => {
     const url = new URL(request.url);
     const app = (url.searchParams.get("app") ?? "claude") as AppId;
@@ -99,6 +112,21 @@ export const handlers = [
     addProvider(app, { ...provider, id: newId });
     return success(true);
   }),
+  http.post("/api/providers/ensure-grokbuild-official-provider", () => {
+    const existing = getProviders("grokbuild")["grokbuild-official"];
+    if (!existing) {
+      addProvider("grokbuild", {
+        id: "grokbuild-official",
+        name: "Grok Official",
+        websiteUrl: "https://x.ai/grok",
+        category: "official",
+        settingsConfig: { config: "" },
+        icon: "grok",
+        iconColor: "currentColor",
+      });
+    }
+    return success(!existing);
+  }),
   http.put("/api/providers/update-provider", async ({ request }) => {
     const { provider, app } = await withJson<{
       provider: Provider;
@@ -116,14 +144,17 @@ export const handlers = [
     setCurrentProviderId(app, id);
     return success({ warnings: [] });
   }),
-  http.put("/api/providers/update-providers-sort-order", async ({ request }) => {
-    const { updates = [], app } = await withJson<{
-      updates: { id: string; sortIndex: number }[];
-      app: AppId;
-    }>(request);
-    updateSortOrder(app, updates);
-    return success(true);
-  }),
+  http.put(
+    "/api/providers/update-providers-sort-order",
+    async ({ request }) => {
+      const { updates = [], app } = await withJson<{
+        updates: { id: string; sortIndex: number }[];
+        app: AppId;
+      }>(request);
+      updateSortOrder(app, updates);
+      return success(true);
+    },
+  ),
   http.get("/api/openclaw/get-openclaw-live-provider-ids", () =>
     success(getLiveProviderIds("openclaw")),
   ),
@@ -174,7 +205,9 @@ export const handlers = [
 
   http.post(`${TAURI_ENDPOINT}/scan_openclaw_config_health`, () => success([])),
   http.post(`${TAURI_ENDPOINT}/get_installed_skills`, () => success([])),
-  http.post(`${TAURI_ENDPOINT}/get_hermes_live_provider_ids`, () => success([])),
+  http.post(`${TAURI_ENDPOINT}/get_hermes_live_provider_ids`, () =>
+    success([]),
+  ),
   http.post(`${TAURI_ENDPOINT}/get_hermes_model_config`, () => success(null)),
   http.get("/api/skills/get-installed-skills", () => success([])),
 
@@ -197,6 +230,22 @@ export const handlers = [
     const newId = provider.id ?? `mock-${Date.now()}`;
     addProvider(app, { ...provider, id: newId });
     return success(true);
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/ensure_grokbuild_official_provider`, () => {
+    const existing = getProviders("grokbuild")["grokbuild-official"];
+    if (!existing) {
+      addProvider("grokbuild", {
+        id: "grokbuild-official",
+        name: "Grok Official",
+        websiteUrl: "https://x.ai/grok",
+        category: "official",
+        settingsConfig: { config: "" },
+        icon: "grok",
+        iconColor: "currentColor",
+      });
+    }
+    return success(!existing);
   }),
 
   http.post(`${TAURI_ENDPOINT}/update_provider`, async ({ request }) => {
@@ -488,6 +537,7 @@ export const handlers = [
       claude: false,
       codex: false,
       gemini: false,
+      grokbuild: false,
     }),
   ),
 

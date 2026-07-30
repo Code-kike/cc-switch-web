@@ -20,6 +20,7 @@ mod deeplink;
 mod error;
 mod gemini_config;
 mod gemini_mcp;
+mod grok_config;
 pub mod hermes_config;
 mod init_status;
 mod json5_doc;
@@ -53,11 +54,13 @@ pub use config::{get_claude_mcp_path, get_claude_settings_path, read_json_file};
 pub use database::{Database, Profile};
 pub use deeplink::{import_provider_from_deeplink, parse_deeplink_url, DeepLinkImportRequest};
 pub use error::AppError;
+pub use grok_config::get_grok_config_path;
 pub use mcp::{
-    import_from_claude, import_from_codex, import_from_gemini, remove_server_from_claude,
-    remove_server_from_codex, remove_server_from_gemini, sync_enabled_to_claude,
-    sync_enabled_to_codex, sync_enabled_to_gemini, sync_single_server_to_claude,
-    sync_single_server_to_codex, sync_single_server_to_gemini,
+    import_from_claude, import_from_codex, import_from_gemini, import_from_grokbuild,
+    remove_server_from_claude, remove_server_from_codex, remove_server_from_gemini,
+    remove_server_from_grokbuild, sync_enabled_to_claude, sync_enabled_to_codex,
+    sync_enabled_to_gemini, sync_single_server_to_claude, sync_single_server_to_codex,
+    sync_single_server_to_gemini, sync_single_server_to_grokbuild,
 };
 pub use prompt::Prompt;
 pub use prompt_files::prompt_file_path;
@@ -626,9 +629,22 @@ pub fn run() {
                 log::info!("✓ CodexOAuthManager initialized");
             }
 
+            // 初始化 xAI OAuthManager (Grok API 反代)
+            {
+                use crate::proxy::providers::xai_oauth_auth::XaiOAuthManager;
+                use commands::XaiOAuthState;
+                use tokio::sync::RwLock;
+
+                let app_config_dir = crate::config::get_app_config_dir();
+                let xai_oauth_manager = XaiOAuthManager::new(app_config_dir);
+                app.manage(XaiOAuthState(Arc::new(RwLock::new(xai_oauth_manager))));
+                log::info!("✓ XaiOAuthManager initialized");
+            }
+
             // 注入代理运行时上下文（取代旧的 set_app_handle）：
             // 事件/托盘走 TauriEventSink，OAuth 管理器直接注入（与
-            // app.manage 的 CopilotAuthState/CodexOAuthState 共享同一 Arc），
+            // app.manage 的 CopilotAuthState/CodexOAuthState/XaiOAuthState
+            // 共享同一 Arc），
             // 故障转移热切换句柄由 set_runtime_ctx 自动填入。
             // 代理服务器只会在 setup 之后启动（startup 恢复任务或前端命令），
             // 因此此处注入时机与旧 set_app_handle 等效。
@@ -636,10 +652,12 @@ pub fn run() {
                 let app_state = app.state::<AppState>();
                 let copilot_auth = app.state::<commands::CopilotAuthState>().0.clone();
                 let codex_oauth = app.state::<commands::CodexOAuthState>().0.clone();
+                let xai_oauth = app.state::<commands::XaiOAuthState>().0.clone();
                 app_state.proxy_service.set_runtime_ctx(
                     Arc::new(crate::runtime::TauriEventSink::new(app.handle().clone())),
                     copilot_auth,
                     codex_oauth,
+                    xai_oauth,
                 );
             }
 
@@ -856,6 +874,7 @@ pub fn run() {
             commands::remove_provider_from_live_config,
             commands::switch_provider,
             commands::import_default_config,
+            commands::ensure_grokbuild_official_provider,
             commands::get_claude_config_status,
             commands::get_config_status,
             commands::get_claude_code_config_path,
@@ -908,6 +927,7 @@ pub fn run() {
             commands::get_subscription_quota,
             commands::get_codex_oauth_quota,
             commands::get_codex_oauth_models,
+            commands::get_xai_oauth_models,
             commands::get_coding_plan_quota,
             commands::get_balance,
             // New MCP via config.json (SSOT)
@@ -1341,14 +1361,7 @@ pub async fn cleanup_before_exit(app_handle: &tauri::AppHandle) {
 /// 则自动启动代理服务并接管对应应用的 Live 配置。
 async fn restore_proxy_state_on_startup(state: &store::AppState) {
     // 收集需要恢复接管的应用列表（从 proxy_config.enabled 读取）
-    let mut apps_to_restore = Vec::new();
-    for app_type in ["claude", "codex", "gemini"] {
-        if let Ok(config) = state.db.get_proxy_config_for_app(app_type).await {
-            if config.enabled {
-                apps_to_restore.push(app_type);
-            }
-        }
-    }
+    let apps_to_restore = bootstrap::enabled_proxy_apps_on_startup(&state.db).await;
 
     if apps_to_restore.is_empty() {
         log::debug!("启动时无需恢复代理状态");

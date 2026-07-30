@@ -45,7 +45,7 @@ interface ToolVersion {
   wsl_distro: string | null;
 }
 
-const TOOL_NAMES = ["claude", "codex", "gemini", "opencode"] as const;
+const TOOL_NAMES = ["claude", "codex", "gemini", "grok", "opencode"] as const;
 type ToolName = (typeof TOOL_NAMES)[number];
 
 type WslShellPreference = {
@@ -89,6 +89,8 @@ curl -fsSL https://claude.ai/install.sh | bash
 npm i -g @openai/codex@latest
 # Gemini CLI
 npm i -g @google/gemini-cli@latest
+# Grok Build (Native install - recommended; npm fallback)
+bash -c 'tmp=$(mktemp) && curl -fsSL https://x.ai/cli/install.sh -o "$tmp" && bash "$tmp"; status=$?; rm -f "$tmp"; exit $status' || npm i -g @xai-official/grok@latest
 # OpenCode
 curl -fsSL https://opencode.ai/install | bash`;
 
@@ -528,7 +530,9 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
               const displayName =
                 toolName === "opencode"
                   ? "OpenCode"
-                  : toolName.charAt(0).toUpperCase() + toolName.slice(1);
+                  : toolName === "grok"
+                    ? "Grok Build"
+                    : toolName.charAt(0).toUpperCase() + toolName.slice(1);
               const title = tool?.version || tool?.error || t("common.unknown");
 
               return (

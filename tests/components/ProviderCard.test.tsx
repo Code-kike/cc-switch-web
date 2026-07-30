@@ -230,6 +230,22 @@ describe("ProviderCard", () => {
         {...baseProps}
         appId="codex"
         provider={createProvider({
+          name: "Managed xAI Codex",
+          meta: {
+            providerType: "xai_oauth",
+            apiFormat: "openai_responses",
+          },
+        })}
+      />,
+    );
+
+    expect(screen.getByText("需要路由")).toBeInTheDocument();
+
+    rerender(
+      <ProviderCard
+        {...baseProps}
+        appId="codex"
+        provider={createProvider({
           name: "Official Codex",
           category: "official",
         })}

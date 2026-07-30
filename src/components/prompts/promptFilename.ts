@@ -4,6 +4,7 @@ const PROMPT_FILENAME_MAP: Record<AppId, string> = {
   claude: "CLAUDE.md",
   codex: "AGENTS.md",
   gemini: "GEMINI.md",
+  grokbuild: "AGENTS.md",
   opencode: "AGENTS.md",
   openclaw: "AGENTS.md",
   hermes: "AGENTS.md",

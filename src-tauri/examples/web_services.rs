@@ -94,6 +94,9 @@ pub mod webdav_auto_sync;
 #[path = "../src/services/webdav_sync.rs"]
 pub mod webdav_sync;
 
+#[path = "../src/services/xai_oauth.rs"]
+pub mod xai_oauth;
+
 pub use mcp::McpService;
 pub use omo::OmoService;
 pub use prompt::PromptService;

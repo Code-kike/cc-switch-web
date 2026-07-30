@@ -243,6 +243,17 @@ fn extract_provider_usage_credentials(provider: &Provider, app_type: &AppType) -
                 .or_else(|| setting_base_url(settings, &["base_url"]))
                 .or_else(|| setting_base_url(settings, &["baseURL"])),
         ),
+        AppType::GrokBuild => {
+            let (base_url, api_key) = settings
+                .get("config")
+                .and_then(Value::as_str)
+                .and_then(crate::grok_config::extract_credentials)
+                .unwrap_or_default();
+            (
+                non_empty_opt_string(Some(&api_key)),
+                non_empty_opt_base_url(Some(&base_url)),
+            )
+        }
         AppType::OpenCode => (
             setting_string(settings, &["options", "apiKey"]),
             setting_base_url(settings, &["options", "baseURL"]),

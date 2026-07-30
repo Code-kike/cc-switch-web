@@ -25,6 +25,7 @@ use super::{
 };
 use crate::proxy::providers::codex_oauth_auth::CodexOAuthManager;
 use crate::proxy::providers::copilot_auth::CopilotAuthManager;
+use crate::proxy::providers::xai_oauth_auth::XaiOAuthManager;
 use crate::{app_config::AppType, provider::Provider};
 use bytes::Bytes;
 use futures::StreamExt;
@@ -32,6 +33,8 @@ use http::Extensions;
 use serde_json::Value;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+
+const PROXY_AUTH_PLACEHOLDER: &str = "PROXY_MANAGED";
 
 pub struct ForwardResult {
     pub response: ProxyResponse,
@@ -898,7 +901,7 @@ impl RequestForwarder {
                     // 先分类错误，决定是否计入 provider 健康度。
                     // NonRetryable / ClientAbort 是客户端层错误，无论换哪家 provider 都会被拒绝，
                     // 不应污染熔断器和数据库健康度。
-                    let category = self.categorize_proxy_error(&e);
+                    let category = self.categorize_proxy_error(&e, provider);
 
                     match category {
                         ErrorCategory::Retryable => {
@@ -1023,7 +1026,9 @@ impl RequestForwarder {
             .meta
             .as_ref()
             .and_then(|meta| meta.is_full_url)
-            .unwrap_or(false);
+            .unwrap_or(false)
+            && !provider.is_codex_oauth()
+            && !provider.is_xai_oauth();
 
         // 应用模型映射（独立于格式转换）
         let (mapped_body, _original_model, _mapped_model) =
@@ -1031,6 +1036,12 @@ impl RequestForwarder {
 
         // 与 CCH 对齐：请求前不做 thinking 主动改写（仅保留兼容入口）
         let mut mapped_body = normalize_thinking_type(mapped_body);
+
+        // Grok Build exposes a stable client-side profile while its selected
+        // model table carries the real upstream model identifier.
+        if matches!(app_type, AppType::GrokBuild) {
+            super::providers::apply_grok_upstream_model(provider, &mut mapped_body);
+        }
 
         // 确定有效端点
         // GitHub Copilot API 使用 /chat/completions（无 /v1 前缀）
@@ -1231,7 +1242,7 @@ impl RequestForwarder {
         };
 
         // 转换请求体（如果需要）
-        let request_body = if needs_transform {
+        let mut request_body = if needs_transform {
             if adapter.name() == "Claude" {
                 let api_format = resolved_claude_api_format
                     .as_deref()
@@ -1250,6 +1261,40 @@ impl RequestForwarder {
         } else {
             mapped_body
         };
+
+        // Codex 0.142+ can emit ChatGPT-private namespace/plugin tool shapes
+        // on the native Responses wire. xAI's strict schema rejects them, so
+        // flatten them before the xAI-only sanitization pass.
+        if matches!(app_type, AppType::Codex | AppType::GrokBuild)
+            && super::providers::provider_needs_responses_namespace_flatten(provider)
+            && super::transform_codex_responses_namespace::flatten_request_namespaces(
+                &mut request_body,
+            )?
+        {
+            log::debug!(
+                "[Codex] Flattened namespace tools for native Responses upstream (provider={})",
+                provider.id
+            );
+        }
+
+        // Remove OpenAI-backend-private fields and unsupported tool carriers
+        // only for the managed xAI native Responses route. Run after namespace
+        // flattening so lifted function tools survive the type whitelist.
+        if matches!(app_type, AppType::Codex | AppType::GrokBuild)
+            && super::providers::provider_needs_responses_namespace_flatten(provider)
+            && super::transform_codex_responses_xai_sanitize::sanitize_xai_responses_request(
+                &mut request_body,
+            )
+        {
+            log::debug!(
+                "[Codex] Sanitized xAI-unsupported Responses fields (provider={})",
+                provider.id
+            );
+        }
+
+        if matches!(app_type, AppType::Codex | AppType::GrokBuild) {
+            self.apply_media_prevention(&mut request_body, provider);
+        }
 
         // 过滤私有参数（以 `_` 开头的字段），防止内部信息泄露到上游
         // 默认使用空白名单，过滤所有 _ 前缀字段
@@ -1370,6 +1415,44 @@ impl RequestForwarder {
                     log::error!("[CodexOAuth] 运行时上下文不可用");
                     return Err(ProxyError::AuthError(
                         "Codex OAuth 认证不可用（无运行时上下文）".to_string(),
+                    ));
+                }
+            }
+
+            // xAI OAuth: resolve a managed account token immediately before
+            // sending the request. The runtime-neutral manager is shared with
+            // desktop commands or Web API handlers, so cache and re-auth state
+            // remain consistent in both runtimes.
+            if auth.strategy == AuthStrategy::XaiOAuth {
+                if let Some(ctx) = &self.runtime_ctx {
+                    let xai_auth: tokio::sync::RwLockReadGuard<'_, XaiOAuthManager> =
+                        ctx.xai_oauth.read().await;
+                    let account_id = provider
+                        .meta
+                        .as_ref()
+                        .and_then(|meta| meta.managed_account_id_for("xai_oauth"));
+                    let token_result = match &account_id {
+                        Some(id) => xai_auth.get_valid_token_for_account(id).await,
+                        None => xai_auth.get_valid_token().await,
+                    };
+                    match token_result {
+                        Ok(token) => {
+                            auth = AuthInfo::new(token, AuthStrategy::XaiOAuth);
+                            log::debug!(
+                                "[XaiOAuth] 成功获取 access_token (account={})",
+                                account_id.as_deref().unwrap_or("default")
+                            );
+                        }
+                        Err(error) => {
+                            log::error!("[XaiOAuth] 获取 access_token 失败: {error}");
+                            return Err(ProxyError::AuthError(format!(
+                                "xAI OAuth 认证失败: {error}"
+                            )));
+                        }
+                    }
+                } else {
+                    return Err(ProxyError::AuthError(
+                        "xAI OAuth 认证不可用（无运行时上下文）".to_string(),
                     ));
                 }
             }
@@ -1683,6 +1766,8 @@ impl RequestForwarder {
                 http::HeaderValue::from_static("application/json"),
             );
         }
+
+        reject_proxy_placeholder_for_managed_account_upstream(&url, &ordered_headers)?;
 
         // 输出请求信息日志
         let tag = adapter.name();
@@ -2100,7 +2185,13 @@ impl RequestForwarder {
         }
     }
 
-    fn categorize_proxy_error(&self, error: &ProxyError) -> ErrorCategory {
+    fn categorize_proxy_error(&self, error: &ProxyError, provider: &Provider) -> ErrorCategory {
+        // A local managed-token failure belongs to the selected xAI account,
+        // not to the upstream provider. Failing over would silently move the
+        // conversation and poison provider health for a re-login condition.
+        if provider.is_xai_oauth() && matches!(error, ProxyError::AuthError(_)) {
+            return ErrorCategory::NonRetryable;
+        }
         categorize_proxy_error(error)
     }
 }
@@ -2556,6 +2647,43 @@ fn build_codex_oauth_session_headers(
     headers
 }
 
+fn reject_proxy_placeholder_for_managed_account_upstream(
+    url: &str,
+    headers: &http::HeaderMap,
+) -> Result<(), ProxyError> {
+    if !is_managed_account_upstream_url(url) || !headers_contain_proxy_placeholder(headers) {
+        return Ok(());
+    }
+
+    Err(ProxyError::AuthError(
+        "Managed account proxy auth was not resolved; PROXY_MANAGED must not be sent upstream"
+            .to_string(),
+    ))
+}
+
+fn is_managed_account_upstream_url(url: &str) -> bool {
+    let Ok(uri) = url.parse::<http::Uri>() else {
+        return false;
+    };
+    let Some(host) = uri.host().map(str::to_ascii_lowercase) else {
+        return false;
+    };
+
+    host == "githubcopilot.com"
+        || host.ends_with(".githubcopilot.com")
+        || (host == "chatgpt.com" && uri.path().starts_with("/backend-api/codex"))
+        || (host == "api.x.ai" && uri.path().starts_with("/v1/"))
+}
+
+fn headers_contain_proxy_placeholder(headers: &http::HeaderMap) -> bool {
+    headers.values().any(|value| {
+        value
+            .to_str()
+            .map(|value| value.contains(PROXY_AUTH_PLACEHOLDER))
+            .unwrap_or(false)
+    })
+}
+
 fn should_preserve_exact_header_case(
     adapter_name: &str,
     provider: &Provider,
@@ -2566,7 +2694,7 @@ fn should_preserve_exact_header_case(
         return false;
     }
 
-    if is_copilot || provider.is_codex_oauth() {
+    if is_copilot || provider.is_codex_oauth() || provider.is_xai_oauth() {
         return false;
     }
 
@@ -2730,7 +2858,7 @@ fn value_for_log(value: &Value) -> String {
 mod tests {
     use super::*;
     use crate::database::Database;
-    use axum::http::header::{HeaderValue, ACCEPT};
+    use axum::http::header::{HeaderValue, ACCEPT, AUTHORIZATION};
     use axum::http::{HeaderMap, StatusCode};
     use bytes::Bytes;
     use serde_json::json;
@@ -2918,6 +3046,29 @@ mod tests {
             let error = ProxyError::UpstreamError { status, body: None };
 
             assert_eq!(categorize_proxy_error(&error), ErrorCategory::Retryable);
+        }
+    }
+
+    #[test]
+    fn xai_oauth_local_auth_failures_are_not_retryable() {
+        let forwarder = test_forwarder(std::time::Duration::ZERO, std::time::Duration::ZERO);
+        let provider = test_provider_with_type(Some("xai_oauth"));
+
+        assert_eq!(
+            forwarder.categorize_proxy_error(
+                &ProxyError::AuthError("xAI OAuth 认证失败".to_string()),
+                &provider,
+            ),
+            ErrorCategory::NonRetryable
+        );
+        for status in [401, 403] {
+            assert_eq!(
+                forwarder.categorize_proxy_error(
+                    &ProxyError::UpstreamError { status, body: None },
+                    &provider,
+                ),
+                ErrorCategory::Retryable
+            );
         }
     }
 
@@ -3455,6 +3606,44 @@ mod tests {
             Some("openai_chat"),
             true
         ));
+    }
+
+    #[test]
+    fn managed_proxy_placeholder_is_rejected_for_pinned_xai_upstream() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_static("Bearer PROXY_MANAGED"),
+        );
+
+        let error = reject_proxy_placeholder_for_managed_account_upstream(
+            "https://api.x.ai/v1/responses",
+            &headers,
+        )
+        .expect_err("xAI managed placeholder must never reach the pinned upstream");
+
+        assert!(matches!(
+            error,
+            ProxyError::AuthError(message) if message.contains("PROXY_MANAGED")
+        ));
+    }
+
+    #[test]
+    fn proxy_placeholder_guard_does_not_expand_beyond_managed_upstreams() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_static("Bearer PROXY_MANAGED"),
+        );
+
+        for url in [
+            "https://relay.example/v1/responses",
+            "https://api.x.ai.attacker.example/v1/responses",
+            "https://api.x.ai/v2/responses",
+        ] {
+            reject_proxy_placeholder_for_managed_account_upstream(url, &headers)
+                .unwrap_or_else(|error| panic!("non-managed upstream {url} was rejected: {error}"));
+        }
     }
 
     #[test]

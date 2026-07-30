@@ -73,11 +73,12 @@ impl<'a> UsageLogger<'a> {
                 log::warn!("SystemTime is before UNIX_EPOCH, falling back to 0: {e}");
                 0
             });
-        let input_token_semantics = if matches!(log.app_type.as_str(), "codex" | "gemini") {
-            INPUT_TOKEN_SEMANTICS_TOTAL
-        } else {
-            INPUT_TOKEN_SEMANTICS_FRESH
-        };
+        let input_token_semantics =
+            if matches!(log.app_type.as_str(), "codex" | "gemini" | "grokbuild") {
+                INPUT_TOKEN_SEMANTICS_TOTAL
+            } else {
+                INPUT_TOKEN_SEMANTICS_FRESH
+            };
 
         // L29 (investigated, intentional cross-source dedup — NOT last-writer data loss):
         // `request_id` here is `TokenUsage::dedup_request_id()`, which is
@@ -544,6 +545,41 @@ mod tests {
             "proxy row must supersede the session_log estimate"
         );
 
+        Ok(())
+    }
+
+    #[test]
+    fn grokbuild_logs_total_input_token_semantics() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        let logger = UsageLogger::new(&db);
+        let log = RequestLog {
+            request_id: "grok-semantics".to_string(),
+            provider_id: "grok-provider".to_string(),
+            app_type: "grokbuild".to_string(),
+            model: "grok-4.5".to_string(),
+            request_model: "grok-4.5".to_string(),
+            pricing_model: String::new(),
+            usage: TokenUsage::default(),
+            cost: None,
+            latency_ms: 1,
+            first_token_ms: None,
+            status_code: 200,
+            error_message: None,
+            session_id: None,
+            provider_type: Some("grokbuild".to_string()),
+            is_streaming: false,
+            cost_multiplier: "1".to_string(),
+        };
+
+        logger.log_request(&log)?;
+
+        let conn = crate::database::lock_conn!(db.conn);
+        let semantics: i64 = conn.query_row(
+            "SELECT input_token_semantics FROM proxy_request_logs WHERE request_id = 'grok-semantics'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(semantics, INPUT_TOKEN_SEMANTICS_TOTAL);
         Ok(())
     }
 }

@@ -7,7 +7,7 @@
 //! - 事件发射：通过 [`UiEventSink`] 抽象（桌面 = `TauriEventSink`，
 //!   Web = `ChannelEventSink` → SSE `/api/events`）。
 //! - 托盘刷新：`UiEventSink::refresh_tray`（默认 no-op，桌面端覆写）。
-//! - Copilot / Codex OAuth 认证管理器：直接注入 `Arc<RwLock<Manager>>`，
+//! - Copilot / Codex / xAI OAuth 认证管理器：直接注入 `Arc<RwLock<Manager>>`，
 //!   取代桌面专属的 `app_handle.state::<CopilotAuthState/CodexOAuthState>()`
 //!   service-locator 查找。
 //! - 故障转移热切换：持有 `ProxyService` 的 clone（全 Arc 字段，共享同一
@@ -21,6 +21,7 @@ use tokio::sync::RwLock;
 
 use crate::proxy::providers::codex_oauth_auth::CodexOAuthManager;
 use crate::proxy::providers::copilot_auth::CopilotAuthManager;
+use crate::proxy::providers::xai_oauth_auth::XaiOAuthManager;
 use crate::runtime::UiEventSink;
 use crate::services::ProxyService;
 
@@ -37,6 +38,8 @@ pub struct ProxyRuntimeCtx {
     pub copilot_auth: Arc<RwLock<CopilotAuthManager>>,
     /// Codex OAuth 认证管理器（ChatGPT Plus/Pro access_token）
     pub codex_oauth: Arc<RwLock<CodexOAuthManager>>,
+    /// xAI OAuth 认证管理器（Grok API access_token）
+    pub xai_oauth: Arc<RwLock<XaiOAuthManager>>,
     /// 故障转移热切换句柄（`ProxyService` clone，Arc 字段共享同一实例）
     pub hot_switch: ProxyService,
 }

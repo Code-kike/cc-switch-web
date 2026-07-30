@@ -545,7 +545,7 @@ fn schema_create_tables_repairs_legacy_proxy_config_singleton_to_per_app() {
     let count: i32 = conn
         .query_row("SELECT COUNT(*) FROM proxy_config", [], |r| r.get(0))
         .expect("count rows");
-    assert_eq!(count, 3, "per-app proxy_config should have 3 rows");
+    assert_eq!(count, 4, "per-app proxy_config should have 4 rows");
 
     // 新结构下应能按 app_type 查询
     let _: i32 = conn
@@ -681,11 +681,11 @@ fn migration_from_v3_8_schema_v1_to_current_schema_v3() {
         "skills migration snapshot should preserve legacy app mapping"
     );
 
-    // v3.9+ 新增：proxy_config 三行 seed 必须存在（否则 UI 会查不到默认值）
+    // v3.9+ 新增：proxy_config 的 per-app seed 必须存在（否则 UI 会查不到默认值）
     let proxy_rows: i64 = conn
         .query_row("SELECT COUNT(*) FROM proxy_config", [], |r| r.get(0))
         .expect("count proxy_config rows");
-    assert_eq!(proxy_rows, 3);
+    assert_eq!(proxy_rows, 4);
 
     // model_pricing 应具备默认数据（迁移时会 seed）
     let pricing_rows: i64 = conn
@@ -776,9 +776,13 @@ fn sql_import_accepts_schema_v2_legacy_objects_and_normalizes_them() {
     }
     let mut sql = source.export_sql_string().expect("export source SQL");
 
-    let proxy_start = sql
-        .find("CREATE TABLE proxy_config (")
-        .expect("find proxy_config DDL");
+    let proxy_start = [
+        "CREATE TABLE proxy_config (",
+        "CREATE TABLE \"proxy_config\" (",
+    ]
+    .into_iter()
+    .find_map(|ddl| sql.find(ddl))
+    .expect("find proxy_config DDL");
     let proxy_end = proxy_start
         + sql[proxy_start..]
             .find(";\n")

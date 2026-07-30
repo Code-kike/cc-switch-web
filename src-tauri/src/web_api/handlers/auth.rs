@@ -10,6 +10,7 @@ use super::common::{json_ok, ApiError, ApiResult};
 
 const AUTH_PROVIDER_GITHUB_COPILOT: &str = "github_copilot";
 const AUTH_PROVIDER_CODEX_OAUTH: &str = "codex_oauth";
+const AUTH_PROVIDER_XAI_OAUTH: &str = "xai_oauth";
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ManagedAuthAccount {
@@ -20,6 +21,7 @@ pub struct ManagedAuthAccount {
     pub authenticated_at: i64,
     pub is_default: bool,
     pub github_domain: String,
+    pub requires_reauth: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -81,6 +83,12 @@ struct CodexOauthQuotaQuery {
     account_id: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct XaiOauthModelsQuery {
+    account_id: Option<String>,
+}
+
 pub fn router(state: ApiState) -> Router {
     Router::new()
         .route("/auth/auth-start-login", post(auth_start_login))
@@ -95,6 +103,7 @@ pub fn router(state: ApiState) -> Router {
         .route("/auth/auth-logout", post(auth_logout))
         .route("/auth/get-codex-oauth-models", get(get_codex_oauth_models))
         .route("/auth/get-codex-oauth-quota", get(get_codex_oauth_quota))
+        .route("/auth/get-xai-oauth-models", get(get_xai_oauth_models))
         .with_state(state)
 }
 
@@ -102,6 +111,7 @@ fn ensure_auth_provider(auth_provider: &str) -> Result<&'static str, ApiError> {
     match auth_provider {
         AUTH_PROVIDER_GITHUB_COPILOT => Ok(AUTH_PROVIDER_GITHUB_COPILOT),
         AUTH_PROVIDER_CODEX_OAUTH => Ok(AUTH_PROVIDER_CODEX_OAUTH),
+        AUTH_PROVIDER_XAI_OAUTH => Ok(AUTH_PROVIDER_XAI_OAUTH),
         _ => Err(ApiError::bad_request(format!(
             "Unsupported auth provider: {auth_provider}"
         ))),
@@ -121,6 +131,40 @@ fn map_account(
         avatar_url: account.avatar_url,
         authenticated_at: account.authenticated_at,
         github_domain: account.github_domain,
+        requires_reauth: false,
+    }
+}
+
+fn map_xai_account(
+    account: crate::proxy::providers::xai_oauth_auth::XaiOAuthAccount,
+    default_account_id: Option<&str>,
+) -> ManagedAuthAccount {
+    ManagedAuthAccount {
+        is_default: default_account_id == Some(account.id.as_str()),
+        id: account.id,
+        provider: AUTH_PROVIDER_XAI_OAUTH.to_string(),
+        login: account.login,
+        avatar_url: account.avatar_url,
+        authenticated_at: account.authenticated_at,
+        github_domain: account.github_domain,
+        requires_reauth: account.requires_reauth,
+    }
+}
+
+fn map_xai_status(
+    status: crate::proxy::providers::xai_oauth_auth::XaiOAuthStatus,
+) -> ManagedAuthStatus {
+    let default_account_id = status.default_account_id.clone();
+    ManagedAuthStatus {
+        provider: AUTH_PROVIDER_XAI_OAUTH.to_string(),
+        authenticated: status.authenticated,
+        default_account_id: default_account_id.clone(),
+        migration_error: None,
+        accounts: status
+            .accounts
+            .into_iter()
+            .map(|account| map_xai_account(account, default_account_id.as_deref()))
+            .collect(),
     }
 }
 
@@ -153,6 +197,13 @@ async fn auth_start_login(
         }
         AUTH_PROVIDER_CODEX_OAUTH => {
             let manager = state.codex_oauth.read().await;
+            manager
+                .start_device_flow()
+                .await
+                .map_err(ApiError::from_anyhow)?
+        }
+        AUTH_PROVIDER_XAI_OAUTH => {
+            let manager = state.xai_oauth.read().await;
             manager
                 .start_device_flow()
                 .await
@@ -200,6 +251,19 @@ async fn auth_poll_for_account(
                 Err(err) => return Err(ApiError::from_anyhow(err)),
             }
         }
+        AUTH_PROVIDER_XAI_OAUTH => {
+            let manager = state.xai_oauth.write().await;
+            match manager.poll_for_token(&request.device_code).await {
+                Ok(account) => {
+                    let default_account_id = manager.get_status().await.default_account_id;
+                    account.map(|account| map_xai_account(account, default_account_id.as_deref()))
+                }
+                Err(
+                    crate::proxy::providers::xai_oauth_auth::XaiOAuthError::AuthorizationPending,
+                ) => None,
+                Err(err) => return Err(ApiError::from_anyhow(err)),
+            }
+        }
         _ => unreachable!(),
     };
 
@@ -230,6 +294,16 @@ async fn auth_list_accounts(
                 .accounts
                 .into_iter()
                 .map(|account| map_account(auth_provider, account, default_account_id.as_deref()))
+                .collect()
+        }
+        AUTH_PROVIDER_XAI_OAUTH => {
+            let manager = state.xai_oauth.read().await;
+            let status = manager.get_status().await;
+            let default_account_id = status.default_account_id.clone();
+            status
+                .accounts
+                .into_iter()
+                .map(|account| map_xai_account(account, default_account_id.as_deref()))
                 .collect()
         }
         _ => unreachable!(),
@@ -279,6 +353,10 @@ async fn auth_get_status(
                     .collect(),
             }
         }
+        AUTH_PROVIDER_XAI_OAUTH => {
+            let manager = state.xai_oauth.read().await;
+            map_xai_status(manager.get_status().await)
+        }
         _ => unreachable!(),
     };
     Ok(json_ok(status))
@@ -299,6 +377,13 @@ async fn auth_remove_account(
         }
         AUTH_PROVIDER_CODEX_OAUTH => {
             let manager = state.codex_oauth.write().await;
+            manager
+                .remove_account(&request.account_id)
+                .await
+                .map_err(ApiError::from_anyhow)?;
+        }
+        AUTH_PROVIDER_XAI_OAUTH => {
+            let manager = state.xai_oauth.write().await;
             manager
                 .remove_account(&request.account_id)
                 .await
@@ -329,6 +414,13 @@ async fn auth_set_default_account(
                 .await
                 .map_err(ApiError::from_anyhow)?;
         }
+        AUTH_PROVIDER_XAI_OAUTH => {
+            let manager = state.xai_oauth.write().await;
+            manager
+                .set_default_account(&request.account_id)
+                .await
+                .map_err(ApiError::from_anyhow)?;
+        }
         _ => unreachable!(),
     }
     Ok(json_ok(()))
@@ -346,6 +438,10 @@ async fn auth_logout(
         }
         AUTH_PROVIDER_CODEX_OAUTH => {
             let manager = state.codex_oauth.write().await;
+            manager.clear_auth().await.map_err(ApiError::from_anyhow)?;
+        }
+        AUTH_PROVIDER_XAI_OAUTH => {
+            let manager = state.xai_oauth.write().await;
             manager.clear_auth().await.map_err(ApiError::from_anyhow)?;
         }
         _ => unreachable!(),
@@ -377,6 +473,17 @@ async fn get_codex_oauth_models(
         .map_err(|e| ApiError::bad_request(format!("Codex OAuth token unavailable: {e}")))?;
 
     let models = crate::services::codex_oauth_models::fetch_models_with_token(&token, &id)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(json_ok(models))
+}
+
+async fn get_xai_oauth_models(
+    State(state): State<ApiState>,
+    Query(query): Query<XaiOauthModelsQuery>,
+) -> ApiResult<Vec<crate::services::model_fetch::FetchedModel>> {
+    let manager = state.xai_oauth.read().await;
+    let models = crate::services::xai_oauth::fetch_models(&manager, query.account_id.as_deref())
         .await
         .map_err(ApiError::bad_request)?;
     Ok(json_ok(models))
@@ -425,4 +532,53 @@ async fn get_codex_oauth_quota(
     .await
     .map_err(super::common::ApiError::from_service_message)?;
     Ok(json_ok(quota))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::proxy::providers::xai_oauth_auth::{XaiOAuthAccount, XaiOAuthStatus};
+
+    #[test]
+    fn xai_auth_provider_is_supported_by_web_dispatch() {
+        assert_eq!(
+            ensure_auth_provider(AUTH_PROVIDER_XAI_OAUTH).unwrap(),
+            AUTH_PROVIDER_XAI_OAUTH
+        );
+    }
+
+    #[test]
+    fn xai_status_mapping_preserves_default_and_reauth_state() {
+        let status = map_xai_status(XaiOAuthStatus {
+            authenticated: true,
+            default_account_id: Some("ready".to_string()),
+            username: Some("ready@example.com".to_string()),
+            accounts: vec![
+                XaiOAuthAccount {
+                    id: "ready".to_string(),
+                    login: "ready@example.com".to_string(),
+                    avatar_url: None,
+                    authenticated_at: 20,
+                    github_domain: "x.ai".to_string(),
+                    requires_reauth: false,
+                },
+                XaiOAuthAccount {
+                    id: "expired".to_string(),
+                    login: "expired@example.com".to_string(),
+                    avatar_url: None,
+                    authenticated_at: 10,
+                    github_domain: "x.ai".to_string(),
+                    requires_reauth: true,
+                },
+            ],
+        });
+
+        assert_eq!(status.provider, AUTH_PROVIDER_XAI_OAUTH);
+        assert!(status.authenticated);
+        assert_eq!(status.default_account_id.as_deref(), Some("ready"));
+        assert!(status.accounts[0].is_default);
+        assert!(!status.accounts[0].requires_reauth);
+        assert!(!status.accounts[1].is_default);
+        assert!(status.accounts[1].requires_reauth);
+    }
 }

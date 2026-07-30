@@ -397,6 +397,14 @@ pub fn run_post_db_bootstrap(app_state: &crate::store::AppState) {
             Err(e) => log::warn!("✗ Failed to import Gemini MCP: {e}"),
         }
 
+        match crate::services::mcp::McpService::import_from_grokbuild(app_state) {
+            Ok(count) if count > 0 => {
+                log::info!("✓ Imported {count} MCP server(s) from Grok Build");
+            }
+            Ok(_) => log::debug!("○ No Grok Build MCP servers found to import"),
+            Err(e) => log::warn!("✗ Failed to import Grok Build MCP: {e}"),
+        }
+
         match crate::services::mcp::McpService::import_from_opencode(app_state) {
             Ok(count) if count > 0 => {
                 log::info!("✓ Imported {count} MCP server(s) from OpenCode");
@@ -422,6 +430,7 @@ pub fn run_post_db_bootstrap(app_state: &crate::store::AppState) {
             crate::app_config::AppType::Claude,
             crate::app_config::AppType::Codex,
             crate::app_config::AppType::Gemini,
+            crate::app_config::AppType::GrokBuild,
             crate::app_config::AppType::OpenCode,
             crate::app_config::AppType::OpenClaw,
             crate::app_config::AppType::Hermes,
@@ -437,5 +446,42 @@ pub fn run_post_db_bootstrap(app_state: &crate::store::AppState) {
                 Err(e) => log::warn!("✗ Failed to import prompt for {}: {e}", app.as_str()),
             }
         }
+    }
+}
+
+pub const PROXY_STARTUP_APP_TYPES: [&str; 4] = ["claude", "codex", "gemini", "grokbuild"];
+
+pub async fn enabled_proxy_apps_on_startup(db: &crate::database::Database) -> Vec<&'static str> {
+    let mut apps = Vec::new();
+    for app_type in PROXY_STARTUP_APP_TYPES {
+        if db
+            .get_proxy_config_for_app(app_type)
+            .await
+            .is_ok_and(|config| config.enabled)
+        {
+            apps.push(app_type);
+        }
+    }
+    apps
+}
+
+#[cfg(test)]
+mod tests {
+    use super::enabled_proxy_apps_on_startup;
+    use crate::database::Database;
+
+    #[tokio::test]
+    async fn startup_restore_includes_enabled_grokbuild_route() {
+        let db = Database::memory().expect("initialize database");
+        let mut config = db
+            .get_proxy_config_for_app("grokbuild")
+            .await
+            .expect("read Grok Build proxy config");
+        config.enabled = true;
+        db.update_proxy_config_for_app(config)
+            .await
+            .expect("enable Grok Build proxy config");
+
+        assert_eq!(enabled_proxy_apps_on_startup(&db).await, vec!["grokbuild"]);
     }
 }

@@ -28,6 +28,7 @@ const VALID_APPS: AppId[] = [
   "claude",
   "codex",
   "gemini",
+  "grokbuild",
   "opencode",
   "openclaw",
   "hermes",
@@ -96,6 +97,7 @@ const APP_VIEWS: Record<AppId, View[]> = {
     "sessions",
     "mcp",
   ],
+  grokbuild: ["skills", "skillsDiscovery", "prompts", "sessions", "mcp"],
   opencode: ["skills", "skillsDiscovery", "prompts", "sessions", "mcp"],
   openclaw: [
     "workspace",

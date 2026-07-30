@@ -22,12 +22,13 @@ use super::{
         transform_gemini, transform_responses,
     },
     response_processor::{
-        create_logged_passthrough_stream, process_response, read_decoded_body,
-        strip_entity_headers_for_rebuilt_body, strip_hop_by_hop_response_headers,
-        usage_logging_enabled, SseUsageCollector,
+        create_logged_passthrough_stream, create_usage_collector, process_response,
+        read_decoded_body, spawn_log_usage, strip_entity_headers_for_rebuilt_body,
+        strip_hop_by_hop_response_headers, usage_logging_enabled, SseUsageCollector,
     },
     server::ProxyState,
     sse::{strip_sse_field, take_sse_block},
+    transform_codex_responses_namespace,
     types::*,
     usage::parser::TokenUsage,
     ProxyError,
@@ -555,6 +556,7 @@ pub async fn handle_chat_completions(
         .get("stream")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let namespace_restore_map = transform_codex_responses_namespace::namespace_restore_map(&body);
 
     let forwarder = ctx.create_forwarder(&state);
     let mut result = match forwarder
@@ -583,6 +585,19 @@ pub async fn handle_chat_completions(
     let connection_guard = result.connection_guard.take();
     ctx.provider = result.provider;
     let response = result.response;
+
+    if super::providers::provider_needs_responses_namespace_flatten(&ctx.provider)
+        && !namespace_restore_map.is_empty()
+    {
+        return handle_codex_responses_namespace_restore(
+            response,
+            &ctx,
+            &state,
+            connection_guard,
+            namespace_restore_map,
+        )
+        .await;
+    }
 
     process_response(
         response,
@@ -599,71 +614,29 @@ pub async fn handle_responses(
     State(state): State<ProxyState>,
     request: axum::extract::Request,
 ) -> Result<axum::response::Response, ProxyError> {
-    let (parts, req_body) = request.into_parts();
-    let method = parts.method.clone();
-    let uri = parts.uri;
-    let mut headers = parts.headers;
-    let extensions = parts.extensions;
-    let body_bytes = req_body
-        .collect()
-        .await
-        .map_err(|e| ProxyError::Internal(format!("Failed to read request body: {e}")))?
-        .to_bytes();
-    let body_bytes = decode_codex_request_body(&mut headers, body_bytes)?;
-    let body: Value = serde_json::from_slice(&body_bytes)
-        .map_err(|e| ProxyError::Internal(format!("Failed to parse request body: {e}")))?;
+    handle_responses_for_app(state, request, AppType::Codex, "Codex", "codex").await
+}
 
-    let mut ctx =
-        RequestContext::new(&state, &body, &headers, AppType::Codex, "Codex", "codex").await?;
-    let endpoint = endpoint_with_query(&uri, "/responses");
-
-    let is_stream = body
-        .get("stream")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-
-    let forwarder = ctx.create_forwarder(&state);
-    let mut result = match forwarder
-        .forward_with_retry(
-            &AppType::Codex,
-            method,
-            &endpoint,
-            body,
-            headers,
-            extensions,
-            ctx.get_providers(),
-            ctx.failover_enabled(),
-        )
-        .await
-    {
-        Ok(result) => result,
-        Err(mut err) => {
-            if let Some(provider) = err.provider.take() {
-                ctx.provider = provider;
-            }
-            log_forward_error(&state, &ctx, is_stream, &err.error);
-            return build_codex_proxy_error_response(&ctx, &endpoint, &err.error);
-        }
-    };
-
-    let connection_guard = result.connection_guard.take();
-    ctx.provider = result.provider;
-    let response = result.response;
-
-    process_response(
-        response,
-        &ctx,
-        &state,
-        &CODEX_PARSER_CONFIG,
-        connection_guard,
+pub async fn handle_grokbuild_responses(
+    State(state): State<ProxyState>,
+    request: axum::extract::Request,
+) -> Result<axum::response::Response, ProxyError> {
+    handle_responses_for_app(
+        state,
+        request,
+        AppType::GrokBuild,
+        "Grok Build",
+        "grokbuild",
     )
     .await
 }
 
-/// 处理 /v1/responses/compact 请求（OpenAI Responses Compact API - Codex CLI 透传）
-pub async fn handle_responses_compact(
-    State(state): State<ProxyState>,
+async fn handle_responses_for_app(
+    state: ProxyState,
     request: axum::extract::Request,
+    app_type: AppType,
+    tag: &'static str,
+    app_type_str: &'static str,
 ) -> Result<axum::response::Response, ProxyError> {
     let (parts, req_body) = request.into_parts();
     let method = parts.method.clone();
@@ -680,18 +653,19 @@ pub async fn handle_responses_compact(
         .map_err(|e| ProxyError::Internal(format!("Failed to parse request body: {e}")))?;
 
     let mut ctx =
-        RequestContext::new(&state, &body, &headers, AppType::Codex, "Codex", "codex").await?;
-    let endpoint = endpoint_with_query(&uri, "/responses/compact");
+        RequestContext::new(&state, &body, &headers, app_type.clone(), tag, app_type_str).await?;
+    let endpoint = endpoint_with_query(&uri, "/responses");
 
     let is_stream = body
         .get("stream")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let namespace_restore_map = transform_codex_responses_namespace::namespace_restore_map(&body);
 
     let forwarder = ctx.create_forwarder(&state);
     let mut result = match forwarder
         .forward_with_retry(
-            &AppType::Codex,
+            &app_type,
             method,
             &endpoint,
             body,
@@ -716,6 +690,19 @@ pub async fn handle_responses_compact(
     ctx.provider = result.provider;
     let response = result.response;
 
+    if super::providers::provider_needs_responses_namespace_flatten(&ctx.provider)
+        && !namespace_restore_map.is_empty()
+    {
+        return handle_codex_responses_namespace_restore(
+            response,
+            &ctx,
+            &state,
+            connection_guard,
+            namespace_restore_map,
+        )
+        .await;
+    }
+
     process_response(
         response,
         &ctx,
@@ -724,6 +711,283 @@ pub async fn handle_responses_compact(
         connection_guard,
     )
     .await
+}
+
+/// 处理 /v1/responses/compact 请求（OpenAI Responses Compact API - Codex CLI 透传）
+pub async fn handle_responses_compact(
+    State(state): State<ProxyState>,
+    request: axum::extract::Request,
+) -> Result<axum::response::Response, ProxyError> {
+    handle_responses_compact_for_app(state, request, AppType::Codex, "Codex", "codex").await
+}
+
+pub async fn handle_grokbuild_responses_compact(
+    State(state): State<ProxyState>,
+    request: axum::extract::Request,
+) -> Result<axum::response::Response, ProxyError> {
+    handle_responses_compact_for_app(
+        state,
+        request,
+        AppType::GrokBuild,
+        "Grok Build",
+        "grokbuild",
+    )
+    .await
+}
+
+async fn handle_responses_compact_for_app(
+    state: ProxyState,
+    request: axum::extract::Request,
+    app_type: AppType,
+    tag: &'static str,
+    app_type_str: &'static str,
+) -> Result<axum::response::Response, ProxyError> {
+    let (parts, req_body) = request.into_parts();
+    let method = parts.method.clone();
+    let uri = parts.uri;
+    let mut headers = parts.headers;
+    let extensions = parts.extensions;
+    let body_bytes = req_body
+        .collect()
+        .await
+        .map_err(|e| ProxyError::Internal(format!("Failed to read request body: {e}")))?
+        .to_bytes();
+    let body_bytes = decode_codex_request_body(&mut headers, body_bytes)?;
+    let body: Value = serde_json::from_slice(&body_bytes)
+        .map_err(|e| ProxyError::Internal(format!("Failed to parse request body: {e}")))?;
+
+    let mut ctx =
+        RequestContext::new(&state, &body, &headers, app_type.clone(), tag, app_type_str).await?;
+    let endpoint = endpoint_with_query(&uri, "/responses/compact");
+
+    let is_stream = body
+        .get("stream")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let namespace_restore_map = transform_codex_responses_namespace::namespace_restore_map(&body);
+
+    let forwarder = ctx.create_forwarder(&state);
+    let mut result = match forwarder
+        .forward_with_retry(
+            &app_type,
+            method,
+            &endpoint,
+            body,
+            headers,
+            extensions,
+            ctx.get_providers(),
+            ctx.failover_enabled(),
+        )
+        .await
+    {
+        Ok(result) => result,
+        Err(mut err) => {
+            if let Some(provider) = err.provider.take() {
+                ctx.provider = provider;
+            }
+            log_forward_error(&state, &ctx, is_stream, &err.error);
+            return build_codex_proxy_error_response(&ctx, &endpoint, &err.error);
+        }
+    };
+
+    let connection_guard = result.connection_guard.take();
+    ctx.provider = result.provider;
+    let response = result.response;
+
+    if super::providers::provider_needs_responses_namespace_flatten(&ctx.provider)
+        && !namespace_restore_map.is_empty()
+    {
+        return handle_codex_responses_namespace_restore(
+            response,
+            &ctx,
+            &state,
+            connection_guard,
+            namespace_restore_map,
+        )
+        .await;
+    }
+
+    process_response(
+        response,
+        &ctx,
+        &state,
+        &CODEX_PARSER_CONFIG,
+        connection_guard,
+    )
+    .await
+}
+
+/// Restore flattened Codex namespace tool names on the managed xAI native
+/// Responses path. Error responses retain the fork's generic passthrough and
+/// bounded logging behavior; successful responses keep the normal Codex usage
+/// parser and session attribution.
+async fn handle_codex_responses_namespace_restore(
+    response: super::hyper_client::ProxyResponse,
+    ctx: &RequestContext,
+    state: &ProxyState,
+    connection_guard: Option<ActiveConnectionGuard>,
+    restore_map: std::collections::HashMap<
+        String,
+        transform_codex_responses_namespace::NamespacedName,
+    >,
+) -> Result<axum::response::Response, ProxyError> {
+    let status = response.status();
+
+    if !status.is_success() {
+        return process_response(response, ctx, state, &CODEX_PARSER_CONFIG, connection_guard)
+            .await;
+    }
+
+    if response.is_sse() {
+        let mut response_headers = response.headers().clone();
+        strip_hop_by_hop_response_headers(&mut response_headers);
+
+        let mut builder = axum::response::Response::builder().status(status);
+        for (key, value) in &response_headers {
+            builder = builder.header(key, value);
+        }
+
+        let restore_stream =
+            transform_codex_responses_namespace::create_namespace_restore_sse_stream(
+                response.bytes_stream(),
+                restore_map,
+            );
+        let usage_collector =
+            create_usage_collector(ctx, state, status.as_u16(), &CODEX_PARSER_CONFIG);
+        let logged_stream = create_logged_passthrough_stream(
+            restore_stream,
+            ctx.tag,
+            usage_collector,
+            ctx.streaming_timeout_config(),
+            connection_guard,
+        );
+
+        return builder
+            .body(axum::body::Body::from_stream(logged_stream))
+            .map_err(|error| {
+                log::error!("[{}] 构建 namespace 还原流式响应失败: {error}", ctx.tag);
+                ProxyError::Internal(format!("Failed to build namespace restore stream: {error}"))
+            });
+    }
+
+    let _connection_guard = connection_guard;
+    let body_timeout =
+        if ctx.app_config.auto_failover_enabled && ctx.app_config.non_streaming_timeout > 0 {
+            std::time::Duration::from_secs(ctx.app_config.non_streaming_timeout as u64)
+        } else {
+            std::time::Duration::ZERO
+        };
+    let (mut response_headers, status, body_bytes) =
+        read_decoded_body(response, ctx.tag, body_timeout).await?;
+    strip_hop_by_hop_response_headers(&mut response_headers);
+
+    // Full response bodies remain debug-only under the fork's shipped
+    // RUST_LOG=info posture.
+    log::debug!(
+        "[{}] 上游响应体内容: {}",
+        ctx.tag,
+        String::from_utf8_lossy(&body_bytes)
+    );
+
+    let (response_bytes, rebuilt_json) = match serde_json::from_slice::<Value>(&body_bytes) {
+        Ok(mut value) => {
+            let changed = transform_codex_responses_namespace::restore_response_namespaces(
+                &mut value,
+                &restore_map,
+            );
+
+            if usage_logging_enabled(state) {
+                if let Some(usage) = TokenUsage::from_codex_response_auto(&value) {
+                    let model = usage
+                        .model
+                        .clone()
+                        .or_else(|| {
+                            value
+                                .get("model")
+                                .and_then(Value::as_str)
+                                .map(str::to_string)
+                        })
+                        .unwrap_or_else(|| ctx.request_model.clone());
+                    spawn_log_usage(
+                        state,
+                        ctx,
+                        usage,
+                        &model,
+                        &ctx.request_model,
+                        status.as_u16(),
+                        false,
+                    );
+                } else {
+                    spawn_log_usage(
+                        state,
+                        ctx,
+                        TokenUsage::default(),
+                        &ctx.request_model,
+                        &ctx.request_model,
+                        status.as_u16(),
+                        false,
+                    );
+                    log::debug!("[Codex] namespace 还原响应缺少 usage，跳过消费记录");
+                }
+            }
+
+            if changed {
+                match serde_json::to_vec(&value) {
+                    Ok(bytes) => (Bytes::from(bytes), true),
+                    Err(error) => {
+                        log::error!("[{}] 序列化 namespace 还原响应失败: {error}", ctx.tag);
+                        (body_bytes, false)
+                    }
+                }
+            } else {
+                (body_bytes, false)
+            }
+        }
+        Err(_) => {
+            if usage_logging_enabled(state) {
+                spawn_log_usage(
+                    state,
+                    ctx,
+                    TokenUsage::default(),
+                    &ctx.request_model,
+                    &ctx.request_model,
+                    status.as_u16(),
+                    false,
+                );
+            }
+            log::debug!(
+                "[{}] namespace 还原响应不是 JSON，按原字节透传 ({} bytes)",
+                ctx.tag,
+                body_bytes.len()
+            );
+            (body_bytes, false)
+        }
+    };
+
+    if rebuilt_json {
+        strip_entity_headers_for_rebuilt_body(&mut response_headers);
+        response_headers.remove(axum::http::header::CONTENT_TYPE);
+    }
+
+    let mut builder = axum::response::Response::builder().status(status);
+    for (key, value) in response_headers.iter() {
+        builder = builder.header(key, value);
+    }
+    if rebuilt_json {
+        builder = builder.header(
+            axum::http::header::CONTENT_TYPE,
+            axum::http::HeaderValue::from_static("application/json"),
+        );
+    }
+
+    builder
+        .body(axum::body::Body::from(response_bytes))
+        .map_err(|error| {
+            log::error!("[{}] 构建 namespace 还原响应失败: {error}", ctx.tag);
+            ProxyError::Internal(format!(
+                "Failed to build namespace restore response: {error}"
+            ))
+        })
 }
 
 /// 把转发层（非上游响应）的失败构造成富化的 Codex 错误响应。

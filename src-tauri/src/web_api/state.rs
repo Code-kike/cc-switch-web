@@ -11,6 +11,8 @@ pub struct ApiState {
         Arc<tokio::sync::RwLock<crate::proxy::providers::copilot_auth::CopilotAuthManager>>,
     pub codex_oauth:
         Arc<tokio::sync::RwLock<crate::proxy::providers::codex_oauth_auth::CodexOAuthManager>>,
+    pub xai_oauth:
+        Arc<tokio::sync::RwLock<crate::proxy::providers::xai_oauth_auth::XaiOAuthManager>>,
     /// Shared event sink. Web mode uses `ChannelEventSink`; the desktop-only
     /// `NoopEventSink` is a no-op placeholder. Used by handlers that need to
     /// emit events to SSE.
@@ -28,6 +30,9 @@ impl ApiState {
         codex_oauth: Arc<
             tokio::sync::RwLock<crate::proxy::providers::codex_oauth_auth::CodexOAuthManager>,
         >,
+        xai_oauth: Arc<
+            tokio::sync::RwLock<crate::proxy::providers::xai_oauth_auth::XaiOAuthManager>,
+        >,
         sink: Arc<dyn super::super::runtime::UiEventSink>,
         events: broadcast::Sender<crate::runtime::EventEnvelope>,
     ) -> Self {
@@ -35,6 +40,7 @@ impl ApiState {
             app_state,
             copilot_auth,
             codex_oauth,
+            xai_oauth,
             sink,
             events,
         }

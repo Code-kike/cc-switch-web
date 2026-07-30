@@ -219,6 +219,7 @@
     "providerDeleted": "Provider deleted successfully",
     "switchSuccess": "Switch successful!",
     "codexRestartRequired": "Switched successfully. Restart the client to apply changes.",
+    "grokBuildRestartRequired": "Switched successfully. Restart Grok Build to apply changes.",
     "addToConfigSuccess": "Added to config",
     "removeFromConfigSuccess": "Removed from config",
     "switchFailedTitle": "Switch failed",
@@ -243,6 +244,8 @@
     "proxyReasonOpenAIChat": "uses OpenAI Chat API format",
     "proxyReasonOpenAIResponses": "uses OpenAI Responses API format",
     "proxyReasonFullUrl": "has full URL connection mode enabled",
+    "proxyReasonManagedOAuth": "uses managed OAuth login (token injected by local routing)",
+    "proxyReasonRoutingRequired": "requires local routing to process requests",
     "openAIFormatHint": "This provider uses OpenAI-compatible format and requires the routing service to be enabled",
     "copilotProxyHint": "GitHub Copilot as a Claude provider always requires local routing; routing automatically selects Chat Completions or Responses based on the current model.",
     "openLinkFailed": "Failed to open link",
@@ -304,8 +307,9 @@
       "beta": "Beta",
       "copilotDescription": "Manage GitHub Copilot accounts",
       "codexOauthDescription": "Manage ChatGPT accounts",
+      "xaiOauthDescription": "Manage xAI / Grok accounts",
       "webRemoteHint": "Remote Web mode stores OAuth accounts on the server host",
-      "webRemoteHintDescription": "The authorization page opens in this browser, but successful Copilot / ChatGPT logins are saved on the machine running cc-switch Web. Continue only if you trust that server."
+      "webRemoteHintDescription": "The authorization page opens in this browser, but successful Copilot / ChatGPT / xAI logins are saved on the machine running cc-switch Web. Continue only if you trust that server."
     },
     "advanced": {
       "configDir": {
@@ -738,6 +742,8 @@
     "codexConfigDirDescription": "Override Codex configuration directory.",
     "geminiConfigDir": "Gemini Configuration Directory",
     "geminiConfigDirDescription": "Override Gemini configuration directory (.env).",
+    "grokConfigDir": "Grok Build Configuration Directory",
+    "grokConfigDirDescription": "Override Grok Build configuration directory (config.toml).",
     "opencodeConfigDir": "OpenCode Configuration Directory",
     "opencodeConfigDirDescription": "Override OpenCode configuration directory (opencode.json).",
     "openclawConfigDir": "OpenClaw Configuration Directory",
@@ -747,6 +753,7 @@
     "browsePlaceholderClaude": "e.g., /home/<your-username>/.claude",
     "browsePlaceholderCodex": "e.g., /home/<your-username>/.codex",
     "browsePlaceholderGemini": "e.g., /home/<your-username>/.gemini",
+    "browsePlaceholderGrok": "e.g., /home/<your-username>/.grok",
     "browsePlaceholderOpencode": "e.g., /home/<your-username>/.config/opencode",
     "browsePlaceholderOpenclaw": "e.g., /home/<your-username>/.openclaw",
     "browsePlaceholderHermes": "e.g., /home/<your-username>/.hermes",
@@ -770,7 +777,7 @@
     "viewReleaseNotes": "View release notes for this version",
     "viewCurrentReleaseNotes": "View current version release notes",
     "oneClickInstall": "One-click Install",
-    "oneClickInstallHint": "Install Claude Code / Codex / Gemini CLI / OpenCode",
+    "oneClickInstallHint": "Install Claude Code / Codex / Gemini CLI / Grok Build / OpenCode",
     "serverInstallHint": "Run these commands on the machine hosting cc-switch Web, not in this browser.",
     "localEnvCheck": "Local environment check",
     "serverEnvCheck": "Server environment check",
@@ -830,13 +837,22 @@
     "claude": "Claude",
     "codex": "Codex",
     "gemini": "Gemini",
+    "grokbuild": "Grok Build",
     "opencode": "OpenCode",
     "openclaw": "OpenClaw",
     "hermes": "Hermes"
   },
+  "grokBuild": {
+    "apiBackend": "API backend",
+    "contextWindow": "Context window",
+    "contextWindowInvalid": "Context window must be a positive integer",
+    "profile": "Client model profile",
+    "rawConfig": "config.toml",
+    "invalidToml": "Invalid config.toml: {{error}}"
+  },
   "sessionManager": {
     "title": "Session Manager",
-    "subtitle": "Manage Claude Code, Codex, OpenCode, OpenClaw, Hermes and Gemini CLI sessions",
+    "subtitle": "Manage Claude Code, Codex, Gemini CLI, Grok Build, OpenCode, OpenClaw and Hermes sessions",
     "searchPlaceholder": "Search by content, directory, or ID",
     "searchSessions": "Search sessions",
     "providerFilterAll": "All",
@@ -946,6 +962,7 @@
     "customApiKeyHint": "💡 Custom configuration requires manually filling all necessary fields",
     "omoHint": "💡 OMO config manages Agent model assignments and supports both oh-my-openagent.jsonc and oh-my-opencode.jsonc",
     "officialHint": "💡 Official provider uses browser login, no API Key needed",
+    "providerKeyStatusLoading": "Provider identifier status is still loading. Please try again shortly.",
     "getApiKey": "Get API Key",
     "partnerPromotion": {
       "packycode": "PackyCode is an official partner of CC Switch. Register using this link and enter \"cc-switch\" promo code during recharge to get 10% off",
@@ -1110,6 +1127,31 @@
     "copyCode": "Copy code",
     "fastMode": "FAST mode",
     "fastModeDescription": "Send service_tier=\"priority\" for lower latency. Off by default — enabling it consumes your ChatGPT quota at a higher rate."
+  },
+  "xaiOauth": {
+    "authStatus": "xAI OAuth authentication",
+    "accountCount": "Usable accounts: {{count}}",
+    "reauthRequired": "Sign-in required",
+    "notAuthenticated": "Not authenticated",
+    "selectAccount": "Select account",
+    "selectAccountPlaceholder": "Select an xAI account",
+    "useDefaultAccount": "Use default account",
+    "accounts": "xAI accounts",
+    "defaultAccount": "Default",
+    "expired": "Credentials expired",
+    "setAsDefault": "Set as default",
+    "removeAccount": "Remove account",
+    "addOrReauth": "Add account or sign in again",
+    "login": "Sign in with xAI",
+    "waitingForAuth": "Waiting for xAI authorization…",
+    "enterCode": "If the browser did not fill it in automatically, enter:",
+    "retry": "Retry",
+    "logoutAll": "Remove all xAI accounts",
+    "loginRequired": "Sign in to an xAI account first"
+  },
+  "managedAuth": {
+    "selectedAccountNeedsReauth": "The linked account is missing or needs you to sign in again",
+    "selectedAccountUnavailable": "The linked account is missing or needs you to sign in again. Select another account."
   },
   "endpointTest": {
     "title": "API Endpoint Management",
@@ -1531,6 +1573,7 @@
         "claude": "Claude",
         "codex": "Codex",
         "gemini": "Gemini",
+        "grokbuild": "Grok Build",
         "opencode": "OpenCode",
         "openclaw": "OpenClaw",
         "hermes": "Hermes"

@@ -38,6 +38,7 @@ pub mod webdav_auto_sync;
 #[cfg(not(feature = "desktop"))]
 pub mod webdav_auto_sync_web;
 pub mod webdav_sync;
+pub mod xai_oauth;
 
 pub use config::ConfigService;
 pub use mcp::McpService;

@@ -523,7 +523,7 @@ fn settings_contain_common_config(app_type: &AppType, settings: &Value, snippet:
             }
             _ => false,
         },
-        AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => false,
+        AppType::GrokBuild | AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => false,
     }
 }
 
@@ -593,7 +593,9 @@ pub(crate) fn remove_common_config_from_settings(
             }
             Ok(result)
         }
-        AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => Ok(settings.clone()),
+        AppType::GrokBuild | AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => {
+            Ok(settings.clone())
+        }
     }
 }
 
@@ -648,7 +650,9 @@ fn apply_common_config_to_settings(
             }
             Ok(result)
         }
-        AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => Ok(settings.clone()),
+        AppType::GrokBuild | AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => {
+            Ok(settings.clone())
+        }
     }
 }
 
@@ -840,6 +844,16 @@ fn restore_live_settings_for_provider_backfill(
         let mut settings = live_settings;
         strip_injected_codex_oauth_context_defaults(&mut settings, provider);
         strip_injected_kimi_for_coding_context_defaults(&mut settings, provider);
+        return settings;
+    }
+    if matches!(app_type, AppType::GrokBuild) {
+        let mut settings = live_settings;
+        if let Err(err) = crate::grok_config::strip_grok_mcp_servers_from_settings(&mut settings) {
+            log::warn!(
+                "Failed to strip Grok Build mcp_servers while backfilling '{}': {err}",
+                provider.id
+            );
+        }
         return settings;
     }
     if !matches!(app_type, AppType::Codex) {
@@ -1137,6 +1151,9 @@ pub(crate) fn write_live_snapshot(app_type: &AppType, provider: &Provider) -> Re
             // Delegate to write_gemini_live which handles env file writing correctly
             write_gemini_live(provider)?;
         }
+        AppType::GrokBuild => {
+            crate::grok_config::write_grok_provider_live(provider)?;
+        }
         AppType::OpenCode => {
             // OpenCode uses additive mode - write provider to config
             use crate::opencode_config;
@@ -1428,6 +1445,7 @@ pub fn read_live_settings(app_type: AppType) -> Result<Value, AppError> {
                 "config": config_obj
             }))
         }
+        AppType::GrokBuild => crate::grok_config::read_grok_live_settings(),
         AppType::OpenCode => {
             use crate::opencode_config::{get_opencode_config_path, read_opencode_config};
 
@@ -1495,6 +1513,20 @@ pub fn import_default_config(state: &AppState, app_type: AppType) -> Result<bool
 
     let settings_config = match app_type {
         AppType::Codex => crate::codex_config::read_codex_live_settings()?,
+        AppType::GrokBuild => {
+            let mut settings = crate::grok_config::read_grok_live_settings()?;
+            let config = settings
+                .get("config")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            // The bare service path is also used by startup auto-import. It may
+            // create only a custom `default` provider; official live state is
+            // handled exclusively by the explicit/manual import wrapper so a
+            // deleted official row is not resurrected on every restart.
+            crate::grok_config::validate_config_toml(config)?;
+            crate::grok_config::strip_grok_mcp_servers_from_settings(&mut settings)?;
+            settings
+        }
         AppType::Claude => {
             let settings_path = get_claude_settings_path();
             if !settings_path.exists() {
@@ -1585,6 +1617,18 @@ pub fn import_default_config(state: &AppState, app_type: AppType) -> Result<bool
         .db
         .set_current_provider(app_type.as_str(), &provider.id)?;
     crate::settings::set_current_provider(&app_type, Some(provider.id.as_str()))?;
+
+    // The Grok seed was introduced after the one-shot global seed flag. Ensure
+    // it alongside a successful live import so existing databases get the
+    // official fallback without changing which imported provider is current.
+    if matches!(app_type, AppType::GrokBuild) {
+        if let Err(error) = state.db.ensure_official_seed_by_id(
+            crate::database::GROKBUILD_OFFICIAL_PROVIDER_ID,
+            AppType::GrokBuild,
+        ) {
+            log::warn!("Failed to ensure grokbuild-official seed after import: {error}");
+        }
+    }
 
     Ok(true) // 真正导入了
 }
@@ -2733,5 +2777,33 @@ base_url = "https://api.example/v1"
             Some(v) => std::env::set_var("CC_SWITCH_TEST_HOME", v),
             None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
         }
+    }
+
+    #[test]
+    fn grok_switch_backfill_strips_synced_mcp_servers() {
+        let provider = Provider::with_id(
+            "grok".to_string(),
+            "Grok".to_string(),
+            json!({
+                "config": "[models]\ndefault = \"grok-4.5\"\n\n[model.\"grok-4.5\"]\nmodel = \"grok-4.5\"\nbase_url = \"https://example.com/v1\"\nname = \"Example\"\napi_key = \"secret\"\napi_backend = \"responses\"\ncontext_window = 500000\n"
+            }),
+            None,
+        );
+        let live_settings = json!({
+            "config": "[models]\ndefault = \"grok-4.5\"\n\n[model.\"grok-4.5\"]\nmodel = \"grok-4.5\"\nbase_url = \"https://example.com/v1\"\nname = \"Example\"\napi_key = \"secret\"\napi_backend = \"responses\"\ncontext_window = 500000\n\n[mcp_servers.echo]\ncommand = \"echo\"\n"
+        });
+
+        let result = restore_live_settings_for_provider_backfill(
+            &AppType::GrokBuild,
+            &provider,
+            live_settings,
+        );
+        let config_text = result
+            .get("config")
+            .and_then(Value::as_str)
+            .expect("config text");
+
+        assert!(!config_text.contains("mcp_servers"));
+        assert!(config_text.contains("model = \"grok-4.5\""));
     }
 }

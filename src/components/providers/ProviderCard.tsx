@@ -26,6 +26,8 @@ import { useProviderHealth } from "@/lib/query/failover";
 import { useUsageQuery } from "@/lib/query/queries";
 import { useProviderLimits, useProviderStats } from "@/lib/query/usage";
 import { extractErrorMessage } from "@/utils/errorUtils";
+import { resolveProviderIcon } from "@/utils/providerIcon";
+import { providerNeedsRouting } from "@/utils/providerCapabilities";
 
 interface DragHandleProps {
   attributes: DraggableAttributes;
@@ -277,6 +279,7 @@ export function ProviderCard({
     provider.meta?.providerType === PROVIDER_TYPES.CODEX_OAUTH;
   const isClaudeThirdParty =
     appId === "claude" && provider.category === "third_party";
+  const needsRouting = providerNeedsRouting(appId, provider);
   const usageStats = providerStats?.find(
     (item) => item.providerId === provider.id,
   );
@@ -410,7 +413,11 @@ export function ProviderCard({
 
           <div className="h-8 w-8 rounded-lg bg-muted flex items-center justify-center border border-border group-hover:scale-105 transition-transform duration-300">
             <ProviderIcon
-              icon={provider.icon}
+              icon={resolveProviderIcon(
+                appId,
+                provider.icon,
+                provider.iconColor,
+              )}
               name={provider.name}
               color={provider.iconColor}
               size={20}
@@ -444,10 +451,10 @@ export function ProviderCard({
                 </div>
               )}
 
-              {appId === "claude" &&
-                provider.category !== "official" &&
-                provider.meta?.apiFormat &&
-                provider.meta.apiFormat !== "anthropic" && (
+              {(appId === "claude" ||
+                appId === "codex" ||
+                appId === "grokbuild") &&
+                needsRouting && (
                   <span className="inline-flex items-center rounded-md bg-sky-100 px-1.5 py-0.5 text-[10px] font-semibold text-sky-700 dark:bg-sky-900/40 dark:text-sky-300">
                     {t("claudeCode.needsRouting", {
                       defaultValue: "需要路由",

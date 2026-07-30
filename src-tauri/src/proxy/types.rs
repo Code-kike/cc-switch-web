@@ -113,6 +113,7 @@ pub struct ProxyTakeoverStatus {
     pub claude: bool,
     pub codex: bool,
     pub gemini: bool,
+    pub grokbuild: bool,
     pub opencode: bool,
     pub openclaw: bool,
     pub hermes: bool,
@@ -143,7 +144,7 @@ pub struct ProviderHealth {
 /// Live 配置备份记录
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LiveBackup {
-    /// 应用类型 (claude/codex/gemini)
+    /// 应用类型 (claude/codex/gemini/grokbuild)
     pub app_type: String,
     /// 原始配置 JSON
     pub original_config: String,
@@ -151,7 +152,7 @@ pub struct LiveBackup {
     pub backed_up_at: String,
 }
 
-/// 全局代理配置（统一字段，三行镜像）
+/// 全局代理配置（统一字段，所有应用行镜像）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GlobalProxyConfig {

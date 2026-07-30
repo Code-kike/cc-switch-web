@@ -65,7 +65,8 @@ impl Database {
             id TEXT PRIMARY KEY, name TEXT NOT NULL, server_config TEXT NOT NULL,
             description TEXT, homepage TEXT, docs TEXT, tags TEXT NOT NULL DEFAULT '[]',
             enabled_claude BOOLEAN NOT NULL DEFAULT 0, enabled_codex BOOLEAN NOT NULL DEFAULT 0,
-            enabled_gemini BOOLEAN NOT NULL DEFAULT 0, enabled_opencode BOOLEAN NOT NULL DEFAULT 0,
+            enabled_gemini BOOLEAN NOT NULL DEFAULT 0, enabled_grokbuild BOOLEAN NOT NULL DEFAULT 0,
+            enabled_opencode BOOLEAN NOT NULL DEFAULT 0,
             enabled_hermes BOOLEAN NOT NULL DEFAULT 0
         )",
             [],
@@ -93,6 +94,7 @@ impl Database {
             enabled_claude BOOLEAN NOT NULL DEFAULT 0,
             enabled_codex BOOLEAN NOT NULL DEFAULT 0,
             enabled_gemini BOOLEAN NOT NULL DEFAULT 0,
+            enabled_grokbuild BOOLEAN NOT NULL DEFAULT 0,
             enabled_opencode BOOLEAN NOT NULL DEFAULT 0,
             enabled_hermes BOOLEAN NOT NULL DEFAULT 0,
             installed_at INTEGER NOT NULL DEFAULT 0,
@@ -120,9 +122,9 @@ impl Database {
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
 
-        // 8. Proxy Config 表（三行结构，app_type 主键）
+        // 8. Proxy Config 表（每应用一行，app_type 主键）
         conn.execute("CREATE TABLE IF NOT EXISTS proxy_config (
-            app_type TEXT PRIMARY KEY CHECK (app_type IN ('claude','codex','gemini')),
+            app_type TEXT PRIMARY KEY CHECK (app_type IN ('claude','codex','gemini','grokbuild')),
             proxy_enabled INTEGER NOT NULL DEFAULT 0, listen_address TEXT NOT NULL DEFAULT '127.0.0.1',
             listen_port INTEGER NOT NULL DEFAULT 15721, enable_logging INTEGER NOT NULL DEFAULT 1,
             enabled INTEGER NOT NULL DEFAULT 0, auto_failover_enabled INTEGER NOT NULL DEFAULT 0,
@@ -134,14 +136,15 @@ impl Database {
             circuit_min_requests INTEGER NOT NULL DEFAULT 10,
             default_cost_multiplier TEXT NOT NULL DEFAULT '1',
             pricing_model_source TEXT NOT NULL DEFAULT 'response',
+            live_takeover_active INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         )", []).map_err(|e| AppError::Database(e.to_string()))?;
 
-        // 初始化三行数据（每应用不同默认值）
+        // 初始化每应用数据（每应用不同默认值）
         //
         // 兼容旧数据库：
-        // - 老版本 proxy_config 是单例表（没有 app_type 列），此时不能执行三行 seed insert；
-        // - 旧表会在 apply_schema_migrations() 中迁移为三行结构后再插入。
+        // - 老版本 proxy_config 是单例表（没有 app_type 列），此时不能执行 per-app seed insert；
+        // - 旧表会在 apply_schema_migrations() 中迁移为每应用一行的结构后再插入。
         if Self::has_column(conn, "proxy_config", "app_type")? {
             conn.execute(
                 "INSERT OR IGNORE INTO proxy_config (app_type, max_retries,
@@ -167,6 +170,15 @@ impl Database {
                 circuit_failure_threshold, circuit_success_threshold, circuit_timeout_seconds,
                 circuit_error_rate_threshold, circuit_min_requests)
                 VALUES ('gemini', 5, 60, 120, 600, 4, 2, 60, 0.6, 10)",
+                [],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+            conn.execute(
+                "INSERT OR IGNORE INTO proxy_config (app_type, max_retries,
+                streaming_first_byte_timeout, streaming_idle_timeout, non_streaming_timeout,
+                circuit_failure_threshold, circuit_success_threshold, circuit_timeout_seconds,
+                circuit_error_rate_threshold, circuit_min_requests)
+                VALUES ('grokbuild', 3, 60, 120, 600, 4, 2, 60, 0.6, 10)",
                 [],
             )
             .map_err(|e| AppError::Database(e.to_string()))?;
@@ -371,7 +383,7 @@ impl Database {
             [],
         );
 
-        // 兼容：若旧版 proxy_config 仍为单例结构（无 app_type），则在启动时直接转换为三行结构
+        // 兼容：若旧版 proxy_config 仍为单例结构（无 app_type），则在启动时直接转换为每应用一行
         // 说明：user_version=2 时不会再触发 v1->v2 迁移，但新代码查询依赖 app_type 列。
         if Self::table_exists(conn, "proxy_config")?
             && !Self::has_column(conn, "proxy_config", "app_type")?
@@ -500,6 +512,13 @@ impl Database {
                         log::info!("迁移数据库从 v13 到 v14（添加项目 Profiles 表）");
                         Self::migrate_v13_to_v14(conn)?;
                         Self::set_user_version(conn, 14)?;
+                    }
+                    14 => {
+                        log::info!(
+                            "迁移数据库从 v14 到 v15（添加 Grok Build 代理、Skills 与 MCP 支持）"
+                        );
+                        Self::migrate_v14_to_v15(conn)?;
+                        Self::set_user_version(conn, 15)?;
                     }
                     _ => {
                         return Err(AppError::Database(format!(
@@ -724,13 +743,13 @@ impl Database {
         // 重构 skills 表（添加 app_type 字段）
         Self::migrate_skills_table(conn)?;
 
-        // 重构 proxy_config 为三行结构（每应用独立配置）
+        // 重构 proxy_config 为每应用一行（每应用独立配置）
         Self::migrate_proxy_config_to_per_app(conn)?;
 
         Ok(())
     }
 
-    /// 将 proxy_config 迁移为三行结构（每应用独立配置）
+    /// 将 proxy_config 迁移为每应用一行（每应用独立配置）
     fn migrate_proxy_config_to_per_app(conn: &Connection) -> Result<(), AppError> {
         // 检查是否已经是新表结构（幂等性）
         if !Self::table_exists(conn, "proxy_config")? {
@@ -739,8 +758,8 @@ impl Database {
         }
 
         if Self::has_column(conn, "proxy_config", "app_type")? {
-            // 已经是三行结构，跳过迁移
-            log::info!("proxy_config 已经是三行结构，跳过迁移");
+            // 已经是每应用一行的结构，跳过迁移
+            log::info!("proxy_config 已经是每应用一行的结构，跳过迁移");
             return Ok(());
         }
 
@@ -820,12 +839,25 @@ impl Database {
                 old_cb.3,
                 old_cb.4,
             ),
+            (
+                "grokbuild",
+                false,
+                false,
+                3,
+                old_config.4,
+                old_config.5,
+                old_cb.0,
+                old_cb.1,
+                old_cb.2,
+                old_cb.3,
+                old_cb.4,
+            ),
         ];
 
         // 创建新表
         conn.execute("DROP TABLE IF EXISTS proxy_config_new", [])?;
         conn.execute("CREATE TABLE proxy_config_new (
-            app_type TEXT PRIMARY KEY CHECK (app_type IN ('claude','codex','gemini')),
+            app_type TEXT PRIMARY KEY CHECK (app_type IN ('claude','codex','gemini','grokbuild')),
             proxy_enabled INTEGER NOT NULL DEFAULT 0, listen_address TEXT NOT NULL DEFAULT '127.0.0.1',
             listen_port INTEGER NOT NULL DEFAULT 15721, enable_logging INTEGER NOT NULL DEFAULT 1,
             enabled INTEGER NOT NULL DEFAULT 0, auto_failover_enabled INTEGER NOT NULL DEFAULT 0,
@@ -837,10 +869,11 @@ impl Database {
             circuit_min_requests INTEGER NOT NULL DEFAULT 10,
             default_cost_multiplier TEXT NOT NULL DEFAULT '1',
             pricing_model_source TEXT NOT NULL DEFAULT 'response',
+            live_takeover_active INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         )", [])?;
 
-        // 插入三行配置
+        // 插入每应用配置
         for (app, takeover, failover, retries, fb, idle, cb_f, cb_s, cb_t, cb_r, cb_m) in apps {
             conn.execute(
                 "INSERT INTO proxy_config_new (app_type, proxy_enabled, listen_address, listen_port, enable_logging,
@@ -864,7 +897,7 @@ impl Database {
             [],
         )?;
 
-        log::info!("proxy_config 已迁移为三行结构");
+        log::info!("proxy_config 已迁移为每应用一行的结构");
         Ok(())
     }
 
@@ -1389,6 +1422,124 @@ impl Database {
             [],
         )
         .map_err(|e| AppError::Database(format!("v13 -> v14 创建 profiles 表失败: {e}")))?;
+        Ok(())
+    }
+
+    /// v14 -> v15：添加 Grok Build 的独立代理行及 Skills/MCP 启用状态。
+    fn migrate_v14_to_v15(conn: &Connection) -> Result<(), AppError> {
+        if !Self::table_exists(conn, "proxy_config")? {
+            log::debug!("v14 -> v15: proxy_config 不存在，跳过 Grok Build 代理表迁移");
+        } else {
+            conn.execute("DROP TABLE IF EXISTS proxy_config_v15", [])
+                .map_err(|e| AppError::Database(e.to_string()))?;
+            conn.execute(
+                "CREATE TABLE proxy_config_v15 (
+                app_type TEXT PRIMARY KEY CHECK (app_type IN ('claude','codex','gemini','grokbuild')),
+                proxy_enabled INTEGER NOT NULL DEFAULT 0,
+                listen_address TEXT NOT NULL DEFAULT '127.0.0.1',
+                listen_port INTEGER NOT NULL DEFAULT 15721,
+                enable_logging INTEGER NOT NULL DEFAULT 1,
+                enabled INTEGER NOT NULL DEFAULT 0,
+                auto_failover_enabled INTEGER NOT NULL DEFAULT 0,
+                failover_strategy TEXT NOT NULL DEFAULT 'sequential',
+                max_retries INTEGER NOT NULL DEFAULT 3,
+                streaming_first_byte_timeout INTEGER NOT NULL DEFAULT 60,
+                streaming_idle_timeout INTEGER NOT NULL DEFAULT 120,
+                non_streaming_timeout INTEGER NOT NULL DEFAULT 600,
+                circuit_failure_threshold INTEGER NOT NULL DEFAULT 4,
+                circuit_success_threshold INTEGER NOT NULL DEFAULT 2,
+                circuit_timeout_seconds INTEGER NOT NULL DEFAULT 60,
+                circuit_error_rate_threshold REAL NOT NULL DEFAULT 0.6,
+                circuit_min_requests INTEGER NOT NULL DEFAULT 10,
+                default_cost_multiplier TEXT NOT NULL DEFAULT '1',
+                pricing_model_source TEXT NOT NULL DEFAULT 'response',
+                live_takeover_active INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )",
+                [],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+
+            let copied_columns = [
+                ("app_type", "'claude'"),
+                ("proxy_enabled", "0"),
+                ("listen_address", "'127.0.0.1'"),
+                ("listen_port", "15721"),
+                ("enable_logging", "1"),
+                ("enabled", "0"),
+                ("auto_failover_enabled", "0"),
+                ("failover_strategy", "'sequential'"),
+                ("max_retries", "3"),
+                ("streaming_first_byte_timeout", "60"),
+                ("streaming_idle_timeout", "120"),
+                ("non_streaming_timeout", "600"),
+                ("circuit_failure_threshold", "4"),
+                ("circuit_success_threshold", "2"),
+                ("circuit_timeout_seconds", "60"),
+                ("circuit_error_rate_threshold", "0.6"),
+                ("circuit_min_requests", "10"),
+                ("default_cost_multiplier", "'1'"),
+                ("pricing_model_source", "'response'"),
+                ("live_takeover_active", "0"),
+                ("created_at", "datetime('now')"),
+                ("updated_at", "datetime('now')"),
+            ]
+            .into_iter()
+            .map(|(column, fallback)| {
+                Self::has_column(conn, "proxy_config", column).map(|exists| {
+                    if exists {
+                        format!("\"{column}\"")
+                    } else {
+                        fallback.into()
+                    }
+                })
+            })
+            .collect::<Result<Vec<_>, AppError>>()?
+            .join(", ");
+
+            let copy_sql = format!(
+                "INSERT INTO proxy_config_v15 (
+                app_type, proxy_enabled, listen_address, listen_port, enable_logging,
+                enabled, auto_failover_enabled, failover_strategy, max_retries,
+                streaming_first_byte_timeout, streaming_idle_timeout, non_streaming_timeout,
+                circuit_failure_threshold, circuit_success_threshold, circuit_timeout_seconds,
+                circuit_error_rate_threshold, circuit_min_requests,
+                default_cost_multiplier, pricing_model_source, live_takeover_active,
+                created_at, updated_at
+            )
+            SELECT {copied_columns} FROM proxy_config"
+            );
+            conn.execute(&copy_sql, [])
+                .map_err(|e| AppError::Database(e.to_string()))?;
+
+            conn.execute("DROP TABLE proxy_config", [])
+                .map_err(|e| AppError::Database(e.to_string()))?;
+            conn.execute("ALTER TABLE proxy_config_v15 RENAME TO proxy_config", [])
+                .map_err(|e| AppError::Database(e.to_string()))?;
+            conn.execute(
+                "INSERT OR IGNORE INTO proxy_config (app_type) VALUES ('grokbuild')",
+                [],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        }
+
+        if Self::table_exists(conn, "mcp_servers")? {
+            Self::add_column_if_missing(
+                conn,
+                "mcp_servers",
+                "enabled_grokbuild",
+                "BOOLEAN NOT NULL DEFAULT 0",
+            )?;
+        }
+        if Self::table_exists(conn, "skills")? {
+            Self::add_column_if_missing(
+                conn,
+                "skills",
+                "enabled_grokbuild",
+                "BOOLEAN NOT NULL DEFAULT 0",
+            )?;
+        }
         Ok(())
     }
 
@@ -2130,6 +2281,7 @@ impl Database {
             ("qwq-32b", "QwQ 32B", "0.20", "0.60", "0", "0"),
             ("qwen3-32b", "Qwen3 32B", "0.16", "0.64", "0", "0"),
             // Grok 系列 (xAI)
+            ("grok-4.5", "Grok 4.5", "2", "6", "0.50", "0"),
             (
                 "grok-4.20-0309-reasoning",
                 "Grok 4.20 Reasoning",
@@ -2568,7 +2720,7 @@ mod tests {
 
         Database::apply_schema_migrations_on_conn(&conn)?;
 
-        assert_eq!(Database::get_user_version(&conn)?, 14);
+        assert_eq!(Database::get_user_version(&conn)?, SCHEMA_VERSION);
         assert!(Database::has_column(
             &conn,
             "proxy_request_logs",
@@ -2602,7 +2754,7 @@ mod tests {
 
         Database::apply_schema_migrations_on_conn(&conn)?;
 
-        assert_eq!(Database::get_user_version(&conn)?, 14);
+        assert_eq!(Database::get_user_version(&conn)?, SCHEMA_VERSION);
         assert!(Database::table_exists(&conn, "profiles")?);
         for column in [
             "id",
@@ -2617,6 +2769,70 @@ mod tests {
                 "profiles.{column} should exist after migration"
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn migrate_v14_to_v15_adds_grokbuild_proxy_row_and_enablement_flags() -> Result<(), AppError> {
+        let conn = Connection::open_in_memory()?;
+        conn.execute_batch(
+            "CREATE TABLE proxy_config (
+                app_type TEXT PRIMARY KEY CHECK (app_type IN ('claude','codex','gemini')),
+                enabled INTEGER NOT NULL DEFAULT 0,
+                failover_strategy TEXT NOT NULL DEFAULT 'sequential',
+                live_takeover_active INTEGER NOT NULL DEFAULT 0,
+                max_retries INTEGER NOT NULL DEFAULT 3
+            );
+            INSERT INTO proxy_config (
+                app_type, enabled, failover_strategy, live_takeover_active, max_retries
+            ) VALUES ('codex', 1, 'random', 1, 9);
+            CREATE TABLE mcp_servers (
+                id TEXT PRIMARY KEY,
+                enabled_codex BOOLEAN NOT NULL DEFAULT 0
+            );
+            CREATE TABLE skills (
+                id TEXT PRIMARY KEY,
+                enabled_codex BOOLEAN NOT NULL DEFAULT 0
+            );
+            INSERT INTO mcp_servers (id, enabled_codex) VALUES ('mcp-1', 1);
+            INSERT INTO skills (id, enabled_codex) VALUES ('skill-1', 1);",
+        )?;
+        Database::set_user_version(&conn, 14)?;
+
+        Database::apply_schema_migrations_on_conn(&conn)?;
+
+        assert_eq!(Database::get_user_version(&conn)?, SCHEMA_VERSION);
+        let grok_rows: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM proxy_config WHERE app_type = 'grokbuild'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(grok_rows, 1);
+        let codex_values: (i64, String, i64, i64) = conn.query_row(
+            "SELECT enabled, failover_strategy, live_takeover_active, max_retries
+             FROM proxy_config WHERE app_type = 'codex'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
+        assert_eq!(codex_values, (1, "random".to_string(), 1, 9));
+        assert!(Database::has_column(
+            &conn,
+            "mcp_servers",
+            "enabled_grokbuild"
+        )?);
+        assert!(Database::has_column(&conn, "skills", "enabled_grokbuild")?);
+        let mcp_values: (i64, i64) = conn.query_row(
+            "SELECT enabled_codex, enabled_grokbuild FROM mcp_servers WHERE id = 'mcp-1'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        let skill_values: (i64, i64) = conn.query_row(
+            "SELECT enabled_codex, enabled_grokbuild FROM skills WHERE id = 'skill-1'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!(mcp_values, (1, 0));
+        assert_eq!(skill_values, (1, 0));
         Ok(())
     }
 }

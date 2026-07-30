@@ -158,6 +158,8 @@ mod error;
 mod gemini_config;
 #[path = "../src/gemini_mcp.rs"]
 mod gemini_mcp;
+#[path = "../src/grok_config.rs"]
+mod grok_config;
 #[path = "../src/hermes_config.rs"]
 mod hermes_config;
 #[path = "../src/init_status.rs"]
@@ -342,7 +344,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         crate::proxy::providers::copilot_auth::CopilotAuthManager::new(app_config_dir.clone()),
     ));
     let codex_oauth = Arc::new(RwLock::new(
-        crate::proxy::providers::codex_oauth_auth::CodexOAuthManager::new(app_config_dir),
+        crate::proxy::providers::codex_oauth_auth::CodexOAuthManager::new(app_config_dir.clone()),
+    ));
+    let xai_oauth = Arc::new(RwLock::new(
+        crate::proxy::providers::xai_oauth_auth::XaiOAuthManager::new(app_config_dir),
     ));
 
     // Event sink (broadcast for SSE).
@@ -358,6 +363,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Arc::clone(&app_state),
         Arc::clone(&copilot_auth),
         Arc::clone(&codex_oauth),
+        Arc::clone(&xai_oauth),
         Arc::clone(&sink),
         events,
     );
@@ -369,7 +375,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // 热切换句柄由 set_runtime_ctx 内部自动填入。
     app_state
         .proxy_service
-        .set_runtime_ctx(sink, copilot_auth, codex_oauth);
+        .set_runtime_ctx(sink, copilot_auth, codex_oauth, xai_oauth);
 
     // ── Proxy lifecycle, step 2/5: global outbound proxy client init ─────
     // 镜像桌面 lib.rs setup 的「初始化全局出站代理 HTTP 客户端」块：从数据库
@@ -638,14 +644,7 @@ async fn recover_proxy_from_crash_residue(state: &store::AppState) {
 /// 则自动启动代理服务并接管对应应用的 Live 配置；失败时清除该应用的
 /// 状态，避免下次启动反复尝试。
 async fn restore_proxy_state_on_startup(state: &store::AppState) {
-    let mut apps_to_restore = Vec::new();
-    for app_type in ["claude", "codex", "gemini"] {
-        if let Ok(config) = state.db.get_proxy_config_for_app(app_type).await {
-            if config.enabled {
-                apps_to_restore.push(app_type);
-            }
-        }
-    }
+    let apps_to_restore = bootstrap::enabled_proxy_apps_on_startup(&state.db).await;
 
     if apps_to_restore.is_empty() {
         log::debug!("启动时无需恢复代理状态");

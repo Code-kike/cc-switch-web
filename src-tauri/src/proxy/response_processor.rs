@@ -451,7 +451,7 @@ impl Drop for SseUsageFinishGuard {
 // ============================================================================
 
 /// 创建使用量收集器
-fn create_usage_collector(
+pub(crate) fn create_usage_collector(
     ctx: &RequestContext,
     state: &ProxyState,
     status_code: u16,
@@ -536,7 +536,7 @@ fn create_usage_collector(
 }
 
 /// 异步记录使用量
-fn spawn_log_usage(
+pub(crate) fn spawn_log_usage(
     state: &ProxyState,
     ctx: &RequestContext,
     usage: TokenUsage,

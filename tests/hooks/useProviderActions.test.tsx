@@ -242,6 +242,92 @@ describe("useProviderActions", () => {
     expect(switchProviderMutateAsync).toHaveBeenCalledWith(provider.id);
   });
 
+  it("warns for Grok providers that require the Responses router", async () => {
+    switchProviderMutateAsync.mockResolvedValue(undefined);
+    const { wrapper } = createWrapper();
+    const providers = [
+      createProvider({
+        id: "grok-chat",
+        category: "custom",
+        meta: { apiFormat: "openai_chat" },
+      }),
+      createProvider({
+        id: "grok-anthropic",
+        category: "custom",
+        meta: { apiFormat: "anthropic" },
+      }),
+      createProvider({
+        id: "grok-full-url",
+        category: "custom",
+        meta: { isFullUrl: true },
+      }),
+    ];
+
+    const { result } = renderHook(
+      () => useProviderActions("grokbuild", false),
+      { wrapper },
+    );
+
+    for (const provider of providers) {
+      await act(async () => {
+        await result.current.switchProvider(provider);
+      });
+    }
+
+    expect(toastWarningMock).toHaveBeenCalledTimes(3);
+    expect(switchProviderMutateAsync).toHaveBeenCalledTimes(3);
+  });
+
+  it("warns for managed OAuth until the current app is taken over", async () => {
+    switchProviderMutateAsync.mockResolvedValueOnce(undefined);
+    const { wrapper } = createWrapper();
+    const provider = createProvider({
+      category: "custom",
+      meta: {
+        providerType: "xai_oauth",
+        apiFormat: "openai_responses",
+      },
+    });
+
+    const { result } = renderHook(
+      () => useProviderActions("codex", true, false),
+      { wrapper },
+    );
+
+    await act(async () => {
+      await result.current.switchProvider(provider);
+    });
+
+    expect(toastWarningMock).toHaveBeenCalledWith(
+      expect.stringContaining("托管 OAuth"),
+    );
+    expect(switchProviderMutateAsync).toHaveBeenCalledWith(provider.id);
+  });
+
+  it("does not warn for managed OAuth after the current app is taken over", async () => {
+    switchProviderMutateAsync.mockResolvedValueOnce(undefined);
+    const { wrapper } = createWrapper();
+    const provider = createProvider({
+      category: "custom",
+      meta: {
+        providerType: "xai_oauth",
+        apiFormat: "openai_responses",
+      },
+    });
+
+    const { result } = renderHook(
+      () => useProviderActions("codex", true, true),
+      { wrapper },
+    );
+
+    await act(async () => {
+      await result.current.switchProvider(provider);
+    });
+
+    expect(toastWarningMock).not.toHaveBeenCalled();
+    expect(switchProviderMutateAsync).toHaveBeenCalledWith(provider.id);
+  });
+
   it("should sync plugin config when switching Claude provider with integration enabled", async () => {
     switchProviderMutateAsync.mockResolvedValueOnce(undefined);
     settingsApiGetMock.mockResolvedValueOnce({

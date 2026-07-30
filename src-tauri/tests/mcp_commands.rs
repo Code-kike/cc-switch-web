@@ -4,8 +4,9 @@ use std::fs;
 use serde_json::json;
 
 use cc_switch_lib::{
-    get_claude_mcp_path, get_claude_settings_path, import_default_config_test_hook, AppError,
-    AppType, McpApps, McpServer, McpService, MultiAppConfig,
+    get_claude_mcp_path, get_claude_settings_path, get_grok_config_path,
+    import_default_config_test_hook, AppError, AppType, McpApps, McpServer, McpService,
+    MultiAppConfig, ProviderService,
 };
 
 #[path = "support.rs"]
@@ -64,6 +65,141 @@ fn import_default_config_claude_persists_provider() {
     assert!(
         db_path.exists(),
         "importing default config should persist to cc-switch.db"
+    );
+}
+
+fn write_grok_config(contents: &str) {
+    let config_path = get_grok_config_path();
+    if let Some(parent) = config_path.parent() {
+        fs::create_dir_all(parent).expect("create grok config dir");
+    }
+    fs::write(config_path, contents).expect("seed grok config.toml");
+}
+
+#[test]
+fn import_default_config_grokbuild_seeds_official_alongside_default() {
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let _home = ensure_test_home();
+    write_grok_config(
+        r#"[models]
+default = "grok-4.5"
+
+[model."grok-4.5"]
+model = "grok-4.5"
+base_url = "https://example.com/v1"
+name = "Example"
+api_key = "secret"
+api_backend = "responses"
+context_window = 500000
+"#,
+    );
+
+    let mut config = MultiAppConfig::default();
+    config.ensure_app(&AppType::GrokBuild);
+    let state = create_test_state_with_config(&config).expect("create test state");
+
+    import_default_config_test_hook(&state, AppType::GrokBuild)
+        .expect("import default config succeeds");
+
+    let providers = state
+        .db
+        .get_all_providers(AppType::GrokBuild.as_str())
+        .expect("get all providers");
+    assert!(providers.contains_key("default"));
+    assert_eq!(
+        providers
+            .get("grokbuild-official")
+            .expect("official seed")
+            .category
+            .as_deref(),
+        Some("official")
+    );
+    assert_eq!(
+        state
+            .db
+            .get_current_provider(AppType::GrokBuild.as_str())
+            .expect("current provider")
+            .as_deref(),
+        Some("default")
+    );
+}
+
+#[test]
+fn import_default_config_grokbuild_official_live_selects_official() {
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let _home = ensure_test_home();
+    write_grok_config("[mcp_servers.echo]\ncommand = \"echo\"\n");
+
+    let mut config = MultiAppConfig::default();
+    config.ensure_app(&AppType::GrokBuild);
+    let state = create_test_state_with_config(&config).expect("create test state");
+
+    assert!(import_default_config_test_hook(&state, AppType::GrokBuild)
+        .expect("official live import succeeds"));
+    let providers = state
+        .db
+        .get_all_providers(AppType::GrokBuild.as_str())
+        .expect("get all providers");
+    assert!(providers.contains_key("grokbuild-official"));
+    assert!(!providers.contains_key("default"));
+    assert_eq!(
+        state
+            .db
+            .get_current_provider(AppType::GrokBuild.as_str())
+            .expect("current provider")
+            .as_deref(),
+        Some("grokbuild-official")
+    );
+}
+
+#[test]
+fn startup_import_grokbuild_official_live_does_not_resurrect_official() {
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let _home = ensure_test_home();
+    write_grok_config("");
+
+    let mut config = MultiAppConfig::default();
+    config.ensure_app(&AppType::GrokBuild);
+    let state = create_test_state_with_config(&config).expect("create test state");
+
+    ProviderService::import_default_config(&state, AppType::GrokBuild)
+        .expect_err("startup path must reject official live state");
+    assert!(state
+        .db
+        .get_all_providers(AppType::GrokBuild.as_str())
+        .expect("get all providers")
+        .is_empty());
+}
+
+#[test]
+fn import_default_config_grokbuild_broken_custom_live_still_errors() {
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let _home = ensure_test_home();
+    write_grok_config("[models]\ndefault = \"grok-4.5\"\n");
+
+    let mut config = MultiAppConfig::default();
+    config.ensure_app(&AppType::GrokBuild);
+    let state = create_test_state_with_config(&config).expect("create test state");
+
+    import_default_config_test_hook(&state, AppType::GrokBuild)
+        .expect_err("broken custom config should remain invalid");
+    let providers = state
+        .db
+        .get_all_providers(AppType::GrokBuild.as_str())
+        .expect("get all providers");
+    assert!(providers.contains_key("grokbuild-official"));
+    assert!(!providers.contains_key("default"));
+    assert_ne!(
+        state
+            .db
+            .get_current_provider(AppType::GrokBuild.as_str())
+            .expect("current provider")
+            .as_deref(),
+        Some("grokbuild-official")
     );
 }
 
@@ -226,6 +362,7 @@ command = "echo"
                 claude: false,
                 codex: true,
                 gemini: false,
+                grokbuild: false,
                 opencode: false,
                 hermes: false,
             },
@@ -441,6 +578,7 @@ fn sync_all_enabled_projects_codex_even_when_claude_live_is_invalid() {
                 claude: false,
                 codex: true,
                 gemini: false,
+                grokbuild: false,
                 opencode: false,
                 hermes: false,
             },
@@ -490,6 +628,7 @@ fn sync_enabled_for_codex_replaces_table_and_removes_live_orphans() {
                 claude: false,
                 codex: true,
                 gemini: false,
+                grokbuild: false,
                 opencode: false,
                 hermes: false,
             },
@@ -568,6 +707,7 @@ fn codex_toggle_rolls_back_database_when_projection_fails() {
                 claude: false,
                 codex: true,
                 gemini: false,
+                grokbuild: false,
                 opencode: false,
                 hermes: false,
             },
@@ -606,6 +746,7 @@ fn codex_delete_rolls_back_database_when_projection_fails() {
                 claude: false,
                 codex: true,
                 gemini: false,
+                grokbuild: false,
                 opencode: false,
                 hermes: false,
             },
@@ -634,6 +775,7 @@ fn multi_app_mcp_server(command: &str) -> McpServer {
             claude: true,
             codex: true,
             gemini: false,
+            grokbuild: false,
             opencode: false,
             hermes: false,
         },
@@ -795,6 +937,7 @@ fn set_mcp_enabled_for_codex_writes_live_config() {
                 claude: false,
                 codex: false, // 初始未启用
                 gemini: false,
+                grokbuild: false,
                 opencode: false,
                 hermes: false,
             },
@@ -860,6 +1003,7 @@ fn enabling_codex_mcp_skips_when_codex_dir_missing() {
                 claude: false,
                 codex: false,
                 gemini: false,
+                grokbuild: false,
                 opencode: false,
                 hermes: false,
             },
@@ -905,6 +1049,7 @@ fn upsert_mcp_server_disabling_app_removes_from_claude_live_config() {
                 claude: true,
                 codex: false,
                 gemini: false,
+                grokbuild: false,
                 opencode: false,
                 hermes: false,
             },
@@ -939,6 +1084,7 @@ fn upsert_mcp_server_disabling_app_removes_from_claude_live_config() {
                 claude: false,
                 codex: false,
                 gemini: false,
+                grokbuild: false,
                 opencode: false,
                 hermes: false,
             },
@@ -1072,6 +1218,7 @@ fn enabling_gemini_mcp_skips_when_gemini_dir_missing() {
                 claude: false,
                 codex: false,
                 gemini: false,
+                grokbuild: false,
                 opencode: false,
                 hermes: false,
             },
@@ -1127,6 +1274,7 @@ fn enabling_claude_mcp_skips_when_claude_config_absent() {
                 claude: false,
                 codex: false,
                 gemini: false,
+                grokbuild: false,
                 opencode: false,
                 hermes: false,
             },
@@ -1188,6 +1336,7 @@ fn sync_all_enabled_removes_known_disabled_but_preserves_unknown_live_entries() 
                 claude: false,
                 codex: false,
                 gemini: false,
+                grokbuild: false,
                 opencode: false,
                 hermes: false,
             },
@@ -1210,6 +1359,7 @@ fn sync_all_enabled_removes_known_disabled_but_preserves_unknown_live_entries() 
                 claude: true,
                 codex: false,
                 gemini: false,
+                grokbuild: false,
                 opencode: false,
                 hermes: false,
             },

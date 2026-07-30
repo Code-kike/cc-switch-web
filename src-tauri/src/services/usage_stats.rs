@@ -3000,6 +3000,18 @@ mod tests {
             "MiniMaxAI/MiniMax-M3 应清洗后小写匹配到 minimax-m3"
         );
 
+        let grok_pricing = find_model_pricing_row(&conn, "xai/grok-4.5")?;
+        assert_eq!(
+            grok_pricing,
+            Some((
+                "2".to_string(),
+                "6".to_string(),
+                "0.50".to_string(),
+                "0".to_string(),
+            )),
+            "Grok Build / xAI 默认模型必须命中内置定价，避免成本静默记 0"
+        );
+
         // 裸 id 精确命中新增的 seed 行
         let result = find_model_pricing_row(&conn, "claude-sonnet-4-6")?;
         assert!(

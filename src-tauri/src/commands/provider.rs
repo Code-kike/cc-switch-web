@@ -120,6 +120,17 @@ pub fn import_default_config(state: State<'_, AppState>, app: String) -> Result<
     import_default_config_internal(&state, app_type).map_err(Into::into)
 }
 
+#[tauri::command]
+pub fn ensure_grokbuild_official_provider(state: State<'_, AppState>) -> Result<bool, String> {
+    state
+        .db
+        .ensure_official_seed_by_id(
+            crate::database::GROKBUILD_OFFICIAL_PROVIDER_ID,
+            AppType::GrokBuild,
+        )
+        .map_err(|error| error.to_string())
+}
+
 #[allow(non_snake_case)]
 #[tauri::command]
 pub async fn queryProviderUsage(

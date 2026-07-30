@@ -400,6 +400,16 @@ impl Database {
         Ok(())
     }
 
+    pub fn clear_current_provider(&self, app_type: &str) -> Result<(), AppError> {
+        let conn = lock_conn!(self.conn);
+        conn.execute(
+            "UPDATE providers SET is_current = 0 WHERE app_type = ?1",
+            params![app_type],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(())
+    }
+
     pub fn update_provider_settings_config(
         &self,
         app_type: &str,
@@ -721,10 +731,10 @@ impl Database {
         Ok(max.map(|v| (v + 1) as usize).unwrap_or(0))
     }
 
-    /// 启动时调用：补齐缺失的官方预设供应商（Claude / Codex / Gemini）。
+    /// 启动时调用：补齐缺失的官方预设供应商（Claude / Codex / Gemini / Grok Build）。
     ///
     /// 使用 settings flag `official_providers_seeded` 保证每个数据库只执行一次：
-    /// - 全新用户：seed 三条官方预设
+    /// - 全新用户：seed 四条官方预设
     /// - 老用户升级：同样会触发一次（flag 不存在），追加到末尾，不影响已有排序
     /// - 用户删除 seed 后：不再重建（flag 已为 true），尊重用户意图
     ///
@@ -783,6 +793,106 @@ impl Database {
         self.set_setting("official_providers_seeded", "true")?;
 
         Ok(inserted)
+    }
+
+    /// 按 id 兜底插入单条 official seed（仅当目标表中该 id 不存在时插入）。
+    ///
+    /// 与 `init_default_official_providers` 不同，这个按需修复入口不触碰
+    /// `official_providers_seeded` 全局 flag，并且不会覆盖同 id 的用户数据。
+    /// 返回 `Ok(true)` 表示新插入，`Ok(false)` 表示目标已存在。
+    pub fn ensure_official_seed_by_id(
+        &self,
+        seed_id: &str,
+        app_type: crate::app_config::AppType,
+    ) -> Result<bool, AppError> {
+        use crate::database::dao::providers_seed::OFFICIAL_SEEDS;
+
+        let seed = OFFICIAL_SEEDS
+            .iter()
+            .find(|seed| seed.id == seed_id && seed.app_type == app_type)
+            .ok_or_else(|| {
+                AppError::Database(format!(
+                    "unknown official seed: id={seed_id}, app_type={}",
+                    app_type.as_str()
+                ))
+            })?;
+
+        let app_type_str = seed.app_type.as_str();
+        if self.get_provider_by_id(seed_id, app_type_str)?.is_some() {
+            return Ok(false);
+        }
+
+        let settings_config: serde_json::Value = serde_json::from_str(seed.settings_config_json)
+            .map_err(|e| {
+                AppError::Database(format!("Seed JSON parse failed for {}: {e}", seed.id))
+            })?;
+        let next_sort_index = self.next_sort_index_for_app(app_type_str)?;
+
+        let mut provider = Provider::with_id(
+            seed.id.to_string(),
+            seed.name.to_string(),
+            settings_config,
+            Some(seed.website_url.to_string()),
+        );
+        provider.category = Some("official".to_string());
+        provider.icon = Some(seed.icon.to_string());
+        provider.icon_color = Some(seed.icon_color.to_string());
+        provider.sort_index = Some(next_sort_index);
+        provider.created_at = Some(chrono::Utc::now().timestamp_millis());
+
+        self.save_provider(app_type_str, &provider)?;
+        Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod ensure_official_seed_tests {
+    use crate::app_config::AppType;
+    use crate::database::{Database, GROKBUILD_OFFICIAL_PROVIDER_ID};
+
+    #[test]
+    fn ensure_recreates_grokbuild_official_seed_after_deletion() {
+        let db = Database::memory().expect("memory db");
+        db.init_default_official_providers().expect("seed");
+        db.delete_provider(AppType::GrokBuild.as_str(), GROKBUILD_OFFICIAL_PROVIDER_ID)
+            .expect("delete Grok Build official");
+
+        let inserted = db
+            .ensure_official_seed_by_id(GROKBUILD_OFFICIAL_PROVIDER_ID, AppType::GrokBuild)
+            .expect("ensure Grok Build official");
+        assert!(inserted);
+
+        let provider = db
+            .get_provider_by_id(GROKBUILD_OFFICIAL_PROVIDER_ID, AppType::GrokBuild.as_str())
+            .expect("query")
+            .expect("Grok Build official restored");
+        assert_eq!(provider.category.as_deref(), Some("official"));
+        assert_eq!(provider.settings_config["config"], serde_json::json!(""));
+    }
+
+    #[test]
+    fn ensure_preserves_existing_grokbuild_official_customization() {
+        let db = Database::memory().expect("memory db");
+        db.init_default_official_providers().expect("seed");
+
+        let mut provider = db
+            .get_provider_by_id(GROKBUILD_OFFICIAL_PROVIDER_ID, AppType::GrokBuild.as_str())
+            .expect("query")
+            .expect("seed exists");
+        provider.name = "Renamed Grok Official".to_string();
+        db.save_provider(AppType::GrokBuild.as_str(), &provider)
+            .expect("rename seed");
+
+        assert!(!db
+            .ensure_official_seed_by_id(GROKBUILD_OFFICIAL_PROVIDER_ID, AppType::GrokBuild)
+            .expect("ensure existing seed"));
+        assert_eq!(
+            db.get_provider_by_id(GROKBUILD_OFFICIAL_PROVIDER_ID, AppType::GrokBuild.as_str())
+                .expect("query")
+                .expect("seed exists")
+                .name,
+            "Renamed Grok Official"
+        );
     }
 }
 

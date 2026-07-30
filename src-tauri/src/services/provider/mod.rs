@@ -266,6 +266,24 @@ mod tests {
         );
     }
 
+    #[test]
+    fn validate_provider_settings_accepts_grok_official_empty_config() {
+        let mut provider = Provider::with_id(
+            "grokbuild-official".into(),
+            "Grok Official".into(),
+            json!({ "config": "" }),
+            None,
+        );
+        provider.category = Some("official".to_string());
+
+        ProviderService::validate_provider_settings(&AppType::GrokBuild, &provider)
+            .expect("official no-model config should be valid");
+
+        provider.category = Some("custom".to_string());
+        ProviderService::validate_provider_settings(&AppType::GrokBuild, &provider)
+            .expect_err("custom providers still require a model table");
+    }
+
     /// Regression for issue #4272: Fable tier env keys must not enter the shared
     /// Claude common-config snippet (same class as haiku/sonnet/opus model pins).
     #[test]
@@ -2152,14 +2170,16 @@ impl ProviderService {
         // restore backup. Serialize them per app, then decide from the locked
         // current state so a just-started takeover cannot be overwritten by a
         // normal live write.
-        let _switch_guard =
-            if matches!(app_type, AppType::Claude | AppType::Codex | AppType::Gemini) {
-                Some(futures::executor::block_on(
-                    state.proxy_service.lock_switch_for_app(app_type.as_str()),
-                ))
-            } else {
-                None
-            };
+        let _switch_guard = if matches!(
+            app_type,
+            AppType::Claude | AppType::Codex | AppType::Gemini | AppType::GrokBuild
+        ) {
+            Some(futures::executor::block_on(
+                state.proxy_service.lock_switch_for_app(app_type.as_str()),
+            ))
+        } else {
+            None
+        };
 
         // Backup or live placeholders mean the live file is owned by proxy
         // takeover, even if the proxy server is temporarily stopped or is in the
@@ -2609,6 +2629,7 @@ impl ProviderService {
             AppType::Claude => Self::extract_claude_common_config(&provider.settings_config),
             AppType::Codex => Self::extract_codex_common_config(&provider.settings_config),
             AppType::Gemini => Self::extract_gemini_common_config(&provider.settings_config),
+            AppType::GrokBuild => Ok(String::new()),
             AppType::OpenCode => Self::extract_opencode_common_config(&provider.settings_config),
             AppType::OpenClaw => Self::extract_openclaw_common_config(&provider.settings_config),
             AppType::Hermes => Ok(String::new()), // Hermes doesn't use common config snippets
@@ -2624,6 +2645,7 @@ impl ProviderService {
             AppType::Claude => Self::extract_claude_common_config(settings_config),
             AppType::Codex => Self::extract_codex_common_config(settings_config),
             AppType::Gemini => Self::extract_gemini_common_config(settings_config),
+            AppType::GrokBuild => Ok(String::new()),
             AppType::OpenCode => Self::extract_opencode_common_config(settings_config),
             AppType::OpenClaw => Self::extract_openclaw_common_config(settings_config),
             AppType::Hermes => Ok(String::new()), // Hermes doesn't use common config snippets
@@ -2890,6 +2912,43 @@ impl ProviderService {
         state: &AppState,
         app_type: AppType,
     ) -> Result<bool, AppError> {
+        if matches!(app_type, AppType::GrokBuild) {
+            // Explicit import of a valid no-model live document means the Grok
+            // CLI is using its native OAuth state. Select the canonical official
+            // row instead of materializing an invalid custom `default` provider.
+            if let Ok(settings) = crate::grok_config::read_grok_live_settings() {
+                let config = settings
+                    .get("config")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                if crate::grok_config::is_official_live_config(config) {
+                    state.db.ensure_official_seed_by_id(
+                        crate::database::GROKBUILD_OFFICIAL_PROVIDER_ID,
+                        AppType::GrokBuild,
+                    )?;
+                    state.db.set_current_provider(
+                        app_type.as_str(),
+                        crate::database::GROKBUILD_OFFICIAL_PROVIDER_ID,
+                    )?;
+                    crate::settings::set_current_provider(
+                        &app_type,
+                        Some(crate::database::GROKBUILD_OFFICIAL_PROVIDER_ID),
+                    )?;
+                    return Ok(true);
+                }
+            }
+
+            // A user-triggered import is also the recovery affordance for a
+            // manually deleted seed. Preserve the original import error/result;
+            // failure to repair this optional row is warning-only.
+            if let Err(error) = state.db.ensure_official_seed_by_id(
+                crate::database::GROKBUILD_OFFICIAL_PROVIDER_ID,
+                AppType::GrokBuild,
+            ) {
+                log::warn!("Failed to ensure grokbuild-official seed during import: {error}");
+            }
+        }
+
         let imported = Self::import_default_config(state, app_type.clone())?;
 
         if imported {
@@ -3187,6 +3246,30 @@ impl ProviderService {
                 use crate::gemini_config::validate_gemini_settings;
                 validate_gemini_settings(&provider.settings_config)?
             }
+            AppType::GrokBuild => {
+                let settings = provider.settings_config.as_object().ok_or_else(|| {
+                    AppError::localized(
+                        "provider.grokbuild.settings.not_object",
+                        "Grok Build 配置必须是 JSON 对象",
+                        "Grok Build configuration must be a JSON object",
+                    )
+                })?;
+                let config = settings
+                    .get("config")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        AppError::localized(
+                            "provider.grokbuild.config.missing",
+                            "Grok Build 配置缺少 config 字段",
+                            "Grok Build configuration is missing the config field",
+                        )
+                    })?;
+                if provider.category.as_deref() == Some("official") {
+                    crate::grok_config::validate_config_toml_syntax(config)?;
+                } else {
+                    crate::grok_config::validate_config_toml(config)?;
+                }
+            }
             AppType::OpenCode => {
                 // OpenCode uses a different config structure: { npm, options, models }
                 // Basic validation - must be an object
@@ -3281,6 +3364,28 @@ impl ProviderService {
                     })?
                     .to_string();
 
+                Ok((api_key, base_url))
+            }
+            AppType::GrokBuild => {
+                let config_toml = provider
+                    .settings_config
+                    .get("config")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        AppError::localized(
+                            "provider.grokbuild.config.missing",
+                            "Grok Build 配置缺少 config 字段",
+                            "Grok Build configuration is missing the config field",
+                        )
+                    })?;
+                let (base_url, api_key) = crate::grok_config::extract_credentials(config_toml)
+                    .ok_or_else(|| {
+                        AppError::localized(
+                            "provider.grokbuild.credentials.missing",
+                            "Grok Build 配置缺少 Base URL 或 API Key",
+                            "Grok Build configuration is missing the base URL or API key",
+                        )
+                    })?;
                 Ok((api_key, base_url))
             }
             AppType::Codex => {

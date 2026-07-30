@@ -5,7 +5,7 @@
 use futures::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 use std::time::Instant;
 
 use crate::app_config::AppType;
@@ -166,9 +166,11 @@ impl StreamCheckService {
                 let npm = Self::extract_opencode_npm(provider);
                 Self::resolve_opencode_base_url(provider, npm.as_deref())
             }
-            AppType::Claude | AppType::Codex | AppType::Gemini => get_adapter(app_type)
-                .extract_base_url(provider)
-                .map_err(|e| AppError::Message(format!("Failed to extract base_url: {e}"))),
+            AppType::Claude | AppType::Codex | AppType::Gemini | AppType::GrokBuild => {
+                get_adapter(app_type)
+                    .extract_base_url(provider)
+                    .map_err(|e| AppError::Message(format!("Failed to extract base_url: {e}")))
+            }
         }
     }
 
@@ -229,7 +231,7 @@ impl StreamCheckService {
                 )
                 .await
             }
-            AppType::Codex => {
+            AppType::Codex | AppType::GrokBuild => {
                 Self::check_codex_stream(
                     &client,
                     &base_url,
@@ -1352,6 +1354,13 @@ impl StreamCheckService {
             AppType::Codex => {
                 Self::extract_codex_model(provider).unwrap_or_else(|| config.codex_model.clone())
             }
+            AppType::GrokBuild => provider
+                .settings_config
+                .get("config")
+                .and_then(Value::as_str)
+                .and_then(crate::grok_config::extract_model_config)
+                .map(|model| model.model)
+                .unwrap_or_else(|| config.codex_model.clone()),
             AppType::Gemini => Self::extract_env_model(provider, "GEMINI_MODEL")
                 .unwrap_or_else(|| config.gemini_model.clone()),
             AppType::OpenCode => {
