@@ -1,11 +1,8 @@
-{"file":".trellis/spec/frontend/index.md","reason":"Frontend spec index and mandatory review conventions for S3 provider UI changes."}
-{"file":".trellis/spec/frontend/component-guidelines.md","reason":"Review AddProviderDialog and OpenCode editor changes for component consistency."}
-{"file":".trellis/spec/frontend/state-management.md","reason":"Verify provider add/switch autosync state transitions and invalidation behavior."}
-{"file":".trellis/spec/frontend/type-safety.md","reason":"Verify strict typing across provider/config synchronization changes."}
-{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Canonical quality, test, formatting, and regression review criteria."}
-{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"Check that upstream adaptations reuse fork atomic/config helpers rather than duplicating behavior."}
-{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Review React, Tauri, web shim, command-route, persistence, and error-flow consistency end to end."}
-{"file":".trellis/tasks/07-25-sync-upstream-v3-18-0/research/S3-brief.md","reason":"Authoritative S3 scope, invariants, exclusions, and complete light-gate checklist."}
-{"file":".trellis/tasks/07-25-sync-upstream-v3-18-0/research/S3-progress.md","reason":"Per-unit implementation evidence and resumed-work checkpoints to audit."}
-{"file":".trellis/tasks/07-25-sync-upstream-v3-18-0/research/S1-report.md","reason":"Review preservation of earlier fork-local adaptations and web constraints."}
-{"file":".trellis/tasks/07-25-sync-upstream-v3-18-0/research/S2-report.md","reason":"Review overlapping Codex/provider bridge decisions and known deferrals."}
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"Frontend pass: review ProfileSwitcher/ProfileManageDialog/connectivity settings component behavior and composition."}
+{"file":".trellis/spec/frontend/state-management.md","reason":"Frontend pass: verify TanStack query mutations/invalidation, runtime profile events, and settings form persistence."}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"Frontend pass: verify profile/currentIds/scope/settings/connectivity TypeScript contracts."}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Frontend pass: canonical Web adapter parity, testing, security boundary, and quality requirements."}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Frontend pass: review Web/desktop API serialization through adapter/query/component/event boundaries."}
+{"file":".trellis/tasks/07-25-sync-upstream-v3-18-0/research/S4-brief.md","reason":"Authoritative S4 frontend/health-check scope, exclusions, Web parity, and hard rules."}
+{"file":".trellis/tasks/07-25-sync-upstream-v3-18-0/research/S4-progress.md","reason":"Exact implementation, backend review fix, and gate evidence."}
+{"file":".trellis/tasks/07-25-sync-upstream-v3-18-0/research/S4-report.md","reason":"Per-commit adaptations, non-port inventory, and review addendum to audit."}

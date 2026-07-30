@@ -2488,6 +2488,143 @@ projection failure -> DB rollback + compensation of every affected application
 
 ---
 
+### Scenario: Project Profiles — Scoped Snapshot Apply and Runtime Refresh
+
+#### 1. Scope / Trigger
+
+- Trigger: changing project-profile schema, snapshot/apply behavior, Tauri/Web
+  commands, frontend profile UI, or the `profile-applied` refresh path.
+- Applies to `database/dao/profiles.rs`, `services/profile.rs`,
+  `commands/profile.rs`, `web_api/handlers/profiles.rs`,
+  `src/lib/api/profiles.ts`, `src/lib/query/profiles.ts`, `App.tsx`, and any
+  feature state refreshed after a profile apply.
+
+#### 2. Signatures
+
+- Storage:
+  - `profiles(id, name, payload, sort_order, created_at, updated_at)`
+  - `settings.current_profile_id_claude`
+  - `settings.current_profile_id_codex`
+- Backend:
+  - `ProfileScope = Claude | Codex`
+  - `ProfileService::apply(state, profile_id, scope) -> Result<(Vec<String>, bool), AppError>`
+  - `ProfilePayload { providers, mcp, skills, prompts }`, each keyed by
+    `claude` and `codex`
+- Dual-runtime API:
+  - `list_profiles`
+  - `create_profile(name, scope)`
+  - `update_profile(id, name?, resnapshot?, scope?)`
+  - `delete_profile(id)`
+  - `clear_current_profile(scope)`
+  - `apply_profile(id, scope)`
+  - Web routes live under `/api/profiles/*` with matching GET/POST/PUT/DELETE
+    methods in `web-commands.ts` and Axum.
+- Refresh event:
+  - `profile-applied { profileId: string | null, scope: "claude" | "codex" }`
+  - `PromptPanelHandle.reload(): Promise<void>` for prompt state, which is not
+    owned by React Query.
+
+#### 3. Contracts
+
+- A profile is a shared project entity, but its current pointer and payload
+  slots are scope-local. Applying Claude must not mutate Codex slots or its
+  current marker, and vice versa.
+- The fork supports only Claude and Codex profile scopes. Gemini, OpenCode,
+  OpenClaw, and Hermes do not render a profile switcher; Claude Desktop must not
+  be reintroduced without a real fork runtime surface.
+- For MCP and Skills payloads, JSON `null` means “this scope was never
+  captured; leave it untouched”, while `[]` means “captured empty; disable all
+  currently enabled entries”. Frontend `hasScopeSnapshot` must preserve this
+  distinction.
+- Apply order is: serialize with the per-app switch lock while disabling proxy
+  takeover, then provider, MCP, Skills, Prompt, scoped current marker, and
+  finally stop the proxy only when no takeover remains. Live writes continue
+  through existing managed atomic writers; MCP remains a DB-authoritative
+  projection.
+- Missing target entities are best-effort warnings. A malformed scope, missing
+  profile, or invalid payload is a request failure and must not be silently
+  treated as a successful empty profile.
+- Tauri commands and Web handlers must expose the same payload/response shape.
+  Web mutations remain under the existing unauthenticated + same-origin-intent
+  posture; do not add profile-specific authentication.
+- Refresh the actual owner of each derived state:
+  - TanStack Query state -> invalidate its real query key (`profiles`, scoped
+    `providers`, `mcp`, `skills`, proxy status).
+  - Local hook/component state -> call its explicit reload path. Invalidating a
+    made-up key is a no-op; `PromptPanel` must reload directly when the event
+    scope matches the active application.
+- Use the runtime-neutral event adapter so desktop Tauri events and Web SSE
+  events exercise the same refresh logic.
+
+#### 4. Validation & Error Matrix
+
+- Unknown scope -> reject (`InvalidInput`; Web 400), do not create a new key or
+  silently fall back to Claude.
+- Profile exists only for the other scope -> mark it current with a warning and
+  leave the uncaptured scope unchanged.
+- Captured empty MCP/Skills set -> disable existing enabled entries; treating
+  it like `null` is a reject.
+- Missing provider/MCP/Skill/Prompt referenced by a payload -> continue and
+  return a warning naming the dangling ID.
+- Profile apply races takeover or hot switch without the per-app switch lock ->
+  reject; live config and backup ownership can interleave.
+- Tauri command added without Axum route or `web-commands.ts` entry -> reject;
+  route coverage must report zero missing/mismatched commands.
+- `profile-applied` invalidates `['prompts', scope]` while prompts remain local
+  state -> reject; an already-open prompt panel stays stale.
+- Event for Codex reloads an open Claude prompt panel (or the reverse) ->
+  reject; refresh must be scope-matched.
+
+#### 5. Good/Base/Bad Cases
+
+- Good: a Web client applies a Claude profile; provider/MCP/Skills/prompt live
+  state changes through shared services, Web SSE emits `profile-applied`, query
+  caches invalidate, and an open Claude prompt panel reloads.
+- Base: a Claude-only profile is selected from the Codex tab; Codex state is
+  left untouched, the Codex current marker changes, and the caller receives the
+  uncaptured-scope warning.
+- Bad: copying upstream Tauri-only profile commands without Web parity, adding
+  Claude Desktop payload slots to this fork, or assuming every UI state owner
+  can be refreshed through React Query invalidation.
+
+#### 6. Tests Required
+
+- Rust service/DAO/migration tests:
+  - shared-scope isolation and autosave round trip;
+  - null-vs-empty MCP/Skills behavior and dangling-reference warnings;
+  - v13 -> v14 schema migration plus scoped current-marker behavior;
+  - takeover-disable serialization on the per-app switch lock;
+  - `profile_roundtrip` integration suite with an isolated temporary HOME.
+- Frontend/Web tests:
+  - adapter method/body/query encoding for all six profile commands;
+  - switcher current-ID mapping and unsupported app tabs;
+  - App event test proving matching-scope prompt reload and non-matching-scope
+    no-op;
+  - Web route coverage with zero missing/method mismatch/parity fallback.
+- Gates: desktop and Web clippy/check, unfiltered Rust library tests,
+  `profile_roundtrip`, TypeScript, locale parity, formatting, and full Vitest.
+
+#### 7. Wrong vs Correct
+
+##### Wrong
+
+```typescript
+await queryClient.invalidateQueries({
+  queryKey: ["prompts", payload.scope], // PromptPanel has no such query.
+});
+```
+
+##### Correct
+
+```typescript
+await queryClient.invalidateQueries({ queryKey: ["profiles"] });
+if (payload.scope === activeApp) {
+  await promptPanelRef.current?.reload();
+}
+```
+
+---
+
 ## Testing Requirements
 
 <!-- What level of testing is expected -->
