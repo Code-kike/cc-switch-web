@@ -22,16 +22,88 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::SystemTime;
 
 /// 同步结果
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionSyncResult {
     pub imported: u32,
     pub skipped: u32,
     pub files_scanned: u32,
+    pub suspected_duplicates: u32,
+    pub deferred_files: u32,
     pub errors: Vec<String>,
+}
+
+impl SessionSyncResult {
+    pub fn merge(&mut self, other: SessionSyncResult) {
+        self.imported = self.imported.saturating_add(other.imported);
+        self.skipped = self.skipped.saturating_add(other.skipped);
+        self.files_scanned = self.files_scanned.saturating_add(other.files_scanned);
+        self.suspected_duplicates = self
+            .suspected_duplicates
+            .saturating_add(other.suspected_duplicates);
+        self.deferred_files = self.deferred_files.saturating_add(other.deferred_files);
+        self.errors.extend(other.errors);
+    }
+}
+
+pub fn session_sync_mutex() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+fn merge_sync_step(
+    aggregate: &mut SessionSyncResult,
+    name: &str,
+    step: Result<SessionSyncResult, AppError>,
+) {
+    match step {
+        Ok(result) => aggregate.merge(result),
+        Err(error) => aggregate.errors.push(format!("{name} 同步失败: {error}")),
+    }
+}
+
+/// 调用方必须持有 [`session_sync_mutex`]。此函数是同步内核，供后台任务、
+/// 手动同步和 Codex 重建共享，避免 tokio Mutex 重入。
+pub fn sync_all_unlocked(db: &Database) -> SessionSyncResult {
+    let mut result = SessionSyncResult::default();
+    merge_sync_step(&mut result, "Claude", sync_claude_session_logs(db));
+    merge_sync_step(
+        &mut result,
+        "Codex",
+        crate::services::session_usage_codex::sync_codex_usage(db),
+    );
+    merge_sync_step(
+        &mut result,
+        "Gemini",
+        crate::services::session_usage_gemini::sync_gemini_usage(db),
+    );
+    merge_sync_step(
+        &mut result,
+        "OpenCode",
+        crate::services::session_usage_opencode::sync_opencode_usage(db),
+    );
+    notify_sync_result(&result);
+    result
+}
+
+pub(crate) fn notify_sync_result(result: &SessionSyncResult) {
+    if result.imported > 0 {
+        crate::usage_events::notify_log_recorded();
+    }
+}
+
+/// Codex reset 成功后，无论重导是否导入新行或返回错误，都必须通知前端刷新。
+/// 调用方应只在 reset 成功后调用，避免把未发生的数据变更误报为重建完成。
+/// 桌面命令与 Web handler 共享（eff1e0cc）。
+pub(crate) fn finish_codex_rebuild(
+    result: Result<SessionSyncResult, AppError>,
+) -> Result<SessionSyncResult, AppError> {
+    crate::usage_events::notify_log_recorded();
+    result
 }
 
 /// 数据来源分布
@@ -65,6 +137,8 @@ pub fn sync_claude_session_logs(db: &Database) -> Result<SessionSyncResult, AppE
             imported: 0,
             skipped: 0,
             files_scanned: 0,
+            suspected_duplicates: 0,
+            deferred_files: 0,
             errors: vec![],
         });
     }
@@ -73,6 +147,8 @@ pub fn sync_claude_session_logs(db: &Database) -> Result<SessionSyncResult, AppE
         imported: 0,
         skipped: 0,
         files_scanned: 0,
+        suspected_duplicates: 0,
+        deferred_files: 0,
         errors: vec![],
     };
 
@@ -328,7 +404,9 @@ fn sync_single_file(db: &Database, file_path: &Path) -> Result<(u32, u32), AppEr
 }
 
 /// 获取文件的同步状态
-fn get_sync_state(db: &Database, file_path: &str) -> Result<(i64, i64), AppError> {
+///
+/// Shared by all session_usage_* parsers.
+pub(crate) fn get_sync_state(db: &Database, file_path: &str) -> Result<(i64, i64), AppError> {
     let conn = lock_conn!(db.conn);
     let result = conn.query_row(
         "SELECT last_modified, last_line_offset FROM session_log_sync WHERE file_path = ?1",
@@ -338,8 +416,23 @@ fn get_sync_state(db: &Database, file_path: &str) -> Result<(i64, i64), AppError
     Ok(result.unwrap_or((0, 0)))
 }
 
+/// 文件 mtime（纳秒）。同一秒内的多次写入（OpenCode WAL 提交、Codex
+/// rollout 追加）在秒级粒度下会被漏掉，用纳秒精度作为游标。
+///
+/// Shared by all session_usage_* parsers.
+pub(crate) fn metadata_modified_nanos(metadata: &fs::Metadata) -> i64 {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos().min(i64::MAX as u128) as i64)
+        .unwrap_or(0)
+}
+
 /// 更新文件的同步状态
-fn update_sync_state(
+///
+/// Shared by all session_usage_* parsers.
+pub(crate) fn update_sync_state(
     db: &Database,
     file_path: &str,
     last_modified: i64,
@@ -472,12 +565,7 @@ fn insert_session_log_entry(
         )
         .map_err(|e| AppError::Database(format!("插入会话日志失败: {e}")))?;
 
-    // 仅在确实写入新行时通知前端，避免 INSERT OR IGNORE 跳过时产生空刷新
-    if inserted_rows > 0 {
-        crate::usage_events::notify_log_recorded();
-    }
-
-    Ok(true)
+    Ok(inserted_rows > 0)
 }
 
 /// 从 model_pricing 表查找模型定价（支持模糊匹配）
@@ -582,6 +670,26 @@ pub fn get_data_source_breakdown(db: &Database) -> Result<Vec<DataSourceSummary>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sync_result_notification_is_coalesced_to_one_call() {
+        crate::usage_events::take_test_notify_count();
+        notify_sync_result(&SessionSyncResult::default());
+        let result = SessionSyncResult {
+            imported: 25,
+            ..SessionSyncResult::default()
+        };
+        notify_sync_result(&result);
+        assert_eq!(crate::usage_events::take_test_notify_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn session_sync_mutex_serializes_callers() {
+        let first = session_sync_mutex().lock().await;
+        assert!(session_sync_mutex().try_lock().is_err());
+        drop(first);
+        assert!(session_sync_mutex().try_lock().is_ok());
+    }
 
     #[test]
     fn test_parse_usage_from_jsonl_line() {

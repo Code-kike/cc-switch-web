@@ -1296,7 +1296,7 @@ mod tests {
             Some("chatcmpl-claude-compatible")
         );
         assert_eq!(
-            usage.dedup_request_id(),
+            usage.dedup_request_id(None),
             "session:chatcmpl-claude-compatible"
         );
     }

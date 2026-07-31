@@ -55,6 +55,9 @@ pub fn init(sink: Arc<dyn UiEventSink>) {
 /// （代理日志、Claude/Codex/Gemini 会话同步、启动归档）。
 /// 内部 200ms 防抖合并，绝不阻塞调用线程。
 pub fn notify_log_recorded() {
+    #[cfg(test)]
+    TEST_NOTIFY_COUNT.with(|count| count.set(count.get().saturating_add(1)));
+
     // sink 未注入（典型出现在单元测试或 init 之前）：直接放弃。
     let Some(sink) = EVENT_SINK.get() else {
         return;
@@ -77,4 +80,14 @@ pub fn notify_log_recorded() {
         // invalidate，无需具体数据）。
         sink.emit_json(EVENT_USAGE_LOG_RECORDED, serde_json::Value::Null);
     });
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_NOTIFY_COUNT: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn take_test_notify_count() -> u32 {
+    TEST_NOTIFY_COUNT.with(|count| count.replace(0))
 }

@@ -13,6 +13,7 @@ mod auto_launch;
 mod claude_mcp;
 mod claude_plugin;
 mod codex_config;
+mod codex_state_db;
 mod commands;
 mod config;
 mod database;
@@ -748,71 +749,40 @@ pub fn run() {
                 tauri::async_runtime::spawn(async move {
                     const SESSION_SYNC_INTERVAL_SECS: u64 = 60;
 
+                    // 上游 eb105eae 在启动路径回填 usage 成本；本 fork 没有
+                    // `backfill_missing_usage_costs`（用查询期 `maybe_backfill_log_costs`
+                    // 惰性回填替代），因此这里只做串行化同步。
+                    async fn run_session_sync(db: std::sync::Arc<crate::database::Database>) {
+                        let _guard = crate::services::session_usage::session_sync_mutex()
+                            .lock()
+                            .await;
+                        let task = tauri::async_runtime::spawn_blocking(move || {
+                            crate::services::session_usage::sync_all_unlocked(&db)
+                        });
+                        match task.await {
+                            Ok(result) if !result.errors.is_empty() => {
+                                log::warn!(
+                                    "Session usage sync completed with {} error(s)",
+                                    result.errors.len()
+                                );
+                            }
+                            Ok(_) => {}
+                            Err(error) => log::warn!("Session usage blocking task failed: {error}"),
+                        }
+                    }
+
                     // 首次同步
-                    if let Err(e) =
-                        crate::services::session_usage::sync_claude_session_logs(
-                            &db_for_session_sync,
-                        )
-                    {
-                        log::warn!("Session usage initial sync failed: {e}");
-                    }
-                    if let Err(e) =
-                        crate::services::session_usage_codex::sync_codex_usage(
-                            &db_for_session_sync,
-                        )
-                    {
-                        log::warn!("Codex usage initial sync failed: {e}");
-                    }
-                    if let Err(e) =
-                        crate::services::session_usage_gemini::sync_gemini_usage(
-                            &db_for_session_sync,
-                        )
-                    {
-                        log::warn!("Gemini usage initial sync failed: {e}");
-                    }
-                    if let Err(e) =
-                        crate::services::session_usage_opencode::sync_opencode_usage(
-                            &db_for_session_sync,
-                        )
-                    {
-                        log::warn!("OpenCode usage initial sync failed: {e}");
-                    }
+                    run_session_sync(db_for_session_sync.clone()).await;
 
                     // 定期同步
                     let mut interval = tokio::time::interval(std::time::Duration::from_secs(
                         SESSION_SYNC_INTERVAL_SECS,
                     ));
+                    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                     interval.tick().await; // skip immediate first tick
                     loop {
                         interval.tick().await;
-                        if let Err(e) =
-                            crate::services::session_usage::sync_claude_session_logs(
-                                &db_for_session_sync,
-                            )
-                        {
-                            log::warn!("Session usage periodic sync failed: {e}");
-                        }
-                        if let Err(e) =
-                            crate::services::session_usage_codex::sync_codex_usage(
-                                &db_for_session_sync,
-                            )
-                        {
-                            log::warn!("Codex usage periodic sync failed: {e}");
-                        }
-                        if let Err(e) =
-                            crate::services::session_usage_gemini::sync_gemini_usage(
-                                &db_for_session_sync,
-                            )
-                        {
-                            log::warn!("Gemini usage periodic sync failed: {e}");
-                        }
-                        if let Err(e) =
-                            crate::services::session_usage_opencode::sync_opencode_usage(
-                                &db_for_session_sync,
-                            )
-                        {
-                            log::warn!("OpenCode usage periodic sync failed: {e}");
-                        }
+                        run_session_sync(db_for_session_sync.clone()).await;
                     }
                 });
             });
@@ -1076,6 +1046,7 @@ pub fn run() {
             commands::check_provider_limits,
             // Session usage sync
             commands::sync_session_usage,
+            commands::rebuild_codex_usage,
             commands::get_usage_data_sources,
             // Stream health check
             commands::stream_check_provider,

@@ -91,6 +91,7 @@ pub fn router(state: ApiState) -> Router {
         .route("/system/delete_model_pricing", post(delete_model_pricing))
         .route("/usage/testusagescript", post(test_usage_script))
         .route("/sessions/sync-session-usage", post(sync_session_usage))
+        .route("/usage/rebuild-codex-usage", post(rebuild_codex_usage))
         .with_state(state)
 }
 
@@ -170,36 +171,33 @@ async fn sync_session_usage(
     State(state): State<ApiState>,
 ) -> ApiResult<crate::services::session_usage::SessionSyncResult> {
     let db = state.app_state.db.clone();
+    // eb105eae: 与桌面命令一致，用进程级互斥串行化会话同步，
+    // 并在阻塞线程执行文件系统/SQLite 工作。
+    let _guard = crate::services::session_usage::session_sync_mutex()
+        .lock()
+        .await;
+    let result =
+        tokio::task::spawn_blocking(move || crate::services::session_usage::sync_all_unlocked(&db))
+            .await
+            .map_err(ApiError::from_anyhow)?;
+    Ok(json_ok(result))
+}
+
+/// eff1e0cc Web 对等实现：与桌面 `rebuild_codex_usage` 命令共享同一
+/// backup → reset → reimport 序列与通知语义（`finish_codex_rebuild`），
+/// 全程持有会话同步互斥锁，阻塞工作放在 blocking 线程。
+async fn rebuild_codex_usage(
+    State(state): State<ApiState>,
+) -> ApiResult<crate::services::session_usage::SessionSyncResult> {
+    let db = state.app_state.db.clone();
+    let _guard = crate::services::session_usage::session_sync_mutex()
+        .lock()
+        .await;
     let result = tokio::task::spawn_blocking(move || {
-        let mut result = crate::services::session_usage::sync_claude_session_logs(&db)?;
-        match crate::services::session_usage_codex::sync_codex_usage(&db) {
-            Ok(codex) => {
-                result.imported += codex.imported;
-                result.skipped += codex.skipped;
-                result.files_scanned += codex.files_scanned;
-                result.errors.extend(codex.errors);
-            }
-            Err(err) => result.errors.push(format!("Codex sync failed: {err}")),
-        }
-        match crate::services::session_usage_gemini::sync_gemini_usage(&db) {
-            Ok(gemini) => {
-                result.imported += gemini.imported;
-                result.skipped += gemini.skipped;
-                result.files_scanned += gemini.files_scanned;
-                result.errors.extend(gemini.errors);
-            }
-            Err(err) => result.errors.push(format!("Gemini sync failed: {err}")),
-        }
-        match crate::services::session_usage_opencode::sync_opencode_usage(&db) {
-            Ok(opencode) => {
-                result.imported += opencode.imported;
-                result.skipped += opencode.skipped;
-                result.files_scanned += opencode.files_scanned;
-                result.errors.extend(opencode.errors);
-            }
-            Err(err) => result.errors.push(format!("OpenCode sync failed: {err}")),
-        }
-        Ok::<_, crate::error::AppError>(result)
+        db.backup_database_file()?;
+        db.reset_codex_usage()?;
+        let result = crate::services::session_usage_codex::sync_codex_usage(&db);
+        crate::services::session_usage::finish_codex_rebuild(result)
     })
     .await
     .map_err(ApiError::from_anyhow)?

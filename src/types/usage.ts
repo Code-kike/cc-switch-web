@@ -39,6 +39,8 @@ export interface SessionSyncResult {
   imported: number;
   skipped: number;
   filesScanned: number;
+  suspectedDuplicates: number;
+  deferredFiles: number;
   errors: string[];
 }
 

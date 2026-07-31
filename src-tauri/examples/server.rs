@@ -142,6 +142,8 @@ mod claude_mcp;
 mod claude_plugin;
 #[path = "../src/codex_config.rs"]
 mod codex_config;
+#[path = "../src/codex_state_db.rs"]
+mod codex_state_db;
 #[path = "../src/config.rs"]
 mod config;
 #[path = "../src/database/mod.rs"]
@@ -542,30 +544,38 @@ fn spawn_background_workers(state: &store::AppState) {
     // server only synced usage lazily on `GET /api/usage`.
     let db_for_session_sync = state.db.clone();
     tokio::spawn(async move {
-        run_session_usage_sync(&db_for_session_sync, "initial");
+        run_session_usage_sync(db_for_session_sync.clone(), "initial").await;
         let mut interval = tokio::time::interval(Duration::from_secs(SESSION_SYNC_INTERVAL_SECS));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         interval.tick().await; // skip the immediate first tick
         loop {
             interval.tick().await;
-            run_session_usage_sync(&db_for_session_sync, "periodic");
+            run_session_usage_sync(db_for_session_sync.clone(), "periodic").await;
         }
     });
 }
 
-/// Run one round of the four session-usage syncs (Claude / Codex / Gemini /
-/// OpenCode), logging each failure without aborting the others.
-fn run_session_usage_sync(db: &database::Database, phase: &str) {
-    if let Err(e) = crate::services::session_usage::sync_claude_session_logs(db) {
-        log::warn!("Session usage {phase} sync failed: {e}");
-    }
-    if let Err(e) = crate::services::session_usage_codex::sync_codex_usage(db) {
-        log::warn!("Codex usage {phase} sync failed: {e}");
-    }
-    if let Err(e) = crate::services::session_usage_gemini::sync_gemini_usage(db) {
-        log::warn!("Gemini usage {phase} sync failed: {e}");
-    }
-    if let Err(e) = crate::services::session_usage_opencode::sync_opencode_usage(db) {
-        log::warn!("OpenCode usage {phase} sync failed: {e}");
+/// Run one serialized round of the four session-usage syncs (Claude / Codex /
+/// Gemini / OpenCode) on a blocking worker (upstream eb105eae parity with the
+/// desktop `lib.rs` loop): the process-wide session-sync mutex serializes the
+/// startup/timer path against manual Web API syncs, blocking filesystem/SQLite
+/// work stays off the async executor, and the sync kernel emits at most one
+/// coalesced refresh notification per completed pass.
+async fn run_session_usage_sync(db: std::sync::Arc<database::Database>, phase: &str) {
+    let _guard = crate::services::session_usage::session_sync_mutex()
+        .lock()
+        .await;
+    let task =
+        tokio::task::spawn_blocking(move || crate::services::session_usage::sync_all_unlocked(&db));
+    match task.await {
+        Ok(result) if !result.errors.is_empty() => {
+            log::warn!(
+                "Session usage {phase} sync completed with {} error(s)",
+                result.errors.len()
+            );
+        }
+        Ok(_) => {}
+        Err(error) => log::warn!("Session usage {phase} blocking task failed: {error}"),
     }
 }
 

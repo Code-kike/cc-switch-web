@@ -637,6 +637,10 @@ const cmds = defineCommands({
     method: "GET",
     path: "/api/workspace/read-workspace-file",
   },
+  rebuild_codex_usage: {
+    method: "POST",
+    path: "/api/usage/rebuild-codex-usage",
+  },
   remove_custom_endpoint: {
     method: "POST",
     path: "/api/system/remove_custom_endpoint",
