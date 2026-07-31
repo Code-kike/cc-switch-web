@@ -59,6 +59,27 @@ const getBackups = async (baseUrl: string): Promise<BackupEntry[]> => {
   return (await response.json()) as BackupEntry[];
 };
 
+// The web server mirrors the desktop startup maintenance worker and creates a
+// baseline automatic backup on a fresh data dir before it starts serving. Clear
+// that baseline through the real API so the section's empty-state flow stays
+// observable and the later exact-list assertions are relative to a clean slate.
+const clearBackups = async (baseUrl: string): Promise<void> => {
+  for (const backup of await getBackups(baseUrl)) {
+    const response = await fetch(
+      new URL(
+        `/api/backups/delete-db-backup?filename=${encodeURIComponent(backup.filename)}`,
+        baseUrl,
+      ),
+      { method: "DELETE" },
+    );
+    if (!response.ok) {
+      throw new Error(
+        `failed to delete backup ${backup.filename}: ${response.status}`,
+      );
+    }
+  }
+};
+
 const getRowForName = (displayName: string): HTMLElement => {
   const label = screen.getByText(displayName);
   const row = label.parentElement?.parentElement;
@@ -101,6 +122,11 @@ describe.sequential("BackupListSection against real web server", () => {
   it(
     "creates, renames, restores, and deletes backups through the visible section UI",
     async () => {
+      await waitFor(async () => {
+        await clearBackups(webServer.baseUrl);
+        expect(await getBackups(webServer.baseUrl)).toEqual([]);
+      });
+
       renderSection();
 
       await waitFor(async () => {

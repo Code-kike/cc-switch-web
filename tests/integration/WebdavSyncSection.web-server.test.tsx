@@ -323,9 +323,16 @@ describe.sequential("WebdavSyncSection against real web server", () => {
 
       fireEvent.click(screen.getByRole("button", { name: confirmDownloadRegex }));
 
-      await waitFor(() => {
-        expectToastMessage(toastSuccessMock, downloadSuccessRegex);
-      });
+      // The download restore runs the constrained canonical SQL restore, which
+      // replays the full schema migration chain (now through v16) plus
+      // integrity checks on the downloaded dump before swapping the live
+      // database — longer than the default 1s waitFor window.
+      await waitFor(
+        () => {
+          expectToastMessage(toastSuccessMock, downloadSuccessRegex);
+        },
+        { timeout: 15_000 },
+      );
       await waitFor(async () => {
         expect(
           (await providersApi.getAll("claude"))["webdav-page-provider"],

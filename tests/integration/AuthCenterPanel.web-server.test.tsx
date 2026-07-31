@@ -27,7 +27,7 @@ import {
 const remoteHintRegex =
   /^(settings\.authCenter\.webRemoteHint|远程 Web 模式会把 OAuth 账号保存到服务端机器|Remote Web mode stores OAuth accounts on the server host)$/;
 const remoteHintDescriptionRegex =
-  /^(settings\.authCenter\.webRemoteHintDescription|授权页面会在当前浏览器打开，但登录成功后的 Copilot \/ ChatGPT 账号会绑定到运行 cc-switch Web 的那台机器。仅在您信任该服务端时继续。|The authorization page opens in this browser, but successful Copilot \/ ChatGPT logins are saved on the machine running cc-switch Web\. Continue only if you trust that server\.)$/;
+  /^(settings\.authCenter\.webRemoteHintDescription|授权页面会在当前浏览器打开，但登录成功后的 Copilot \/ ChatGPT \/ xAI 账号会绑定到运行 cc-switch Web 的那台机器。仅在您信任该服务端时继续。|The authorization page opens in this browser, but successful Copilot \/ ChatGPT \/ xAI logins are saved on the machine running cc-switch Web\. Continue only if you trust that server\.)$/;
 const copilotLoginRegex =
   /^(copilot\.loginWithGitHub|使用 GitHub 登录|Login with GitHub)$/;
 const codexLoginRegex =

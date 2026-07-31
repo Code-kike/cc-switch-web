@@ -315,12 +315,22 @@ describe.sequential("ImportExportSection against real web server", () => {
 
       fireEvent.click(screen.getByRole("button", { name: /settings\.import/ }));
 
-      await waitFor(async () => {
-        expect(await getClaudeProviders()).toEqual(snapshotA);
-      });
-      await waitFor(async () => {
-        expect(await getCurrentClaudeProvider()).toBe(currentA);
-      });
+      // The constrained canonical SQL restore replays the full schema
+      // migration chain (now through v16) plus integrity checks on the
+      // imported dump before swapping the live database, so it can take
+      // noticeably longer than the default 1s waitFor window.
+      await waitFor(
+        async () => {
+          expect(await getClaudeProviders()).toEqual(snapshotA);
+        },
+        { timeout: 15_000 },
+      );
+      await waitFor(
+        async () => {
+          expect(await getCurrentClaudeProvider()).toBe(currentA);
+        },
+        { timeout: 15_000 },
+      );
       await waitFor(async () => {
         const liveSettings = JSON.parse(
           await fs.readFile(claudeLiveSettingsPath(webServer.homeDir), "utf8"),
