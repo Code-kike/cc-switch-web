@@ -13,6 +13,7 @@ mod auto_launch;
 mod claude_mcp;
 mod claude_plugin;
 mod codex_config;
+mod codex_state_db;
 mod commands;
 mod config;
 mod database;
@@ -20,13 +21,16 @@ mod deeplink;
 mod error;
 mod gemini_config;
 mod gemini_mcp;
+mod grok_config;
 pub mod hermes_config;
 mod init_status;
 mod json5_doc;
 mod lightweight;
 #[cfg(target_os = "linux")]
 mod linux_fix;
+mod logging;
 mod mcp;
+mod model_capabilities;
 mod openclaw_config;
 mod opencode_config;
 mod panic_hook;
@@ -49,19 +53,22 @@ pub use codex_config::{get_codex_auth_path, get_codex_config_path, write_codex_l
 pub use commands::open_provider_terminal;
 pub use commands::*;
 pub use config::{get_claude_mcp_path, get_claude_settings_path, read_json_file};
-pub use database::Database;
+pub use database::{Database, Profile};
 pub use deeplink::{import_provider_from_deeplink, parse_deeplink_url, DeepLinkImportRequest};
 pub use error::AppError;
+pub use grok_config::get_grok_config_path;
 pub use mcp::{
-    import_from_claude, import_from_codex, import_from_gemini, remove_server_from_claude,
-    remove_server_from_codex, remove_server_from_gemini, sync_enabled_to_claude,
-    sync_enabled_to_codex, sync_enabled_to_gemini, sync_single_server_to_claude,
-    sync_single_server_to_codex, sync_single_server_to_gemini,
+    import_from_claude, import_from_codex, import_from_gemini, import_from_grokbuild,
+    remove_server_from_claude, remove_server_from_codex, remove_server_from_gemini,
+    remove_server_from_grokbuild, sync_enabled_to_claude, sync_enabled_to_codex,
+    sync_enabled_to_gemini, sync_single_server_to_claude, sync_single_server_to_codex,
+    sync_single_server_to_gemini, sync_single_server_to_grokbuild,
 };
 pub use prompt::Prompt;
 pub use prompt_files::prompt_file_path;
 pub use provider::{Provider, ProviderMeta};
 pub use services::{
+    profile::{ProfilePayload, ProfileScope, ProfileService},
     skill::{migrate_skills_to_ssot, ImportSkillSelection},
     ConfigService, EndpointLatency, McpService, PromptService, ProviderService, ProxyService,
     SkillService, SpeedtestService,
@@ -78,35 +85,8 @@ use tauri::tray::{TrayIconBuilder, TrayIconEvent};
 use tauri::RunEvent;
 use tauri::{Emitter, Manager};
 
-fn redact_url_for_log(url_str: &str) -> String {
-    match url::Url::parse(url_str) {
-        Ok(url) => {
-            let mut output = format!("{}://", url.scheme());
-            if let Some(host) = url.host_str() {
-                output.push_str(host);
-            }
-            output.push_str(url.path());
-
-            let mut keys: Vec<String> = url.query_pairs().map(|(k, _)| k.to_string()).collect();
-            keys.sort();
-            keys.dedup();
-
-            if !keys.is_empty() {
-                output.push_str("?[keys:");
-                output.push_str(&keys.join(","));
-                output.push(']');
-            }
-
-            output
-        }
-        Err(_) => {
-            let base = url_str.split('#').next().unwrap_or(url_str);
-            match base.split_once('?') {
-                Some((prefix, _)) => format!("{prefix}?[redacted]"),
-                None => base.to_string(),
-            }
-        }
-    }
+fn runtime_log_level_allows(level: log::Level, max_level: log::LevelFilter) -> bool {
+    max_level.to_level().is_some_and(|maximum| level <= maximum)
 }
 
 /// 统一处理 ccswitch:// 深链接 URL
@@ -124,9 +104,10 @@ fn handle_deeplink_url(
         return false;
     }
 
-    let redacted_url = redact_url_for_log(url_str);
-    log::info!("✓ Deep link URL detected from {source}: {redacted_url}");
-    log::debug!("Deep link URL (raw) from {source}: {url_str}");
+    log::info!(
+        "✓ Deep link URL detected from {source}: {}",
+        crate::logging::url_for_log(url_str)
+    );
 
     match crate::deeplink::parse_deeplink_url(url_str) {
         Ok(request) => {
@@ -222,7 +203,7 @@ pub fn run() {
             log::info!("=== Single Instance Callback Triggered ===");
             log::debug!("Args count: {}", args.len());
             for (i, arg) in args.iter().enumerate() {
-                log::debug!("  arg[{i}]: {}", redact_url_for_log(arg));
+                log::debug!("  arg[{i}]: {}", crate::logging::url_for_log(arg));
             }
 
             if crate::lightweight::is_lightweight_mode() {
@@ -292,18 +273,7 @@ pub fn run() {
             app_store::refresh_app_config_dir_override(app.handle());
             panic_hook::init_app_config_dir(crate::config::get_app_config_dir());
 
-            // 注册 Updater 插件（桌面端）
-            #[cfg(desktop)]
-            {
-                if let Err(e) = app
-                    .handle()
-                    .plugin(tauri_plugin_updater::Builder::new().build())
-                {
-                    // 若配置不完整（如缺少 pubkey），跳过 Updater 而不中断应用
-                    log::warn!("初始化 Updater 插件失败，已跳过：{e}");
-                }
-            }
-            // 初始化日志（单文件输出到 <app_config_dir>/logs/cc-switch.log）
+            // 初始化日志（输出到 <app_config_dir>/logs/cc-switch.log）
             {
                 use tauri_plugin_log::{RotationStrategy, Target, TargetKind, TimezoneStrategy};
 
@@ -314,14 +284,16 @@ pub fn run() {
                     eprintln!("创建日志目录失败: {e}");
                 }
 
-                // 启动时删除旧日志文件，实现单文件覆盖效果
-                let log_file_path = log_dir.join("cc-switch.log");
-                let _ = std::fs::remove_file(&log_file_path);
-
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()
-                        // 初始化为 Trace，允许后续通过 log::set_max_level() 动态调整级别
+                        // 底层保留 Trace 能力，便于加载用户配置后动态调高级别。
+                        // 插件注册后会立即把全局级别收紧到 Info，避免启动阶段全量 Trace。
                         .level(log::LevelFilter::Trace)
+                        // plugin-log 的前端 command 会直达 logger，绕过 log 宏的全局
+                        // max_level；在分发层补一次过滤，确保动态总开关同样约束前端日志。
+                        .filter(|metadata| {
+                            runtime_log_level_allows(metadata.level(), log::max_level())
+                        })
                         .targets([
                             Target::new(TargetKind::Stdout),
                             Target::new(TargetKind::Folder {
@@ -329,15 +301,33 @@ pub fn run() {
                                 file_name: Some("cc-switch".into()),
                             }),
                         ])
-                        // 单文件模式：启动时删除旧文件，达到大小时轮转
-                        // 注意：KeepSome(n) 内部会做 n-2 运算，n=1 会导致 usize 下溢
-                        // KeepSome(2) 是最小安全值，表示不保留轮转文件
-                        .rotation_strategy(RotationStrategy::KeepSome(2))
-                        // 单文件大小限制 1GB
-                        .max_file_size(1024 * 1024 * 1024)
+                        // KeepSome(4) 保留 4 个轮转归档，加上当前文件最多约 100 MiB。
+                        // 轮转仅按大小触发；跨重启继续追加，不再丢失上一次运行的日志。
+                        .rotation_strategy(RotationStrategy::KeepSome(4))
+                        .max_file_size(20 * 1024 * 1024)
                         .timezone_strategy(TimezoneStrategy::UseLocal)
                         .build(),
                 )?;
+
+                // 用户配置存在数据库中，数据库尚未打开时使用保守的 Info 级别。
+                log::set_max_level(log::LevelFilter::Info);
+                log::info!("=== CC Switch v{} started ===", env!("CARGO_PKG_VERSION"));
+            }
+
+            // 首次读取覆盖路径时 logger 尚未可用；此处重放一次，
+            // 让 Store 损坏或路径无效等启动警告能够真正落盘。
+            let _ = app_store::refresh_app_config_dir_override(app.handle());
+
+            // 注册 Updater 插件（桌面端）；放在 logger 之后，确保失败可诊断。
+            #[cfg(desktop)]
+            {
+                if let Err(e) = app
+                    .handle()
+                    .plugin(tauri_plugin_updater::Builder::new().build())
+                {
+                    // 若配置不完整（如缺少 pubkey），跳过 Updater 而不中断应用
+                    log::warn!("初始化 Updater 插件失败，已跳过：{e}");
+                }
             }
 
             // 注入运行时事件 sink 给 usage_events，让无 sink/AppHandle 持有的写
@@ -436,6 +426,23 @@ pub fn run() {
                 }
             };
 
+            // 数据库可用后立即应用持久化日志级别，避免后续服务初始化
+            // 继续使用启动阶段的 Info 回退。损坏配置显式 fail-closed 到 Info。
+            match db.get_log_config() {
+                Ok(log_config) => {
+                    log::set_max_level(log_config.to_level_filter());
+                    log::info!(
+                        "已加载日志配置: enabled={}, level={}",
+                        log_config.enabled,
+                        log_config.level
+                    );
+                }
+                Err(e) => {
+                    log::set_max_level(log::LevelFilter::Info);
+                    log::warn!("读取日志配置失败，已回退到 info: {e}");
+                }
+            }
+
             // 如果有预加载的配置，执行迁移（迁移核心与归档逻辑由 bootstrap 共享，
             // 桌面/Web 两端复用；桌面端的对话框/重试/退出循环保留在上方加载阶段）
             if let Some(config) = migration_config {
@@ -519,7 +526,7 @@ pub fn run() {
 
                     for (i, url) in urls.iter().enumerate() {
                         let url_str = url.as_str();
-                        log::debug!("  URL[{i}]: {}", redact_url_for_log(url_str));
+                        log::debug!("  URL[{i}]: {}", crate::logging::url_for_log(url_str));
 
                         if handle_deeplink_url(&app_handle, url_str, true, "on_open_url") {
                             break; // Process only first ccswitch:// URL
@@ -583,19 +590,6 @@ pub fn run() {
             // 将同一个实例注入到全局状态，避免重复创建导致的不一致
             app.manage(app_state);
 
-            // 从数据库加载日志配置并应用
-            {
-                let db = &app.state::<AppState>().db;
-                if let Ok(log_config) = db.get_log_config() {
-                    log::set_max_level(log_config.to_level_filter());
-                    log::info!(
-                        "已加载日志配置: enabled={}, level={}",
-                        log_config.enabled,
-                        log_config.level
-                    );
-                }
-            }
-
             // 初始化 SkillService
             let skill_service = SkillService::new();
             app.manage(commands::skill::SkillServiceState(Arc::new(skill_service)));
@@ -624,9 +618,22 @@ pub fn run() {
                 log::info!("✓ CodexOAuthManager initialized");
             }
 
+            // 初始化 xAI OAuthManager (Grok API 反代)
+            {
+                use crate::proxy::providers::xai_oauth_auth::XaiOAuthManager;
+                use commands::XaiOAuthState;
+                use tokio::sync::RwLock;
+
+                let app_config_dir = crate::config::get_app_config_dir();
+                let xai_oauth_manager = XaiOAuthManager::new(app_config_dir);
+                app.manage(XaiOAuthState(Arc::new(RwLock::new(xai_oauth_manager))));
+                log::info!("✓ XaiOAuthManager initialized");
+            }
+
             // 注入代理运行时上下文（取代旧的 set_app_handle）：
             // 事件/托盘走 TauriEventSink，OAuth 管理器直接注入（与
-            // app.manage 的 CopilotAuthState/CodexOAuthState 共享同一 Arc），
+            // app.manage 的 CopilotAuthState/CodexOAuthState/XaiOAuthState
+            // 共享同一 Arc），
             // 故障转移热切换句柄由 set_runtime_ctx 自动填入。
             // 代理服务器只会在 setup 之后启动（startup 恢复任务或前端命令），
             // 因此此处注入时机与旧 set_app_handle 等效。
@@ -634,10 +641,12 @@ pub fn run() {
                 let app_state = app.state::<AppState>();
                 let copilot_auth = app.state::<commands::CopilotAuthState>().0.clone();
                 let codex_oauth = app.state::<commands::CodexOAuthState>().0.clone();
+                let xai_oauth = app.state::<commands::XaiOAuthState>().0.clone();
                 app_state.proxy_service.set_runtime_ctx(
                     Arc::new(crate::runtime::TauriEventSink::new(app.handle().clone())),
                     copilot_auth,
                     codex_oauth,
+                    xai_oauth,
                 );
             }
 
@@ -728,71 +737,40 @@ pub fn run() {
                 tauri::async_runtime::spawn(async move {
                     const SESSION_SYNC_INTERVAL_SECS: u64 = 60;
 
+                    // 上游 eb105eae 在启动路径回填 usage 成本；本 fork 没有
+                    // `backfill_missing_usage_costs`（用查询期 `maybe_backfill_log_costs`
+                    // 惰性回填替代），因此这里只做串行化同步。
+                    async fn run_session_sync(db: std::sync::Arc<crate::database::Database>) {
+                        let _guard = crate::services::session_usage::session_sync_mutex()
+                            .lock()
+                            .await;
+                        let task = tauri::async_runtime::spawn_blocking(move || {
+                            crate::services::session_usage::sync_all_unlocked(&db)
+                        });
+                        match task.await {
+                            Ok(result) if !result.errors.is_empty() => {
+                                log::warn!(
+                                    "Session usage sync completed with {} error(s)",
+                                    result.errors.len()
+                                );
+                            }
+                            Ok(_) => {}
+                            Err(error) => log::warn!("Session usage blocking task failed: {error}"),
+                        }
+                    }
+
                     // 首次同步
-                    if let Err(e) =
-                        crate::services::session_usage::sync_claude_session_logs(
-                            &db_for_session_sync,
-                        )
-                    {
-                        log::warn!("Session usage initial sync failed: {e}");
-                    }
-                    if let Err(e) =
-                        crate::services::session_usage_codex::sync_codex_usage(
-                            &db_for_session_sync,
-                        )
-                    {
-                        log::warn!("Codex usage initial sync failed: {e}");
-                    }
-                    if let Err(e) =
-                        crate::services::session_usage_gemini::sync_gemini_usage(
-                            &db_for_session_sync,
-                        )
-                    {
-                        log::warn!("Gemini usage initial sync failed: {e}");
-                    }
-                    if let Err(e) =
-                        crate::services::session_usage_opencode::sync_opencode_usage(
-                            &db_for_session_sync,
-                        )
-                    {
-                        log::warn!("OpenCode usage initial sync failed: {e}");
-                    }
+                    run_session_sync(db_for_session_sync.clone()).await;
 
                     // 定期同步
                     let mut interval = tokio::time::interval(std::time::Duration::from_secs(
                         SESSION_SYNC_INTERVAL_SECS,
                     ));
+                    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                     interval.tick().await; // skip immediate first tick
                     loop {
                         interval.tick().await;
-                        if let Err(e) =
-                            crate::services::session_usage::sync_claude_session_logs(
-                                &db_for_session_sync,
-                            )
-                        {
-                            log::warn!("Session usage periodic sync failed: {e}");
-                        }
-                        if let Err(e) =
-                            crate::services::session_usage_codex::sync_codex_usage(
-                                &db_for_session_sync,
-                            )
-                        {
-                            log::warn!("Codex usage periodic sync failed: {e}");
-                        }
-                        if let Err(e) =
-                            crate::services::session_usage_gemini::sync_gemini_usage(
-                                &db_for_session_sync,
-                            )
-                        {
-                            log::warn!("Gemini usage periodic sync failed: {e}");
-                        }
-                        if let Err(e) =
-                            crate::services::session_usage_opencode::sync_opencode_usage(
-                                &db_for_session_sync,
-                            )
-                        {
-                            log::warn!("OpenCode usage periodic sync failed: {e}");
-                        }
+                        run_session_sync(db_for_session_sync.clone()).await;
                     }
                 });
             });
@@ -854,6 +832,7 @@ pub fn run() {
             commands::remove_provider_from_live_config,
             commands::switch_provider,
             commands::import_default_config,
+            commands::ensure_grokbuild_official_provider,
             commands::get_claude_config_status,
             commands::get_config_status,
             commands::get_claude_code_config_path,
@@ -864,6 +843,7 @@ pub fn run() {
             commands::get_init_error,
             commands::get_migration_result,
             commands::get_skills_migration_result,
+            commands::log_frontend_error,
             commands::get_app_config_path,
             commands::open_app_config_folder,
             commands::get_claude_common_config_snippet,
@@ -906,6 +886,7 @@ pub fn run() {
             commands::get_subscription_quota,
             commands::get_codex_oauth_quota,
             commands::get_codex_oauth_models,
+            commands::get_xai_oauth_models,
             commands::get_coding_plan_quota,
             commands::get_balance,
             // New MCP via config.json (SSOT)
@@ -926,6 +907,13 @@ pub fn run() {
             commands::enable_prompt,
             commands::import_prompt_from_file,
             commands::get_current_prompt_file_content,
+            // Profile management (项目配置方案)
+            commands::list_profiles,
+            commands::create_profile,
+            commands::update_profile,
+            commands::delete_profile,
+            commands::clear_current_profile,
+            commands::apply_profile,
             // model list fetch (OpenAI-compatible /v1/models)
             commands::fetch_models_for_config,
             // ours: endpoint speed test + custom endpoint management
@@ -1047,6 +1035,7 @@ pub fn run() {
             commands::check_provider_limits,
             // Session usage sync
             commands::sync_session_usage,
+            commands::rebuild_codex_usage,
             commands::get_usage_data_sources,
             // Stream health check
             commands::stream_check_provider,
@@ -1210,7 +1199,10 @@ pub fn run() {
                 RunEvent::Opened { urls } => {
                     if let Some(url) = urls.first() {
                         let url_str = url.to_string();
-                        log::info!("RunEvent::Opened with URL: {url_str}");
+                        log::info!(
+                            "RunEvent::Opened with URL: {}",
+                            crate::logging::url_for_log(&url_str)
+                        );
 
                         if url_str.starts_with("ccswitch://") {
                             if crate::lightweight::is_lightweight_mode() {
@@ -1332,14 +1324,7 @@ pub async fn cleanup_before_exit(app_handle: &tauri::AppHandle) {
 /// 则自动启动代理服务并接管对应应用的 Live 配置。
 async fn restore_proxy_state_on_startup(state: &store::AppState) {
     // 收集需要恢复接管的应用列表（从 proxy_config.enabled 读取）
-    let mut apps_to_restore = Vec::new();
-    for app_type in ["claude", "codex", "gemini"] {
-        if let Ok(config) = state.db.get_proxy_config_for_app(app_type).await {
-            if config.enabled {
-                apps_to_restore.push(app_type);
-            }
-        }
-    }
+    let apps_to_restore = bootstrap::enabled_proxy_apps_on_startup(&state.db).await;
 
     if apps_to_restore.is_empty() {
         log::debug!("启动时无需恢复代理状态");
@@ -1589,4 +1574,33 @@ fn show_database_init_error_dialog(
             exit_text.to_string(),
         ))
         .blocking_show()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::runtime_log_level_allows;
+
+    #[test]
+    fn runtime_log_filter_honors_dynamic_max_level() {
+        assert!(!runtime_log_level_allows(
+            log::Level::Error,
+            log::LevelFilter::Off
+        ));
+        assert!(runtime_log_level_allows(
+            log::Level::Error,
+            log::LevelFilter::Info
+        ));
+        assert!(runtime_log_level_allows(
+            log::Level::Info,
+            log::LevelFilter::Info
+        ));
+        assert!(!runtime_log_level_allows(
+            log::Level::Debug,
+            log::LevelFilter::Info
+        ));
+        assert!(runtime_log_level_allows(
+            log::Level::Trace,
+            log::LevelFilter::Trace
+        ));
+    }
 }

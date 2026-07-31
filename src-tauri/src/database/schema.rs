@@ -65,7 +65,8 @@ impl Database {
             id TEXT PRIMARY KEY, name TEXT NOT NULL, server_config TEXT NOT NULL,
             description TEXT, homepage TEXT, docs TEXT, tags TEXT NOT NULL DEFAULT '[]',
             enabled_claude BOOLEAN NOT NULL DEFAULT 0, enabled_codex BOOLEAN NOT NULL DEFAULT 0,
-            enabled_gemini BOOLEAN NOT NULL DEFAULT 0, enabled_opencode BOOLEAN NOT NULL DEFAULT 0,
+            enabled_gemini BOOLEAN NOT NULL DEFAULT 0, enabled_grokbuild BOOLEAN NOT NULL DEFAULT 0,
+            enabled_opencode BOOLEAN NOT NULL DEFAULT 0,
             enabled_hermes BOOLEAN NOT NULL DEFAULT 0
         )",
             [],
@@ -93,6 +94,7 @@ impl Database {
             enabled_claude BOOLEAN NOT NULL DEFAULT 0,
             enabled_codex BOOLEAN NOT NULL DEFAULT 0,
             enabled_gemini BOOLEAN NOT NULL DEFAULT 0,
+            enabled_grokbuild BOOLEAN NOT NULL DEFAULT 0,
             enabled_opencode BOOLEAN NOT NULL DEFAULT 0,
             enabled_hermes BOOLEAN NOT NULL DEFAULT 0,
             installed_at INTEGER NOT NULL DEFAULT 0,
@@ -120,9 +122,9 @@ impl Database {
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
 
-        // 8. Proxy Config 表（三行结构，app_type 主键）
+        // 8. Proxy Config 表（每应用一行，app_type 主键）
         conn.execute("CREATE TABLE IF NOT EXISTS proxy_config (
-            app_type TEXT PRIMARY KEY CHECK (app_type IN ('claude','codex','gemini')),
+            app_type TEXT PRIMARY KEY CHECK (app_type IN ('claude','codex','gemini','grokbuild')),
             proxy_enabled INTEGER NOT NULL DEFAULT 0, listen_address TEXT NOT NULL DEFAULT '127.0.0.1',
             listen_port INTEGER NOT NULL DEFAULT 15721, enable_logging INTEGER NOT NULL DEFAULT 1,
             enabled INTEGER NOT NULL DEFAULT 0, auto_failover_enabled INTEGER NOT NULL DEFAULT 0,
@@ -134,14 +136,15 @@ impl Database {
             circuit_min_requests INTEGER NOT NULL DEFAULT 10,
             default_cost_multiplier TEXT NOT NULL DEFAULT '1',
             pricing_model_source TEXT NOT NULL DEFAULT 'response',
+            live_takeover_active INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         )", []).map_err(|e| AppError::Database(e.to_string()))?;
 
-        // 初始化三行数据（每应用不同默认值）
+        // 初始化每应用数据（每应用不同默认值）
         //
         // 兼容旧数据库：
-        // - 老版本 proxy_config 是单例表（没有 app_type 列），此时不能执行三行 seed insert；
-        // - 旧表会在 apply_schema_migrations() 中迁移为三行结构后再插入。
+        // - 老版本 proxy_config 是单例表（没有 app_type 列），此时不能执行 per-app seed insert；
+        // - 旧表会在 apply_schema_migrations() 中迁移为每应用一行的结构后再插入。
         if Self::has_column(conn, "proxy_config", "app_type")? {
             conn.execute(
                 "INSERT OR IGNORE INTO proxy_config (app_type, max_retries,
@@ -170,6 +173,15 @@ impl Database {
                 [],
             )
             .map_err(|e| AppError::Database(e.to_string()))?;
+            conn.execute(
+                "INSERT OR IGNORE INTO proxy_config (app_type, max_retries,
+                streaming_first_byte_timeout, streaming_idle_timeout, non_streaming_timeout,
+                circuit_failure_threshold, circuit_success_threshold, circuit_timeout_seconds,
+                circuit_error_rate_threshold, circuit_min_requests)
+                VALUES ('grokbuild', 3, 60, 120, 600, 4, 2, 60, 0.6, 10)",
+                [],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
         }
 
         // 9. Provider Health 表
@@ -190,6 +202,7 @@ impl Database {
             pricing_model TEXT,
             input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0,
             cache_read_tokens INTEGER NOT NULL DEFAULT 0, cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+            input_token_semantics INTEGER NOT NULL DEFAULT 0,
             input_cost_usd TEXT NOT NULL DEFAULT '0', output_cost_usd TEXT NOT NULL DEFAULT '0',
             cache_read_cost_usd TEXT NOT NULL DEFAULT '0', cache_creation_cost_usd TEXT NOT NULL DEFAULT '0',
             total_cost_usd TEXT NOT NULL DEFAULT '0', latency_ms INTEGER NOT NULL, first_token_ms INTEGER,
@@ -276,6 +289,7 @@ impl Database {
                 output_tokens INTEGER NOT NULL DEFAULT 0,
                 cache_read_tokens INTEGER NOT NULL DEFAULT 0,
                 cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+                input_token_semantics INTEGER NOT NULL DEFAULT 0,
                 total_cost_usd TEXT NOT NULL DEFAULT '0',
                 avg_latency_ms INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (date, app_type, provider_id, model, request_model, pricing_model)
@@ -295,6 +309,35 @@ impl Database {
             [],
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
+
+        // 19. Profiles 表（全应用共享的项目实体，payload 按 app 分槽快照
+        //     供应商/MCP/Skills/Prompt；各应用分组的 current 标记在 settings 表）
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS profiles (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                sort_order INTEGER,
+                created_at INTEGER,
+                updated_at INTEGER
+            )",
+            [],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+        // 修复跑过未发布开发版的库：current 标记曾是全局 key，现按应用分组
+        // （随 v14 定稿为 current_profile_id_<scope>，不单独 bump 版本）
+        if conn
+            .execute(
+                "INSERT OR REPLACE INTO settings (key, value)
+                 SELECT 'current_profile_id_claude', value FROM settings
+                 WHERE key = 'current_profile_id'",
+                [],
+            )
+            .is_ok()
+        {
+            let _ = conn.execute("DELETE FROM settings WHERE key = 'current_profile_id'", []);
+        }
 
         // 尝试添加 live_takeover_active 列到 proxy_config 表
         let _ = conn.execute(
@@ -340,7 +383,7 @@ impl Database {
             [],
         );
 
-        // 兼容：若旧版 proxy_config 仍为单例结构（无 app_type），则在启动时直接转换为三行结构
+        // 兼容：若旧版 proxy_config 仍为单例结构（无 app_type），则在启动时直接转换为每应用一行
         // 说明：user_version=2 时不会再触发 v1->v2 迁移，但新代码查询依赖 app_type 列。
         if Self::table_exists(conn, "proxy_config")?
             && !Self::has_column(conn, "proxy_config", "app_type")?
@@ -459,6 +502,28 @@ impl Database {
                         );
                         Self::migrate_v11_to_v12(conn)?;
                         Self::set_user_version(conn, 12)?;
+                    }
+                    12 => {
+                        log::info!("迁移数据库从 v12 到 v13（记录输入 token 缓存语义）");
+                        Self::migrate_v12_to_v13(conn)?;
+                        Self::set_user_version(conn, 13)?;
+                    }
+                    13 => {
+                        log::info!("迁移数据库从 v13 到 v14（添加项目 Profiles 表）");
+                        Self::migrate_v13_to_v14(conn)?;
+                        Self::set_user_version(conn, 14)?;
+                    }
+                    14 => {
+                        log::info!(
+                            "迁移数据库从 v14 到 v15（添加 Grok Build 代理、Skills 与 MCP 支持）"
+                        );
+                        Self::migrate_v14_to_v15(conn)?;
+                        Self::set_user_version(conn, 15)?;
+                    }
+                    15 => {
+                        log::info!("迁移数据库从 v15 到 v16（重建 Codex 会话用量）");
+                        Self::migrate_v15_to_v16(conn)?;
+                        Self::set_user_version(conn, 16)?;
                     }
                     _ => {
                         return Err(AppError::Database(format!(
@@ -638,6 +703,7 @@ impl Database {
             request_model TEXT,
             input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0,
             cache_read_tokens INTEGER NOT NULL DEFAULT 0, cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+            input_token_semantics INTEGER NOT NULL DEFAULT 0,
             input_cost_usd TEXT NOT NULL DEFAULT '0', output_cost_usd TEXT NOT NULL DEFAULT '0',
             cache_read_cost_usd TEXT NOT NULL DEFAULT '0', cache_creation_cost_usd TEXT NOT NULL DEFAULT '0',
             total_cost_usd TEXT NOT NULL DEFAULT '0', latency_ms INTEGER NOT NULL, first_token_ms INTEGER,
@@ -682,13 +748,13 @@ impl Database {
         // 重构 skills 表（添加 app_type 字段）
         Self::migrate_skills_table(conn)?;
 
-        // 重构 proxy_config 为三行结构（每应用独立配置）
+        // 重构 proxy_config 为每应用一行（每应用独立配置）
         Self::migrate_proxy_config_to_per_app(conn)?;
 
         Ok(())
     }
 
-    /// 将 proxy_config 迁移为三行结构（每应用独立配置）
+    /// 将 proxy_config 迁移为每应用一行（每应用独立配置）
     fn migrate_proxy_config_to_per_app(conn: &Connection) -> Result<(), AppError> {
         // 检查是否已经是新表结构（幂等性）
         if !Self::table_exists(conn, "proxy_config")? {
@@ -697,8 +763,8 @@ impl Database {
         }
 
         if Self::has_column(conn, "proxy_config", "app_type")? {
-            // 已经是三行结构，跳过迁移
-            log::info!("proxy_config 已经是三行结构，跳过迁移");
+            // 已经是每应用一行的结构，跳过迁移
+            log::info!("proxy_config 已经是每应用一行的结构，跳过迁移");
             return Ok(());
         }
 
@@ -778,12 +844,25 @@ impl Database {
                 old_cb.3,
                 old_cb.4,
             ),
+            (
+                "grokbuild",
+                false,
+                false,
+                3,
+                old_config.4,
+                old_config.5,
+                old_cb.0,
+                old_cb.1,
+                old_cb.2,
+                old_cb.3,
+                old_cb.4,
+            ),
         ];
 
         // 创建新表
         conn.execute("DROP TABLE IF EXISTS proxy_config_new", [])?;
         conn.execute("CREATE TABLE proxy_config_new (
-            app_type TEXT PRIMARY KEY CHECK (app_type IN ('claude','codex','gemini')),
+            app_type TEXT PRIMARY KEY CHECK (app_type IN ('claude','codex','gemini','grokbuild')),
             proxy_enabled INTEGER NOT NULL DEFAULT 0, listen_address TEXT NOT NULL DEFAULT '127.0.0.1',
             listen_port INTEGER NOT NULL DEFAULT 15721, enable_logging INTEGER NOT NULL DEFAULT 1,
             enabled INTEGER NOT NULL DEFAULT 0, auto_failover_enabled INTEGER NOT NULL DEFAULT 0,
@@ -795,10 +874,11 @@ impl Database {
             circuit_min_requests INTEGER NOT NULL DEFAULT 10,
             default_cost_multiplier TEXT NOT NULL DEFAULT '1',
             pricing_model_source TEXT NOT NULL DEFAULT 'response',
+            live_takeover_active INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         )", [])?;
 
-        // 插入三行配置
+        // 插入每应用配置
         for (app, takeover, failover, retries, fb, idle, cb_f, cb_s, cb_t, cb_r, cb_m) in apps {
             conn.execute(
                 "INSERT INTO proxy_config_new (app_type, proxy_enabled, listen_address, listen_port, enable_logging,
@@ -822,7 +902,7 @@ impl Database {
             [],
         )?;
 
-        log::info!("proxy_config 已迁移为三行结构");
+        log::info!("proxy_config 已迁移为每应用一行的结构");
         Ok(())
     }
 
@@ -1306,6 +1386,176 @@ impl Database {
         Ok(())
     }
 
+    /// v12 -> v13：记录 input_tokens 是否包含缓存写入。
+    ///
+    /// 默认 0 表示旧版/未知语义；旧 Codex 行只包含 cache read，不包含
+    /// cache creation。新代理行会显式写入 1(total-inclusive) 或 2(fresh)。
+    fn migrate_v12_to_v13(conn: &Connection) -> Result<(), AppError> {
+        if Self::table_exists(conn, "proxy_request_logs")? {
+            Self::add_column_if_missing(
+                conn,
+                "proxy_request_logs",
+                "input_token_semantics",
+                "INTEGER NOT NULL DEFAULT 0",
+            )?;
+        }
+        if Self::table_exists(conn, "usage_daily_rollups")? {
+            Self::add_column_if_missing(
+                conn,
+                "usage_daily_rollups",
+                "input_token_semantics",
+                "INTEGER NOT NULL DEFAULT 0",
+            )?;
+        }
+        Ok(())
+    }
+
+    /// v13 -> v14：添加项目 Profiles 表。
+    ///
+    /// 与 `create_tables_on_conn` 中的建表语句保持一致；`IF NOT EXISTS`
+    /// 让迁移在开发版已提前创建该表的数据库上仍然幂等。
+    fn migrate_v13_to_v14(conn: &Connection) -> Result<(), AppError> {
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS profiles (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                sort_order INTEGER,
+                created_at INTEGER,
+                updated_at INTEGER
+            )",
+            [],
+        )
+        .map_err(|e| AppError::Database(format!("v13 -> v14 创建 profiles 表失败: {e}")))?;
+        Ok(())
+    }
+
+    /// v14 -> v15：添加 Grok Build 的独立代理行及 Skills/MCP 启用状态。
+    fn migrate_v14_to_v15(conn: &Connection) -> Result<(), AppError> {
+        if !Self::table_exists(conn, "proxy_config")? {
+            log::debug!("v14 -> v15: proxy_config 不存在，跳过 Grok Build 代理表迁移");
+        } else {
+            conn.execute("DROP TABLE IF EXISTS proxy_config_v15", [])
+                .map_err(|e| AppError::Database(e.to_string()))?;
+            conn.execute(
+                "CREATE TABLE proxy_config_v15 (
+                app_type TEXT PRIMARY KEY CHECK (app_type IN ('claude','codex','gemini','grokbuild')),
+                proxy_enabled INTEGER NOT NULL DEFAULT 0,
+                listen_address TEXT NOT NULL DEFAULT '127.0.0.1',
+                listen_port INTEGER NOT NULL DEFAULT 15721,
+                enable_logging INTEGER NOT NULL DEFAULT 1,
+                enabled INTEGER NOT NULL DEFAULT 0,
+                auto_failover_enabled INTEGER NOT NULL DEFAULT 0,
+                failover_strategy TEXT NOT NULL DEFAULT 'sequential',
+                max_retries INTEGER NOT NULL DEFAULT 3,
+                streaming_first_byte_timeout INTEGER NOT NULL DEFAULT 60,
+                streaming_idle_timeout INTEGER NOT NULL DEFAULT 120,
+                non_streaming_timeout INTEGER NOT NULL DEFAULT 600,
+                circuit_failure_threshold INTEGER NOT NULL DEFAULT 4,
+                circuit_success_threshold INTEGER NOT NULL DEFAULT 2,
+                circuit_timeout_seconds INTEGER NOT NULL DEFAULT 60,
+                circuit_error_rate_threshold REAL NOT NULL DEFAULT 0.6,
+                circuit_min_requests INTEGER NOT NULL DEFAULT 10,
+                default_cost_multiplier TEXT NOT NULL DEFAULT '1',
+                pricing_model_source TEXT NOT NULL DEFAULT 'response',
+                live_takeover_active INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )",
+                [],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+
+            let copied_columns = [
+                ("app_type", "'claude'"),
+                ("proxy_enabled", "0"),
+                ("listen_address", "'127.0.0.1'"),
+                ("listen_port", "15721"),
+                ("enable_logging", "1"),
+                ("enabled", "0"),
+                ("auto_failover_enabled", "0"),
+                ("failover_strategy", "'sequential'"),
+                ("max_retries", "3"),
+                ("streaming_first_byte_timeout", "60"),
+                ("streaming_idle_timeout", "120"),
+                ("non_streaming_timeout", "600"),
+                ("circuit_failure_threshold", "4"),
+                ("circuit_success_threshold", "2"),
+                ("circuit_timeout_seconds", "60"),
+                ("circuit_error_rate_threshold", "0.6"),
+                ("circuit_min_requests", "10"),
+                ("default_cost_multiplier", "'1'"),
+                ("pricing_model_source", "'response'"),
+                ("live_takeover_active", "0"),
+                ("created_at", "datetime('now')"),
+                ("updated_at", "datetime('now')"),
+            ]
+            .into_iter()
+            .map(|(column, fallback)| {
+                Self::has_column(conn, "proxy_config", column).map(|exists| {
+                    if exists {
+                        format!("\"{column}\"")
+                    } else {
+                        fallback.into()
+                    }
+                })
+            })
+            .collect::<Result<Vec<_>, AppError>>()?
+            .join(", ");
+
+            let copy_sql = format!(
+                "INSERT INTO proxy_config_v15 (
+                app_type, proxy_enabled, listen_address, listen_port, enable_logging,
+                enabled, auto_failover_enabled, failover_strategy, max_retries,
+                streaming_first_byte_timeout, streaming_idle_timeout, non_streaming_timeout,
+                circuit_failure_threshold, circuit_success_threshold, circuit_timeout_seconds,
+                circuit_error_rate_threshold, circuit_min_requests,
+                default_cost_multiplier, pricing_model_source, live_takeover_active,
+                created_at, updated_at
+            )
+            SELECT {copied_columns} FROM proxy_config"
+            );
+            conn.execute(&copy_sql, [])
+                .map_err(|e| AppError::Database(e.to_string()))?;
+
+            conn.execute("DROP TABLE proxy_config", [])
+                .map_err(|e| AppError::Database(e.to_string()))?;
+            conn.execute("ALTER TABLE proxy_config_v15 RENAME TO proxy_config", [])
+                .map_err(|e| AppError::Database(e.to_string()))?;
+            conn.execute(
+                "INSERT OR IGNORE INTO proxy_config (app_type) VALUES ('grokbuild')",
+                [],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        }
+
+        if Self::table_exists(conn, "mcp_servers")? {
+            Self::add_column_if_missing(
+                conn,
+                "mcp_servers",
+                "enabled_grokbuild",
+                "BOOLEAN NOT NULL DEFAULT 0",
+            )?;
+        }
+        if Self::table_exists(conn, "skills")? {
+            Self::add_column_if_missing(
+                conn,
+                "skills",
+                "enabled_grokbuild",
+                "BOOLEAN NOT NULL DEFAULT 0",
+            )?;
+        }
+        Ok(())
+    }
+
+    /// v15 -> v16: remove Codex session rows and cursors so startup sync can
+    /// rebuild them with fork-history alignment. Must stay connection-level:
+    /// schema migration already owns the Database connection mutex.
+    fn migrate_v15_to_v16(conn: &Connection) -> Result<(), AppError> {
+        let codex_dir = crate::codex_config::get_codex_config_dir();
+        crate::services::session_usage_codex::reset_codex_usage_on_conn(conn, &codex_dir)
+    }
+
     /// 插入默认模型定价数据
     /// 格式: (model_id, display_name, input, output, cache_read, cache_creation)
     /// 注意: model_id 使用短横线格式（如 claude-haiku-4-5），与 API 返回的模型名称标准化后一致
@@ -1429,6 +1679,25 @@ impl Database {
                 "0.30",
                 "3.75",
             ),
+            // GPT-5.6 系列（Sol / Terra / Luna，2026-06 发布）
+            // 5.6 家族起 cache write 收 1.25× 输入价（此前 GPT 模型写缓存免费，勿回填旧系列）
+            ("gpt-5.6-sol", "GPT-5.6 Sol", "5", "30", "0.50", "6.25"),
+            (
+                "gpt-5.6-terra",
+                "GPT-5.6 Terra",
+                "2.50",
+                "15",
+                "0.25",
+                "3.125",
+            ),
+            ("gpt-5.6-luna", "GPT-5.6 Luna", "1", "6", "0.10", "1.25"),
+            // 裸名 gpt-5.6 是 sol 的官方别名；effort 后缀对齐 gpt-5.5 系列的记账形态
+            ("gpt-5.6", "GPT-5.6 Sol", "5", "30", "0.50", "6.25"),
+            ("gpt-5.6-low", "GPT-5.6 Sol", "5", "30", "0.50", "6.25"),
+            ("gpt-5.6-medium", "GPT-5.6 Sol", "5", "30", "0.50", "6.25"),
+            ("gpt-5.6-high", "GPT-5.6 Sol", "5", "30", "0.50", "6.25"),
+            ("gpt-5.6-xhigh", "GPT-5.6 Sol", "5", "30", "0.50", "6.25"),
+            ("gpt-5.6-minimal", "GPT-5.6 Sol", "5", "30", "0.50", "6.25"),
             // GPT-5.5 系列
             ("gpt-5.5", "GPT-5.5", "5", "30", "0.50", "0"),
             ("gpt-5.5-low", "GPT-5.5", "5", "30", "0.50", "0"),
@@ -1828,8 +2097,23 @@ impl Database {
                 "0.14",
                 "0",
             ),
-            ("kimi-k2.5", "Kimi K2.5", "0.60", "2.50", "0.10", "0"),
+            ("kimi-k2.5", "Kimi K2.5", "0.60", "3.00", "0.10", "0"),
             ("kimi-k2.6", "Kimi K2.6", "0.95", "4.00", "0.16", "0"),
+            (
+                "kimi-k2.7-code",
+                "Kimi K2.7 Code",
+                "0.95",
+                "4.00",
+                "0.19",
+                "0",
+            ),
+            // Kimi K3（官方 list 价 $3/M in、$15/M out、$0.30/M cache read；1M 上下文）
+            ("kimi-k3", "Kimi K3", "3.00", "15.00", "0.30", "0"),
+            // Kimi For Coding 套餐里 K3 的裸名（无 kimi- 前缀），同标准 list 价
+            ("k3", "Kimi K3", "3.00", "15.00", "0.30", "0"),
+            // 腾讯混元 (Tencent Hunyuan)（官方 CNY 1/4/0.25 按 1 USD ≈ 7.14 折算；Hy3 阶梯计价取最低档）
+            ("hunyuan-hy3", "Hunyuan Hy3", "0.14", "0.56", "0.035", "0"),
+            ("hy3", "Hunyuan Hy3", "0.14", "0.56", "0.035", "0"),
             // MiniMax 系列
             ("minimax-m2.1", "MiniMax M2.1", "0.27", "0.95", "0.03", "0"),
             (
@@ -1876,13 +2160,27 @@ impl Database {
             // 注：lookup key 一律小写，与既有 minimax/glm 约定一致；pricing_lookup_candidates
             // 会对来料 model_id 生成小写候选，故小写 seed 对任意大小写来料都能命中
             // （含预设里的混合大小写 id，如 katcoder/KAT-Coder-Pro → cleaned KAT-Coder-Pro → lower kat-coder-pro）。
-            // KAT-Coder Pro — openclawProviderPresets.ts:674 cost {input:0.002, output:0.006}
-            ("kat-coder-pro", "KAT-Coder Pro", "0.002", "0.006", "0", "0"),
+            // KAT-Coder Pro — 官方 list 价（e356fc6e 与 openclaw 预设同步：0.3/1.2/0.06）
+            (
+                "kat-coder-pro",
+                "KAT-Coder Pro",
+                "0.30",
+                "1.20",
+                "0.06",
+                "0",
+            ),
             // KAT-Coder Air — claudeProviderPresets.ts KAT-Coder 预设的 HAIKU 默认模型
             // (`KAT-Coder-Air V1`)。openclaw 预设未内嵌 Air 价格，暂按同族 Pro 套餐价
-            // 兜底（量级可忽略），待厂商公布后细化。归一链：`KAT-Coder-Air V1` →
+            // 兜底，待厂商公布后细化。归一链：`KAT-Coder-Air V1` →
             // 小写空格转横线 `kat-coder-air-v1` → 去 `-vN` → `kat-coder-air`。
-            ("kat-coder-air", "KAT-Coder Air", "0.002", "0.006", "0", "0"),
+            (
+                "kat-coder-air",
+                "KAT-Coder Air",
+                "0.30",
+                "1.20",
+                "0.06",
+                "0",
+            ),
             // LongCat Flash Chat — openclawProviderPresets.ts:719 cost {input:0.001, output:0.004}
             (
                 "longcat-flash-chat",
@@ -1892,15 +2190,16 @@ impl Database {
                 "0",
                 "0",
             ),
-            // Ling 2.5 1T — openclawProviderPresets.ts:756 cost {input:0.001, output:0.004}
-            ("ling-2.5-1t", "Ling 2.5 1T", "0.001", "0.004", "0", "0"),
-            // Kimi For Coding — openclawProviderPresets.ts:469 cost {input:0.002, output:0.006}
+            // Ling 2.5 1T — 官方 CNY 4/16 按 1 USD ≈ 7.14 折算（e356fc6e 与 openclaw 预设同步）
+            ("ling-2.5-1t", "Ling 2.5 1T", "0.56", "2.24", "0", "0"),
+            // Kimi For Coding — 套餐端点别名按 K2.7 Code 官方 list 价展示
+            // （e356fc6e 与 openclaw 预设同步）
             (
                 "kimi-for-coding",
                 "Kimi For Coding",
-                "0.002",
-                "0.006",
-                "0",
+                "0.95",
+                "4.00",
+                "0.19",
                 "0",
             ),
             // 云网关 coding 别名（claudeProviderPresets.ts / openclawProviderPresets.ts 引用）。
@@ -1960,7 +2259,7 @@ impl Database {
             ("mimo-v2.5-pro", "MiMo V2.5 Pro", "1", "3", "0", "0"),
             // Qwen 系列 (阿里巴巴)
             ("qwen3.6-plus", "Qwen3.6 Plus", "0.325", "1.95", "0", "0"),
-            ("qwen3.5-plus", "Qwen3.5 Plus", "0.26", "1.56", "0", "0"),
+            ("qwen3.5-plus", "Qwen3.5 Plus", "0.26", "1.56", "0.052", "0"),
             ("qwen3-max", "Qwen3 Max", "0.78", "3.90", "0", "0"),
             (
                 "qwen3-235b-a22b",
@@ -2014,6 +2313,7 @@ impl Database {
             ("qwq-32b", "QwQ 32B", "0.20", "0.60", "0", "0"),
             ("qwen3-32b", "Qwen3 32B", "0.16", "0.64", "0", "0"),
             // Grok 系列 (xAI)
+            ("grok-4.5", "Grok 4.5", "2", "6", "0.50", "0"),
             (
                 "grok-4.20-0309-reasoning",
                 "Grok 4.20 Reasoning",
@@ -2149,6 +2449,44 @@ impl Database {
 
     fn repair_current_model_pricing(conn: &Connection) -> Result<(), AppError> {
         let pricing_fixes = [
+            // 2026-07-12 GPT-5.6 家族 cache write=1.25× 输入价（OpenAI 5.6 起的新规），
+            // 修正早期 seed 的 0 值；只匹配未被用户改过的行
+            (
+                "gpt-5.6-sol",
+                "GPT-5.6 Sol",
+                "5",
+                "30",
+                "0.50",
+                "6.25",
+                "5",
+                "30",
+                "0.50",
+                "0",
+            ),
+            (
+                "gpt-5.6-terra",
+                "GPT-5.6 Terra",
+                "2.50",
+                "15",
+                "0.25",
+                "3.125",
+                "2.50",
+                "15",
+                "0.25",
+                "0",
+            ),
+            (
+                "gpt-5.6-luna",
+                "GPT-5.6 Luna",
+                "1",
+                "6",
+                "0.10",
+                "1.25",
+                "1",
+                "6",
+                "0.10",
+                "0",
+            ),
             (
                 "deepseek-v4-flash",
                 "DeepSeek V4 Flash",
@@ -2189,6 +2527,84 @@ impl Database {
                 "0.20",
                 "1.50",
                 "0.02",
+                "0",
+            ),
+            // 2026-07 e356fc6e：openclaw 预设改按官方 list 价计价，
+            // 同步修复早期按旧预设值播种的两行（仅未被用户改过的行）。
+            (
+                "kimi-for-coding",
+                "Kimi For Coding",
+                "0.95",
+                "4.00",
+                "0.19",
+                "0",
+                "0.002",
+                "0.006",
+                "0",
+                "0",
+            ),
+            (
+                "ling-2.5-1t",
+                "Ling 2.5 1T",
+                "0.56",
+                "2.24",
+                "0",
+                "0",
+                "0.001",
+                "0.004",
+                "0",
+                "0",
+            ),
+            // Kimi K2.5 官方 output 3.00
+            (
+                "kimi-k2.5",
+                "Kimi K2.5",
+                "0.60",
+                "3.00",
+                "0.10",
+                "0",
+                "0.60",
+                "2.50",
+                "0.10",
+                "0",
+            ),
+            // KAT-Coder：早期按旧 openclaw 预设值播种（0.002/0.006），e356fc6e 预设
+            // 改按官方 list 价后 seed 同步修复；Air 维持“同族 Pro 套餐价兜底”锚定。
+            (
+                "kat-coder-pro",
+                "KAT-Coder Pro",
+                "0.30",
+                "1.20",
+                "0.06",
+                "0",
+                "0.002",
+                "0.006",
+                "0",
+                "0",
+            ),
+            (
+                "kat-coder-air",
+                "KAT-Coder Air",
+                "0.30",
+                "1.20",
+                "0.06",
+                "0",
+                "0.002",
+                "0.006",
+                "0",
+                "0",
+            ),
+            // Qwen3.5 Plus cache read 0.052（上游 seed/修复项同值；e356fc6e 预设同步携带）
+            (
+                "qwen3.5-plus",
+                "Qwen3.5 Plus",
+                "0.26",
+                "1.56",
+                "0.052",
+                "0",
+                "0.26",
+                "1.56",
+                "0",
                 "0",
             ),
         ];
@@ -2392,5 +2808,180 @@ impl Database {
             .map_err(|e| AppError::Database(format!("为表 {table} 添加列 {column} 失败: {e}")))?;
         log::info!("已为表 {table} 添加缺失列 {column}");
         Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn migrate_v12_to_v13_adds_input_token_semantics_columns() -> Result<(), AppError> {
+        let conn = Connection::open_in_memory()?;
+        conn.execute(
+            "CREATE TABLE proxy_request_logs (request_id TEXT PRIMARY KEY)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE TABLE usage_daily_rollups (date TEXT PRIMARY KEY)",
+            [],
+        )?;
+        Database::set_user_version(&conn, 12)?;
+
+        Database::apply_schema_migrations_on_conn(&conn)?;
+
+        assert_eq!(Database::get_user_version(&conn)?, SCHEMA_VERSION);
+        assert!(Database::has_column(
+            &conn,
+            "proxy_request_logs",
+            "input_token_semantics"
+        )?);
+        assert!(Database::has_column(
+            &conn,
+            "usage_daily_rollups",
+            "input_token_semantics"
+        )?);
+        assert!(Database::table_exists(&conn, "profiles")?);
+        let log_default: i64 = conn.query_row(
+            "SELECT dflt_value = '0' FROM pragma_table_info('proxy_request_logs')
+             WHERE name = 'input_token_semantics'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(log_default, 1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn migrate_v13_to_v14_adds_profiles_table() -> Result<(), AppError> {
+        let conn = Connection::open_in_memory()?;
+        conn.execute(
+            "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT)",
+            [],
+        )?;
+        Database::set_user_version(&conn, 13)?;
+
+        Database::apply_schema_migrations_on_conn(&conn)?;
+
+        assert_eq!(Database::get_user_version(&conn)?, SCHEMA_VERSION);
+        assert!(Database::table_exists(&conn, "profiles")?);
+        for column in [
+            "id",
+            "name",
+            "payload",
+            "sort_order",
+            "created_at",
+            "updated_at",
+        ] {
+            assert!(
+                Database::has_column(&conn, "profiles", column)?,
+                "profiles.{column} should exist after migration"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn migrate_v14_to_v15_adds_grokbuild_proxy_row_and_enablement_flags() -> Result<(), AppError> {
+        let conn = Connection::open_in_memory()?;
+        conn.execute_batch(
+            "CREATE TABLE proxy_config (
+                app_type TEXT PRIMARY KEY CHECK (app_type IN ('claude','codex','gemini')),
+                enabled INTEGER NOT NULL DEFAULT 0,
+                failover_strategy TEXT NOT NULL DEFAULT 'sequential',
+                live_takeover_active INTEGER NOT NULL DEFAULT 0,
+                max_retries INTEGER NOT NULL DEFAULT 3
+            );
+            INSERT INTO proxy_config (
+                app_type, enabled, failover_strategy, live_takeover_active, max_retries
+            ) VALUES ('codex', 1, 'random', 1, 9);
+            CREATE TABLE mcp_servers (
+                id TEXT PRIMARY KEY,
+                enabled_codex BOOLEAN NOT NULL DEFAULT 0
+            );
+            CREATE TABLE skills (
+                id TEXT PRIMARY KEY,
+                enabled_codex BOOLEAN NOT NULL DEFAULT 0
+            );
+            INSERT INTO mcp_servers (id, enabled_codex) VALUES ('mcp-1', 1);
+            INSERT INTO skills (id, enabled_codex) VALUES ('skill-1', 1);",
+        )?;
+        Database::set_user_version(&conn, 14)?;
+
+        Database::apply_schema_migrations_on_conn(&conn)?;
+
+        assert_eq!(Database::get_user_version(&conn)?, SCHEMA_VERSION);
+        let grok_rows: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM proxy_config WHERE app_type = 'grokbuild'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(grok_rows, 1);
+        let codex_values: (i64, String, i64, i64) = conn.query_row(
+            "SELECT enabled, failover_strategy, live_takeover_active, max_retries
+             FROM proxy_config WHERE app_type = 'codex'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
+        assert_eq!(codex_values, (1, "random".to_string(), 1, 9));
+        assert!(Database::has_column(
+            &conn,
+            "mcp_servers",
+            "enabled_grokbuild"
+        )?);
+        assert!(Database::has_column(&conn, "skills", "enabled_grokbuild")?);
+        let mcp_values: (i64, i64) = conn.query_row(
+            "SELECT enabled_codex, enabled_grokbuild FROM mcp_servers WHERE id = 'mcp-1'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        let skill_values: (i64, i64) = conn.query_row(
+            "SELECT enabled_codex, enabled_grokbuild FROM skills WHERE id = 'skill-1'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!(mcp_values, (1, 0));
+        assert_eq!(skill_values, (1, 0));
+        Ok(())
+    }
+    #[test]
+    fn migrate_v15_to_v16_resets_only_codex_session_usage() -> Result<(), AppError> {
+        let conn = Connection::open_in_memory()?;
+        Database::create_tables_on_conn(&conn)?;
+        conn.execute_batch(
+            "INSERT INTO proxy_request_logs (
+                request_id, provider_id, app_type, model, input_tokens,
+                output_tokens, cache_read_tokens, latency_ms, status_code,
+                created_at, data_source
+             ) VALUES
+                ('codex-row', '_codex_session', 'codex', 'gpt', 1, 1, 0, 0, 200, 1, 'codex_session'),
+                ('gemini-row', '_gemini_session', 'gemini', 'gemini', 1, 1, 0, 0, 200, 1, 'gemini_session');
+             INSERT INTO usage_daily_rollups (date, app_type, provider_id, model)
+             VALUES
+                ('2026-07-10', 'codex', '_codex_session', 'gpt'),
+                ('2026-07-10', 'gemini', '_gemini_session', 'gemini');
+             INSERT INTO session_log_sync
+                (file_path, last_modified, last_line_offset, last_synced_at)
+             VALUES
+                ('/old/sessions/rollout-old-00000000-0000-4000-8000-000000000001.jsonl', 1, 1, 1),
+                ('/gemini/tmp/session-123.json', 1, 1, 1);",
+        )?;
+        Database::set_user_version(&conn, 15)?;
+
+        Database::apply_schema_migrations_on_conn(&conn)?;
+
+        assert_eq!(Database::get_user_version(&conn)?, 16);
+        let counts: (i64, i64, i64, i64) = conn.query_row(
+            "SELECT
+                (SELECT COUNT(*) FROM proxy_request_logs WHERE data_source = 'codex_session'),
+                (SELECT COUNT(*) FROM proxy_request_logs WHERE data_source = 'gemini_session'),
+                (SELECT COUNT(*) FROM usage_daily_rollups WHERE provider_id = '_codex_session'),
+                (SELECT COUNT(*) FROM session_log_sync)",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
+        assert_eq!(counts, (0, 1, 0, 1));
+        Ok(())
     }
 }

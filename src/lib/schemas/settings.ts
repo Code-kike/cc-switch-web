@@ -15,6 +15,8 @@ export const settingsSchema = z.object({
   skipClaudeOnboarding: z.boolean().optional(),
   launchOnStartup: z.boolean().optional(),
   enableLocalProxy: z.boolean().optional(),
+  usageDashboardRefreshIntervalMs: z.number().optional(),
+  showProfileSwitcher: z.boolean().optional(),
   preserveCodexOfficialAuthOnSwitch: z.boolean().optional(),
   language: z.enum(["en", "zh", "ja"]).optional(),
 
@@ -22,6 +24,7 @@ export const settingsSchema = z.object({
   claudeConfigDir: directorySchema.nullable().optional(),
   codexConfigDir: directorySchema.nullable().optional(),
   geminiConfigDir: directorySchema.nullable().optional(),
+  grokConfigDir: directorySchema.nullable().optional(),
   opencodeConfigDir: directorySchema.nullable().optional(),
   openclawConfigDir: directorySchema.nullable().optional(),
 

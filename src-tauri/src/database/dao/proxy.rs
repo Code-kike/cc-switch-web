@@ -59,7 +59,7 @@ impl Database {
 
     /// 获取全局代理配置（统一字段）
     ///
-    /// 从 claude 行读取（三行镜像一致）
+    /// 从 claude 行读取（所有应用的公共字段镜像一致）
     pub async fn get_global_proxy_config(&self) -> Result<GlobalProxyConfig, AppError> {
         // 使用 block 限制 conn 的作用域，避免跨 await 持有锁
         let result = {
@@ -96,7 +96,7 @@ impl Database {
         }
     }
 
-    /// 更新全局代理配置（镜像写三行）
+    /// 更新全局代理配置（镜像写所有应用行）
     pub async fn update_global_proxy_config(
         &self,
         config: GlobalProxyConfig,
@@ -336,6 +336,7 @@ impl Database {
                 "claude" => (6, 90, 180, 8, 3, 90, 0.7, 15),
                 "codex" => (3, 60, 120, 4, 2, 60, 0.6, 10),
                 "gemini" => (5, 60, 120, 4, 2, 60, 0.6, 10),
+                "grokbuild" => (3, 60, 120, 4, 2, 60, 0.6, 10),
                 _ => (3, 60, 120, 4, 2, 60, 0.6, 10), // 默认值
             };
 
@@ -363,7 +364,7 @@ impl Database {
         Ok(())
     }
 
-    /// 初始化 proxy_config 表的三行数据
+    /// 初始化 proxy_config 表的每应用数据
     ///
     /// 使用与 schema.rs seed 相同的 per-app 默认值
     async fn init_proxy_config_rows(&self) -> Result<(), AppError> {
@@ -402,6 +403,18 @@ impl Database {
                 circuit_failure_threshold, circuit_success_threshold, circuit_timeout_seconds,
                 circuit_error_rate_threshold, circuit_min_requests
             ) VALUES ('gemini', 5, 60, 120, 600, 4, 2, 60, 0.6, 10)",
+            [],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+        // grokbuild: Responses protocol, same timeout defaults as Codex.
+        conn.execute(
+            "INSERT OR IGNORE INTO proxy_config (
+                app_type, max_retries,
+                streaming_first_byte_timeout, streaming_idle_timeout, non_streaming_timeout,
+                circuit_failure_threshold, circuit_success_threshold, circuit_timeout_seconds,
+                circuit_error_rate_threshold, circuit_min_requests
+            ) VALUES ('grokbuild', 3, 60, 120, 600, 4, 2, 60, 0.6, 10)",
             [],
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
@@ -450,11 +463,11 @@ impl Database {
         }
     }
 
-    /// 更新代理配置（兼容旧接口，更新所有三行的公共字段）
+    /// 更新代理配置（兼容旧接口，更新所有应用行的公共字段）
     pub async fn update_proxy_config(&self, config: ProxyConfig) -> Result<(), AppError> {
         let conn = lock_conn!(self.conn);
 
-        // 更新所有三行的公共字段
+        // 更新所有应用行的公共字段
         conn.execute(
             "UPDATE proxy_config SET
                 listen_address = ?1,
@@ -500,6 +513,25 @@ impl Database {
             )
             .map_err(|e| AppError::Database(e.to_string()))?;
         Ok(count > 0)
+    }
+
+    /// 同步版本：检查是否有任一 app 的 enabled = true。
+    ///
+    /// Profile apply 运行在阻塞线程中，用它判断关闭当前 scope 后是否还需
+    /// 保持代理服务；锁毒化时保守返回 false，让调用方尝试停止而不是留下
+    /// 一个没有接管目标的监听器。
+    pub fn is_live_takeover_active_sync(&self) -> bool {
+        let conn = match self.conn.lock() {
+            Ok(conn) => conn,
+            Err(_) => return false,
+        };
+        conn.query_row(
+            "SELECT COUNT(*) FROM proxy_config WHERE enabled = 1",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap_or(0)
+            > 0
     }
 
     // ==================== Provider Health ====================
@@ -719,7 +751,7 @@ impl Database {
         }
     }
 
-    /// 更新熔断器配置（兼容旧接口，更新所有三行）
+    /// 更新熔断器配置（兼容旧接口，更新所有应用行）
     ///
     /// 熔断器配置已合并到 proxy_config 表
     /// 此方法保留用于兼容旧代码，建议使用 update_proxy_config_for_app
@@ -729,7 +761,7 @@ impl Database {
     ) -> Result<(), AppError> {
         let conn = lock_conn!(self.conn);
 
-        // 更新所有三行的熔断器配置
+        // 更新所有应用行的熔断器配置
         conn.execute(
             "UPDATE proxy_config SET
                 circuit_failure_threshold = ?1,

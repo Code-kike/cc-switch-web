@@ -20,6 +20,37 @@ static CODEX_CLIENT_REGEX: LazyLock<Regex> =
 /// Codex 适配器
 pub struct CodexAdapter;
 
+/// Resolve the real upstream model selected by a Grok Build config.toml.
+pub fn grok_provider_upstream_model(provider: &Provider) -> Option<String> {
+    provider
+        .settings_config
+        .get("config")
+        .and_then(|value| value.as_str())
+        .and_then(crate::grok_config::extract_model_config)
+        .map(|model| model.model)
+}
+
+/// Replace the Grok client-visible profile with the configured upstream model.
+pub fn apply_grok_upstream_model(
+    provider: &Provider,
+    body: &mut serde_json::Value,
+) -> Option<String> {
+    let upstream_model = grok_provider_upstream_model(provider)?;
+    body["model"] = serde_json::Value::String(upstream_model.clone());
+    Some(upstream_model)
+}
+
+/// Whether a native Responses Codex upstream needs Codex namespace/plugin
+/// tools flattened before forwarding.
+///
+/// xAI's strict Responses schema rejects Codex's ChatGPT-private
+/// `{"type":"namespace", ...}` tool declarations. Chat/Anthropic bridges do
+/// not use this native passthrough path, so the rewrite is limited to managed
+/// xAI OAuth providers.
+pub fn provider_needs_responses_namespace_flatten(provider: &Provider) -> bool {
+    provider.is_xai_oauth()
+}
+
 impl CodexAdapter {
     pub fn new() -> Self {
         Self
@@ -79,6 +110,9 @@ impl CodexAdapter {
             }
 
             if let Some(config_str) = config.as_str() {
+                if let Some((_, key)) = crate::grok_config::extract_credentials(config_str) {
+                    return Some(key);
+                }
                 if let Some(key) = codex_config::extract_codex_experimental_bearer_token(config_str)
                 {
                     return Some(key);
@@ -102,6 +136,13 @@ impl ProviderAdapter for CodexAdapter {
     }
 
     fn extract_base_url(&self, provider: &Provider) -> Result<String, ProxyError> {
+        // Managed xAI OAuth credentials are valid only for the pinned xAI
+        // origin. Ignore editable config so a stored token cannot be relayed
+        // to an arbitrary endpoint.
+        if provider.is_xai_oauth() {
+            return Ok(super::XAI_API_BASE_URL.to_string());
+        }
+
         // 1. 尝试直接获取 base_url 字段
         if let Some(url) = provider
             .settings_config
@@ -128,6 +169,9 @@ impl ProviderAdapter for CodexAdapter {
 
             // 尝试解析 TOML 字符串格式
             if let Some(config_str) = config.as_str() {
+                if let Some(url) = crate::grok_config::extract_base_url(config_str) {
+                    return Ok(url.trim_end_matches('/').to_string());
+                }
                 if let Some(start) = config_str.find("base_url = \"") {
                     let rest = &config_str[start + 12..];
                     if let Some(end) = rest.find('"') {
@@ -149,6 +193,15 @@ impl ProviderAdapter for CodexAdapter {
     }
 
     fn extract_auth(&self, provider: &Provider) -> Option<AuthInfo> {
+        // The real access token is resolved per request by the forwarder from
+        // the managed xAI account. This placeholder only selects that path.
+        if provider.is_xai_oauth() {
+            return Some(AuthInfo::new(
+                "xai_oauth_placeholder".to_string(),
+                AuthStrategy::XaiOAuth,
+            ));
+        }
+
         self.extract_key(provider)
             .map(|key| AuthInfo::new(key, AuthStrategy::Bearer))
     }
@@ -234,6 +287,87 @@ mod tests {
 
         let url = adapter.extract_base_url(&provider).unwrap();
         assert_eq!(url, "https://api.openai.com/v1");
+    }
+
+    #[test]
+    fn grok_build_toml_exposes_upstream_credentials_and_model() {
+        let adapter = CodexAdapter::new();
+        let provider = create_provider(json!({
+            "config": r#"
+[models]
+default = "grok-4.5"
+
+[model."grok-4.5"]
+model = "upstream-grok-model"
+base_url = "https://relay.example.com/v1/"
+name = "Example Relay"
+api_key = "grok-secret"
+api_backend = "responses"
+context_window = 500000
+"#
+        }));
+
+        assert_eq!(
+            adapter.extract_base_url(&provider).unwrap(),
+            "https://relay.example.com/v1"
+        );
+        let auth = adapter.extract_auth(&provider).unwrap();
+        assert_eq!(auth.api_key, "grok-secret");
+        assert_eq!(auth.strategy, AuthStrategy::Bearer);
+        assert_eq!(
+            grok_provider_upstream_model(&provider).as_deref(),
+            Some("upstream-grok-model")
+        );
+
+        let mut body = json!({ "model": "grok-4.5", "input": "hello" });
+        assert_eq!(
+            apply_grok_upstream_model(&provider, &mut body).as_deref(),
+            Some("upstream-grok-model")
+        );
+        assert_eq!(body["model"], "upstream-grok-model");
+    }
+
+    #[test]
+    fn xai_oauth_pins_base_url_and_managed_auth_placeholder() {
+        let adapter = CodexAdapter::new();
+        let mut provider = create_provider(json!({
+            "auth": { "OPENAI_API_KEY": "user-edited" },
+            "config": r#"
+model = "grok-4.5"
+
+[model_providers.custom]
+base_url = "https://attacker.example/v1"
+wire_api = "responses"
+"#
+        }));
+        provider.meta = Some(crate::provider::ProviderMeta {
+            provider_type: Some("xai_oauth".to_string()),
+            ..Default::default()
+        });
+
+        assert_eq!(
+            adapter.extract_base_url(&provider).unwrap(),
+            super::super::XAI_API_BASE_URL
+        );
+        let auth = adapter.extract_auth(&provider).unwrap();
+        assert_eq!(auth.api_key, "xai_oauth_placeholder");
+        assert_eq!(auth.strategy, AuthStrategy::XaiOAuth);
+    }
+
+    #[test]
+    fn namespace_flatten_gate_only_fires_for_xai_oauth() {
+        let mut xai = create_provider(json!({ "auth": {}, "config": "" }));
+        xai.meta = Some(crate::provider::ProviderMeta {
+            provider_type: Some("xai_oauth".to_string()),
+            ..Default::default()
+        });
+        assert!(provider_needs_responses_namespace_flatten(&xai));
+
+        let plain = create_provider(json!({
+            "auth": { "OPENAI_API_KEY": "sk-x" },
+            "config": "base_url = \"https://api.x.ai/v1\"\nwire_api = \"responses\""
+        }));
+        assert!(!provider_needs_responses_namespace_flatten(&plain));
     }
 
     #[test]

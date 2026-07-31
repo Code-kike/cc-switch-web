@@ -6,7 +6,14 @@ import {
 } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
-import { describe, it, expect, beforeEach, vi, type MockInstance } from "vitest";
+import {
+  describe,
+  it,
+  expect,
+  beforeEach,
+  vi,
+  type MockInstance,
+} from "vitest";
 import { providersApi } from "@/lib/api/providers";
 import { closeAllSubscriptions } from "@/lib/api/event-adapter";
 import {
@@ -29,6 +36,7 @@ const toastErrorMock = vi.fn();
 const toastInfoMock = vi.fn();
 const promptOpenImportMock = vi.fn();
 const promptOpenAddMock = vi.fn();
+const promptReloadMock = vi.fn();
 const mcpOpenImportMock = vi.fn();
 const mcpOpenAddMock = vi.fn();
 const skillsOpenRestoreFromBackupMock = vi.fn();
@@ -59,11 +67,14 @@ vi.mock("@/lib/api/event-adapter", () => ({
       .get(event)
       ?.forEach((handler) => handler({ event, payload }));
   },
-  getMockListenerCount: (event: string) => appEventListeners.get(event)?.size ?? 0,
+  getMockListenerCount: (event: string) =>
+    appEventListeners.get(event)?.size ?? 0,
 }));
 
 const emitMockEvent = (event: string, payload: unknown) => {
-  appEventListeners.get(event)?.forEach((handler) => handler({ event, payload }));
+  appEventListeners
+    .get(event)
+    ?.forEach((handler) => handler({ event, payload }));
 };
 
 const getMockListenerCount = (event: string) =>
@@ -187,6 +198,12 @@ vi.mock("@/components/AppSwitcher", () => ({
   ),
 }));
 
+vi.mock("@/components/profiles/ProfileSwitcher", () => ({
+  ProfileSwitcher: ({ activeApp }: { activeApp: string }) => (
+    <div data-testid="profile-switcher">{activeApp}</div>
+  ),
+}));
+
 vi.mock("@/components/UpdateBadge", () => ({
   UpdateBadge: ({ onClick }: any) => (
     <button onClick={onClick}>update-badge</button>
@@ -198,6 +215,7 @@ vi.mock("@/components/prompts/PromptPanel", () => ({
     useImperativeHandle(ref, () => ({
       openImport: () => promptOpenImportMock(),
       openAdd: () => promptOpenAddMock(),
+      reload: () => promptReloadMock(),
     }));
     return <div data-testid="prompt-panel">prompt-panel</div>;
   }),
@@ -230,7 +248,9 @@ vi.mock("@/components/DeepLinkImportDialog", () => ({
       openManualImport: (...args: unknown[]) =>
         deepLinkOpenManualImportMock(...args),
     }));
-    return <div data-testid="deeplink-import-dialog">deeplink-import-dialog</div>;
+    return (
+      <div data-testid="deeplink-import-dialog">deeplink-import-dialog</div>
+    );
   }),
 }));
 
@@ -242,13 +262,14 @@ vi.mock("@/components/universal", () => ({
 
 const renderApp = (AppComponent: ComponentType) => {
   const client = new QueryClient();
-  return render(
+  const rendered = render(
     <QueryClientProvider client={client}>
       <Suspense fallback={<div data-testid="loading">loading</div>}>
         <AppComponent />
       </Suspense>
     </QueryClientProvider>,
   );
+  return { ...rendered, client };
 };
 
 const waitForEventSubscription = async (event: string) => {
@@ -266,6 +287,7 @@ describe("App integration with MSW", () => {
     toastInfoMock.mockReset();
     promptOpenImportMock.mockReset();
     promptOpenAddMock.mockReset();
+    promptReloadMock.mockReset();
     mcpOpenImportMock.mockReset();
     mcpOpenAddMock.mockReset();
     skillsOpenRestoreFromBackupMock.mockReset();
@@ -342,6 +364,58 @@ describe("App integration with MSW", () => {
     expect(toastErrorMock).not.toHaveBeenCalled();
     expect(toastSuccessMock).toHaveBeenCalled();
   }, 10000);
+
+  it("refreshes profile-derived and takeover caches after profile application", async () => {
+    const { default: App } = await import("@/App");
+    const { client } = renderApp(App);
+    const invalidateSpy = vi.spyOn(client, "invalidateQueries");
+
+    await waitForEventSubscription("profile-applied");
+    emitMockEvent("profile-applied", {
+      profileId: "project-1",
+      scope: "claude",
+    });
+
+    await waitFor(() => {
+      expect(invalidateSpy).toHaveBeenCalledWith({
+        queryKey: ["proxyTakeoverStatus"],
+      });
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["proxyStatus"] });
+      expect(invalidateSpy).toHaveBeenCalledWith({
+        queryKey: ["providers", "claude"],
+      });
+      expect(invalidateSpy).toHaveBeenCalledWith({
+        queryKey: ["profiles"],
+      });
+    });
+  });
+
+  it("reloads an open prompt panel when its profile scope is applied", async () => {
+    const { default: App } = await import("@/App");
+    renderApp(App);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("provider-list")).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByTitle("prompts.manage"));
+    await waitFor(() =>
+      expect(screen.getByTestId("prompt-panel")).toBeInTheDocument(),
+    );
+
+    await waitForEventSubscription("profile-applied");
+    emitMockEvent("profile-applied", {
+      profileId: "project-1",
+      scope: "claude",
+    });
+
+    await waitFor(() => expect(promptReloadMock).toHaveBeenCalledTimes(1));
+
+    emitMockEvent("profile-applied", {
+      profileId: "project-2",
+      scope: "codex",
+    });
+    expect(promptReloadMock).toHaveBeenCalledTimes(1);
+  });
 
   it("shows toast when auto sync fails in background", async () => {
     const { default: App } = await import("@/App");
@@ -457,8 +531,7 @@ describe("App integration with MSW", () => {
         vi
           .spyOn(providersApi, "importOpenCodeFromLive")
           .mockResolvedValueOnce(1),
-      expectSpy: (spy: MockInstance) =>
-        expect(spy).toHaveBeenCalledTimes(1),
+      expectSpy: (spy: MockInstance) => expect(spy).toHaveBeenCalledTimes(1),
     },
     {
       appId: "openclaw",
@@ -467,18 +540,14 @@ describe("App integration with MSW", () => {
         vi
           .spyOn(providersApi, "importOpenClawFromLive")
           .mockResolvedValueOnce(1),
-      expectSpy: (spy: MockInstance) =>
-        expect(spy).toHaveBeenCalledTimes(1),
+      expectSpy: (spy: MockInstance) => expect(spy).toHaveBeenCalledTimes(1),
     },
     {
       appId: "hermes",
       switchLabel: "switch-hermes",
       primeSpy: () =>
-        vi
-          .spyOn(providersApi, "importHermesFromLive")
-          .mockResolvedValueOnce(1),
-      expectSpy: (spy: MockInstance) =>
-        expect(spy).toHaveBeenCalledTimes(1),
+        vi.spyOn(providersApi, "importHermesFromLive").mockResolvedValueOnce(1),
+      expectSpy: (spy: MockInstance) => expect(spy).toHaveBeenCalledTimes(1),
     },
   ])(
     "imports current config from the providers toolbar for $appId",
@@ -569,9 +638,7 @@ describe("App integration with MSW", () => {
       expect(screen.getByTestId("mcp-panel")).toBeInTheDocument(),
     );
 
-    fireEvent.click(
-      screen.getByRole("button", { name: "mcp.importExisting" }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: "mcp.importExisting" }));
     fireEvent.click(screen.getByRole("button", { name: "mcp.addMcp" }));
 
     expect(mcpOpenImportMock).toHaveBeenCalledTimes(1);
@@ -613,7 +680,9 @@ describe("App integration with MSW", () => {
       expect(screen.getByTestId("provider-list")).toBeInTheDocument(),
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "deeplink.pasteImport" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "deeplink.pasteImport" }),
+    );
 
     expect(deepLinkOpenManualImportMock).toHaveBeenCalledTimes(1);
   });

@@ -20,8 +20,7 @@ const i18nState = vi.hoisted(() => ({
       error?: string;
     },
   ) =>
-    options?.defaultValue ??
-    (options?.error ? `${key}:${options.error}` : key),
+    options?.defaultValue ?? (options?.error ? `${key}:${options.error}` : key),
 }));
 
 const pricingState = vi.hoisted(() => ({
@@ -70,17 +69,20 @@ vi.mock("@/components/ui/alert", () => ({
 }));
 
 vi.mock("@/components/ui/dialog", () => ({
-  Dialog: ({
-    open,
-    children,
-  }: {
-    open: boolean;
-    children: ReactNode;
-  }) => (open ? <div>{children}</div> : null),
-  DialogContent: ({ children }: { children: ReactNode }) => <div>{children}</div>,
-  DialogDescription: ({ children }: { children: ReactNode }) => <div>{children}</div>,
-  DialogFooter: ({ children }: { children: ReactNode }) => <div>{children}</div>,
-  DialogHeader: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  Dialog: ({ open, children }: { open: boolean; children: ReactNode }) =>
+    open ? <div>{children}</div> : null,
+  DialogContent: ({ children }: { children: ReactNode }) => (
+    <div>{children}</div>
+  ),
+  DialogDescription: ({ children }: { children: ReactNode }) => (
+    <div>{children}</div>
+  ),
+  DialogFooter: ({ children }: { children: ReactNode }) => (
+    <div>{children}</div>
+  ),
+  DialogHeader: ({ children }: { children: ReactNode }) => (
+    <div>{children}</div>
+  ),
   DialogTitle: ({ children }: { children: ReactNode }) => <div>{children}</div>,
 }));
 
@@ -229,11 +231,17 @@ describe("PricingConfigPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "common.save" }));
 
     await waitFor(() =>
-      expect(setDefaultCostMultiplierMock).toHaveBeenCalledWith("claude", "2.5"),
+      expect(setDefaultCostMultiplierMock).toHaveBeenCalledWith(
+        "claude",
+        "2.5",
+      ),
     );
     expect(setDefaultCostMultiplierMock).toHaveBeenCalledWith("codex", "0.9");
     expect(setDefaultCostMultiplierMock).toHaveBeenCalledWith("gemini", "1");
-    expect(setPricingModelSourceMock).toHaveBeenCalledWith("claude", "response");
+    expect(setPricingModelSourceMock).toHaveBeenCalledWith(
+      "claude",
+      "response",
+    );
     expect(setPricingModelSourceMock).toHaveBeenCalledWith("codex", "request");
     expect(setPricingModelSourceMock).toHaveBeenCalledWith("gemini", "request");
     expect(toastSuccessMock).toHaveBeenCalledWith(
@@ -254,9 +262,7 @@ describe("PricingConfigPanel", () => {
     expect(
       screen.getByText("usage.loadPricingError: pricing fetch failed"),
     ).toBeInTheDocument();
-    expect(
-      screen.queryByText(/\\[object Object\\]/),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/\\[object Object\\]/)).not.toBeInTheDocument();
   });
 
   it("shows structured details when saving pricing defaults fails", async () => {
@@ -286,11 +292,14 @@ describe("PricingConfigPanel", () => {
     render(<PricingConfigPanel />);
 
     await waitFor(() =>
-      expect(getDefaultCostMultiplierMock).toHaveBeenCalledTimes(3),
+      expect(getDefaultCostMultiplierMock).toHaveBeenCalledTimes(4),
     );
+    expect(getDefaultCostMultiplierMock).toHaveBeenCalledWith("grokbuild");
 
     fireEvent.click(screen.getByRole("button", { name: "common.add" }));
-    expect(screen.getByTestId("pricing-edit-modal")).toHaveTextContent("new:empty");
+    expect(screen.getByTestId("pricing-edit-modal")).toHaveTextContent(
+      "new:empty",
+    );
 
     fireEvent.click(screen.getByTitle("common.edit"));
     expect(screen.getByTestId("pricing-edit-modal")).toHaveTextContent(
@@ -300,7 +309,9 @@ describe("PricingConfigPanel", () => {
     fireEvent.click(screen.getByTitle("common.delete"));
     expect(screen.getByText("usage.deleteConfirmTitle")).toBeInTheDocument();
 
-    const deleteButtons = screen.getAllByRole("button", { name: "common.delete" });
+    const deleteButtons = screen.getAllByRole("button", {
+      name: "common.delete",
+    });
     fireEvent.click(deleteButtons[deleteButtons.length - 1]);
 
     await waitFor(() =>

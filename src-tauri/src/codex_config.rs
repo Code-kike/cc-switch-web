@@ -7,6 +7,7 @@ use crate::config::{
     write_json_file_managed, write_text_file_managed,
 };
 use crate::error::AppError;
+use crate::model_capabilities::{image_input_capability_from_modalities, ImageInputCapability};
 use serde_json::{json, Value};
 use std::fs;
 use toml_edit::DocumentMut;
@@ -18,7 +19,10 @@ pub const CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME: &str = "cc-switch-model-catalo
 /// Top-level `config.toml` key that controls Codex's built-in web-search tool.
 pub(crate) const CODEX_WEB_SEARCH_FIELD: &str = "web_search";
 /// Value that disables the web-search tool. Some native `/responses` gateways
-/// reject a `web_search` tool, so cc-switch owns only this sentinel value.
+/// reject a `web_search` tool with `responses_feature_not_supported` ("tool type
+/// 'web_search' is not supported by this gateway phase"), so for those we write
+/// this per the vendors' official Codex docs. It also doubles as cc-switch's
+/// ownership sentinel: only this value is removed, never a user's own setting.
 pub(crate) const CODEX_WEB_SEARCH_DISABLED: &str = "disabled";
 
 /// Native `/responses` gateways whose first-party models do not support Codex's
@@ -383,12 +387,26 @@ fn extract_codex_top_level_u64(config_text: &str, field: &str) -> Option<u64> {
         .filter(|value| *value > 0)
 }
 
+fn codex_catalog_input_modalities(
+    model: &str,
+    declared_modalities: Option<&[String]>,
+) -> Vec<String> {
+    let modalities = match image_input_capability_from_modalities(model, declared_modalities) {
+        ImageInputCapability::Unsupported => &["text"][..],
+        ImageInputCapability::Supported | ImageInputCapability::Unknown => &["text", "image"][..],
+    };
+    modalities.iter().map(|item| (*item).to_string()).collect()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CodexCatalogModelSpec {
     model: String,
     display_name: String,
     context_window: u64,
     supports_parallel_tool_calls: Option<bool>,
+    /// Hidden per-row capability declaration from built-in provider metadata.
+    /// When omitted, all catalog profiles consult the shared text-only model
+    /// registry and otherwise default to `["text", "image"]`.
     input_modalities: Option<Vec<String>>,
     base_instructions: Option<String>,
 }
@@ -415,6 +433,18 @@ fn codex_catalog_model_entry(
     entry_obj.insert("availability_nux".to_string(), Value::Null);
     entry_obj.insert("upgrade".to_string(), Value::Null);
 
+    // Image support is a model capability, not a tool-profile capability.
+    // Trust hidden preset metadata first, then the confirmed text-only registry;
+    // every unknown model fails open so GPT/relay aliases are never declared
+    // text-only merely because a template had a conservative default.
+    entry_obj.insert(
+        "input_modalities".to_string(),
+        json!(codex_catalog_input_modalities(
+            &spec.model,
+            spec.input_modalities.as_deref(),
+        )),
+    );
+
     if profile == CodexCatalogToolProfile::NativeResponses {
         for key in [
             "apply_patch_tool_type",
@@ -436,9 +466,6 @@ fn codex_catalog_model_entry(
         }
         if let Some(parallel) = spec.supports_parallel_tool_calls {
             entry_obj.insert("supports_parallel_tool_calls".to_string(), json!(parallel));
-        }
-        if let Some(modalities) = &spec.input_modalities {
-            entry_obj.insert("input_modalities".to_string(), json!(modalities));
         }
     }
 
@@ -757,11 +784,47 @@ fn load_codex_native_responses_template() -> Value {
     serde_json::from_str(text).expect("bundled codex native responses template must be valid JSON")
 }
 
+/// Fields Codex's external-catalog parser REQUIRES (no serde default): when
+/// one is missing Codex rejects the whole catalog file at startup ("missing
+/// field ..."). `base_instructions` is the other known required field; the
+/// templates always carry it and `codex_catalog_model_entry` handles it.
+/// When Codex requires a new field, add it here AND to the static templates.
+const CODEX_CATALOG_PARSER_REQUIRED_FIELDS: &[&str] = &["supports_reasoning_summaries"];
+
+/// `models_cache.json` is shared by every Codex install on the machine (npm
+/// CLI, desktop-bundled binary, ...), and each version serializes its own
+/// `ModelInfo` shape — the cache's field set follows whichever process wrote
+/// it last, so it cannot be assumed to satisfy the current external-catalog
+/// schema (observed live: 0.144.5 requires `supports_reasoning_summaries`
+/// while a coexisting build kept rewriting the cache without it). Backfill
+/// ONLY parser-required fields from the bundled static template: optional
+/// capability fields keep their missing-means-default semantics, and existing
+/// values always win.
+fn fill_template_fields_from_static(template: &mut Value) {
+    let Some(static_template) = load_codex_model_template_static() else {
+        return;
+    };
+    let (Some(template_obj), Some(static_obj)) =
+        (template.as_object_mut(), static_template.as_object())
+    else {
+        return;
+    };
+    for key in CODEX_CATALOG_PARSER_REQUIRED_FIELDS {
+        if !template_obj.contains_key(*key) {
+            if let Some(value) = static_obj.get(*key) {
+                template_obj.insert((*key).to_string(), value.clone());
+            }
+        }
+    }
+}
+
 fn load_codex_model_catalog_template() -> Result<Value, AppError> {
-    if let Some(template) = load_codex_model_template_from_cache()? {
+    if let Some(mut template) = load_codex_model_template_from_cache()? {
+        fill_template_fields_from_static(&mut template);
         return Ok(template);
     }
-    if let Some(template) = load_codex_model_template_from_bundled()? {
+    if let Some(mut template) = load_codex_model_template_from_bundled()? {
+        fill_template_fields_from_static(&mut template);
         return Ok(template);
     }
     if let Some(template) = load_codex_model_template_static() {
@@ -974,7 +1037,8 @@ fn build_simplified_catalog_from_texts(config_text: &str, catalog_text: &str) ->
                 .filter_map(|m| m.as_str())
                 .map(str::to_string)
                 .collect();
-            if !modalities.is_empty() {
+            let inferred = codex_catalog_input_modalities(model, None);
+            if !modalities.is_empty() && modalities != inferred {
                 obj.insert("inputModalities".to_string(), json!(modalities));
             }
         }
@@ -1402,6 +1466,68 @@ mod tests {
     use super::*;
 
     #[test]
+    fn dynamic_template_backfills_parser_required_fields_from_static() {
+        // Simulate a template cloned from a models_cache.json written by a
+        // Codex build whose ModelInfo lacks parser-side required fields such
+        // as `supports_reasoning_summaries` (codex >= 0.144.5 rejects the
+        // whole catalog file without it).
+        let mut template = serde_json::json!({
+            "slug": "gpt-5.5",
+            "context_window": 272_000,
+            "supports_parallel_tool_calls": false
+        });
+        fill_template_fields_from_static(&mut template);
+
+        assert_eq!(
+            template
+                .get("supports_reasoning_summaries")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        // Keys already present in the dynamic template are never overwritten.
+        assert_eq!(
+            template
+                .get("supports_parallel_tool_calls")
+                .and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            template.get("context_window").and_then(Value::as_u64),
+            Some(272_000)
+        );
+        // Optional capability fields must NOT be backfilled: for the catalog
+        // parser "missing" means the parser default, not the static
+        // template's value.
+        assert!(template.get("supports_search_tool").is_none());
+        assert!(template.get("supports_image_detail_original").is_none());
+        assert!(template.get("web_search_tool_type").is_none());
+    }
+
+    #[test]
+    fn proxy_chat_catalog_entries_carry_reasoning_summaries_flag() {
+        // End to end: a stale dynamic template, once backfilled, must yield
+        // catalog entries codex 0.144.5+ can parse.
+        let mut template = serde_json::json!({ "slug": "gpt-5.5" });
+        fill_template_fields_from_static(&mut template);
+        let specs = vec![CodexCatalogModelSpec {
+            model: "k3".to_string(),
+            display_name: "Kimi K3".to_string(),
+            context_window: 262_144,
+            supports_parallel_tool_calls: None,
+            input_modalities: None,
+            base_instructions: None,
+        }];
+        let catalog =
+            codex_model_catalog_from_specs(&specs, &template, CodexCatalogToolProfile::ProxyChat);
+        assert_eq!(
+            catalog["models"][0]
+                .get("supports_reasoning_summaries")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+    }
+
+    #[test]
     fn native_responses_catalog_strips_freeform_tools_and_applies_overrides() {
         let settings = serde_json::json!({
             "modelCatalog": {
@@ -1480,6 +1606,40 @@ model = "gpt-5.5""#,
     }
 
     #[test]
+    fn build_simplified_catalog_squashes_inferred_modalities_and_keeps_overrides() {
+        let catalog = r#"{
+            "models": [
+                { "slug": "gpt-5.4", "input_modalities": ["text", "image"] },
+                { "slug": "deepseek-v4-pro", "input_modalities": ["text"] },
+                { "slug": "gpt-text-override", "input_modalities": ["text"] },
+                { "slug": "deepseek-v4-flash", "input_modalities": ["text", "image"] }
+            ]
+        }"#;
+
+        let result = build_simplified_catalog_from_texts("", catalog).expect("entries");
+        let models = result.get("models").unwrap().as_array().unwrap();
+
+        assert!(
+            models[0].get("inputModalities").is_none(),
+            "GPT text+image is inferred and must not become a sticky hidden override"
+        );
+        assert!(
+            models[1].get("inputModalities").is_none(),
+            "confirmed text-only capability is inferred and must remain registry-driven"
+        );
+        assert_eq!(
+            models[2].get("inputModalities"),
+            Some(&json!(["text"])),
+            "an unknown model explicitly forced to text-only must round-trip"
+        );
+        assert_eq!(
+            models[3].get("inputModalities"),
+            Some(&json!(["text", "image"])),
+            "an explicit image override for a registered text-only model must round-trip"
+        );
+    }
+
+    #[test]
     fn simplified_catalog_exposes_codex_model_metadata_for_models_endpoint() {
         let catalog_text = serde_json::json!({
             "models": [
@@ -1528,10 +1688,11 @@ model_context_window = 128000"#,
                 .and_then(Value::as_bool),
             Some(true)
         );
-        assert_eq!(
-            models[0].get("inputModalities"),
-            Some(&serde_json::json!(["text", "image"]))
-        );
+        // `["text","image"]` is what the shared inference already yields for an
+        // unregistered model, so it is collapsed rather than frozen into a hidden
+        // row override (see `build_simplified_catalog_squashes_inferred_modalities_
+        // and_keeps_overrides`).
+        assert!(models[0].get("inputModalities").is_none());
         assert!(
             models[1].get("displayName").is_none(),
             "displayName is omitted when it duplicates model"

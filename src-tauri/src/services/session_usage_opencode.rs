@@ -16,7 +16,9 @@ use crate::error::AppError;
 use crate::opencode_config::get_opencode_db_path;
 use crate::proxy::usage::calculator::CostCalculator;
 use crate::proxy::usage::parser::TokenUsage;
-use crate::services::session_usage::SessionSyncResult;
+use crate::services::session_usage::{
+    get_sync_state, metadata_modified_nanos, update_sync_state, SessionSyncResult,
+};
 use crate::services::usage_stats::{find_model_pricing, should_skip_session_insert, DedupKey};
 use rust_decimal::Decimal;
 use std::fs;
@@ -48,6 +50,8 @@ pub fn sync_opencode_usage(db: &Database) -> Result<SessionSyncResult, AppError>
             imported: 0,
             skipped: 0,
             files_scanned: 0,
+            suspected_duplicates: 0,
+            deferred_files: 0,
             errors: vec![],
         });
     }
@@ -75,6 +79,8 @@ pub fn sync_opencode_usage(db: &Database) -> Result<SessionSyncResult, AppError>
             imported: 0,
             skipped: 0,
             files_scanned: 1,
+            suspected_duplicates: 0,
+            deferred_files: 0,
             errors: vec![],
         });
     }
@@ -88,6 +94,8 @@ pub fn sync_opencode_usage(db: &Database) -> Result<SessionSyncResult, AppError>
         imported: 0,
         skipped: 0,
         files_scanned: 1,
+        suspected_duplicates: 0,
+        deferred_files: 0,
         errors: vec![],
     };
     let mut has_sync_errors = false;
@@ -434,57 +442,9 @@ fn insert_opencode_message(
     )
     .map_err(|e| AppError::Database(format!("插入 OpenCode 会话日志失败: {e}")))?;
 
-    // 分叉适配：与 Codex/Gemini 同步一致，新插入时触发实时使用量事件
-    // （桌面端 Tauri emit / Web 端 SSE），让仪表盘即时刷新。
-    let inserted = inserted_rows > 0;
-    if inserted {
-        crate::usage_events::notify_log_recorded();
-    }
-    Ok(inserted)
-}
-
-/// 文件 mtime（纳秒）。OpenCode 的 WAL 提交可能落在同一秒内，
-/// 用纳秒精度避免秒级粒度漏掉同秒内的更新。
-fn metadata_modified_nanos(metadata: &fs::Metadata) -> i64 {
-    metadata
-        .modified()
-        .ok()
-        .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
-        .map(|d| d.as_nanos().min(i64::MAX as u128) as i64)
-        .unwrap_or(0)
-}
-
-/// 获取文件的同步状态
-fn get_sync_state(db: &Database, file_path: &str) -> Result<(i64, i64), AppError> {
-    let conn = lock_conn!(db.conn);
-    let result = conn.query_row(
-        "SELECT last_modified, last_line_offset FROM session_log_sync WHERE file_path = ?1",
-        rusqlite::params![file_path],
-        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
-    );
-    Ok(result.unwrap_or((0, 0)))
-}
-
-/// 更新文件的同步状态
-fn update_sync_state(
-    db: &Database,
-    file_path: &str,
-    last_modified: i64,
-    last_offset: i64,
-) -> Result<(), AppError> {
-    let now = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-
-    let conn = lock_conn!(db.conn);
-    conn.execute(
-        "INSERT OR REPLACE INTO session_log_sync (file_path, last_modified, last_line_offset, last_synced_at)
-         VALUES (?1, ?2, ?3, ?4)",
-        rusqlite::params![file_path, last_modified, last_offset, now],
-    )
-    .map_err(|e| AppError::Database(format!("更新同步状态失败: {e}")))?;
-    Ok(())
+    // eb105eae: 每次插入不再单独通知，由 sync_all_unlocked 在整个同步
+    // 完成后合并为一次刷新事件。
+    Ok(inserted_rows > 0)
 }
 
 #[cfg(test)]

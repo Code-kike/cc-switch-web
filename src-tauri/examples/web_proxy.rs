@@ -102,6 +102,12 @@ pub mod thinking_optimizer;
 #[path = "../src/proxy/thinking_rectifier.rs"]
 pub mod thinking_rectifier;
 
+#[path = "../src/proxy/transform_codex_responses_namespace.rs"]
+pub(crate) mod transform_codex_responses_namespace;
+
+#[path = "../src/proxy/transform_codex_responses_xai_sanitize.rs"]
+pub(crate) mod transform_codex_responses_xai_sanitize;
+
 #[path = "../src/proxy/types.rs"]
 pub(crate) mod types;
 

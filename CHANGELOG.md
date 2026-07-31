@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.18.0] - 2026-07-31
+
+Synced product-upstream `farion1231/cc-switch` `v3.16.5..v3.18.0` (v3.17.0 + v3.18.0) into this Web-first fork in seven themed batches, preserving the standalone Web server deployment model, dual-runtime parity, and the fork's security hardening. Highlights: Project Profiles (snapshot-based Claude/Codex config switching with autosave and takeover-safe apply), Grok OAuth + Grok Build (xAI device-flow accounts, managed providers pinned to `api.x.ai`, Grok Build as a first-class app), a Codex usage rebuild with the schema v16 migration (automatic pre-migration backup; Codex rows re-import for corrected totals), usage/pricing correctness (three-bucket cache-write accounting, last-good display on transient failures, GPT-5.6/Hunyuan Hy3/Kimi K3/grok-4.5 pricing seeds), a logging privacy overhaul, and frontend error-log persistence to server-side disk in Web mode. This release also ships the fork's own unreleased audit hardening since v3.16.5, including the deliberate removal of Web Basic Auth (unauthenticated by design). The desktop updater remains disabled and no authentication was introduced; sponsor/marketing, Claude Desktop scope, `zh-TW`, and the Codex Chat bridge cluster remain excluded.
+
+See **[release notes ->](docs/release-notes/v3.18.0-en.md)** for the per-theme scope, Web adaptations, schema v13→v16 upgrade notes, and intentionally excluded upstream deltas.
+
 ## [3.16.5] - 2026-07-07
 
 Synced selected product-upstream `farion1231/cc-switch` changes from `v3.16.2..v3.16.5` into this Web-first fork, preserving the standalone Web server deployment model and recent Web security hardening. Highlights: schema v11 usage/pricing storage, Web-adapted too-new database recovery, Codex native Responses model-catalog support, session organization grouping in the Web UI, functional provider/preset/pricing refreshes, and proxy correctness fixes including explicit zstd/content-encoding handling.

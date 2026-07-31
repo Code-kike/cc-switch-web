@@ -26,7 +26,13 @@ const toastErrorMock = vi.fn();
 
 const smokeUsage = {
   codexSessionId: "019cc36c-bd7c-7891-b371-7b20b4fe0b21",
-  archivedFileName: "page-usage-session.jsonl",
+  // S6 (upstream df3e07ed): the Codex usage sync derives the root thread id
+  // from the LAST 36 chars of the file stem and defers files without a valid
+  // trailing UUID, mirroring real Codex rollout naming
+  // (`rollout-<ts>-<uuid>.jsonl`). The fixture stem must end with the session
+  // UUID or the file is never imported.
+  archivedFileName:
+    "page-usage-session-019cc36c-bd7c-7891-b371-7b20b4fe0b21.jsonl",
   model: "openai/gpt-5.4",
   sessionMetaTimestamp: new Date(Date.now() - 4_000).toISOString(),
   turnContextTimestamp: new Date(Date.now() - 3_000).toISOString(),
@@ -106,9 +112,12 @@ async function writeFixtureFile(
 
 function createSmokeUsageFixture(suffix: string): SmokeUsageFixture {
   const now = Date.now();
+  // Distinct valid UUID for the second session: the sync keys imported rows by
+  // the trailing filename UUID (S6), so each fixture needs its own.
+  const sessionId = "019cc36d-bd7c-7891-b371-7b20b4fe0b22";
   return {
-    codexSessionId: `019cc36c-${suffix}-7891-b371-7b20b4fe0b21`,
-    archivedFileName: `page-usage-session-${suffix}.jsonl`,
+    codexSessionId: sessionId,
+    archivedFileName: `page-usage-session-${suffix}-${sessionId}.jsonl`,
     model: smokeUsage.model,
     sessionMetaTimestamp: new Date(now - 4_000).toISOString(),
     turnContextTimestamp: new Date(now - 3_000).toISOString(),

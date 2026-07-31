@@ -30,10 +30,14 @@ function parseModelsFromConfig(settingsConfig: string) {
       typeof env.ANTHROPIC_DEFAULT_OPUS_MODEL === "string"
         ? env.ANTHROPIC_DEFAULT_OPUS_MODEL
         : model || small;
+    const subagent =
+      typeof env.CLAUDE_CODE_SUBAGENT_MODEL === "string"
+        ? env.CLAUDE_CODE_SUBAGENT_MODEL
+        : "";
 
-    return { model, haiku, sonnet, opus };
+    return { model, haiku, sonnet, opus, subagent };
   } catch {
-    return { model: "", haiku: "", sonnet: "", opus: "" };
+    return { model: "", haiku: "", sonnet: "", opus: "", subagent: "" };
   }
 }
 
@@ -57,6 +61,9 @@ export function useModelState({
   );
   const [defaultOpusModel, setDefaultOpusModel] = useState(
     () => parseModelsFromConfig(settingsConfig).opus,
+  );
+  const [subagentModel, setSubagentModel] = useState(
+    () => parseModelsFromConfig(settingsConfig).subagent,
   );
 
   const isUserEditingRef = useRef(false);
@@ -109,6 +116,11 @@ export function useModelState({
       setDefaultHaikuModel(haiku || "");
       setDefaultSonnetModel(sonnet || "");
       setDefaultOpusModel(opus || "");
+      setSubagentModel(
+        typeof env.CLAUDE_CODE_SUBAGENT_MODEL === "string"
+          ? env.CLAUDE_CODE_SUBAGENT_MODEL
+          : "",
+      );
     } catch {
       // ignore
     }
@@ -120,7 +132,8 @@ export function useModelState({
         | "ANTHROPIC_MODEL"
         | "ANTHROPIC_DEFAULT_HAIKU_MODEL"
         | "ANTHROPIC_DEFAULT_SONNET_MODEL"
-        | "ANTHROPIC_DEFAULT_OPUS_MODEL",
+        | "ANTHROPIC_DEFAULT_OPUS_MODEL"
+        | "CLAUDE_CODE_SUBAGENT_MODEL",
       value: string,
     ) => {
       isUserEditingRef.current = true;
@@ -131,6 +144,7 @@ export function useModelState({
       if (field === "ANTHROPIC_DEFAULT_SONNET_MODEL")
         setDefaultSonnetModel(value);
       if (field === "ANTHROPIC_DEFAULT_OPUS_MODEL") setDefaultOpusModel(value);
+      if (field === "CLAUDE_CODE_SUBAGENT_MODEL") setSubagentModel(value);
 
       try {
         const currentConfig = latestConfigRef.current
@@ -168,6 +182,8 @@ export function useModelState({
     setDefaultSonnetModel,
     defaultOpusModel,
     setDefaultOpusModel,
+    subagentModel,
+    setSubagentModel,
     handleModelChange,
   };
 }

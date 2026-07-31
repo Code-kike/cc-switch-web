@@ -25,12 +25,16 @@ use super::{
 };
 use crate::proxy::providers::codex_oauth_auth::CodexOAuthManager;
 use crate::proxy::providers::copilot_auth::CopilotAuthManager;
+use crate::proxy::providers::xai_oauth_auth::XaiOAuthManager;
 use crate::{app_config::AppType, provider::Provider};
+use bytes::Bytes;
 use futures::StreamExt;
 use http::Extensions;
 use serde_json::Value;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+
+const PROXY_AUTH_PLACEHOLDER: &str = "PROXY_MANAGED";
 
 pub struct ForwardResult {
     pub response: ProxyResponse,
@@ -897,7 +901,7 @@ impl RequestForwarder {
                     // 先分类错误，决定是否计入 provider 健康度。
                     // NonRetryable / ClientAbort 是客户端层错误，无论换哪家 provider 都会被拒绝，
                     // 不应污染熔断器和数据库健康度。
-                    let category = self.categorize_proxy_error(&e);
+                    let category = self.categorize_proxy_error(&e, provider);
 
                     match category {
                         ErrorCategory::Retryable => {
@@ -1022,7 +1026,9 @@ impl RequestForwarder {
             .meta
             .as_ref()
             .and_then(|meta| meta.is_full_url)
-            .unwrap_or(false);
+            .unwrap_or(false)
+            && !provider.is_codex_oauth()
+            && !provider.is_xai_oauth();
 
         // 应用模型映射（独立于格式转换）
         let (mapped_body, _original_model, _mapped_model) =
@@ -1030,6 +1036,12 @@ impl RequestForwarder {
 
         // 与 CCH 对齐：请求前不做 thinking 主动改写（仅保留兼容入口）
         let mut mapped_body = normalize_thinking_type(mapped_body);
+
+        // Grok Build exposes a stable client-side profile while its selected
+        // model table carries the real upstream model identifier.
+        if matches!(app_type, AppType::GrokBuild) {
+            super::providers::apply_grok_upstream_model(provider, &mut mapped_body);
+        }
 
         // 确定有效端点
         // GitHub Copilot API 使用 /chat/completions（无 /v1 前缀）
@@ -1230,7 +1242,7 @@ impl RequestForwarder {
         };
 
         // 转换请求体（如果需要）
-        let request_body = if needs_transform {
+        let mut request_body = if needs_transform {
             if adapter.name() == "Claude" {
                 let api_format = resolved_claude_api_format
                     .as_deref()
@@ -1249,6 +1261,40 @@ impl RequestForwarder {
         } else {
             mapped_body
         };
+
+        // Codex 0.142+ can emit ChatGPT-private namespace/plugin tool shapes
+        // on the native Responses wire. xAI's strict schema rejects them, so
+        // flatten them before the xAI-only sanitization pass.
+        if matches!(app_type, AppType::Codex | AppType::GrokBuild)
+            && super::providers::provider_needs_responses_namespace_flatten(provider)
+            && super::transform_codex_responses_namespace::flatten_request_namespaces(
+                &mut request_body,
+            )?
+        {
+            log::debug!(
+                "[Codex] Flattened namespace tools for native Responses upstream (provider={})",
+                provider.id
+            );
+        }
+
+        // Remove OpenAI-backend-private fields and unsupported tool carriers
+        // only for the managed xAI native Responses route. Run after namespace
+        // flattening so lifted function tools survive the type whitelist.
+        if matches!(app_type, AppType::Codex | AppType::GrokBuild)
+            && super::providers::provider_needs_responses_namespace_flatten(provider)
+            && super::transform_codex_responses_xai_sanitize::sanitize_xai_responses_request(
+                &mut request_body,
+            )
+        {
+            log::debug!(
+                "[Codex] Sanitized xAI-unsupported Responses fields (provider={})",
+                provider.id
+            );
+        }
+
+        if matches!(app_type, AppType::Codex | AppType::GrokBuild) {
+            self.apply_media_prevention(&mut request_body, provider);
+        }
 
         // 过滤私有参数（以 `_` 开头的字段），防止内部信息泄露到上游
         // 默认使用空白名单，过滤所有 _ 前缀字段
@@ -1269,7 +1315,9 @@ impl RequestForwarder {
         let mut codex_oauth_account_id: Option<String> = None;
         let mut should_send_codex_oauth_session_headers = false;
 
-        // 获取认证头（提前准备，用于内联替换）
+        // 获取认证头（提前准备，用于内联替换），同时保留仅用于日志脱敏的
+        // 精确认证材料。实际日志永远不输出这些值。
+        let mut log_secrets: Vec<String> = Vec::new();
         let mut auth_headers = if let Some(mut auth) = adapter.extract_auth(provider) {
             // GitHub Copilot 特殊处理：从 CopilotAuthManager 获取真实 token
             if auth.strategy == AuthStrategy::GitHubCopilot {
@@ -1373,6 +1421,44 @@ impl RequestForwarder {
                 }
             }
 
+            // xAI OAuth: resolve a managed account token immediately before
+            // sending the request. The runtime-neutral manager is shared with
+            // desktop commands or Web API handlers, so cache and re-auth state
+            // remain consistent in both runtimes.
+            if auth.strategy == AuthStrategy::XaiOAuth {
+                if let Some(ctx) = &self.runtime_ctx {
+                    let xai_auth: tokio::sync::RwLockReadGuard<'_, XaiOAuthManager> =
+                        ctx.xai_oauth.read().await;
+                    let account_id = provider
+                        .meta
+                        .as_ref()
+                        .and_then(|meta| meta.managed_account_id_for("xai_oauth"));
+                    let token_result = match &account_id {
+                        Some(id) => xai_auth.get_valid_token_for_account(id).await,
+                        None => xai_auth.get_valid_token().await,
+                    };
+                    match token_result {
+                        Ok(token) => {
+                            auth = AuthInfo::new(token, AuthStrategy::XaiOAuth);
+                            log::debug!(
+                                "[XaiOAuth] 成功获取 access_token (account={})",
+                                account_id.as_deref().unwrap_or("default")
+                            );
+                        }
+                        Err(error) => {
+                            log::error!("[XaiOAuth] 获取 access_token 失败: {error}");
+                            return Err(ProxyError::AuthError(format!(
+                                "xAI OAuth 认证失败: {error}"
+                            )));
+                        }
+                    }
+                } else {
+                    return Err(ProxyError::AuthError(
+                        "xAI OAuth 认证不可用（无运行时上下文）".to_string(),
+                    ));
+                }
+            }
+
             // Gemini (Google) OAuth: refresh the access token from the stored
             // refresh_token when it is missing/expiring, so an expired ~1h
             // `ya29.` token no longer degrades to a 401 (M31). The manager is a
@@ -1398,6 +1484,12 @@ impl RequestForwarder {
                             ),
                         }
                     }
+                }
+            }
+
+            for secret in std::iter::once(&auth.api_key).chain(auth.access_token.iter()) {
+                if !secret.is_empty() && !log_secrets.contains(secret) {
+                    log_secrets.push(secret.clone());
                 }
             }
 
@@ -1683,22 +1775,31 @@ impl RequestForwarder {
             );
         }
 
+        reject_proxy_placeholder_for_managed_account_upstream(&url, &ordered_headers)?;
+
+        // 日志目标 URL 的脱敏分两种情形：
+        // - 有已知密钥(log_secrets 非空)：记录脱敏后的完整 URL，剥 userinfo/query
+        //   并抹掉已知密钥值，保留 host+path 便于诊断 base_url 配错路径导致的 404。
+        // - 无已知密钥：凭据可能整个内嵌在 path 里且无从脱敏，只记 origin，
+        //   避免默认 Info 级把形如 https://gw/<KEY>/v1 的 path 完整落盘。
+        let target_for_log = if log_secrets.is_empty() {
+            crate::logging::redact_url_origin_for_log(&url)
+        } else {
+            crate::logging::redact_url_for_log_with_secrets(&url, &log_secrets)
+        };
+
         // 输出请求信息日志
         let tag = adapter.name();
         let request_model = filtered_body
             .get("model")
             .and_then(|v| v.as_str())
             .unwrap_or("<none>");
-        log::info!("[{tag}] >>> 请求 URL: {url} (model={request_model})");
-        if log::log_enabled!(log::Level::Debug) {
-            if let Ok(body_str) = serde_json::to_string(&filtered_body) {
-                log::debug!(
-                    "[{tag}] >>> 请求体内容 ({}字节): {}",
-                    body_str.len(),
-                    body_str
-                );
-            }
-        }
+        log::info!("[{tag}] >>> 请求目标: {target_for_log} (model={request_model})");
+        log::debug!(
+            "[{tag}] >>> 请求体已准备: bytes={}, hash={} (content omitted)",
+            body_bytes.len(),
+            short_value_hash(Some(&filtered_body))
+        );
 
         // 确定超时
         let timeout = if self.non_streaming_timeout.is_zero() {
@@ -1765,11 +1866,12 @@ impl RequestForwarder {
         } else {
             // HTTP 代理或直连：走 hyper raw write（保持 header 大小写）
             // 如果有 HTTP 代理，hyper_client 会用 CONNECT 隧道穿过代理
-            let uri: http::Uri = url
-                .parse()
-                .map_err(|e| ProxyError::ForwardFailed(format!("Invalid URL '{url}': {e}")))?;
+            let uri: http::Uri = url.parse().map_err(|e| {
+                ProxyError::ForwardFailed(format!("Invalid upstream URL ({target_for_log}): {e}"))
+            })?;
             super::hyper_client::send_request(
                 uri,
+                &target_for_log,
                 method.clone(),
                 ordered_headers,
                 extensions.clone(),
@@ -1784,9 +1886,24 @@ impl RequestForwarder {
         let status = response.status();
 
         if status.is_success() {
-            let response = self
+            let mut response = self
                 .prepare_success_response_for_failover(response, request_is_streaming)
                 .await?;
+            // Claude→Responses gateways can return a semantic failure inside an HTTP
+            // 2xx Response object. Validate buffered/JSON bodies inside the retry loop
+            // so an early failure can still select another provider; for real SSE,
+            // delay committing the downstream stream until the upstream emits either
+            // productive output or a valid non-failure terminal event.
+            if matches!(
+                resolved_claude_api_format.as_deref(),
+                Some("openai_responses")
+            ) {
+                if !request_is_streaming || response.is_json() {
+                    response = self.validate_responses_success_response(response).await?;
+                } else {
+                    response = self.validate_responses_stream_start(response).await?;
+                }
+            }
             Ok((response, resolved_claude_api_format))
         } else {
             let status_code = status.as_u16();
@@ -1838,6 +1955,113 @@ impl RequestForwarder {
             })??;
 
         Ok(ProxyResponse::buffered(status, headers, body))
+    }
+
+    async fn validate_responses_success_response(
+        &self,
+        response: ProxyResponse,
+    ) -> Result<ProxyResponse, ProxyError> {
+        let status = response.status();
+        let headers = response.headers().clone();
+        let encoding = get_content_encoding(&headers);
+        let raw = response.bytes().await?;
+        let decoded = match encoding {
+            Some(encoding) => match decompress_body(&encoding, &raw) {
+                Ok(Some(decompressed)) => decompressed,
+                _ => raw.to_vec(),
+            },
+            None => raw.to_vec(),
+        };
+
+        if let Some(message) = responses_error_envelope_message(&decoded) {
+            return Err(ProxyError::TransformError(format!(
+                "Responses upstream returned a 2xx failure: {message}"
+            )));
+        }
+
+        Ok(ProxyResponse::buffered(status, headers, raw))
+    }
+
+    async fn validate_responses_stream_start(
+        &self,
+        response: ProxyResponse,
+    ) -> Result<ProxyResponse, ProxyError> {
+        const MAX_PRIME_BYTES: usize = 256 * 1024;
+
+        let status = response.status();
+        let headers = response.headers().clone();
+        let mut stream = Box::pin(response.bytes_stream());
+        let mut replay_chunks: Vec<Bytes> = Vec::new();
+        let mut parse_buffer = String::new();
+        let mut utf8_remainder = Vec::new();
+
+        loop {
+            let next = if self.streaming_first_byte_timeout.is_zero() {
+                stream.next().await
+            } else {
+                tokio::time::timeout(self.streaming_first_byte_timeout, stream.next())
+                    .await
+                    .map_err(|_| {
+                        ProxyError::Timeout(format!(
+                            "Responses stream produced no semantic output within {}s",
+                            self.streaming_first_byte_timeout.as_secs()
+                        ))
+                    })?
+            };
+
+            let Some(chunk) = next else {
+                if let Some(outcome) = inspect_responses_json_document(&parse_buffer) {
+                    outcome?;
+                    let replay = futures::stream::iter(replay_chunks.into_iter().map(Ok));
+                    return Ok(ProxyResponse::streamed(status, headers, replay));
+                }
+                if !parse_buffer.trim().is_empty() {
+                    if let Some(outcome) = inspect_responses_start_event(parse_buffer.trim()) {
+                        outcome?;
+                        let replay = futures::stream::iter(replay_chunks.into_iter().map(Ok));
+                        return Ok(ProxyResponse::streamed(status, headers, replay));
+                    }
+                }
+                return Err(ProxyError::ForwardFailed(
+                    "Responses stream ended before producing output or a terminal event"
+                        .to_string(),
+                ));
+            };
+            let chunk = chunk.map_err(|error| {
+                ProxyError::ForwardFailed(format!(
+                    "Failed while validating Responses stream start: {error}"
+                ))
+            })?;
+            crate::proxy::sse::append_utf8_safe(&mut parse_buffer, &mut utf8_remainder, &chunk);
+            replay_chunks.push(chunk);
+
+            // Some compatible gateways ignore `stream:true` and return a complete
+            // Responses JSON document without a JSON content-type. Recognize that
+            // shape before looking for SSE delimiters; pretty-printed JSON may itself
+            // contain blank lines and must stay intact.
+            if let Some(outcome) = inspect_responses_json_document(&parse_buffer) {
+                outcome?;
+                let replay = futures::stream::iter(replay_chunks.into_iter().map(Ok)).chain(stream);
+                return Ok(ProxyResponse::streamed(status, headers, replay));
+            }
+
+            while let Some(block) = crate::proxy::sse::take_sse_block(&mut parse_buffer) {
+                if let Some(outcome) = inspect_responses_start_event(&block) {
+                    outcome?;
+                    let replay =
+                        futures::stream::iter(replay_chunks.into_iter().map(Ok)).chain(stream);
+                    return Ok(ProxyResponse::streamed(status, headers, replay));
+                }
+            }
+
+            if replay_chunks.iter().map(Bytes::len).sum::<usize>() >= MAX_PRIME_BYTES {
+                log::warn!(
+                    "[Claude/Responses] semantic stream priming exceeded {MAX_PRIME_BYTES} bytes; committing buffered stream"
+                );
+                let replay = futures::stream::iter(replay_chunks.into_iter().map(Ok)).chain(stream);
+                return Ok(ProxyResponse::streamed(status, headers, replay));
+            }
+        }
     }
 
     async fn prime_streaming_response(
@@ -1977,7 +2201,13 @@ impl RequestForwarder {
         }
     }
 
-    fn categorize_proxy_error(&self, error: &ProxyError) -> ErrorCategory {
+    fn categorize_proxy_error(&self, error: &ProxyError, provider: &Provider) -> ErrorCategory {
+        // A local managed-token failure belongs to the selected xAI account,
+        // not to the upstream provider. Failing over would silently move the
+        // conversation and poison provider health for a re-login condition.
+        if provider.is_xai_oauth() && matches!(error, ProxyError::AuthError(_)) {
+            return ErrorCategory::NonRetryable;
+        }
         categorize_proxy_error(error)
     }
 }
@@ -2193,6 +2423,126 @@ fn is_claude_messages_path(path: &str) -> bool {
     matches!(path, "/v1/messages" | "/claude/v1/messages")
 }
 
+fn responses_error_envelope_message(body: &[u8]) -> Option<String> {
+    let value: Value = serde_json::from_slice(body).ok()?;
+    let status = value.get("status").and_then(Value::as_str);
+    let has_error = value.get("error").is_some_and(|error| !error.is_null());
+    if !matches!(status, Some("failed" | "cancelled")) && !has_error {
+        return None;
+    }
+
+    let error = value.get("error").unwrap_or(&value);
+    let error_type = error
+        .get("type")
+        .and_then(Value::as_str)
+        .or_else(|| error.get("code").and_then(Value::as_str))
+        .unwrap_or_else(|| status.unwrap_or("error"));
+    let message = error
+        .get("message")
+        .and_then(Value::as_str)
+        .or_else(|| error.as_str())
+        .filter(|message| !message.trim().is_empty())
+        .unwrap_or(match status {
+            Some("cancelled") => "response generation was cancelled",
+            _ => "response generation failed",
+        });
+    Some(format!("{error_type}: {message}"))
+}
+
+/// Prompt caching is part of the Codex→Anthropic protocol bridge rather than an
+/// optional Bedrock optimizer. Codex requests do not contain Anthropic
+/// `cache_control`, so keep bridge caching on by default while still honoring the
+/// dedicated cache-injection switch and configured TTL.
+fn inspect_responses_json_document(buffer: &str) -> Option<Result<(), ProxyError>> {
+    let trimmed = buffer.trim();
+    if !matches!(trimmed.as_bytes().first(), Some(b'{') | Some(b'[')) {
+        return None;
+    }
+    let _: Value = serde_json::from_str(trimmed).ok()?;
+    if let Some(message) = responses_error_envelope_message(trimmed.as_bytes()) {
+        return Some(Err(ProxyError::TransformError(format!(
+            "Responses upstream returned a 2xx failure: {message}"
+        ))));
+    }
+    Some(Ok(()))
+}
+
+/// Inspect one complete Responses SSE block while the response is still inside
+/// the retry loop. `None` means the event is lifecycle-only and priming should
+/// continue; `Some(Ok(()))` means it is safe to commit/replay the stream.
+fn inspect_responses_start_event(block: &str) -> Option<Result<(), ProxyError>> {
+    let mut named_event = None;
+    let mut data_lines = Vec::new();
+    for line in block.lines() {
+        if let Some(event) = crate::proxy::sse::strip_sse_field(line, "event") {
+            named_event = Some(event.trim().to_string());
+        } else if let Some(data) = crate::proxy::sse::strip_sse_field(line, "data") {
+            data_lines.push(data);
+        }
+    }
+    if data_lines.is_empty() {
+        return None;
+    }
+    let value: Value = match serde_json::from_str(&data_lines.join("\n")) {
+        Ok(value) => value,
+        Err(_) => return None,
+    };
+    let event = named_event
+        .as_deref()
+        .filter(|event| !event.is_empty())
+        .or_else(|| value.get("type").and_then(Value::as_str))
+        .unwrap_or("");
+
+    let response = value.get("response").unwrap_or(&value);
+    if matches!(
+        response.get("status").and_then(Value::as_str),
+        Some("failed" | "cancelled")
+    ) || response.get("error").is_some_and(|error| !error.is_null())
+    {
+        let error = response.get("error").unwrap_or(response);
+        let message = error
+            .get("message")
+            .and_then(Value::as_str)
+            .or_else(|| error.as_str())
+            .unwrap_or("Responses upstream failed before output");
+        let error_type = error
+            .get("type")
+            .and_then(Value::as_str)
+            .or_else(|| error.get("code").and_then(Value::as_str))
+            .or_else(|| response.get("status").and_then(Value::as_str))
+            .unwrap_or("upstream_error");
+        return Some(Err(ProxyError::TransformError(format!(
+            "Responses upstream {error_type}: {message}"
+        ))));
+    }
+
+    match event {
+        "response.failed" | "error" => {
+            let error = response.get("error").unwrap_or(response);
+            let message = error
+                .get("message")
+                .and_then(Value::as_str)
+                .or_else(|| error.as_str())
+                .unwrap_or("Responses upstream emitted an error before output");
+            let error_type = error
+                .get("type")
+                .and_then(Value::as_str)
+                .or_else(|| error.get("code").and_then(Value::as_str))
+                .unwrap_or("upstream_error");
+            Some(Err(ProxyError::TransformError(format!(
+                "Responses upstream {error_type}: {message}"
+            ))))
+        }
+        "response.created" | "response.in_progress" | "response.queued" => None,
+        "" => None,
+        // Productive output, incomplete, and completed terminals are all safe to
+        // expose. Mid-stream failures after this point are surfaced by the converter
+        // but intentionally do not switch providers.
+        _ => Some(Ok(())),
+    }
+}
+
+/// Rewrite Codex's `/responses` (and variants) to Anthropic's `/v1/messages`, preserving the query.
 fn rewrite_claude_transform_endpoint(
     endpoint: &str,
     api_format: &str,
@@ -2313,6 +2663,43 @@ fn build_codex_oauth_session_headers(
     headers
 }
 
+fn reject_proxy_placeholder_for_managed_account_upstream(
+    url: &str,
+    headers: &http::HeaderMap,
+) -> Result<(), ProxyError> {
+    if !is_managed_account_upstream_url(url) || !headers_contain_proxy_placeholder(headers) {
+        return Ok(());
+    }
+
+    Err(ProxyError::AuthError(
+        "Managed account proxy auth was not resolved; PROXY_MANAGED must not be sent upstream"
+            .to_string(),
+    ))
+}
+
+fn is_managed_account_upstream_url(url: &str) -> bool {
+    let Ok(uri) = url.parse::<http::Uri>() else {
+        return false;
+    };
+    let Some(host) = uri.host().map(str::to_ascii_lowercase) else {
+        return false;
+    };
+
+    host == "githubcopilot.com"
+        || host.ends_with(".githubcopilot.com")
+        || (host == "chatgpt.com" && uri.path().starts_with("/backend-api/codex"))
+        || (host == "api.x.ai" && uri.path().starts_with("/v1/"))
+}
+
+fn headers_contain_proxy_placeholder(headers: &http::HeaderMap) -> bool {
+    headers.values().any(|value| {
+        value
+            .to_str()
+            .map(|value| value.contains(PROXY_AUTH_PLACEHOLDER))
+            .unwrap_or(false)
+    })
+}
+
 fn should_preserve_exact_header_case(
     adapter_name: &str,
     provider: &Provider,
@@ -2323,7 +2710,7 @@ fn should_preserve_exact_header_case(
         return false;
     }
 
-    if is_copilot || provider.is_codex_oauth() {
+    if is_copilot || provider.is_codex_oauth() || provider.is_xai_oauth() {
         return false;
     }
 
@@ -2361,11 +2748,11 @@ fn should_force_identity_encoding(
 
 fn map_reqwest_send_error(error: reqwest::Error) -> ProxyError {
     if error.is_timeout() {
-        ProxyError::Timeout(format!("请求超时: {error}"))
+        ProxyError::Timeout(format!("上游请求超时: {}", error.without_url()))
     } else if error.is_connect() {
-        ProxyError::ForwardFailed(format!("连接失败: {error}"))
+        ProxyError::ForwardFailed(format!("上游连接失败: {}", error.without_url()))
     } else {
-        ProxyError::ForwardFailed(error.to_string())
+        ProxyError::ForwardFailed(format!("上游请求发送失败: {}", error.without_url()))
     }
 }
 
@@ -2411,23 +2798,66 @@ fn log_prompt_cache_trace(
         .get("stream")
         .map(value_for_log)
         .unwrap_or_else(|| "absent".to_string());
+    let cache_controls = cache_control_summary(body);
 
     log::debug!(
-        "[CacheTrace] app={}, provider={}, endpoint={}, api_format={}, session_client_provided={}, prompt_cache_key={}, store={}, stream={}, instructions_hash={}, tools_hash={}, input_hash={}, include_hash={}, body_hash={}",
+        "[CacheTrace] app={}, provider={}, endpoint={}, api_format={}, session_client_provided={}, prompt_cache_key={}, store={}, stream={}, instructions_hash={}, system_hash={}, tools_hash={}, input_hash={}, messages_hash={}, include_hash={}, cache_controls={}, body_hash={}",
         app_type.as_str(),
         provider.id,
-        endpoint,
+        // Gemini 的 endpoint 带 ?key=<API_KEY>；脱敏剥掉 query 再落盘。
+        crate::logging::redact_url_for_log(endpoint),
         api_format.unwrap_or("native"),
         session_client_provided,
         prompt_cache_key,
         store,
         stream,
         short_value_hash(body.get("instructions")),
+        short_value_hash(body.get("system")),
         short_value_hash(body.get("tools")),
         short_value_hash(body.get("input")),
+        short_value_hash(body.get("messages")),
         short_value_hash(body.get("include")),
+        cache_controls,
         short_value_hash(Some(body)),
     );
+}
+
+fn cache_control_summary(value: &Value) -> String {
+    fn walk(value: &Value, count: &mut usize, ttls: &mut std::collections::BTreeSet<String>) {
+        match value {
+            Value::Object(object) => {
+                if let Some(cache_control) = object.get("cache_control") {
+                    *count += 1;
+                    let ttl = cache_control
+                        .get("ttl")
+                        .and_then(Value::as_str)
+                        .unwrap_or("default");
+                    ttls.insert(ttl.to_string());
+                }
+                for child in object.values() {
+                    walk(child, count, ttls);
+                }
+            }
+            Value::Array(items) => {
+                for child in items {
+                    walk(child, count, ttls);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut count = 0;
+    let mut ttls = std::collections::BTreeSet::new();
+    walk(value, &mut count, &mut ttls);
+    format!(
+        "count={count},ttls={}",
+        if ttls.is_empty() {
+            "none".to_string()
+        } else {
+            ttls.into_iter().collect::<Vec<_>>().join("|")
+        }
+    )
 }
 
 fn value_for_log(value: &Value) -> String {
@@ -2445,7 +2875,7 @@ fn value_for_log(value: &Value) -> String {
 mod tests {
     use super::*;
     use crate::database::Database;
-    use axum::http::header::{HeaderValue, ACCEPT};
+    use axum::http::header::{HeaderValue, ACCEPT, AUTHORIZATION};
     use axum::http::{HeaderMap, StatusCode};
     use bytes::Bytes;
     use serde_json::json;
@@ -2633,6 +3063,29 @@ mod tests {
             let error = ProxyError::UpstreamError { status, body: None };
 
             assert_eq!(categorize_proxy_error(&error), ErrorCategory::Retryable);
+        }
+    }
+
+    #[test]
+    fn xai_oauth_local_auth_failures_are_not_retryable() {
+        let forwarder = test_forwarder(std::time::Duration::ZERO, std::time::Duration::ZERO);
+        let provider = test_provider_with_type(Some("xai_oauth"));
+
+        assert_eq!(
+            forwarder.categorize_proxy_error(
+                &ProxyError::AuthError("xAI OAuth 认证失败".to_string()),
+                &provider,
+            ),
+            ErrorCategory::NonRetryable
+        );
+        for status in [401, 403] {
+            assert_eq!(
+                forwarder.categorize_proxy_error(
+                    &ProxyError::UpstreamError { status, body: None },
+                    &provider,
+                ),
+                ErrorCategory::Retryable
+            );
         }
     }
 
@@ -3173,6 +3626,44 @@ mod tests {
     }
 
     #[test]
+    fn managed_proxy_placeholder_is_rejected_for_pinned_xai_upstream() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_static("Bearer PROXY_MANAGED"),
+        );
+
+        let error = reject_proxy_placeholder_for_managed_account_upstream(
+            "https://api.x.ai/v1/responses",
+            &headers,
+        )
+        .expect_err("xAI managed placeholder must never reach the pinned upstream");
+
+        assert!(matches!(
+            error,
+            ProxyError::AuthError(message) if message.contains("PROXY_MANAGED")
+        ));
+    }
+
+    #[test]
+    fn proxy_placeholder_guard_does_not_expand_beyond_managed_upstreams() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_static("Bearer PROXY_MANAGED"),
+        );
+
+        for url in [
+            "https://relay.example/v1/responses",
+            "https://api.x.ai.attacker.example/v1/responses",
+            "https://api.x.ai/v2/responses",
+        ] {
+            reject_proxy_placeholder_for_managed_account_upstream(url, &headers)
+                .unwrap_or_else(|error| panic!("non-managed upstream {url} was rejected: {error}"));
+        }
+    }
+
+    #[test]
     fn rewrite_claude_transform_endpoint_strips_beta_for_chat_completions() {
         let (endpoint, passthrough_query) = rewrite_claude_transform_endpoint(
             "/v1/messages?beta=true&foo=bar",
@@ -3196,6 +3687,75 @@ mod tests {
 
         assert_eq!(endpoint, "/v1/responses?x-id=1");
         assert_eq!(passthrough_query.as_deref(), Some("x-id=1"));
+    }
+
+    #[test]
+    fn responses_2xx_failure_is_detected_for_failover() {
+        assert_eq!(
+            responses_error_envelope_message(
+                br#"{"status":"failed","error":{"type":"server_error","message":"busy"},"output":[]}"#
+            )
+            .as_deref(),
+            Some("server_error: busy")
+        );
+        assert_eq!(
+            responses_error_envelope_message(br#"{"status":"cancelled","output":[]}"#).as_deref(),
+            Some("cancelled: response generation was cancelled")
+        );
+        assert!(responses_error_envelope_message(
+            br#"{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"output":[]}"#
+        )
+        .is_none());
+        assert!(responses_error_envelope_message(
+            br#"{"status":"completed","error":null,"output":[]}"#
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn responses_stream_start_semantic_failure_is_retryable() {
+        let created = concat!(
+            "event: response.created\n",
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\"}}"
+        );
+        assert!(inspect_responses_start_event(created).is_none());
+
+        let failed = concat!(
+            "event: response.failed\n",
+            "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"type\":\"server_error\",\"message\":\"boom\"}}}"
+        );
+        assert!(matches!(
+            inspect_responses_start_event(failed),
+            Some(Err(ProxyError::TransformError(message))) if message.contains("boom")
+        ));
+
+        let delta = concat!(
+            "event: response.output_text.delta\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}"
+        );
+        assert!(matches!(inspect_responses_start_event(delta), Some(Ok(()))));
+    }
+
+    #[test]
+    fn responses_stream_start_accepts_unlabelled_whole_json() {
+        assert!(matches!(
+            inspect_responses_json_document(
+                r#"{
+                    "status": "completed",
+
+                    "output": []
+                }"#
+            ),
+            Some(Ok(()))
+        ));
+        assert!(inspect_responses_json_document(r#"{"status":"completed""#).is_none());
+
+        let failed = inspect_responses_json_document(
+            r#"{"status":"failed","error":{"message":"backend unavailable"}}"#,
+        );
+        assert!(
+            matches!(failed, Some(Err(ProxyError::TransformError(message))) if message.contains("backend unavailable"))
+        );
     }
 
     #[test]

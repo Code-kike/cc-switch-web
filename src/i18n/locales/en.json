@@ -48,6 +48,39 @@
     "bodyOfficial": "An “Official” preset is also included in the list — click it any time you want to switch back to the official default. CC Switch automatically backs up your current config to “default” before switching, so you can move back and forth freely. That's how CC Switch works 😊",
     "confirm": "Got it"
   },
+  "profiles": {
+    "switcherTooltip": {
+      "claude": "Projects: switch the Claude Code provider / MCP / Skills / memory files in one click",
+      "codex": "Projects: switch the Codex provider / MCP / Skills / memory files in one click"
+    },
+    "none": "No project",
+    "searchPlaceholder": "Search projects",
+    "empty": "No projects yet",
+    "createFromCurrent": "New project",
+    "createDescription": {
+      "claude": "Save the current Claude Code provider, MCP, Skills and memory file as a project you can switch to later.",
+      "codex": "Save the current Codex provider, MCP, Skills and memory file configuration as a project you can switch to later."
+    },
+    "manage": "Manage projects…",
+    "manageTitle": "Manage Projects",
+    "manageDescription": "Projects are configuration snapshots. When you switch projects, the current configuration is automatically saved back to the project you are leaving.",
+    "namePlaceholder": "e.g. Development, Drawing",
+    "rename": "Rename",
+    "noSnapshotForScope": "Not saved for this app yet",
+    "delete": "Delete",
+    "deleteConfirmTitle": "Confirm Delete",
+    "deleteConfirmMessage": "Are you sure you want to delete project \"{{name}}\"? Your current configuration will not be changed.",
+    "createSuccess": "Project created",
+    "createFailed": "Failed to create project: {{detail}}",
+    "updateSuccess": "Project updated",
+    "updateFailed": "Failed to update project: {{detail}}",
+    "deleteSuccess": "Project deleted",
+    "deleteFailed": "Failed to delete project: {{detail}}",
+    "applySuccess": "Project applied",
+    "applyFailed": "Failed to apply project: {{detail}}",
+    "applyWarnings": "Project applied with {{warningCount}} warning(s):\n{{details}}",
+    "clearSuccess": "Switched to no project"
+  },
   "apiKeyInput": {
     "placeholder": "Enter API Key",
     "show": "Show API Key",
@@ -186,6 +219,7 @@
     "providerDeleted": "Provider deleted successfully",
     "switchSuccess": "Switch successful!",
     "codexRestartRequired": "Switched successfully. Restart the client to apply changes.",
+    "grokBuildRestartRequired": "Switched successfully. Restart Grok Build to apply changes.",
     "addToConfigSuccess": "Added to config",
     "removeFromConfigSuccess": "Removed from config",
     "switchFailedTitle": "Switch failed",
@@ -209,7 +243,10 @@
     "proxyReasonCopilot": "uses GitHub Copilot as a Claude provider",
     "proxyReasonOpenAIChat": "uses OpenAI Chat API format",
     "proxyReasonOpenAIResponses": "uses OpenAI Responses API format",
+    "proxyReasonAnthropicMessages": "uses Anthropic Messages API format",
     "proxyReasonFullUrl": "has full URL connection mode enabled",
+    "proxyReasonManagedOAuth": "uses managed OAuth login (token injected by local routing)",
+    "proxyReasonRoutingRequired": "requires local routing to process requests",
     "openAIFormatHint": "This provider uses OpenAI-compatible format and requires the routing service to be enabled",
     "copilotProxyHint": "GitHub Copilot as a Claude provider always requires local routing; routing automatically selects Chat Completions or Responses based on the current model.",
     "openLinkFailed": "Failed to open link",
@@ -271,8 +308,9 @@
       "beta": "Beta",
       "copilotDescription": "Manage GitHub Copilot accounts",
       "codexOauthDescription": "Manage ChatGPT accounts",
+      "xaiOauthDescription": "Manage xAI / Grok accounts",
       "webRemoteHint": "Remote Web mode stores OAuth accounts on the server host",
-      "webRemoteHintDescription": "The authorization page opens in this browser, but successful Copilot / ChatGPT logins are saved on the machine running cc-switch Web. Continue only if you trust that server."
+      "webRemoteHintDescription": "The authorization page opens in this browser, but successful Copilot / ChatGPT / xAI logins are saved on the machine running cc-switch Web. Continue only if you trust that server."
     },
     "advanced": {
       "configDir": {
@@ -289,9 +327,9 @@
         "running": "Running",
         "stopped": "Stopped"
       },
-      "modelTest": {
-        "title": "Model Test Config",
-        "description": "Configure default models and prompts for model testing"
+      "connectivityCheck": {
+        "title": "Connectivity Check Settings",
+        "description": "Configure the default models, prompt, timeout, retries, and slow-response threshold for provider checks"
       },
       "failover": {
         "title": "Auto Failover",
@@ -332,8 +370,8 @@
         "thinkingBudgetDescription": "When an Anthropic-type provider returns budget_tokens constraint errors (such as at least 1024), automatically normalizes thinking to enabled, sets thinking budget to 32000, and raises max_tokens to 64000 if needed, then retries once",
         "mediaFallback": "Unsupported Image Fallback",
         "mediaFallbackDescription": "When a provider does not support image input (it declares text-only capability, or the upstream returns an unsupported-image error), automatically replaces image blocks with an [Unsupported Image] marker so the conversation is not interrupted",
-        "mediaHeuristic": "Heuristic Text-Only Model Detection",
-        "mediaHeuristicDescription": "Predictively strips images before sending based on a built-in model-name list. When off, only the declared-text-only and upstream-error fallback paths remain, preventing the built-in list from misclassifying a multimodal model as text-only and silently dropping images"
+        "mediaHeuristic": "Text-Only Model Preflight",
+        "mediaHeuristicDescription": "Before sending, strips images for models in the built-in confirmed text-only registry. Turning this off only disables the proxy's registry-based preflight; declared text-only handling and upstream-error fallback remain, and Codex model-catalog capability declarations are unchanged"
       },
       "optimizer": {
         "title": "Bedrock Request Optimizer",
@@ -344,16 +382,13 @@
         "thinkingOptimizer": "Thinking Optimization",
         "thinkingOptimizerDescription": "Automatically enable Adaptive Thinking for Opus/Sonnet, and inject Extended Thinking for legacy models",
         "cacheInjection": "Cache Injection",
-        "cacheInjectionDescription": "Automatically inject cache breakpoints at key positions in requests to reduce duplicate token billing",
-        "cacheTtl": "Cache TTL",
-        "cacheTtl5m": "5 minutes",
-        "cacheTtl1h": "1 hour"
+        "cacheInjectionDescription": "Automatically inject standard 5-minute cache breakpoints at key positions to reduce duplicate token billing"
       },
       "logConfig": {
-        "title": "Log Management",
-        "description": "Control log output level",
-        "enabled": "Enable Logging",
-        "enabledDescription": "Master switch, all logging will be disabled when turned off",
+        "title": "Application Diagnostic Logs",
+        "description": "Control the output level for application diagnostic logs",
+        "enabled": "Enable Diagnostic Logs",
+        "enabledDescription": "Controls cc-switch.log; request usage records and crash.log are unaffected",
         "loadFailed": "Failed to load log configuration: {{error}}",
         "saveFailed": "Failed to save log configuration: {{error}}",
         "level": "Log Level",
@@ -644,7 +679,9 @@
       "claudeDesc": "Anthropic Claude Code CLI",
       "codexDesc": "OpenAI Codex CLI",
       "geminiDesc": "Google Gemini CLI",
-      "opencodeDesc": "OpenCode CLI"
+      "opencodeDesc": "OpenCode CLI",
+      "showProfileSwitcher": "Show project switcher",
+      "showProfileSwitcherDescription": "Show the project switcher in the main page header"
     },
     "skillStorage": {
       "title": "Skill Storage Location",
@@ -706,6 +743,8 @@
     "codexConfigDirDescription": "Override Codex configuration directory.",
     "geminiConfigDir": "Gemini Configuration Directory",
     "geminiConfigDirDescription": "Override Gemini configuration directory (.env).",
+    "grokConfigDir": "Grok Build Configuration Directory",
+    "grokConfigDirDescription": "Override Grok Build configuration directory (config.toml).",
     "opencodeConfigDir": "OpenCode Configuration Directory",
     "opencodeConfigDirDescription": "Override OpenCode configuration directory (opencode.json).",
     "openclawConfigDir": "OpenClaw Configuration Directory",
@@ -715,6 +754,7 @@
     "browsePlaceholderClaude": "e.g., /home/<your-username>/.claude",
     "browsePlaceholderCodex": "e.g., /home/<your-username>/.codex",
     "browsePlaceholderGemini": "e.g., /home/<your-username>/.gemini",
+    "browsePlaceholderGrok": "e.g., /home/<your-username>/.grok",
     "browsePlaceholderOpencode": "e.g., /home/<your-username>/.config/opencode",
     "browsePlaceholderOpenclaw": "e.g., /home/<your-username>/.openclaw",
     "browsePlaceholderHermes": "e.g., /home/<your-username>/.hermes",
@@ -738,7 +778,7 @@
     "viewReleaseNotes": "View release notes for this version",
     "viewCurrentReleaseNotes": "View current version release notes",
     "oneClickInstall": "One-click Install",
-    "oneClickInstallHint": "Install Claude Code / Codex / Gemini CLI / OpenCode",
+    "oneClickInstallHint": "Install Claude Code / Codex / Gemini CLI / Grok Build / OpenCode",
     "serverInstallHint": "Run these commands on the machine hosting cc-switch Web, not in this browser.",
     "localEnvCheck": "Local environment check",
     "serverEnvCheck": "Server environment check",
@@ -798,13 +838,22 @@
     "claude": "Claude",
     "codex": "Codex",
     "gemini": "Gemini",
+    "grokbuild": "Grok Build",
     "opencode": "OpenCode",
     "openclaw": "OpenClaw",
     "hermes": "Hermes"
   },
+  "grokBuild": {
+    "apiBackend": "API backend",
+    "contextWindow": "Context window",
+    "contextWindowInvalid": "Context window must be a positive integer",
+    "profile": "Client model profile",
+    "rawConfig": "config.toml",
+    "invalidToml": "Invalid config.toml: {{error}}"
+  },
   "sessionManager": {
     "title": "Session Manager",
-    "subtitle": "Manage Claude Code, Codex, OpenCode, OpenClaw, Hermes and Gemini CLI sessions",
+    "subtitle": "Manage Claude Code, Codex, Gemini CLI, Grok Build, OpenCode, OpenClaw and Hermes sessions",
     "searchPlaceholder": "Search by content, directory, or ID",
     "searchSessions": "Search sessions",
     "providerFilterAll": "All",
@@ -914,6 +963,7 @@
     "customApiKeyHint": "💡 Custom configuration requires manually filling all necessary fields",
     "omoHint": "💡 OMO config manages Agent model assignments and supports both oh-my-openagent.jsonc and oh-my-opencode.jsonc",
     "officialHint": "💡 Official provider uses browser login, no API Key needed",
+    "providerKeyStatusLoading": "Provider identifier status is still loading. Please try again shortly.",
     "getApiKey": "Get API Key",
     "partnerPromotion": {
       "packycode": "PackyCode is an official partner of CC Switch. Register using this link and enter \"cc-switch\" promo code during recharge to get 10% off",
@@ -993,9 +1043,11 @@
     "anthropicDefaultHaikuModel": "Default Haiku Model",
     "anthropicDefaultSonnetModel": "Default Sonnet Model",
     "anthropicDefaultOpusModel": "Default Opus Model",
+    "claudeCodeSubagentModel": "Subagent Model",
     "modelPlaceholder": "",
     "smallModelPlaceholder": "",
     "haikuModelPlaceholder": "",
+    "subagentModelPlaceholder": "",
     "modelHelper": "Optional: Specify default Claude model to use, leave blank to use system default.",
     "modelMappingLabel": "Model Mapping",
     "modelMappingHint": "Usually not needed if the provider natively serves Claude models. Only configure when you need to map requests to different model names.",
@@ -1077,6 +1129,31 @@
     "fastMode": "FAST mode",
     "fastModeDescription": "Send service_tier=\"priority\" for lower latency. Off by default — enabling it consumes your ChatGPT quota at a higher rate."
   },
+  "xaiOauth": {
+    "authStatus": "xAI OAuth authentication",
+    "accountCount": "Usable accounts: {{count}}",
+    "reauthRequired": "Sign-in required",
+    "notAuthenticated": "Not authenticated",
+    "selectAccount": "Select account",
+    "selectAccountPlaceholder": "Select an xAI account",
+    "useDefaultAccount": "Use default account",
+    "accounts": "xAI accounts",
+    "defaultAccount": "Default",
+    "expired": "Credentials expired",
+    "setAsDefault": "Set as default",
+    "removeAccount": "Remove account",
+    "addOrReauth": "Add account or sign in again",
+    "login": "Sign in with xAI",
+    "waitingForAuth": "Waiting for xAI authorization…",
+    "enterCode": "If the browser did not fill it in automatically, enter:",
+    "retry": "Retry",
+    "logoutAll": "Remove all xAI accounts",
+    "loginRequired": "Sign in to an xAI account first"
+  },
+  "managedAuth": {
+    "selectedAccountNeedsReauth": "The linked account is missing or needs you to sign in again",
+    "selectedAccountUnavailable": "The linked account is missing or needs you to sign in again. Select another account."
+  },
   "endpointTest": {
     "title": "API Endpoint Management",
     "endpoints": "endpoints",
@@ -1104,15 +1181,6 @@
     "empty": "No endpoints"
   },
   "providerAdvanced": {
-    "testConfig": "Model Test Config",
-    "useCustomConfig": "Use separate config",
-    "testConfigDesc": "Configure separate model testing parameters for this provider. Uses global settings when disabled.",
-    "testModel": "Test Model",
-    "testModelPlaceholder": "Leave empty to use global config",
-    "timeoutSecs": "Timeout (seconds)",
-    "testPrompt": "Test Prompt",
-    "degradedThreshold": "Degraded Threshold (ms)",
-    "maxRetries": "Max Retries",
     "pricingConfig": "Pricing Config",
     "useCustomPricing": "Use separate config",
     "pricingConfigDesc": "Configure separate pricing parameters for this provider. Uses global defaults when disabled.",
@@ -1187,6 +1255,7 @@
     "modelName": "Display Name",
     "noModels": "No models configured",
     "modelsRequired": "Please add at least one model",
+    "toggleModelDetails": "Toggle model details",
     "providerKey": "Provider Key",
     "providerKeyPlaceholder": "my-provider",
     "providerKeyHint": "Unique identifier in config file. Use lowercase letters, numbers, and hyphens only.",
@@ -1194,6 +1263,15 @@
     "providerKeyRequired": "Provider key is required",
     "providerKeyDuplicate": "This key is already in use",
     "providerKeyInvalid": "Invalid format. Use lowercase letters, numbers, and hyphens only.",
+    "headers": "Headers",
+    "headersHint": "Optional HTTP headers sent with provider requests, such as HTTP-Referer or X-Title.",
+    "addHeader": "Add header",
+    "headerName": "Header",
+    "headerValue": "Value",
+    "headerNamePlaceholder": "X-Title",
+    "headerValuePlaceholder": "CC Switch",
+    "removeHeader": "Remove header",
+    "noHeaders": "No custom headers configured",
     "extraOptions": "Extra Options",
     "extraOptionsHint": "Configure extra SDK options like timeout, setCacheKey, etc. Values are auto-parsed to appropriate types (number, boolean, etc.).",
     "addExtraOption": "Add",
@@ -1203,6 +1281,9 @@
     "extraOptionValuePlaceholder": "600000",
     "noExtraOptions": "No extra options configured",
     "noModelOptions": "Model options, click + to add",
+    "modelLimits": "Token Limits",
+    "limitContext": "Context",
+    "limitOutput": "Output",
     "modelExtraFields": "Model Properties",
     "noModelExtraFields": "Model properties (variants, cost, etc.), click + to add",
     "modelExtraFieldKeyPlaceholder": "variants",
@@ -1286,6 +1367,17 @@
       "imported": "Imported {{count}} records from session logs",
       "upToDate": "Session logs are up to date",
       "failed": "Session sync failed"
+    },
+    "rebuildCodex": {
+      "title": "Codex Usage Maintenance",
+      "description": "Rebuild Codex session usage from local rollout logs",
+      "warning": "The database is backed up first. History whose source JSONL has been deleted cannot be re-imported.",
+      "action": "Rebuild Codex Usage",
+      "confirmTitle": "Rebuild Codex usage?",
+      "confirmMessage": "This clears existing Codex session details and rollups, then imports them again from local Codex logs.\n\nHistory with deleted logs will be lost. Forks whose parent rollout is missing will be deferred.",
+      "confirmAction": "Back Up and Rebuild",
+      "completed": "Rebuild complete: {{imported}} imported, {{errors}} errors, {{suspected}} suspected duplicates, {{deferred}} deferred files",
+      "failed": "Codex usage rebuild failed: {{error}}"
     },
     "totalRecords": "{{total}} records total",
     "goToPage": "Go",
@@ -1399,6 +1491,12 @@
     "accessTokenPlaceholder": "Generate in 'Security Settings'",
     "userId": "User ID",
     "userIdPlaceholder": "e.g., 114514",
+    "zhipuTeamHint": "Zhipu team plan usage query needs the team API key (reuses this provider's credentials) + organization ID + project ID (sent as bigmodel-organization / bigmodel-project request headers). Find the organization and project IDs in the team admin console's usage page URL.",
+    "zhipuTeamConsoleLink": "Team usage page:",
+    "organizationId": "Organization ID",
+    "organizationIdPlaceholder": "e.g. org-xxxxxx",
+    "projectId": "Project ID",
+    "projectIdPlaceholder": "e.g. proj-xxxxxx",
     "defaultPlan": "Default Plan",
     "queryFailedMessage": "Query failed",
     "queryScript": "Query script (JavaScript)",
@@ -1451,9 +1549,9 @@
     "usage_query_failed": "Usage query failed",
     "configLoadFailedTitle": "Configuration Load Failed",
     "configLoadFailedMessage": "Unable to read configuration file:\n{{path}}\n\nError details:\n{{detail}}\n\nPlease check if the JSON is valid, or restore from a backup file (e.g., config.json.bak) in the same directory.\n\nThe app will exit so you can fix this.",
-    "renderCrashTitle": "Something went wrong",
-    "renderCrashMessage": "The interface hit an unexpected error and couldn't continue. Reloading usually fixes it.",
-    "renderCrashReload": "Reload"
+    "frontendCrashTitle": "Something went wrong in the interface",
+    "frontendCrashMessage": "An attempt was made to write the error to the application diagnostic log. Reload the interface, and attach the log when opening an issue if the problem continues.",
+    "reloadInterface": "Reload interface"
   },
   "presetSelector": {
     "title": "Select Configuration Type",
@@ -1487,6 +1585,7 @@
         "claude": "Claude",
         "codex": "Codex",
         "gemini": "Gemini",
+        "grokbuild": "Grok Build",
         "opencode": "OpenCode",
         "openclaw": "OpenClaw",
         "hermes": "Hermes"
@@ -2190,9 +2289,6 @@
     "comingSoonTitle": "Coming Soon",
     "comingSoonDescription": "The Agents management feature is intentionally kept as a placeholder in Web mode for now. This page remains visible so the navigation stays stable, but it does not expose any partial actions yet."
   },
-  "modelTest": {
-    "testProvider": "Test model"
-  },
   "health": {
     "operational": "Operational",
     "degraded": "Degraded",
@@ -2271,8 +2367,8 @@
           "description": "Maximum wait time for a single request (0 = unlimited, or 10 ~ 600 seconds)"
         },
         "enableLogging": {
-          "label": "Enable Logging",
-          "description": "Log all routing requests for troubleshooting"
+          "label": "Record Request Usage",
+          "description": "Write routing request usage and status to the local statistics database"
         },
         "streamingFirstByteTimeout": {
           "label": "Streaming First Byte Timeout (sec)",
@@ -2402,10 +2498,10 @@
     "stopWithRestoreFailed": "Stop failed: {{detail}}"
   },
   "streamCheck": {
-    "configSaved": "Health check config saved",
+    "configSaved": "Connectivity check settings saved",
     "configSaveFailed": "Save failed",
     "configSaveFailedDetail": "Save failed: {{error}}",
-    "loadFailed": "Failed to load health check config: {{error}}",
+    "loadFailed": "Failed to load connectivity check settings: {{error}}",
     "testModels": "Test Models",
     "claudeModel": "Claude Model",
     "codexModel": "Codex Model",
@@ -2421,7 +2517,7 @@
     "rejected": "{{providerName}} check rejected: {{message}}",
     "error": "{{providerName}} check error: {{error}}",
     "modelNotFound": "{{providerName}} test model {{model}} does not exist or has been deprecated",
-    "modelNotFoundHint": "This model may have been retired by the provider. Update the default test model in \"Model Test Config\".",
+    "modelNotFoundHint": "This model may have been retired by the provider. Update the default test model in \"Connectivity Check Settings\".",
     "quotaExceeded": "{{providerName}} Coding Plan quota has been exceeded",
     "quotaExceededHint": "Baidu Qianfan returned a Coding Plan quota-limit error. Wait for the 5-hour, weekly, or monthly quota refresh, or adjust the plan in the Qianfan console.",
     "httpHint": {
@@ -2502,9 +2598,9 @@
     "noAppsEnabled": "No apps enabled",
     "added": "Universal provider added",
     "addedAndSynced": "Universal provider added and synced",
+    "addedButSyncFailed": "Universal provider added, but sync failed",
     "updated": "Universal provider updated",
     "deleted": "Universal provider deleted",
-    "addSuccess": "Universal provider added successfully",
     "addFailed": "Failed to add universal provider",
     "hint": "Cross-app unified config, auto-sync to Claude/Codex/Gemini",
     "manage": "Manage",

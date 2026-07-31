@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom";
 
-import { ModelTestConfigPanel } from "@/components/usage/ModelTestConfigPanel";
+import { ConnectivityCheckConfigPanel } from "@/components/usage/ConnectivityCheckConfigPanel";
 
 const toastSuccessMock = vi.fn();
 const toastErrorMock = vi.fn();
@@ -31,7 +31,9 @@ vi.mock("sonner", () => ({
 }));
 
 vi.mock("@/components/ui/button", () => ({
-  Button: ({ children, ...props }: any) => <button {...props}>{children}</button>,
+  Button: ({ children, ...props }: any) => (
+    <button {...props}>{children}</button>
+  ),
 }));
 
 vi.mock("@/components/ui/input", () => ({
@@ -51,13 +53,13 @@ vi.mock("@/components/ui/alert", () => ({
   AlertDescription: ({ children }: any) => <div>{children}</div>,
 }));
 
-vi.mock("@/lib/api/model-test", () => ({
+vi.mock("@/lib/api/connectivity-check", () => ({
   getStreamCheckConfig: () => getStreamCheckConfigMock(),
   saveStreamCheckConfig: (...args: unknown[]) =>
     saveStreamCheckConfigMock(...args),
 }));
 
-describe("ModelTestConfigPanel", () => {
+describe("ConnectivityCheckConfigPanel", () => {
   beforeEach(() => {
     toastSuccessMock.mockReset();
     toastErrorMock.mockReset();
@@ -77,7 +79,7 @@ describe("ModelTestConfigPanel", () => {
   });
 
   it("loads the current config and saves edited values", async () => {
-    render(<ModelTestConfigPanel />);
+    render(<ConnectivityCheckConfigPanel />);
 
     const claudeModel = await screen.findByLabelText("streamCheck.claudeModel");
     const timeout = screen.getByLabelText("streamCheck.timeout");
@@ -109,7 +111,7 @@ describe("ModelTestConfigPanel", () => {
   });
 
   it("falls back to defaults when numeric fields are cleared and prompt is empty", async () => {
-    render(<ModelTestConfigPanel />);
+    render(<ConnectivityCheckConfigPanel />);
 
     const timeout = await screen.findByLabelText("streamCheck.timeout");
     const retries = screen.getByLabelText("streamCheck.maxRetries");
@@ -141,7 +143,7 @@ describe("ModelTestConfigPanel", () => {
       detail: "config missing",
     });
 
-    render(<ModelTestConfigPanel />);
+    render(<ConnectivityCheckConfigPanel />);
 
     expect(
       await screen.findByText("streamCheck.loadFailed:config missing"),
@@ -153,7 +155,7 @@ describe("ModelTestConfigPanel", () => {
       message: "cannot save",
     });
 
-    render(<ModelTestConfigPanel />);
+    render(<ConnectivityCheckConfigPanel />);
 
     await screen.findByLabelText("streamCheck.claudeModel");
     fireEvent.click(screen.getByRole("button", { name: "common.save" }));

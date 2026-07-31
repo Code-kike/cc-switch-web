@@ -3,11 +3,11 @@
 //! 支持 DeepSeek、StepFun、SiliconFlow、OpenRouter、Novita AI 的账户余额查询。
 //! 返回 UsageResult 格式，与现有用量系统无缝对接。
 //!
-//! 错误通道语义：
-//! - `Err(String)`: 瞬时传输失败（网络不可达/超时/读体中断）。前端 query
-//!   reject 后触发 retry，并保留上一份成功数据。
-//! - `Ok(success:false)`: 确定性失败（空 key/未知供应商/鉴权/非 2xx/响应体
-//!   非法 JSON），立即透出错误文案。
+//! 错误通道语义（与 coding_plan / subscription 两个服务保持一致）：
+//! - `Err(String)` = 瞬时传输失败（网络不可达/超时/读体中断）。前端 invoke reject，
+//!   react-query 触发 retry 并保留上一次成功的 data（天然 keep-last-good）。
+//! - `Ok(success:false)` = 确定性失败（空 key/未知供应商/鉴权/非 2xx/响应体非法 JSON），
+//!   立即透出错误文案。判定按 reqwest 错误种类在折叠点完成，不依赖错误文案匹配。
 
 use crate::provider::{UsageData, UsageResult};
 use std::time::Duration;
@@ -414,6 +414,8 @@ fn siliconflow_balance_labels(is_cn: bool) -> (&'static str, &'static str) {
 
 // ── 公开入口 ────────────────────────────────────────────────
 
+/// 查询余额。瞬时传输失败返回 `Err`（前端 reject → retry + 保留上次成功值），
+/// 确定性失败返回 `Ok(success:false)`（见模块级文档）。
 pub async fn get_balance(base_url: &str, api_key: &str) -> Result<UsageResult, String> {
     if api_key.trim().is_empty() {
         return Ok(UsageResult {

@@ -17,13 +17,20 @@ function parsePresetCosts(): Map<string, { input: number; output: number }> {
     path.join(repoRoot, "src/config/openclawProviderPresets.ts"),
     "utf8",
   );
+  // The cost object may carry extra fields after output (cacheRead/cacheWrite
+  // since e356fc6e); do NOT anchor on the closing brace or those entries
+  // silently drop out of the comparison and the test goes vacuous.
   const re =
-    /id:\s*"([^"]+)"[\s\S]{0,220}?cost:\s*\{\s*input:\s*([\d.]+),\s*output:\s*([\d.]+)\s*\}/g;
+    /id:\s*"([^"]+)"[\s\S]{0,220}?cost:\s*\{\s*input:\s*([\d.]+),\s*output:\s*([\d.]+)[\s\S]{0,120}?\}/g;
   const out = new Map<string, { input: number; output: number }>();
   let m: RegExpExecArray | null;
   while ((m = re.exec(src)) !== null) {
-    if (!out.has(m[1]))
-      out.set(m[1], { input: Number(m[2]), output: Number(m[3]) });
+    // Runtime pricing lookup lowercases the incoming model id before hitting
+    // the all-lowercase seed table, so mixed-case preset ids (KAT-Coder-Pro,
+    // MiniMax-M2.7, ...) must be compared under the same normalization.
+    const id = m[1].toLowerCase();
+    if (!out.has(id))
+      out.set(id, { input: Number(m[2]), output: Number(m[3]) });
   }
   return out;
 }
@@ -53,6 +60,18 @@ describe("OpenClaw preset pricing consistency with the Rust seed (L19)", () => {
     // making this test vacuous).
     expect(presetCosts.size).toBeGreaterThan(0);
     expect(seedCosts.size).toBeGreaterThan(0);
+    // Sentinels: these ids exist on both sides and MUST be compared. They pin
+    // the parser against regressions like cacheRead-bearing cost objects or
+    // mixed-case ids escaping the regex/lookup (the exact gaps that once hid
+    // a 150x kat-coder-pro divergence).
+    for (const sentinel of ["kat-coder-pro", "minimax-m2.7", "kimi-k3"]) {
+      expect(presetCosts.has(sentinel), `preset parser lost ${sentinel}`).toBe(
+        true,
+      );
+      expect(seedCosts.has(sentinel), `seed parser lost ${sentinel}`).toBe(
+        true,
+      );
+    }
 
     const mismatches: string[] = [];
     for (const [id, preset] of presetCosts) {

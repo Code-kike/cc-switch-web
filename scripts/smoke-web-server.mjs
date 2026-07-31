@@ -155,6 +155,12 @@ const smokeMcpIds = {
   legacyConfig: "smoke-legacy-config",
 };
 
+const smokeFrontendError = {
+  marker: "smoke-frontend-error-marker",
+  message:
+    "Uncaught Error: smoke-frontend-error-marker\n    at smokeProbe (smoke.js:1:1)",
+};
+
 const smokeSessions = [
   {
     sessionId: "019cc369-bd7c-7891-b371-7b20b4fe0b18",
@@ -193,7 +199,12 @@ const smokeSessions = [
 
 const smokeUsage = {
   codexSessionId: "019cc36c-bd7c-7891-b371-7b20b4fe0b21",
-  archivedFileName: "smoke-usage-session.jsonl",
+  // v3.18.0 (upstream df3e07ed): the Codex usage sync derives the root thread
+  // id from the LAST 36 chars of the file stem and defers files without a
+  // valid trailing UUID (real Codex rollout naming). The archived fixture stem
+  // must therefore end with the session UUID.
+  archivedFileName:
+    "smoke-usage-session-019cc36c-bd7c-7891-b371-7b20b4fe0b21.jsonl",
   model: "openai/gpt-5.4",
   normalizedModel: "gpt-5.4",
   timestamp: "2026-03-07T12:15:02Z",
@@ -202,6 +213,9 @@ const smokeUsage = {
   outputTokens: 450,
   pricingModelId: "smoke-web-model-pricing",
 };
+// v3.18.0 (upstream c9ac6efd): stable Codex session usage keys are
+// `codex_session:thread-v1:<root_thread_id>:<event_index>` (index starts at 1).
+smokeUsage.expectedRequestId = `codex_session:thread-v1:${smokeUsage.codexSessionId}:1`;
 smokeUsage.freshInputTokens =
   smokeUsage.inputTokens - smokeUsage.cachedInputTokens;
 smokeUsage.realTotalTokens =
@@ -552,6 +566,7 @@ const smokeArtifacts = {
   restoreSafetyBackupId: null,
   exportedSql: null,
   homeDir: null,
+  dataDir: null,
   importedPromptId: null,
   importedDeeplinkProviderId: null,
   claudeFailoverProviderId: null,
@@ -1432,10 +1447,13 @@ const probes = [
       const sessionIds = Array.isArray(payload)
         ? payload.map((item) => item?.sessionId)
         : [];
+      // The archived usage fixture now carries a real rollout-style trailing
+      // UUID (required by the v3.18.0 usage sync), so the session manager
+      // legitimately lists it as a fourth Codex session. Assert the seeded
+      // smoke sessions as a subset instead of an exact list.
       if (
         !response.ok ||
         !Array.isArray(payload) ||
-        payload.length !== smokeSessions.length ||
         !smokeSessions.every((session) =>
           sessionIds.includes(session.sessionId),
         ) ||
@@ -1519,15 +1537,18 @@ const probes = [
       return { response, payload: { deleted, remainingSessions, fileExists } };
     },
     validate(response, payload) {
+      const remainingIds = Array.isArray(payload?.remainingSessions)
+        ? payload.remainingSessions.map((session) => session?.sessionId)
+        : [];
       if (
         !response.ok ||
         payload?.deleted !== true ||
         payload?.fileExists !== false ||
         !Array.isArray(payload?.remainingSessions) ||
-        payload.remainingSessions.length !== smokeSessions.length - 1 ||
-        payload.remainingSessions.some(
-          (session) => session?.sessionId === smokeSessions[0].sessionId,
-        )
+        remainingIds.includes(smokeSessions[0].sessionId) ||
+        !smokeSessions
+          .slice(1)
+          .every((session) => remainingIds.includes(session.sessionId))
       ) {
         throw new Error(
           `expected single session delete to succeed, got ${response.status} ${JSON.stringify(payload)}`,
@@ -1576,13 +1597,18 @@ const probes = [
       };
     },
     validate(response, payload) {
+      const remainingIds = Array.isArray(payload?.remainingSessions)
+        ? payload.remainingSessions.map((session) => session?.sessionId)
+        : [];
       if (
         !response.ok ||
         !Array.isArray(payload?.outcomes) ||
         payload.outcomes.length !== 2 ||
         !payload.outcomes.every((item) => item?.success === true) ||
         !Array.isArray(payload?.remainingSessions) ||
-        payload.remainingSessions.length !== 0 ||
+        smokeSessions.some((session) =>
+          remainingIds.includes(session.sessionId),
+        ) ||
         !Array.isArray(payload?.remainingFiles) ||
         payload.remainingFiles.some(Boolean)
       ) {
@@ -1630,7 +1656,7 @@ const probes = [
           `expected idempotent session usage sync response, got ${response.status} ${JSON.stringify(payload)}`,
         );
       }
-      artifacts.syncedUsageRequestId = `codex_session:${smokeUsage.codexSessionId}:1`;
+      artifacts.syncedUsageRequestId = smokeUsage.expectedRequestId;
     },
   },
   {
@@ -1733,7 +1759,7 @@ const probes = [
         payload?.page !== 0 ||
         payload?.pageSize !== 10 ||
         !firstLog ||
-        firstLog.requestId !== `codex_session:${smokeUsage.codexSessionId}:1` ||
+        firstLog.requestId !== smokeUsage.expectedRequestId ||
         firstLog.providerId !== "_codex_session" ||
         firstLog.providerName !== "Codex (Session)" ||
         firstLog.appType !== "codex" ||
@@ -1770,7 +1796,7 @@ const probes = [
     validate(response, payload) {
       if (
         !response.ok ||
-        payload?.requestId !== `codex_session:${smokeUsage.codexSessionId}:1` ||
+        payload?.requestId !== smokeUsage.expectedRequestId ||
         payload?.providerId !== "_codex_session" ||
         payload?.providerName !== "Codex (Session)" ||
         payload?.model !== smokeUsage.normalizedModel ||
@@ -1795,6 +1821,44 @@ const probes = [
       if (!response.ok || payload !== null) {
         throw new Error(
           `expected null request detail for missing request id, got ${response.status} ${JSON.stringify(payload)}`,
+        );
+      }
+    },
+  },
+  {
+    name: "log-frontend-error-persists",
+    method: "POST",
+    path: "/api/system/log_frontend_error",
+    async send(baseUrl, artifacts) {
+      const response = await fetch(
+        new URL("/api/system/log_frontend_error", baseUrl),
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ message: smokeFrontendError.message }),
+        },
+      );
+      const result = await response.json();
+      // v3.18.0 (upstream 62747058, web-adapted): frontend errors persist to
+      // server-side disk at `<app_config_dir>/logs/frontend.log`; the web
+      // server pins app_config_dir to CC_SWITCH_DATA_DIR.
+      const logPath = path.join(artifacts.dataDir, "logs", "frontend.log");
+      let logContent = "";
+      try {
+        logContent = await fs.readFile(logPath, "utf8");
+      } catch {}
+      return { response, payload: { result, logContent } };
+    },
+    validate(response, payload) {
+      if (
+        !response.ok ||
+        payload?.result !== null ||
+        !String(payload?.logContent ?? "").includes(smokeFrontendError.marker)
+      ) {
+        throw new Error(
+          `expected frontend error to persist to server-side logs/frontend.log, got ${response.status} ${JSON.stringify(payload)}`,
         );
       }
     },
@@ -3873,6 +3937,7 @@ async function main() {
   await seedLiveProviderFixtures(homeDir);
   await seedSessionFixtures(homeDir);
   smokeArtifacts.homeDir = homeDir;
+  smokeArtifacts.dataDir = dataDir;
 
   const child = spawn(
     "cargo",
@@ -3911,6 +3976,17 @@ async function main() {
         USERPROFILE: homeDir,
         XDG_DATA_HOME: path.join(homeDir, ".local", "share"),
         XDG_CONFIG_HOME: path.join(homeDir, ".config"),
+        // The HOME override above is for the cc-switch app's home-dir
+        // resolution only. The spawned `cargo` is the rustup shim, which
+        // resolves its toolchain store from $RUSTUP_HOME (default
+        // $HOME/.rustup) — with HOME pointed at the throwaway temp dir it
+        // finds no toolchains, re-downloads the pinned toolchain into the
+        // temp HOME on every smoke run, and times out the startup window.
+        // Pin rustup/cargo state to the real home so the existing toolchain
+        // and build caches are reused.
+        RUSTUP_HOME:
+          process.env.RUSTUP_HOME || path.join(os.homedir(), ".rustup"),
+        CARGO_HOME: process.env.CARGO_HOME || path.join(os.homedir(), ".cargo"),
       },
       stdio: ["ignore", "pipe", "pipe"],
     },

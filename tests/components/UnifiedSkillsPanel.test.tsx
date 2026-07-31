@@ -1,5 +1,11 @@
 import { createRef } from "react";
-import { render, screen, waitFor, act, fireEvent } from "@testing-library/react";
+import {
+  render,
+  screen,
+  waitFor,
+  act,
+  fireEvent,
+} from "@testing-library/react";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 
 import UnifiedSkillsPanel, {
@@ -122,8 +128,8 @@ describe("UnifiedSkillsPanel", () => {
       {
         directory: "shared-skill",
         name: "Shared Skill",
-        description: "Imported from Claude",
-        foundIn: ["claude"],
+        description: "Imported from Grok Build",
+        foundIn: ["grokbuild"],
         path: "/tmp/shared-skill",
       },
     ];
@@ -161,6 +167,19 @@ describe("UnifiedSkillsPanel", () => {
       expect(screen.getByText("skills.import")).toBeInTheDocument();
       expect(screen.getByText("Shared Skill")).toBeInTheDocument();
       expect(screen.getByText("/tmp/shared-skill")).toBeInTheDocument();
+    });
+
+    await act(async () => {
+      screen.getByText("skills.importSelected").click();
+    });
+
+    await waitFor(() => {
+      expect(importSkillsMock).toHaveBeenCalledWith([
+        {
+          directory: "shared-skill",
+          apps: expect.objectContaining({ grokbuild: true }),
+        },
+      ]);
     });
   });
 
@@ -246,7 +265,9 @@ describe("UnifiedSkillsPanel", () => {
       expect(screen.getByText("OpenClaw Skill")).toBeInTheDocument(),
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "skills.importSelected" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "skills.importSelected" }),
+    );
 
     await waitFor(() =>
       expect(importSkillsMock).toHaveBeenCalledWith([
@@ -256,6 +277,7 @@ describe("UnifiedSkillsPanel", () => {
             claude: false,
             codex: false,
             gemini: false,
+            grokbuild: false,
             opencode: false,
             openclaw: true,
             hermes: false,
@@ -320,10 +342,7 @@ describe("UnifiedSkillsPanel", () => {
     toggleSkillAppMock.mockRejectedValueOnce({});
 
     render(
-      <UnifiedSkillsPanel
-        onOpenDiscovery={() => {}}
-        currentApp="claude"
-      />,
+      <UnifiedSkillsPanel onOpenDiscovery={() => {}} currentApp="claude" />,
     );
 
     fireEvent.click(screen.getByRole("button", { name: "codex" }));

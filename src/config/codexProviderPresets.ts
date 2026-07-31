@@ -27,6 +27,10 @@ export interface CodexProviderPreset {
   iconColor?: string; // 图标颜色
   // Codex API 格式
   apiFormat?: CodexApiFormat;
+  // 托管账号预设：目前仅 xAI OAuth（本地代理按请求注入 token）
+  providerType?: "xai_oauth";
+  // OAuth 预设隐藏 API Key，并要求保存前已有可用托管账号
+  requiresOAuth?: boolean;
   // Codex 模型目录，保存为 settingsConfig.modelCatalog.models
   modelCatalog?: CodexCatalogModel[];
 }
@@ -74,6 +78,10 @@ function modelCatalog(
         model: string;
         displayName?: string;
         contextWindow?: number;
+        // Native Responses (direct) overrides for the generated
+        // model-catalogs.json. Omitted input modalities are inferred by the
+        // backend: confirmed text-only models stay text-only; everything else
+        // defaults to text+image.
         supportsParallelToolCalls?: boolean;
         inputModalities?: string[];
         baseInstructions?: string;
@@ -171,6 +179,52 @@ requires_openai_auth = true`,
     iconColor: "#0078D4",
   },
   {
+    name: "xAI (Grok)",
+    websiteUrl: "https://x.ai/api",
+    apiKeyUrl: "https://console.x.ai",
+    auth: generateThirdPartyAuth(""),
+    config: generateThirdPartyConfig("xai", "https://api.x.ai/v1", "grok-4.5"),
+    endpointCandidates: ["https://api.x.ai/v1"],
+    // xAI exposes /v1/responses as a native endpoint, including the Codex
+    // store/include/reasoning fields, so no protocol bridge is required.
+    apiFormat: "openai_responses",
+    modelCatalog: modelCatalog([
+      {
+        model: "grok-4.5",
+        displayName: "Grok 4.5",
+        contextWindow: 500000,
+        supportsParallelToolCalls: true,
+        inputModalities: ["text", "image"],
+      },
+    ]),
+    category: "third_party",
+    icon: "xai",
+    iconColor: "#000000",
+  },
+  {
+    name: "xAI (Grok) OAuth",
+    websiteUrl: "https://x.ai/grok",
+    auth: generateThirdPartyAuth(""),
+    // These snapshot values keep the generated Codex config self-describing;
+    // the adapter pins api.x.ai and the forwarder injects the managed token.
+    config: generateThirdPartyConfig("xai", "https://api.x.ai/v1", "grok-4.5"),
+    apiFormat: "openai_responses",
+    providerType: "xai_oauth",
+    requiresOAuth: true,
+    modelCatalog: modelCatalog([
+      {
+        model: "grok-4.5",
+        displayName: "Grok 4.5",
+        contextWindow: 500000,
+        supportsParallelToolCalls: true,
+        inputModalities: ["text", "image"],
+      },
+    ]),
+    category: "third_party",
+    icon: "xai",
+    iconColor: "#000000",
+  },
+  {
     name: "AiHubMix",
     websiteUrl: "https://aihubmix.com",
     category: "aggregator",
@@ -184,6 +238,8 @@ requires_openai_auth = true`,
       "https://aihubmix.com/v1",
       "https://api.aihubmix.com/v1",
     ],
+    icon: "aihubmix",
+    iconColor: "#006FFB",
   },
   {
     name: "CherryIN",

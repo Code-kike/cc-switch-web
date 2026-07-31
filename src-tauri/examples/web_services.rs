@@ -25,6 +25,9 @@ pub mod omo;
 #[path = "../src/services/prompt.rs"]
 pub mod prompt;
 
+#[path = "../src/services/profile.rs"]
+pub mod profile;
+
 #[path = "../src/services/proxy.rs"]
 pub mod proxy;
 
@@ -58,6 +61,9 @@ pub mod skill;
 #[path = "../src/services/speedtest.rs"]
 pub mod speedtest;
 
+#[path = "../src/services/sql_helpers.rs"]
+pub mod sql_helpers;
+
 #[path = "../src/services/stream_check.rs"]
 pub mod stream_check;
 
@@ -88,11 +94,15 @@ pub mod webdav_auto_sync;
 #[path = "../src/services/webdav_sync.rs"]
 pub mod webdav_sync;
 
+#[path = "../src/services/xai_oauth.rs"]
+pub mod xai_oauth;
+
 pub use mcp::McpService;
 pub use omo::OmoService;
 pub use prompt::PromptService;
 pub use provider::{ProviderService, ProviderSortUpdate, SwitchResult};
 pub use proxy::ProxyService;
+pub use skill::SkillService;
 pub use speedtest::{EndpointLatency, SpeedtestService};
 pub use tool_version::{ToolVersion, WslShellPreferenceInput};
 pub use usage_cache::UsageCache;

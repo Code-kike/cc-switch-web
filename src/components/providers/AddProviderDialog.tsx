@@ -18,6 +18,8 @@ import { providerPresets } from "@/config/claudeProviderPresets";
 import { codexProviderPresets } from "@/config/codexProviderPresets";
 import { geminiProviderPresets } from "@/config/geminiProviderPresets";
 import { extractCodexBaseUrl } from "@/utils/providerConfigUtils";
+import { extractGrokBuildBaseUrl } from "@/utils/grokBuildConfig";
+import { GROKBUILD_OFFICIAL_PROVIDER_ID } from "@/utils/providerCapabilities";
 import type { OpenClawSuggestedDefaults } from "@/config/openclawProviderPresets";
 import type { UniversalProviderPreset } from "@/config/universalProviderPresets";
 
@@ -29,6 +31,7 @@ interface AddProviderDialogProps {
     provider: Omit<Provider, "id"> & {
       providerKey?: string;
       suggestedDefaults?: OpenClawSuggestedDefaults;
+      ensureGrokBuildOfficialSeed?: boolean;
     },
   ) => Promise<void> | void;
 }
@@ -42,7 +45,10 @@ export function AddProviderDialog({
   const { t } = useTranslation();
   // OpenCode and OpenClaw don't support universal providers
   const showUniversalTab =
-    appId !== "opencode" && appId !== "openclaw" && appId !== "hermes";
+    appId !== "opencode" &&
+    appId !== "openclaw" &&
+    appId !== "hermes" &&
+    appId !== "grokbuild";
   const [activeTab, setActiveTab] = useState<"app-specific" | "universal">(
     "app-specific",
   );
@@ -55,15 +61,6 @@ export function AddProviderDialog({
     async (provider: UniversalProvider) => {
       try {
         await universalProvidersApi.upsert(provider);
-        toast.success(
-          t("universalProvider.addSuccess", {
-            defaultValue: "统一供应商添加成功",
-          }),
-        );
-        setUniversalFormOpen(false);
-        setSelectedUniversalPreset(null);
-        onOpenChange(false);
-        return true;
       } catch (error) {
         console.error(
           "[AddProviderDialog] Failed to save universal provider",
@@ -74,8 +71,35 @@ export function AddProviderDialog({
             defaultValue: "统一供应商添加失败",
           }),
         );
+        // Fork protocol (UniversalProviderFormModal): returning false keeps the
+        // modal open so the user's input survives a failed save. Upstream
+        // returns void here, but its modal closes unconditionally; ours gates
+        // onClose on `result !== false`.
         return false;
       }
+
+      try {
+        await universalProvidersApi.sync(provider.id);
+        toast.success(
+          t("universalProvider.addedAndSynced", {
+            defaultValue: "统一供应商已添加并同步",
+          }),
+        );
+      } catch (error) {
+        console.error(
+          "[AddProviderDialog] Provider saved but sync failed",
+          error,
+        );
+        toast.warning(
+          t("universalProvider.addedButSyncFailed", {
+            defaultValue: "统一供应商已添加，但同步失败",
+          }),
+        );
+      }
+
+      setUniversalFormOpen(false);
+      setSelectedUniversalPreset(null);
+      onOpenChange(false);
     },
     [t, onOpenChange],
   );
@@ -96,6 +120,7 @@ export function AddProviderDialog({
       const providerData: Omit<Provider, "id"> & {
         providerKey?: string;
         suggestedDefaults?: OpenClawSuggestedDefaults;
+        ensureGrokBuildOfficialSeed?: boolean;
       } = {
         name: values.name.trim(),
         notes: values.notes?.trim() || undefined,
@@ -106,6 +131,12 @@ export function AddProviderDialog({
         ...(values.presetCategory ? { category: values.presetCategory } : {}),
         ...(values.meta ? { meta: values.meta } : {}),
       };
+
+      if (appId === "grokbuild" && values.presetId) {
+        providerData.ensureGrokBuildOfficialSeed =
+          values.presetCategory === "official" &&
+          values.presetId === GROKBUILD_OFFICIAL_PROVIDER_ID;
+      }
 
       // OpenCode/OpenClaw: pass providerKey for ID generation
       if (
@@ -193,6 +224,11 @@ export function AddProviderDialog({
           const env = parsedConfig.env as Record<string, any> | undefined;
           if (env?.GOOGLE_GEMINI_BASE_URL) {
             addUrl(env.GOOGLE_GEMINI_BASE_URL);
+          }
+        } else if (appId === "grokbuild") {
+          const config = parsedConfig.config as string | undefined;
+          if (config) {
+            addUrl(extractGrokBuildBaseUrl(config));
           }
         } else if (appId === "opencode") {
           const options = parsedConfig.options as

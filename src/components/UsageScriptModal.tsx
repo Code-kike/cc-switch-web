@@ -1,9 +1,15 @@
 import React, { useState } from "react";
-import { Play, Wand2, Eye, EyeOff, Save } from "lucide-react";
+import { Play, Wand2, Eye, EyeOff, Save, ExternalLink } from "lucide-react";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
 import { useQueryClient } from "@tanstack/react-query";
-import { Provider, UsageScript, UsageData, createUsageScript } from "@/types";
+import {
+  Provider,
+  UsageScript,
+  UsageData,
+  UsageResult,
+  createUsageScript,
+} from "@/types";
 import { usageApi, settingsApi, type AppId } from "@/lib/api";
 import { useSettingsQuery } from "@/lib/query";
 import { usageKeys } from "@/lib/query/usage";
@@ -12,6 +18,7 @@ import {
   extractCodexExperimentalBearerToken,
 } from "@/utils/providerConfigUtils";
 import { extractErrorMessage } from "@/utils/errorUtils";
+import { parseGrokBuildConfig } from "@/utils/grokBuildConfig";
 import JsonEditor from "./JsonEditor";
 import * as prettier from "prettier/standalone";
 import * as parserBabel from "prettier/parser-babel";
@@ -29,6 +36,40 @@ import {
   detectCodingPlanProvider,
 } from "@/config/codingPlanProviders";
 import { formatUsageDataSummary } from "@/utils/usageDisplay";
+
+// 智谱团队套餐用量页（组织 ID / 项目 ID 在此页 URL 或管理后台可见）
+const ZHIPU_TEAM_USAGE_URL = "https://bigmodel.cn/coding-plan/team/usage-stats";
+
+/**
+ * 把 coding-plan 的 `SubscriptionQuota` 摊平成弹窗用的 `UsageResult`，与后端
+ * `coding_plan_quota_to_usage_result` 的非 USD 分支保持一致（智谱 tier 只有
+ * 利用率百分比，没有 ZenMux 那套 USD 字段）。
+ */
+function codingPlanQuotaToUsageResult(
+  quota: Awaited<
+    ReturnType<
+      typeof import("@/lib/api/subscription").subscriptionApi.getCodingPlanQuota
+    >
+  >,
+): UsageResult {
+  if (!quota.success) {
+    return { success: false, data: undefined, error: quota.error ?? undefined };
+  }
+  const data: UsageData[] = quota.tiers.map((tier) => ({
+    planName: tier.name,
+    used: tier.utilization,
+    remaining: 100 - tier.utilization,
+    total: 100,
+    unit: "%",
+    isValid: true,
+    extra: tier.resetsAt ?? undefined,
+  }));
+  return {
+    success: true,
+    data: data.length > 0 ? data : undefined,
+    error: undefined,
+  };
+}
 
 interface UsageScriptModalProps {
   provider: Provider;
@@ -249,6 +290,15 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
           return {
             apiKey: env.GEMINI_API_KEY || env.GOOGLE_API_KEY,
             baseUrl: env.GOOGLE_GEMINI_BASE_URL,
+          };
+        } else if (appId === "grokbuild") {
+          const grokConfig = parseGrokBuildConfig(
+            (config as any).config,
+            provider.name,
+          );
+          return {
+            apiKey: grokConfig.apiKey,
+            baseUrl: grokConfig.baseUrl,
           };
         } else if (appId === "hermes") {
           // Hermes: settingsConfig 顶层扁平（snake_case，对应 config.yaml）
@@ -547,17 +597,45 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
       if (selectedTemplate === TEMPLATE_TYPES.TOKEN_PLAN) {
         // ZenMux 使用用户在脚本配置中手动填入的 API Key 和 Base URL
         const isZenMux = script.codingPlanProvider === "zenmux";
-        const result = await usageApi.testScript(
-          provider.id,
-          appId,
-          "",
-          script.timeout,
-          isZenMux ? script.apiKey : undefined,
-          isZenMux ? script.baseUrl : undefined,
-          undefined,
-          undefined,
-          TEMPLATE_TYPES.TOKEN_PLAN,
-        );
+        // 智谱团队版的组织/项目 ID 在弹窗里还没落盘，testUsageScript 读的是已保存的
+        // 脚本，拿不到刚输入的值，故这条分支直接打 coding-plan 查询（与上游一致）。
+        const result =
+          script.codingPlanProvider === "zhipu_team"
+            ? await (async () => {
+                const { subscriptionApi } = await import(
+                  "@/lib/api/subscription"
+                );
+                try {
+                  const quota = await subscriptionApi.getCodingPlanQuota(
+                    providerCredentials.baseUrl ?? "",
+                    providerCredentials.apiKey ?? "",
+                    script.codingPlanProvider,
+                    script.teamOrganizationId,
+                    script.teamProjectId,
+                  );
+                  return codingPlanQuotaToUsageResult(quota);
+                } catch (error) {
+                  return {
+                    success: false,
+                    data: undefined,
+                    error:
+                      error instanceof Error
+                        ? error.message
+                        : String(error ?? ""),
+                  } satisfies UsageResult;
+                }
+              })()
+            : await usageApi.testScript(
+                provider.id,
+                appId,
+                "",
+                script.timeout,
+                isZenMux ? script.apiKey : undefined,
+                isZenMux ? script.baseUrl : undefined,
+                undefined,
+                undefined,
+                TEMPLATE_TYPES.TOKEN_PLAN,
+              );
         const data = result.data ?? [];
         if (result.success && data.length > 0) {
           const summary = data
@@ -666,6 +744,8 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
         );
       }
     } catch (error: any) {
+      // 后端命令 Err(String) 时 invoke 以裸字符串 reject（如瞬时网络失败），
+      // 直接读 .message 会得到 undefined。
       toast.error(
         `${t("usageScript.testFailed")}: ${extractErrorMessage(error) || t("common.unknown")}`,
         {
@@ -747,8 +827,9 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
           providerCredentials.baseUrl,
         );
         const provider = script.codingPlanProvider || autoDetected || "kimi";
-        // ZenMux 允许手动填写 API Key 和 Base URL，不清除
+        // ZenMux 保留手填 baseUrl/apiKey；智谱团队保留组织/项目 ID；其余清除。
         const isZenMux = provider === "zenmux";
+        const isZhipuTeam = provider === "zhipu_team";
         setScript({
           ...script,
           code: "",
@@ -756,6 +837,10 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
           baseUrl: isZenMux ? script.baseUrl : undefined,
           accessToken: undefined,
           userId: undefined,
+          teamOrganizationId: isZhipuTeam
+            ? script.teamOrganizationId
+            : undefined,
+          teamProjectId: isZhipuTeam ? script.teamProjectId : undefined,
           codingPlanProvider: provider,
         });
       } else if (presetName === TEMPLATE_TYPES.BALANCE) {
@@ -1268,6 +1353,76 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
                 </div>
               </div>
             )}
+
+            {/* 智谱团队套餐：需组织 ID + 项目 ID（api_key 沿用供应商推理凭据） */}
+            {selectedTemplate === TEMPLATE_TYPES.TOKEN_PLAN &&
+              script.codingPlanProvider === "zhipu_team" && (
+                <div className="space-y-4">
+                  <div>
+                    <h4 className="text-sm font-medium text-foreground">
+                      {t("usageScript.credentialsConfig")}
+                    </h4>
+                    <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
+                      {t("usageScript.zhipuTeamHint")}
+                    </p>
+                    <p className="text-xs text-muted-foreground mt-1.5">
+                      {t("usageScript.zhipuTeamConsoleLink")}{" "}
+                      <button
+                        type="button"
+                        onClick={() =>
+                          settingsApi.openExternal(ZHIPU_TEAM_USAGE_URL)
+                        }
+                        className="inline-flex items-center gap-1 text-blue-400 dark:text-blue-500 hover:text-blue-500 dark:hover:text-blue-400 transition-colors break-all align-baseline underline-offset-2 hover:underline"
+                      >
+                        {ZHIPU_TEAM_USAGE_URL}
+                        <ExternalLink size={12} className="shrink-0" />
+                      </button>
+                    </p>
+                  </div>
+
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <div className="space-y-2">
+                      <Label htmlFor="usage-zhipu-team-org">
+                        {t("usageScript.organizationId")}
+                      </Label>
+                      <Input
+                        id="usage-zhipu-team-org"
+                        type="text"
+                        value={script.teamOrganizationId || ""}
+                        onChange={(e) =>
+                          setScript({
+                            ...script,
+                            teamOrganizationId: e.target.value,
+                          })
+                        }
+                        placeholder={t("usageScript.organizationIdPlaceholder")}
+                        autoComplete="off"
+                        className="border-white/10"
+                      />
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label htmlFor="usage-zhipu-team-project">
+                        {t("usageScript.projectId")}
+                      </Label>
+                      <Input
+                        id="usage-zhipu-team-project"
+                        type="text"
+                        value={script.teamProjectId || ""}
+                        onChange={(e) =>
+                          setScript({
+                            ...script,
+                            teamProjectId: e.target.value,
+                          })
+                        }
+                        placeholder={t("usageScript.projectIdPlaceholder")}
+                        autoComplete="off"
+                        className="border-white/10"
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
 
             {/* 通用配置（始终显示） */}
             <div className="grid gap-4 md:grid-cols-2 pt-4 border-t border-white/10">

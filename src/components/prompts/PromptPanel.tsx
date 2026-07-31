@@ -18,6 +18,7 @@ interface PromptPanelProps {
 export interface PromptPanelHandle {
   openAdd: () => void;
   openImport: () => Promise<void>;
+  reload: () => Promise<void>;
 }
 
 const PromptPanel = React.forwardRef<PromptPanelHandle, PromptPanelProps>(
@@ -74,6 +75,7 @@ const PromptPanel = React.forwardRef<PromptPanelHandle, PromptPanelProps>(
       openImport: async () => {
         await importFromFile();
       },
+      reload,
     }));
 
     const handleEdit = (id: string) => {

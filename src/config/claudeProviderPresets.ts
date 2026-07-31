@@ -59,7 +59,7 @@ export interface ProviderPreset {
   // 供应商类型标识（用于特殊供应商检测）
   // - "github_copilot": GitHub Copilot 供应商（需要 OAuth 认证）
   // - "codex_oauth": OpenAI Codex via ChatGPT Plus/Pro 反代（需要 OAuth 认证）
-  providerType?: "github_copilot" | "codex_oauth";
+  providerType?: "github_copilot" | "codex_oauth" | "xai_oauth";
 
   // 是否需要 OAuth 认证（而非 API Key）
   requiresOAuth?: boolean;
@@ -340,6 +340,16 @@ export const providerPresets: ProviderPreset[] = [
       env: {
         ANTHROPIC_BASE_URL: "https://api.kimi.com/coding/",
         ANTHROPIC_AUTH_TOKEN: "",
+        // CLAUDE_CODE_MAX_CONTEXT_TOKENS 只对非 claude- 前缀模型 id 生效，
+        // 必须显式路由端点别名 kimi-for-coding（与 codex/hermes/opencode 预设一致）
+        ANTHROPIC_MODEL: "kimi-for-coding",
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: "kimi-for-coding",
+        ANTHROPIC_DEFAULT_SONNET_MODEL: "kimi-for-coding",
+        ANTHROPIC_DEFAULT_OPUS_MODEL: "kimi-for-coding",
+        // 双键钉 256K：压缩窗口=min(模型窗口,值)，与窗口同值时行为等价于不设，
+        // 但显式钉住可屏蔽远程实验下发的更小压缩点；调整直接改 JSON，不出表单字段
+        CLAUDE_CODE_MAX_CONTEXT_TOKENS: "262144",
+        CLAUDE_CODE_AUTO_COMPACT_WINDOW: "262144",
       },
     },
     category: "cn_official",
@@ -1004,10 +1014,19 @@ export const providerPresets: ProviderPreset[] = [
         // base_url 由代理后端强制重写为 chatgpt.com/backend-api/codex
         // 用户无需配置
         ANTHROPIC_BASE_URL: "https://chatgpt.com/backend-api/codex",
-        ANTHROPIC_MODEL: "gpt-5.5",
-        ANTHROPIC_DEFAULT_HAIKU_MODEL: "gpt-5.4-mini",
-        ANTHROPIC_DEFAULT_SONNET_MODEL: "gpt-5.5",
-        ANTHROPIC_DEFAULT_OPUS_MODEL: "gpt-5.5",
+        ANTHROPIC_MODEL: "gpt-5.6",
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: "gpt-5.6-luna",
+        ANTHROPIC_DEFAULT_SONNET_MODEL: "gpt-5.6",
+        ANTHROPIC_DEFAULT_OPUS_MODEL: "gpt-5.6",
+        // Claude Code falls back to a 200K context window for unrecognized
+        // non-Claude model ids. The ChatGPT Codex backend catalogs gpt-5.6
+        // at a 372K window with a ~353K effective budget (openai/codex#31860),
+        // not the 1.05M API window. Pin both knobs: the compact window equals
+        // min(model window, value), so matching the window is behavior-neutral
+        // today but shields the compact trigger from remote-config experiments.
+        // Tweak these directly in the JSON editor; no form fields on purpose.
+        CLAUDE_CODE_MAX_CONTEXT_TOKENS: "372000",
+        CLAUDE_CODE_AUTO_COMPACT_WINDOW: "372000",
       },
     },
     category: "third_party",
@@ -1032,6 +1051,26 @@ export const providerPresets: ProviderPreset[] = [
     isPartner: true,
     partnerPromotionKey: "lemondata",
     icon: "lemondata",
+  },
+  {
+    name: "xAI (Grok)",
+    websiteUrl: "https://x.ai/grok",
+    settingsConfig: {
+      env: {
+        // The proxy enforces both this origin and the Responses wire format.
+        ANTHROPIC_BASE_URL: "https://api.x.ai/v1",
+        ANTHROPIC_MODEL: "grok-4.5",
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: "grok-4.5",
+        ANTHROPIC_DEFAULT_SONNET_MODEL: "grok-4.5",
+        ANTHROPIC_DEFAULT_OPUS_MODEL: "grok-4.5",
+      },
+    },
+    category: "third_party",
+    apiFormat: "openai_responses",
+    providerType: "xai_oauth",
+    requiresOAuth: true,
+    icon: "xai",
+    iconColor: "#000000",
   },
   {
     name: "Nvidia",

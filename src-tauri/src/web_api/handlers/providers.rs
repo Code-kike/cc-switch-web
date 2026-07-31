@@ -131,6 +131,10 @@ pub fn router(state: ApiState) -> Router {
             delete(remove_provider_from_live_config),
         )
         .route("/config/import-default-config", post(import_default_config))
+        .route(
+            "/providers/ensure-grokbuild-official-provider",
+            post(ensure_grokbuild_official_provider),
+        )
         .route("/providers/switch-provider", post(switch_provider))
         .route(
             "/providers/update-providers-sort-order",
@@ -291,6 +295,18 @@ async fn import_default_config(
     )
     .map_err(ApiError::from_anyhow)?;
     Ok(json_ok(imported))
+}
+
+async fn ensure_grokbuild_official_provider(State(state): State<ApiState>) -> ApiResult<bool> {
+    let inserted = state
+        .app_state
+        .db
+        .ensure_official_seed_by_id(
+            crate::database::GROKBUILD_OFFICIAL_PROVIDER_ID,
+            crate::app_config::AppType::GrokBuild,
+        )
+        .map_err(ApiError::from_anyhow)?;
+    Ok(json_ok(inserted))
 }
 
 async fn switch_provider(

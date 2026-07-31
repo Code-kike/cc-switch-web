@@ -24,6 +24,7 @@ describe("DirectorySettings", () => {
           claude: "/claude",
           codex: "/codex",
           gemini: "/gemini",
+          grokbuild: "/grokbuild",
           opencode: "/opencode",
           openclaw: "/openclaw",
           hermes: "/hermes",
@@ -34,6 +35,7 @@ describe("DirectorySettings", () => {
         claudeDir="/claude"
         codexDir="/codex"
         geminiDir="/gemini"
+        grokDir="/grokbuild"
         opencodeDir="/opencode"
         openclawDir="/openclaw"
         hermesDir="/hermes"

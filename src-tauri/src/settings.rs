@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock, RwLock};
 
@@ -33,6 +32,8 @@ pub struct VisibleApps {
     #[serde(default = "default_true")]
     pub gemini: bool,
     #[serde(default = "default_true")]
+    pub grokbuild: bool,
+    #[serde(default = "default_true")]
     pub opencode: bool,
     #[serde(default = "default_true")]
     pub openclaw: bool,
@@ -46,6 +47,7 @@ impl Default for VisibleApps {
             claude: true,
             codex: true,
             gemini: true,
+            grokbuild: true,
             opencode: true,
             openclaw: true,
             hermes: false, // 默认不显示，需用户手动启用
@@ -60,6 +62,7 @@ impl VisibleApps {
             AppType::Claude => self.claude,
             AppType::Codex => self.codex,
             AppType::Gemini => self.gemini,
+            AppType::GrokBuild => self.grokbuild,
             AppType::OpenCode => self.opencode,
             AppType::OpenClaw => self.openclaw,
             AppType::Hermes => self.hermes,
@@ -302,12 +305,17 @@ pub struct AppSettings {
     /// User has confirmed the usage query first-run notice
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage_confirmed: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage_dashboard_refresh_interval_ms: Option<u32>,
     /// User has confirmed the stream check first-run notice
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stream_check_confirmed: Option<bool>,
     /// Whether to show the failover toggle independently on the main page
     #[serde(default)]
     pub enable_failover_toggle: bool,
+    /// Whether to show the project profile switcher on the main page header
+    #[serde(default = "default_show_profile_switcher")]
+    pub show_profile_switcher: bool,
     /// Keep Codex ChatGPT login material in auth.json when switching to third-party providers.
     /// Opt-in: defaults to false so third-party switches cleanly overwrite auth.json.
     #[serde(default)]
@@ -336,6 +344,8 @@ pub struct AppSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gemini_config_dir: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grok_config_dir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opencode_config_dir: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub openclaw_config_dir: Option<String>,
@@ -352,6 +362,9 @@ pub struct AppSettings {
     /// 当前 Gemini 供应商 ID（本地存储，优先于数据库 is_current）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_provider_gemini: Option<String>,
+    /// 当前 Grok Build 供应商 ID（本地存储，优先于数据库 is_current）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_provider_grokbuild: Option<String>,
     /// 当前 OpenCode 供应商 ID（本地存储，对 OpenCode 可能无意义，但保持结构一致）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_provider_opencode: Option<String>,
@@ -407,6 +420,10 @@ fn default_minimize_to_tray_on_close() -> bool {
     true
 }
 
+fn default_show_profile_switcher() -> bool {
+    true
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
@@ -420,8 +437,10 @@ impl Default for AppSettings {
             enable_local_proxy: false,
             proxy_confirmed: None,
             usage_confirmed: None,
+            usage_dashboard_refresh_interval_ms: None,
             stream_check_confirmed: None,
             enable_failover_toggle: false,
+            show_profile_switcher: true,
             preserve_codex_official_auth_on_switch: false,
             failover_confirmed: None,
             first_run_notice_confirmed: None,
@@ -431,12 +450,14 @@ impl Default for AppSettings {
             claude_config_dir: None,
             codex_config_dir: None,
             gemini_config_dir: None,
+            grok_config_dir: None,
             opencode_config_dir: None,
             openclaw_config_dir: None,
             hermes_config_dir: None,
             current_provider_claude: None,
             current_provider_codex: None,
             current_provider_gemini: None,
+            current_provider_grokbuild: None,
             current_provider_opencode: None,
             current_provider_openclaw: None,
             current_provider_hermes: None,
@@ -479,6 +500,13 @@ impl AppSettings {
 
         self.gemini_config_dir = self
             .gemini_config_dir
+            .as_ref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+
+        self.grok_config_dir = self
+            .grok_config_dir
             .as_ref()
             .map(|s| s.trim())
             .filter(|s| !s.is_empty())
@@ -568,6 +596,7 @@ fn save_settings_file(settings: &AppSettings) -> Result<(), AppError> {
     #[cfg(unix)]
     {
         use std::fs::OpenOptions;
+        use std::io::Write;
         use std::os::unix::fs::OpenOptionsExt;
 
         let mut file = OpenOptions::new()
@@ -743,6 +772,14 @@ pub fn get_gemini_override_dir() -> Option<PathBuf> {
         .map(|p| resolve_override_path(p))
 }
 
+pub fn get_grok_override_dir() -> Option<PathBuf> {
+    let settings = settings_store().read().ok()?;
+    settings
+        .grok_config_dir
+        .as_ref()
+        .map(|p| resolve_override_path(p))
+}
+
 pub fn get_opencode_override_dir() -> Option<PathBuf> {
     let settings = settings_store().read().ok()?;
     settings
@@ -789,6 +826,7 @@ pub fn get_current_provider(app_type: &AppType) -> Option<String> {
         AppType::Claude => settings.current_provider_claude.clone(),
         AppType::Codex => settings.current_provider_codex.clone(),
         AppType::Gemini => settings.current_provider_gemini.clone(),
+        AppType::GrokBuild => settings.current_provider_grokbuild.clone(),
         AppType::OpenCode => settings.current_provider_opencode.clone(),
         AppType::OpenClaw => settings.current_provider_openclaw.clone(),
         AppType::Hermes => settings.current_provider_hermes.clone(),
@@ -805,6 +843,7 @@ pub fn set_current_provider(app_type: &AppType, id: Option<&str>) -> Result<(), 
         AppType::Claude => settings.current_provider_claude = id_owned.clone(),
         AppType::Codex => settings.current_provider_codex = id_owned.clone(),
         AppType::Gemini => settings.current_provider_gemini = id_owned.clone(),
+        AppType::GrokBuild => settings.current_provider_grokbuild = id_owned.clone(),
         AppType::OpenCode => settings.current_provider_opencode = id_owned.clone(),
         AppType::OpenClaw => settings.current_provider_openclaw = id_owned.clone(),
         AppType::Hermes => settings.current_provider_hermes = id_owned.clone(),
@@ -1027,6 +1066,15 @@ mod tests {
         let path = AppSettings::settings_path().expect("settings path");
         let content = std::fs::read_to_string(&path).expect("read settings file");
         serde_json::from_str(&content).expect("parse settings file")
+    }
+
+    /// Project switcher is opt-out: old settings files that predate the field
+    /// must retain the visible main-page control.
+    #[test]
+    fn show_profile_switcher_defaults_true_for_legacy_settings() {
+        let settings: AppSettings = serde_json::from_str("{}").expect("legacy settings");
+        assert!(settings.show_profile_switcher);
+        assert!(AppSettings::default().show_profile_switcher);
     }
 
     /// L14: many concurrent `update_settings` calls must not deadlock, and the

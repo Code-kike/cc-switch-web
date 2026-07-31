@@ -12,6 +12,7 @@ export type AppType =
   | "claude"
   | "codex"
   | "gemini"
+  | "grokbuild"
   | "opencode"
   | "openclaw"
   | "hermes";
@@ -21,6 +22,7 @@ export interface SkillApps {
   claude: boolean;
   codex: boolean;
   gemini: boolean;
+  grokbuild?: boolean;
   opencode: boolean;
   openclaw: boolean;
   hermes: boolean;

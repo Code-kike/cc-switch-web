@@ -5,6 +5,9 @@
 use crate::database::{lock_conn, Database};
 use crate::error::AppError;
 use crate::proxy::usage::calculator::ModelPricing;
+use crate::services::sql_helpers::{
+    fresh_input_sql, INPUT_TOKEN_SEMANTICS_FRESH, INPUT_TOKEN_SEMANTICS_TOTAL,
+};
 use chrono::{Local, NaiveDate, TimeZone, Timelike};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -111,6 +114,9 @@ pub struct RequestLogDetail {
     pub output_tokens: u32,
     pub cache_read_tokens: u32,
     pub cache_creation_tokens: u32,
+    /// Internal storage semantics; omitted from the UI/API payload.
+    #[serde(skip)]
+    pub input_token_semantics: i64,
     pub input_cost_usd: String,
     pub output_cost_usd: String,
     pub cache_read_cost_usd: String,
@@ -129,6 +135,48 @@ pub struct RequestLogDetail {
     pub pricing_model: Option<String>,
 }
 
+/// 把 26 列的查询结果映射为 `RequestLogDetail`。
+///
+/// 调用方的 SELECT **必须**按以下顺序返回 26 列：
+/// `request_id, provider_id, provider_name, app_type, model, request_model,
+///  cost_multiplier, input_tokens, output_tokens, cache_read_tokens,
+///  cache_creation_tokens, input_cost_usd, output_cost_usd, cache_read_cost_usd,
+///  cache_creation_cost_usd, total_cost_usd, is_streaming, latency_ms,
+///  first_token_ms, duration_ms, status_code, error_message, created_at,
+///  data_source, pricing_model, input_token_semantics`
+fn row_to_request_log_detail(row: &rusqlite::Row<'_>) -> rusqlite::Result<RequestLogDetail> {
+    Ok(RequestLogDetail {
+        request_id: row.get(0)?,
+        provider_id: row.get(1)?,
+        provider_name: row.get(2)?,
+        app_type: row.get(3)?,
+        model: row.get(4)?,
+        request_model: row.get(5)?,
+        cost_multiplier: row
+            .get::<_, Option<String>>(6)?
+            .unwrap_or_else(|| "1".to_string()),
+        input_tokens: row.get::<_, i64>(7)? as u32,
+        output_tokens: row.get::<_, i64>(8)? as u32,
+        cache_read_tokens: row.get::<_, i64>(9)? as u32,
+        cache_creation_tokens: row.get::<_, i64>(10)? as u32,
+        input_cost_usd: row.get(11)?,
+        output_cost_usd: row.get(12)?,
+        cache_read_cost_usd: row.get(13)?,
+        cache_creation_cost_usd: row.get(14)?,
+        total_cost_usd: row.get(15)?,
+        is_streaming: row.get::<_, i64>(16)? != 0,
+        latency_ms: row.get::<_, i64>(17)? as u64,
+        first_token_ms: row.get::<_, Option<i64>>(18)?.map(|v| v as u64),
+        duration_ms: row.get::<_, Option<i64>>(19)?.map(|v| v as u64),
+        status_code: row.get::<_, i64>(20)? as u16,
+        error_message: row.get(21)?,
+        created_at: row.get(22)?,
+        data_source: row.get(23)?,
+        pricing_model: row.get(24)?,
+        input_token_semantics: row.get::<_, i64>(25)?,
+    })
+}
+
 /// SQL fragment: resolve provider_name with fallback for session-based entries.
 /// Session logs use placeholder provider_ids (_session, _codex_session,
 /// _gemini_session, _opencode_session) that don't exist in the providers table
@@ -145,27 +193,6 @@ fn provider_name_coalesce(log_alias: &str, provider_alias: &str) -> String {
 }
 
 pub(crate) const SESSION_PROXY_DEDUP_WINDOW_SECONDS: i64 = 10 * 60;
-
-const CACHE_INCLUSIVE_APP_TYPES: &[&str] = &["codex", "gemini"];
-
-fn fresh_input_sql(alias: &str) -> String {
-    let prefix = if alias.is_empty() {
-        String::new()
-    } else {
-        format!("{alias}.")
-    };
-    let app_type_list = CACHE_INCLUSIVE_APP_TYPES
-        .iter()
-        .map(|app_type| format!("'{app_type}'"))
-        .collect::<Vec<_>>()
-        .join(", ");
-
-    format!(
-        "CASE WHEN {prefix}app_type IN ({app_type_list}) AND {prefix}input_tokens >= {prefix}cache_read_tokens \
-              THEN ({prefix}input_tokens - {prefix}cache_read_tokens) \
-              ELSE {prefix}input_tokens END"
-    )
-}
 
 fn derive_real_total_and_hit_rate(
     fresh_input: u64,
@@ -351,6 +378,45 @@ pub(crate) fn has_matching_proxy_usage_log(
         |row| row.get::<_, bool>(0),
     )
     .map_err(|e| AppError::Database(format!("查询重复代理用量日志失败: {e}")))
+}
+
+/// a10b569a: 探测疑似重复的 Codex 会话导入 —— 去重窗口内存在另一个
+/// request_id、模型/令牌指纹相同的 `codex_session` 行。谓词沿用
+/// COALESCE(data_source,'proxy') 形态以命中现有表达式索引。
+pub(crate) fn has_suspected_codex_session_duplicate(
+    conn: &Connection,
+    request_id: &str,
+    key: &DedupKey,
+) -> Result<bool, AppError> {
+    let data_source = data_source_expr("l");
+    let sql = format!(
+        "SELECT EXISTS (
+            SELECT 1
+            FROM proxy_request_logs l
+            WHERE l.app_type = 'codex'
+              AND {data_source} = 'codex_session'
+              AND l.request_id <> ?1
+              AND LOWER(l.model) = LOWER(?2)
+              AND l.input_tokens = ?3
+              AND l.output_tokens = ?4
+              AND l.cache_read_tokens = ?5
+              AND l.created_at BETWEEN ?6 - ?7 AND ?6 + ?7
+        )"
+    );
+    conn.query_row(
+        &sql,
+        params![
+            request_id,
+            key.model,
+            key.input_tokens as i64,
+            key.output_tokens as i64,
+            key.cache_read_tokens as i64,
+            key.created_at,
+            SESSION_PROXY_DEDUP_WINDOW_SECONDS,
+        ],
+        |row| row.get::<_, bool>(0),
+    )
+    .map_err(|error| AppError::Database(format!("查询疑似重复 Codex 会话用量失败: {error}")))
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1288,7 +1354,8 @@ impl Database {
                     l.input_tokens, l.output_tokens, l.cache_read_tokens, l.cache_creation_tokens,
                     l.input_cost_usd, l.output_cost_usd, l.cache_read_cost_usd, l.cache_creation_cost_usd, l.total_cost_usd,
                     l.is_streaming, l.latency_ms, l.first_token_ms, l.duration_ms,
-                    l.status_code, l.error_message, l.created_at, l.data_source, l.pricing_model
+                    l.status_code, l.error_message, l.created_at, l.data_source, l.pricing_model,
+                    l.input_token_semantics
              FROM proxy_request_logs l
              LEFT JOIN providers p ON l.provider_id = p.id AND l.app_type = p.app_type
              {where_clause}
@@ -1298,37 +1365,7 @@ impl Database {
 
         let mut stmt = conn.prepare(&sql)?;
         let params_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
-        let rows = stmt.query_map(params_refs.as_slice(), |row| {
-            Ok(RequestLogDetail {
-                request_id: row.get(0)?,
-                provider_id: row.get(1)?,
-                provider_name: row.get(2)?,
-                app_type: row.get(3)?,
-                model: row.get(4)?,
-                request_model: row.get(5)?,
-                cost_multiplier: row
-                    .get::<_, Option<String>>(6)?
-                    .unwrap_or_else(|| "1".to_string()),
-                input_tokens: row.get::<_, i64>(7)? as u32,
-                output_tokens: row.get::<_, i64>(8)? as u32,
-                cache_read_tokens: row.get::<_, i64>(9)? as u32,
-                cache_creation_tokens: row.get::<_, i64>(10)? as u32,
-                input_cost_usd: row.get(11)?,
-                output_cost_usd: row.get(12)?,
-                cache_read_cost_usd: row.get(13)?,
-                cache_creation_cost_usd: row.get(14)?,
-                total_cost_usd: row.get(15)?,
-                is_streaming: row.get::<_, i64>(16)? != 0,
-                latency_ms: row.get::<_, i64>(17)? as u64,
-                first_token_ms: row.get::<_, Option<i64>>(18)?.map(|v| v as u64),
-                duration_ms: row.get::<_, Option<i64>>(19)?.map(|v| v as u64),
-                status_code: row.get::<_, i64>(20)? as u16,
-                error_message: row.get(21)?,
-                created_at: row.get(22)?,
-                data_source: row.get(23)?,
-                pricing_model: row.get(24)?,
-            })
-        })?;
+        let rows = stmt.query_map(params_refs.as_slice(), row_to_request_log_detail)?;
 
         let mut logs = Vec::new();
         let mut provider_cache = HashMap::new();
@@ -1367,42 +1404,13 @@ impl Database {
                     l.input_tokens, l.output_tokens, l.cache_read_tokens, l.cache_creation_tokens,
                     l.input_cost_usd, l.output_cost_usd, l.cache_read_cost_usd, l.cache_creation_cost_usd, l.total_cost_usd,
                     l.is_streaming, l.latency_ms, l.first_token_ms, l.duration_ms,
-                    l.status_code, l.error_message, l.created_at, l.data_source, l.pricing_model
+                    l.status_code, l.error_message, l.created_at, l.data_source, l.pricing_model,
+                    l.input_token_semantics
              FROM proxy_request_logs l
              LEFT JOIN providers p ON l.provider_id = p.id AND l.app_type = p.app_type
              WHERE l.request_id = ?"
         );
-        let result = conn.query_row(&detail_sql, [request_id], |row| {
-            Ok(RequestLogDetail {
-                request_id: row.get(0)?,
-                provider_id: row.get(1)?,
-                provider_name: row.get(2)?,
-                app_type: row.get(3)?,
-                model: row.get(4)?,
-                request_model: row.get(5)?,
-                cost_multiplier: row
-                    .get::<_, Option<String>>(6)?
-                    .unwrap_or_else(|| "1".to_string()),
-                input_tokens: row.get::<_, i64>(7)? as u32,
-                output_tokens: row.get::<_, i64>(8)? as u32,
-                cache_read_tokens: row.get::<_, i64>(9)? as u32,
-                cache_creation_tokens: row.get::<_, i64>(10)? as u32,
-                input_cost_usd: row.get(11)?,
-                output_cost_usd: row.get(12)?,
-                cache_read_cost_usd: row.get(13)?,
-                cache_creation_cost_usd: row.get(14)?,
-                total_cost_usd: row.get(15)?,
-                is_streaming: row.get::<_, i64>(16)? != 0,
-                latency_ms: row.get::<_, i64>(17)? as u64,
-                first_token_ms: row.get::<_, Option<i64>>(18)?.map(|v| v as u64),
-                duration_ms: row.get::<_, Option<i64>>(19)?.map(|v| v as u64),
-                status_code: row.get::<_, i64>(20)? as u16,
-                error_message: row.get(21)?,
-                created_at: row.get(22)?,
-                data_source: row.get(23)?,
-                pricing_model: row.get(24)?,
-            })
-        });
+        let result = conn.query_row(&detail_sql, [request_id], row_to_request_log_detail);
 
         match result {
             Ok(mut detail) => {
@@ -1564,17 +1572,22 @@ impl Database {
 
         let million = rust_decimal::Decimal::from(1_000_000u64);
 
-        // 与 CostCalculator 保持一致：
-        // - Codex/Gemini 的 input_tokens 包含 cache read，需要扣除缓存命中部分
-        // - Claude/Anthropic 的 input_tokens 已经是 fresh input，不能再次扣减
-        // - 各项成本是基础成本（不含倍率），倍率只作用于最终总价
-        let input_tokens = log.input_tokens as u64;
-        let cache_read_tokens = log.cache_read_tokens as u64;
-        let billable_input_tokens = if matches!(log.app_type.as_str(), "codex" | "gemini") {
-            input_tokens.saturating_sub(cache_read_tokens)
-        } else {
-            input_tokens
-        };
+        // 与 CostCalculator::calculate_for_app 保持一致的计算逻辑：
+        // 1. 历史 Codex/Gemini 行只包含 cache read；新 total 行还包含 cache write。
+        // 2. Claude/Anthropic 的 input_tokens 已经是 fresh input，不能再次扣减
+        // 3. 各项成本是基础成本（不含倍率），倍率只作用于最终总价
+        let cache_inclusive_app = matches!(log.app_type.as_str(), "codex" | "gemini");
+        let billable_input_tokens =
+            if !cache_inclusive_app || log.input_token_semantics == INPUT_TOKEN_SEMANTICS_FRESH {
+                log.input_tokens as u64
+            } else if log.input_token_semantics == INPUT_TOKEN_SEMANTICS_TOTAL {
+                (log.input_tokens as u64)
+                    .saturating_sub(log.cache_read_tokens as u64)
+                    .saturating_sub(log.cache_creation_tokens as u64)
+            } else {
+                // v12 and earlier: input included cache reads but excluded cache writes.
+                (log.input_tokens as u64).saturating_sub(log.cache_read_tokens as u64)
+            };
         let input_cost =
             rust_decimal::Decimal::from(billable_input_tokens) * pricing.input / million;
         let output_cost =
@@ -3024,6 +3037,18 @@ mod tests {
         assert!(
             result.is_some(),
             "MiniMaxAI/MiniMax-M3 应清洗后小写匹配到 minimax-m3"
+        );
+
+        let grok_pricing = find_model_pricing_row(&conn, "xai/grok-4.5")?;
+        assert_eq!(
+            grok_pricing,
+            Some((
+                "2".to_string(),
+                "6".to_string(),
+                "0.50".to_string(),
+                "0".to_string(),
+            )),
+            "Grok Build / xAI 默认模型必须命中内置定价，避免成本静默记 0"
         );
 
         // 裸 id 精确命中新增的 seed 行

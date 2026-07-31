@@ -62,6 +62,8 @@ export interface UsageScript {
   baseUrl?: string; // 用量查询专用的 Base URL（通用和 NewAPI 模板使用）
   accessToken?: string; // 访问令牌（NewAPI 模板使用）
   userId?: string; // 用户ID（NewAPI 模板使用）
+  teamOrganizationId?: string; // 智谱团队套餐组织 ID（请求头 bigmodel-organization）
+  teamProjectId?: string; // 智谱团队套餐项目 ID（请求头 bigmodel-project）
   codingPlanProvider?: string; // Coding Plan 供应商标识（如 "kimi", "zhipu", "minimax"）
   autoQueryInterval?: number; // 自动查询间隔（单位：分钟，0 表示禁用）
   autoIntervalMinutes?: number; // 自动查询间隔（分钟）- 别名字段
@@ -107,22 +109,6 @@ export interface UsageResult {
   error?: string;
 }
 
-// 供应商单独的模型测试配置
-export interface ProviderTestConfig {
-  // 是否启用单独配置（false 时使用全局配置）
-  enabled: boolean;
-  // 测试用的模型名称（覆盖全局配置）
-  testModel?: string;
-  // 超时时间（秒）
-  timeoutSecs?: number;
-  // 测试提示词
-  testPrompt?: string;
-  // 降级阈值（毫秒）
-  degradedThresholdMs?: number;
-  // 最大重试次数
-  maxRetries?: number;
-}
-
 export type AuthBindingSource = "provider_config" | "managed_account";
 
 export interface AuthBinding {
@@ -145,8 +131,6 @@ export interface ProviderMeta {
   isPartner?: boolean;
   // 合作伙伴促销 key（用于后端识别 PackyCode 等）
   partnerPromotionKey?: string;
-  // 供应商单独的模型测试配置
-  testConfig?: ProviderTestConfig;
   // 供应商成本倍率
   costMultiplier?: string;
   // 供应商计费模式来源
@@ -207,6 +191,9 @@ export interface CodexCatalogModel {
   model: string;
   displayName?: string;
   contextWindow?: string | number;
+  // Hidden provider capability metadata for the generated model catalog.
+  // supportsParallelToolCalls is native-profile-only; inputModalities wins over
+  // automatic text-only model detection for every profile.
   supportsParallelToolCalls?: boolean;
   inputModalities?: string[];
   baseInstructions?: string;
@@ -220,6 +207,7 @@ export interface VisibleApps {
   claude: boolean;
   codex: boolean;
   gemini: boolean;
+  grokbuild: boolean;
   opencode: boolean;
   openclaw: boolean;
   hermes: boolean;
@@ -301,10 +289,13 @@ export interface Settings {
   proxyConfirmed?: boolean;
   // User has confirmed the usage query first-run notice
   usageConfirmed?: boolean;
+  usageDashboardRefreshIntervalMs?: number;
   // User has confirmed the stream check first-run notice
   streamCheckConfirmed?: boolean;
   // Whether to show the failover toggle independently on the main page
   enableFailoverToggle?: boolean;
+  // Whether to show the project profile switcher on the main page header
+  showProfileSwitcher?: boolean;
   // Preserve Codex ChatGPT login in auth.json when switching third-party providers
   preserveCodexOfficialAuthOnSwitch?: boolean;
   // User has confirmed the failover toggle first-run notice
@@ -328,6 +319,8 @@ export interface Settings {
   codexConfigDir?: string;
   // 覆盖 Gemini 配置目录（可选）
   geminiConfigDir?: string;
+  // 覆盖 Grok Build 配置目录（可选）
+  grokConfigDir?: string;
   // 覆盖 OpenCode 配置目录（可选）
   opencodeConfigDir?: string;
   // 覆盖 OpenClaw 配置目录（可选）
@@ -408,6 +401,7 @@ export interface McpApps {
   claude: boolean;
   codex: boolean;
   gemini: boolean;
+  grokbuild?: boolean;
   opencode: boolean;
   openclaw: boolean;
   hermes: boolean;

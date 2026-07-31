@@ -33,6 +33,7 @@ const SQL_RESTORE_TABLES: &[&str] = &[
     "proxy_live_backup",
     "usage_daily_rollups",
     "session_log_sync",
+    "profiles",
 ];
 
 const LEGACY_SQL_RESTORE_TABLES: &[&str] = &["circuit_breaker_config", "failover_queue"];
@@ -1528,8 +1529,11 @@ mod tests {
 
         let import_db = Arc::clone(&db);
         let import_thread = std::thread::spawn(move || import_db.import_sql_string(&sql));
+        // Generous deadline: before the hook fires, the canonical restore replays
+        // the full v0→v16 migration chain on the temp DB, which can take well
+        // over 5s on slow shared CI runners.
         hook_ready_rx
-            .recv_timeout(Duration::from_secs(5))
+            .recv_timeout(Duration::from_secs(60))
             .expect("restore should reach critical section hook");
 
         let (writer_started_tx, writer_started_rx) = mpsc::channel();
@@ -1556,7 +1560,7 @@ mod tests {
             .expect("join import thread")
             .expect("import database");
         writer_done_rx
-            .recv_timeout(Duration::from_secs(5))
+            .recv_timeout(Duration::from_secs(60))
             .expect("writer should finish after restore unlocks");
         writer_thread.join().expect("join writer thread");
         assert_eq!(

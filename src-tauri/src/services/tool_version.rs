@@ -9,7 +9,7 @@ use std::os::windows::process::CommandExt;
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
-const VALID_TOOLS: [&str; 4] = ["claude", "codex", "gemini", "opencode"];
+const VALID_TOOLS: [&str; 5] = ["claude", "codex", "gemini", "grok", "opencode"];
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ToolVersion {
@@ -122,6 +122,7 @@ async fn get_single_tool_version_impl(
             }
             "codex" => fetch_npm_latest_for_tool(&client, "@openai/codex", tool, local).await,
             "gemini" => fetch_npm_latest_for_tool(&client, "@google/gemini-cli", tool, local).await,
+            "grok" => fetch_npm_latest_for_tool(&client, "@xai-official/grok", tool, local).await,
             "opencode" => fetch_github_latest_version(&client, "anomalyco/opencode").await,
             _ => None,
         }
@@ -839,6 +840,7 @@ fn wsl_distro_for_tool(tool: &str) -> Option<String> {
         "claude" => crate::settings::get_claude_override_dir(),
         "codex" => crate::settings::get_codex_override_dir(),
         "gemini" => crate::settings::get_gemini_override_dir(),
+        "grok" => crate::settings::get_grok_override_dir(),
         "opencode" => crate::settings::get_opencode_override_dir(),
         _ => None,
     }?;
@@ -880,6 +882,12 @@ mod tests {
         assert_eq!(extract_version("claude 1.0.20"), "1.0.20");
         assert_eq!(extract_version("v2.3.4-beta.1"), "2.3.4-beta.1");
         assert_eq!(extract_version("no version here"), "no version here");
+    }
+
+    #[test]
+    fn grok_is_registered_for_version_discovery() {
+        assert!(VALID_TOOLS.contains(&"grok"));
+        assert!(npm_prerelease_tags("grok").is_empty());
     }
 
     #[test]

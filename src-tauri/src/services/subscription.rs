@@ -342,9 +342,9 @@ const KNOWN_TIERS: &[&str] = &[
 
 /// 查询 Claude 官方订阅额度
 ///
-/// 瞬时传输失败（网络/超时/读体中断）返回 `Err`（前端 reject → retry +
-/// 保留上次成功值）；确定性失败（鉴权/非 2xx/响应体非法 JSON）返回
-/// `Ok(success:false)`。
+/// 瞬时传输失败（网络/超时/读体中断）返回 `Err`（前端 reject → retry + 保留上次
+/// 成功值）；确定性失败（鉴权/非 2xx/响应体非法 JSON）返回 `Ok(success:false)`。
+/// codex/gemini 两个查询函数遵守同一约定。
 async fn query_claude_quota(access_token: &str) -> Result<SubscriptionQuota, String> {
     let client = crate::proxy::http_client::get();
 
@@ -1224,9 +1224,9 @@ async fn query_gemini_quota(access_token: &str) -> Result<SubscriptionQuota, Str
 
 /// 查询指定 CLI 工具的官方订阅额度
 ///
-/// 瞬时传输失败以 `Err` 传播（前端 reject → retry + 保留上次成功值）。
-/// Expired 分支的“过期也试一把”重试同样传播瞬时错误，避免一次网络抖动被
-/// 误报成确定性的凭据过期。
+/// 瞬时传输失败以 `Err` 传播（前端 reject → retry + 保留上次成功值）。Expired
+/// 分支的"过期也试一把"重试同样用 `?` 传播瞬时错误——不能折叠成"已过期"，
+/// 否则一次网络抖动会被误报成确定性的凭据过期。
 pub async fn get_subscription_quota(tool: &str) -> Result<SubscriptionQuota, String> {
     match tool {
         "claude" => {

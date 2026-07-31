@@ -1,17 +1,93 @@
 use serde_json::json;
 
 use cc_switch_lib::{
-    get_codex_auth_path, get_codex_config_path, read_json_file, switch_provider_test_hook,
-    write_codex_live_atomic, AppError, AppType, McpApps, McpServer, MultiAppConfig, Provider,
+    get_codex_auth_path, get_codex_config_path, import_default_config_test_hook, read_json_file,
+    switch_provider_test_hook, write_codex_live_atomic, AppError, AppType, McpApps, McpServer,
+    MultiAppConfig, Provider,
 };
 
 #[path = "support.rs"]
 mod support;
 use std::collections::HashMap;
 use support::{
-    create_test_state_with_config, enable_codex_official_auth_preservation, ensure_test_home,
-    reset_test_fs, test_mutex,
+    create_test_state, create_test_state_with_config, enable_codex_official_auth_preservation,
+    ensure_test_home, reset_test_fs, test_mutex,
 };
+
+fn grokbuild_config(name: &str, endpoint: &str, api_key: &str) -> String {
+    format!(
+        r#"[models]
+default = "grok-4.5"
+
+[model."grok-4.5"]
+model = "grok-4.5"
+base_url = "{endpoint}"
+name = "{name}"
+api_key = "{api_key}"
+api_backend = "responses"
+context_window = 500000
+"#
+    )
+}
+
+#[test]
+fn grokbuild_import_and_switch_write_live_config() {
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let home = ensure_test_home();
+    let live_path = home.join(".grok").join("config.toml");
+    std::fs::create_dir_all(live_path.parent().expect("grok config dir"))
+        .expect("create grok config dir");
+    let imported_config = grokbuild_config("Imported", "https://old.example/v1", "old-key");
+    std::fs::write(&live_path, &imported_config).expect("seed Grok Build config");
+
+    let state = create_test_state().expect("create test state");
+    import_default_config_test_hook(&state, AppType::GrokBuild)
+        .expect("import Grok Build default provider");
+
+    let imported = state
+        .db
+        .get_provider_by_id("default", AppType::GrokBuild.as_str())
+        .expect("query imported provider")
+        .expect("imported provider exists");
+    assert_eq!(
+        imported
+            .settings_config
+            .get("config")
+            .and_then(|value| value.as_str()),
+        Some(imported_config.as_str())
+    );
+
+    let next_config = grokbuild_config("Relay", "https://new.example/v1", "new-key");
+    state
+        .db
+        .save_provider(
+            AppType::GrokBuild.as_str(),
+            &Provider::with_id(
+                "relay".to_string(),
+                "Relay".to_string(),
+                json!({ "config": next_config }),
+                None,
+            ),
+        )
+        .expect("save second Grok Build provider");
+
+    switch_provider_test_hook(&state, AppType::GrokBuild, "relay")
+        .expect("switch Grok Build provider");
+
+    assert_eq!(
+        std::fs::read_to_string(&live_path).expect("read switched Grok Build config"),
+        next_config
+    );
+    assert_eq!(
+        state
+            .db
+            .get_current_provider(AppType::GrokBuild.as_str())
+            .expect("read Grok Build current provider")
+            .as_deref(),
+        Some("relay")
+    );
+}
 
 #[test]
 fn switch_provider_updates_codex_live_and_state() {
@@ -53,7 +129,9 @@ command = "echo"
                 "Latest".to_string(),
                 json!({
                     "auth": {"OPENAI_API_KEY": "fresh-key"},
-                    "config": r#"[mcp_servers.latest]
+                    "config": r#"model = "marker-latest"
+
+[mcp_servers.latest]
 type = "stdio"
 command = "say"
 "#
@@ -78,6 +156,7 @@ command = "say"
                 claude: false,
                 codex: true, // 启用 Codex
                 gemini: false,
+                grokbuild: false,
                 opencode: false,
                 hermes: false,
             },
@@ -136,10 +215,16 @@ command = "say"
         .and_then(|v| v.as_str())
         .unwrap_or_default();
     // 供应商配置应该包含在 live 文件中
-    // 注意：live 文件还会包含 MCP 同步后的内容
+    // 注意：live 的 mcp_servers.* 段由 DB 派生态独占管理（见 spec
+    // “Codex Common Configuration and MCP Derived-State Atomicity”），
+    // 供应商快照里未注册的 mcp_servers.latest 不会存活，用非 MCP 键作标记
     assert!(
-        config_text.contains("mcp_servers.latest"),
+        config_text.contains("marker-latest"),
         "live file should contain provider's original config"
+    );
+    assert!(
+        !config_text.contains("mcp_servers.latest"),
+        "unregistered mcp_servers sections from the provider snapshot must be replaced by DB-derived state"
     );
     assert!(
         new_config_text.contains("mcp_servers.latest"),

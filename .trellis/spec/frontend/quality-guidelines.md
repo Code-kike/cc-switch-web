@@ -147,6 +147,16 @@ async fn get_balance(Json(query): Json<BalanceQuery>) -> ApiResult<_> { ... }
 - Bare default IDs used by presets, such as `claude-sonnet-4-6` and
   `claude-haiku-4-5`, must have seed rows when they are not only aliases for a
   dated model ID.
+- Repricing an existing FE preset entry moves three things together: the preset
+  `cost` values, the matching `seed_model_pricing` row, and a
+  `repair_current_model_pricing` entry (updates only rows still equal to the old
+  built-ins so user overrides survive). Search seeds for the whole model family,
+  including documented peg rows (e.g. `kat-coder-air` pegged to
+  `kat-coder-pro`), not just the id named in the preset.
+- The preset↔seed SSOT test (`tests/config/openclawPresetPricing.test.ts`) must
+  compare ids lowercased (runtime lookup lowercases) and tolerate extra cost
+  fields (`cacheRead`/`cacheWrite`) after `input`/`output`; pin mixed-case and
+  recently-repriced ids as sentinels that must appear on both sides.
 
 #### 4. Validation & Error Matrix
 
@@ -156,6 +166,11 @@ async fn get_balance(Json(query): Json<BalanceQuery>) -> ApiResult<_> { ... }
   be bypassed.
 - Adding a preset default without searching `model_pricing` seeds -> reject;
   this creates a cost-reporting regression.
+- Preset repriced but seed/repair rows untouched -> reject; runtime bills at the
+  stale seed price (v3.18.0 sync caught `kat-coder-pro` at 1/150 of list price).
+- SSOT test compares case-sensitively or requires exact `{input, output}` cost
+  shape -> reject; mixed-case ids and entries with cache fields silently drop
+  out of comparison and the test goes vacuous.
 
 #### 5. Good/Base/Bad Cases
 
@@ -1085,6 +1100,12 @@ crate::services::s3_auto_sync::notify_db_changed(table);
 - Run:
   - `cargo check --manifest-path src-tauri/Cargo.toml --no-default-features --features web-server --example server`
 - Run `git diff --check` on the files included in the sync patch before final review.
+- When a multi-batch sync defers `pnpm test:integration` to the final batch,
+  expect stale-expectation pileup: triage every failure against server logs and
+  the batch reports before editing a test. Each test-side fix must be traced to
+  a named intentional upstream/port behavior (e.g. fixture stems must carry a
+  trailing 36-char UUID once the importer defers non-UUID rollout names); a fix
+  that cannot be traced is a masked product regression.
 
 #### 7. Wrong vs Correct
 
@@ -1139,6 +1160,11 @@ git diff v3.14.1..upstream-v3.15.0 -- <focused-area>
   (e.g. `session_manager/providers/opencode.rs`) resolve through
   `dirs::home_dir()`/XDG, so without this the smoke server reads the developer's
   real `~/.local/share/opencode/opencode.db` (mirror the Rust example `TempHome`).
+- When the spawn env overrides `HOME`, pin `RUSTUP_HOME` and `CARGO_HOME` to the
+  real home directory: the rustup shim otherwise resolves `$HOME/.rustup` inside
+  the throwaway dir and re-downloads the whole toolchain, timing out server
+  startup. These two only affect build caches; cc-switch config resolution never
+  reads them, so app-data isolation is not weakened.
 - `CC_SWITCH_WEB_DIST_DIR` must point at the built Web bundle that should be
   served by the standalone server.
 - The smoke result should be interpreted by probe expectations, not by status
@@ -2131,6 +2157,8 @@ await workspaceApi.writeFile(loadedFilename, content);
 
 #### 2. Signatures
 
+- `database::SCHEMA_VERSION: i32 = 15`
+- `Database::migrate_v14_to_v15(conn) -> Result<(), AppError>`
 - `import_sql_string_inner(&self, sql_raw: &str, preserve_tables: &[&str]) -> Result<String, AppError>`
 - Restore helpers:
   - `install_sql_restore_authorizer`
@@ -2152,6 +2180,15 @@ await workspaceApi.writeFile(loadedFilename, content);
 - After legacy migration and validation, always copy allowed rows into a fresh
   canonical schema created by the current code. Imported DDL never becomes the
   live schema directly.
+- Fresh-schema DDL and migration-rebuilt DDL must define `proxy_config` with the
+  same columns in the same canonical order. A table rebuild must project every
+  existing field by name and use a default only when the old column is truly
+  absent.
+- The v14 -> v15 rebuild adds the `grokbuild` proxy row plus Grok MCP/Skills
+  flags while preserving existing values including `failover_strategy`,
+  `live_takeover_active`, retry/circuit settings, pricing fields, and timeouts.
+- SQLite may emit `CREATE TABLE "proxy_config"` after a rename/rebuild. Current
+  exports from upgraded databases must accept this quoted canonical form.
 - Sync restore may reapply only `SYNC_PRESERVE_TABLES` from the local snapshot.
 - Run `PRAGMA integrity_check` and `PRAGMA foreign_key_check` on the canonical
   database before replacement.
@@ -2166,16 +2203,24 @@ await workspaceApi.writeFile(loadedFilename, content);
 - Foreign-key violation or failed integrity check -> reject.
 - Valid legacy v1/v2 export -> migrate and copy data into the current canonical
   schema.
+- v14 row with `failover_strategy = 'random'` or active takeover -> preserve the
+  values through v15; resetting them to defaults is a migration failure.
+- Current export containing quoted `CREATE TABLE "proxy_config"` -> accept and
+  canonicalize it rather than rejecting a valid upgraded database.
 - Any rejection or replacement failure -> preserve the previous live database
   and its guard data.
 
 #### 5. Good/Base/Bad Cases
 
 - Good: a current CC Switch export round-trips with its providers and MCP data.
+- Good: v14 -> v15 retains random failover, takeover state, retries, MCP flags,
+  and Skills flags while adding the Grok row.
 - Base: a supported legacy export imports, migrates, and re-exports using only
   the current schema semantics.
 - Bad: validate only the header and execute against the live database, or
   validate a temporary database and rename that untrusted schema into place.
+- Bad: rebuild `proxy_config` with a partial `INSERT ... SELECT` that silently
+  replaces existing columns with their defaults.
 
 #### 6. Tests Required
 
@@ -2188,6 +2233,10 @@ await workspaceApi.writeFile(loadedFilename, content);
   - `sql_import_accepts_legacy_v1_export_and_migrates_it`
   - `sql_import_accepts_current_export_from_upgraded_legacy_schema`
   - `sql_import_accepts_schema_v2_legacy_objects_and_normalizes_them`
+- Migration regression:
+  - `migrate_v14_to_v15_adds_grokbuild_proxy_row_and_enablement_flags`
+  - assert preservation of random failover, live takeover, retry count, MCP
+    enablement, and Skills enablement, not only the new Grok defaults.
 - Atomicity and sync tests:
   - `sql_import_holds_main_lock_across_safety_backup_and_replace`
   - `sync_import_preserves_local_only_tables`
@@ -2484,6 +2533,472 @@ frontend parse/stringify -> per-entry live writes -> DB remains committed on fai
 syntax-preserving backend operation + stale-result invalidation
 DB authoritative state -> complete live projection
 projection failure -> DB rollback + compensation of every affected application
+```
+
+---
+
+### Scenario: Project Profiles — Scoped Snapshot Apply and Runtime Refresh
+
+#### 1. Scope / Trigger
+
+- Trigger: changing project-profile schema, snapshot/apply behavior, Tauri/Web
+  commands, frontend profile UI, or the `profile-applied` refresh path.
+- Applies to `database/dao/profiles.rs`, `services/profile.rs`,
+  `commands/profile.rs`, `web_api/handlers/profiles.rs`,
+  `src/lib/api/profiles.ts`, `src/lib/query/profiles.ts`, `App.tsx`, and any
+  feature state refreshed after a profile apply.
+
+#### 2. Signatures
+
+- Storage:
+  - `profiles(id, name, payload, sort_order, created_at, updated_at)`
+  - `settings.current_profile_id_claude`
+  - `settings.current_profile_id_codex`
+- Backend:
+  - `ProfileScope = Claude | Codex`
+  - `ProfileService::apply(state, profile_id, scope) -> Result<(Vec<String>, bool), AppError>`
+  - `ProfilePayload { providers, mcp, skills, prompts }`, each keyed by
+    `claude` and `codex`
+- Dual-runtime API:
+  - `list_profiles`
+  - `create_profile(name, scope)`
+  - `update_profile(id, name?, resnapshot?, scope?)`
+  - `delete_profile(id)`
+  - `clear_current_profile(scope)`
+  - `apply_profile(id, scope)`
+  - Web routes live under `/api/profiles/*` with matching GET/POST/PUT/DELETE
+    methods in `web-commands.ts` and Axum.
+- Refresh event:
+  - `profile-applied { profileId: string | null, scope: "claude" | "codex" }`
+  - `PromptPanelHandle.reload(): Promise<void>` for prompt state, which is not
+    owned by React Query.
+
+#### 3. Contracts
+
+- A profile is a shared project entity, but its current pointer and payload
+  slots are scope-local. Applying Claude must not mutate Codex slots or its
+  current marker, and vice versa.
+- The fork supports only Claude and Codex profile scopes. Gemini, OpenCode,
+  OpenClaw, and Hermes do not render a profile switcher; Claude Desktop must not
+  be reintroduced without a real fork runtime surface.
+- For MCP and Skills payloads, JSON `null` means “this scope was never
+  captured; leave it untouched”, while `[]` means “captured empty; disable all
+  currently enabled entries”. Frontend `hasScopeSnapshot` must preserve this
+  distinction.
+- Apply order is: serialize with the per-app switch lock while disabling proxy
+  takeover, then provider, MCP, Skills, Prompt, scoped current marker, and
+  finally stop the proxy only when no takeover remains. Live writes continue
+  through existing managed atomic writers; MCP remains a DB-authoritative
+  projection.
+- Missing target entities are best-effort warnings. A malformed scope, missing
+  profile, or invalid payload is a request failure and must not be silently
+  treated as a successful empty profile.
+- Tauri commands and Web handlers must expose the same payload/response shape.
+  Web mutations remain under the existing unauthenticated + same-origin-intent
+  posture; do not add profile-specific authentication.
+- Refresh the actual owner of each derived state:
+  - TanStack Query state -> invalidate its real query key (`profiles`, scoped
+    `providers`, `mcp`, `skills`, proxy status).
+  - Local hook/component state -> call its explicit reload path. Invalidating a
+    made-up key is a no-op; `PromptPanel` must reload directly when the event
+    scope matches the active application.
+- Use the runtime-neutral event adapter so desktop Tauri events and Web SSE
+  events exercise the same refresh logic.
+
+#### 4. Validation & Error Matrix
+
+- Unknown scope -> reject (`InvalidInput`; Web 400), do not create a new key or
+  silently fall back to Claude.
+- Profile exists only for the other scope -> mark it current with a warning and
+  leave the uncaptured scope unchanged.
+- Captured empty MCP/Skills set -> disable existing enabled entries; treating
+  it like `null` is a reject.
+- Missing provider/MCP/Skill/Prompt referenced by a payload -> continue and
+  return a warning naming the dangling ID.
+- Profile apply races takeover or hot switch without the per-app switch lock ->
+  reject; live config and backup ownership can interleave.
+- Tauri command added without Axum route or `web-commands.ts` entry -> reject;
+  route coverage must report zero missing/mismatched commands.
+- `profile-applied` invalidates `['prompts', scope]` while prompts remain local
+  state -> reject; an already-open prompt panel stays stale.
+- Event for Codex reloads an open Claude prompt panel (or the reverse) ->
+  reject; refresh must be scope-matched.
+
+#### 5. Good/Base/Bad Cases
+
+- Good: a Web client applies a Claude profile; provider/MCP/Skills/prompt live
+  state changes through shared services, Web SSE emits `profile-applied`, query
+  caches invalidate, and an open Claude prompt panel reloads.
+- Base: a Claude-only profile is selected from the Codex tab; Codex state is
+  left untouched, the Codex current marker changes, and the caller receives the
+  uncaptured-scope warning.
+- Bad: copying upstream Tauri-only profile commands without Web parity, adding
+  Claude Desktop payload slots to this fork, or assuming every UI state owner
+  can be refreshed through React Query invalidation.
+
+#### 6. Tests Required
+
+- Rust service/DAO/migration tests:
+  - shared-scope isolation and autosave round trip;
+  - null-vs-empty MCP/Skills behavior and dangling-reference warnings;
+  - v13 -> v14 schema migration plus scoped current-marker behavior;
+  - takeover-disable serialization on the per-app switch lock;
+  - `profile_roundtrip` integration suite with an isolated temporary HOME.
+- Frontend/Web tests:
+  - adapter method/body/query encoding for all six profile commands;
+  - switcher current-ID mapping and unsupported app tabs;
+  - App event test proving matching-scope prompt reload and non-matching-scope
+    no-op;
+  - Web route coverage with zero missing/method mismatch/parity fallback.
+- Gates: desktop and Web clippy/check, unfiltered Rust library tests,
+  `profile_roundtrip`, TypeScript, locale parity, formatting, and full Vitest.
+
+#### 7. Wrong vs Correct
+
+##### Wrong
+
+```typescript
+await queryClient.invalidateQueries({
+  queryKey: ["prompts", payload.scope], // PromptPanel has no such query.
+});
+```
+
+##### Correct
+
+```typescript
+await queryClient.invalidateQueries({ queryKey: ["profiles"] });
+if (payload.scope === activeApp) {
+  await promptPanelRef.current?.reload();
+}
+```
+
+---
+
+### Scenario: Grok Build Official State and xAI Managed OAuth
+
+#### 1. Scope / Trigger
+
+- Trigger: changing Grok Build application wiring, the canonical Grok Official
+  provider, xAI OAuth account storage, managed-auth routing, or their Tauri/Web
+  command surfaces.
+- Applies across application parsing, provider seed/import flows, frontend
+  presets/mutations, auth managers, proxy transforms, and both runtime roots.
+
+#### 2. Signatures
+
+- Canonical provider:
+  - `GROKBUILD_OFFICIAL_PROVIDER_ID = "grokbuild-official"`
+  - `Database::ensure_official_seed_by_id(id, AppType::GrokBuild) -> Result<bool, AppError>`
+  - `ProviderService::import_default_config_with_snippet_extraction(state, AppType::GrokBuild)`
+- Dual-runtime seed command:
+  - Tauri `ensure_grokbuild_official_provider() -> Result<bool, String>`
+  - Web `POST /api/providers/ensure-grokbuild-official-provider`
+  - frontend `providersApi.ensureGrokBuildOfficialProvider(): Promise<boolean>`
+  - add payload marker `ensureGrokBuildOfficialSeed?: boolean`
+- Managed xAI auth:
+  - provider discriminator `"xai_oauth"`
+  - generic `auth_start_login`, `auth_poll_for_account`, `auth_list_accounts`,
+    `auth_get_status`, `auth_remove_account`, `auth_set_default_account`, and
+    `auth_logout` commands use POST in Web mode.
+  - `GET /api/auth/get-xai-oauth-models?accountId=<id>` carries only an account
+    identifier, not a secret.
+- Routing/storage:
+  - `XAI_API_BASE_URL = "https://api.x.ai/v1"`
+  - `providerNeedsRouting(appId, provider)`
+  - `XaiOAuthManager::write_store_atomic` uses restricted
+    `config::write_text_file`.
+
+#### 3. Contracts
+
+- Grok Build is a first-class application across Rust `AppType`, SQLite rows,
+  services, proxy lifecycle, MCP/Skills/prompts/sessions, frontend navigation,
+  API types, and retained locales. Do not implement it as a Codex-only UI alias.
+- Grok Official represents the Grok CLI's native OAuth state. Its stored config
+  is `{ "config": "" }`; CC Switch must not read, persist, overwrite, delete,
+  or proxy-take over the CLI's sibling native credential file.
+- Ordinary startup respects a user-deleted official row. Explicit import of a
+  syntax-valid no-model live config may recreate the canonical row and set it
+  current; it must not materialize an ordinary custom `default` provider.
+- Selecting the Grok Official preset in the add dialog sets only the seed marker.
+  The mutation ensures and returns `grokbuild-official` before UUID generation
+  or `providersApi.add`, preventing duplicate provider rows.
+- xAI managed OAuth is a credential source for Claude and Codex providers, not
+  the native Grok Official row. Token injection is allowed only for the exact
+  pinned `https://api.x.ai/v1` origin.
+- Discovery issuer must be `https://auth.x.ai`. Discovered device/token
+  endpoints require HTTPS, exact host `auth.x.ai`, effective port 443, and no
+  userinfo. Attacker suffixes, alternate ports, and HTTP fail closed.
+- The xAI account store uses the restricted atomic writer: regular files are
+  written privately and atomically; a final symlink is rejected rather than
+  followed. Persist `requires_reauth` and exclude such accounts from usable
+  default-account selection.
+- Managed OAuth providers require routing through takeover for the current
+  application. A merely running proxy owned by another app is not readiness.
+- A managed placeholder must never reach the pinned upstream. Local account or
+  token `AuthError` is terminal for that request and must not poison provider
+  health or silently fail over; an actual upstream 401/403 retains ordinary
+  retry/failover behavior.
+- New proxy transform modules must be declared in both `src/proxy/mod.rs` and
+  `examples/web_proxy.rs`; xAI auth/model services must likewise remain
+  available to the standalone Web runtime.
+
+#### 4. Validation & Error Matrix
+
+- Missing canonical seed + explicit ensure -> insert `grokbuild-official` and
+  return `true`.
+- Existing canonical seed, including user-renamed metadata -> return `false`
+  and preserve the row without overwriting it.
+- Missing seed during normal startup -> leave it missing.
+- Explicit import sees native official live state -> recreate/select the
+  canonical row and return success.
+- Official row requested for proxy takeover -> reject in strict per-app flows;
+  skip in best-effort/global restoration.
+- Seed marker falls through to UUID generation or ordinary `add_provider` ->
+  reject; this creates a duplicate official-looking row.
+- xAI discovery endpoint uses HTTP, userinfo, a non-443 port, or a different
+  host -> reject before sending credentials.
+- Base URL is an attacker suffix, a v2 path, or another origin -> do not inject
+  a managed token; reject a remaining proxy placeholder before the network.
+- Refresh response invalidates authentication -> persist `requires_reauth` and
+  surface it through both Tauri and Web status serialization.
+- Tauri command added without matching Axum route and `web-commands.ts` entry ->
+  reject through route-parity checks.
+
+#### 5. Good/Base/Bad Cases
+
+- Good: a user selects Grok Official after deleting it; the UI calls the exact
+  POST ensure route, returns the canonical seed, invalidates provider queries,
+  and never calls ordinary provider creation.
+- Good: a Codex xAI OAuth request uses a usable linked account, pins the xAI v1
+  Responses origin, applies namespace/sanitization transforms, and injects the
+  token locally.
+- Base: an editable xAI API-key provider may use the pinned origin without
+  inheriting managed-account requirements unless its provider metadata says so.
+- Bad: copying the native Grok credential into SQLite, accepting
+  `https://auth.x.ai.attacker.example`, following a symlinked account store, or
+  treating any running proxy as sufficient routing readiness.
+
+#### 6. Tests Required
+
+- Canonical seed/import:
+  - `ensure_recreates_grokbuild_official_seed_after_deletion`
+  - `ensure_preserves_existing_grokbuild_official_customization`
+  - `import_default_config_grokbuild_official_live_selects_official`
+  - `startup_import_grokbuild_official_live_does_not_resurrect_official`
+  - frontend mutation regression proving `providersApi.add` is not called.
+- Native-state/takeover:
+  - `grok_official_live_has_no_proxy_takeover_target`
+  - native credential preservation while writing official live config.
+- xAI security/state:
+  - `discovery_endpoints_must_stay_on_xai_origin`
+  - `account_store_round_trips_and_persists_reauth_state`
+  - `account_store_rejects_final_symlink_without_replacing_it`
+  - `managed_proxy_placeholder_is_rejected_for_pinned_xai_upstream`
+  - `proxy_placeholder_guard_does_not_expand_beyond_managed_upstreams`
+  - `xai_oauth_local_auth_failures_are_not_retryable`
+- Gates: desktop and Web cargo check/clippy, Web route/shim parity, TypeScript,
+  retained-locale parity, full Vitest, and a real Web-server fixture when the
+  user-visible tool/version surface changes.
+
+#### 7. Wrong vs Correct
+
+##### Wrong
+
+```typescript
+const provider = { ...formValues, id: generateUUID() };
+await providersApi.add(provider, "grokbuild");
+// Creates an ordinary duplicate instead of restoring the canonical seed.
+```
+
+```rust
+// Following a final symlink is wrong for the private xAI account store.
+write_text_file_managed(&storage_path, json)?;
+```
+
+##### Correct
+
+```typescript
+if (ensureGrokBuildOfficialSeed) {
+  await providersApi.ensureGrokBuildOfficialProvider();
+  return (await providersApi.getAll("grokbuild"))[GROKBUILD_OFFICIAL_PROVIDER_ID];
+}
+```
+
+```rust
+// Restricted writer: atomic/private regular-file write, final symlink rejected.
+write_text_file(&storage_path, json)?;
+```
+
+---
+
+### Scenario: Serialized Session-Usage Sync and Destructive Codex Usage Rebuild
+
+#### 1. Scope / Trigger
+
+- Trigger: changing session-usage import/sync (`services/session_usage*.rs`),
+  usage refresh notifications, proxy usage logging keys, or the Codex usage
+  reset/rebuild path (schema v16+).
+- Applies to both runtimes: desktop startup/timer, Web startup/timer
+  (`examples/server.rs`), and manual Tauri/Web commands.
+
+#### 2. Signatures
+
+- `session_sync_mutex()` — one process-wide mutex; every sync entry path locks
+  it and runs `sync_all_unlocked` on a blocking worker
+  (`spawn_blocking`; timers use `MissedTickBehavior::Skip`).
+- `services::session_usage::finish_codex_rebuild(...)` — tauri-free shared tail
+  of the rebuild (reset → reimport → notify). Desktop command
+  `rebuild_codex_usage` and Web `POST /api/usage/rebuild-codex-usage` both call
+  it; the shared body lives under `services/` because `commands/` is
+  desktop-only in the web build.
+- Stable proxy usage keys (`proxy/usage/parser.rs` +
+  `dedup_request_id(scope)`): Claude stays bare `session:{message_id}`
+  (cross-source session-log convergence); every other app is scoped
+  `session:{app}:{provider}:{id}`; semantic collisions fall back to a
+  deterministic SHA-256 id.
+- Codex importer parent alignment: rollout thread id = trailing 36-char UUID of
+  the file stem; parent resolution uses strict token-signature prefix
+  alignment.
+
+#### 3. Contracts
+
+- Exactly one usage-refresh notification per completed sync pass. Per-insert
+  notifies inside importers are forbidden; rebuild notifies unconditionally,
+  even when reimport is empty or fails after the reset.
+- Rebuild order is fixed: database backup hard-fails BEFORE any reset; reset
+  runs in a savepoint (rollback on failure); reset scope is only
+  `codex_session` detail rows, `_codex_session` rollups, and Codex rollout
+  cursors.
+- Missing or ambiguous rollout parents defer the file WITHOUT advancing its
+  sync cursor (`mark_deferred` returns before `update_sync_state`).
+- Only `session_log` primary rows may be upgraded in place
+  (`INSERT OR REPLACE`); all other collisions use `INSERT OR IGNORE` +
+  SHA-256 fallback, all under one connection guard.
+- Nanosecond mtime cursors are shared via `metadata_modified_nanos`; archived
+  files inherit cursors.
+
+#### 4. Validation & Error Matrix
+
+- New sync entry path skips the process-wide mutex -> reject; concurrent
+  imports double-count.
+- Importer emits its own refresh notification -> reject; UI refresh storms and
+  pass-level coalescing breaks.
+- Reset without a verified backup, or backup failure treated as soft ->
+  reject; destructive reset with no recovery path.
+- Deferred file advances its cursor -> reject; the rows are silently never
+  imported.
+- Non-Claude envelope id written unscoped -> reject; cross-provider replay
+  collides and drops rows.
+
+#### 5. Good/Base/Bad Cases
+
+- Good: manual Web sync locks the mutex, runs on a blocking worker, returns
+  `SessionSyncResult`, one notification fires.
+- Base: rebuild on an empty data dir still notifies so the dashboard clears.
+- Bad: timer tick fires while a sync holds the mutex and queues instead of
+  skipping.
+
+#### 6. Tests Required
+
+- Rust: mutex serialization, notification-coalescing regressions, reset-scope
+  (only Codex rows), notify-on-empty and notify-on-failed-reimport,
+  missing-parent deferral without cursor advance, stable-key scoping +
+  SHA-256 fallback determinism.
+- Web example: `web_api::` route test for the rebuild endpoint; dual-runtime
+  parity suites stay green.
+
+#### 7. Wrong vs Correct
+
+##### Wrong
+
+```rust
+for row in imported_rows {
+    insert_usage(row)?;
+    notify_log_recorded(&app); // per-insert refresh
+}
+```
+
+##### Correct
+
+```rust
+let _guard = session_sync_mutex().lock();
+let result = sync_all_unlocked(...)?; // imports, no notifications
+notify_usage_refreshed(&app, &result); // once per pass
+```
+
+---
+
+### Scenario: Shared Logging Module and Frontend Error-Log Persistence
+
+#### 1. Scope / Trigger
+
+- Trigger: adding/changing any log sink, log formatting of request/response
+  data, or the frontend error reporting pipeline.
+- Applies to `src-tauri/src/logging.rs`, `panic_hook.rs`, proxy
+  forwarder/handlers/hyper_client/response_processor, `mcp/codex.rs`,
+  `services/{webdav,model_fetch}.rs`, `deeplink/`, `src/lib/frontendLogger.ts`,
+  `src/components/FrontendErrorBoundary.tsx`.
+
+#### 2. Signatures
+
+- `src-tauri/src/logging.rs` is tauri-free and shared into the web binary via a
+  `#[path]` shim in `examples/server.rs`.
+- `logging::append_frontend_error(...)` — single convergence point for both
+  sinks: desktop Tauri command `log_frontend_error` and Web
+  `POST /api/system/log_frontend_error` (route in `web-commands.ts` SSOT).
+- Frontend: `frontendLogger.ts` redacts client-side, then writes through the
+  runtime adapter (`invoke(...)` or the Web route); `FrontendErrorBoundary`
+  replaces the old console-only ErrorBoundary.
+
+#### 3. Contracts
+
+- `frontend.log` lands in `<app_config_dir>/logs/` with mode `0600` and
+  rotation (5 MiB × 2); main log KeepSome(4) × 20 MiB, no startup wipe;
+  crash.log rotates 5 MiB × 2 under a lock.
+- No plaintext secrets or full request/response bodies in ANY sink: forwarder
+  logs origin-only/secret-redacted targets and metadata-only bodies, proxy
+  headers go through the allowlisted `format_headers`, SSE content is omitted
+  at trace level, MCP logs core header fields only, webdav/model_fetch/deeplink
+  redact credentials.
+- Adding a Tauri command for logging requires the exact Web route +
+  `web-commands.ts` entry + regenerated manifest (`check:web-routes` green).
+
+#### 4. Validation & Error Matrix
+
+- New log statement includes a request/response body or bearer token ->
+  reject; log-privacy is a preserved fork-hardening contract.
+- Frontend errors only reach the console in web mode -> reject; they must
+  persist server-side via the shared sink.
+- `logging.rs` grows a `tauri::` dependency -> reject; the web example build
+  breaks or forks behavior.
+
+#### 5. Good/Base/Bad Cases
+
+- Good: a React render crash in web mode ends up as one redacted line in
+  `<dataDir>/logs/frontend.log` (0600) and mirrors to the server log.
+- Base: desktop writes the same line via the Tauri command path.
+- Bad: adding a debug log of the full upstream response "temporarily".
+
+#### 6. Tests Required
+
+- Rust `logging::` unit tests must pass in BOTH the desktop lib and the web
+  example build (disk write + permissions proven in the web runtime).
+- Smoke probe `log-frontend-error-persists`: POST the route, assert the marker
+  reaches `${dataDir}/logs/frontend.log`.
+- Vitest coverage for `frontendLogger` redaction and the error boundary.
+
+#### 7. Wrong vs Correct
+
+##### Wrong
+
+```rust
+log::debug!("upstream response: {}", body_text); // full body into the log
+```
+
+##### Correct
+
+```rust
+log::debug!("upstream response: {}", summarize_upstream_body(&body_text)); // metadata only
 ```
 
 ---

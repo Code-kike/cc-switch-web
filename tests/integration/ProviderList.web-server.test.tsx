@@ -680,7 +680,14 @@ describe.sequential("ProviderList against real web server", () => {
         sortIndex: 210,
         settingsConfig: {
           name: "page-hermes-balance",
-          base_url: "https://unsupported-balance.example.com/v1",
+          // The web runtime guards the balance-template base_url (DNS
+          // resolution) BEFORE the balance-provider matcher runs, and saved
+          // usage queries reject Web API errors (upstream 2df2212c). Use a
+          // RESOLVABLE public host that matches no known balance provider so
+          // this probe still exercises the deterministic
+          // "Unknown balance provider" branch (same F4 adaptation as the
+          // smoke-web-server balance probes).
+          base_url: "https://example.com/v1",
           api_key: "hermes-balance-key",
           api_mode: "chat_completions",
         },

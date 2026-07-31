@@ -1,23 +1,31 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import { Download, Loader2 } from "lucide-react";
 import EndpointSpeedTest from "./EndpointSpeedTest";
 import { ApiKeySection, EndpointField, ModelInputWithFetch } from "./shared";
+import { XaiOAuthSection } from "./XaiOAuthSection";
 import {
   fetchModelsForConfig,
+  fetchXaiOauthModels,
   showFetchModelsError,
   type FetchedModel,
 } from "@/lib/api/model-fetch";
 import type { ProviderCategory } from "@/types";
+import type { AppId } from "@/lib/api";
 
 interface EndpointCandidate {
   url: string;
 }
 
 interface CodexFormFieldsProps {
+  appId?: AppId;
   providerId?: string;
+  isXaiOauthPreset?: boolean;
+  isXaiOauthAuthenticated?: boolean;
+  selectedXaiAccountId?: string | null;
+  onXaiAccountSelect?: (accountId: string | null) => void;
   // API Key
   codexApiKey: string;
   onApiKeyChange: (key: string) => void;
@@ -49,7 +57,12 @@ interface CodexFormFieldsProps {
 }
 
 export function CodexFormFields({
+  appId = "codex",
   providerId,
+  isXaiOauthPreset = false,
+  isXaiOauthAuthenticated = false,
+  selectedXaiAccountId,
+  onXaiAccountSelect,
   codexApiKey,
   onApiKeyChange,
   category,
@@ -77,7 +90,57 @@ export function CodexFormFields({
   const [fetchedModels, setFetchedModels] = useState<FetchedModel[]>([]);
   const [isFetchingModels, setIsFetchingModels] = useState(false);
 
+  // 拉取请求序号：请求身份（Base URL / 完整地址开关 / API Key）一变即自增，
+  // 清空旧列表并作废在途响应——/models 结果可能按 Key 的模型授权返回，
+  // 换号后残留旧列表会误导选择
+  const fetchModelsSeqRef = useRef(0);
+
+  useEffect(() => {
+    fetchModelsSeqRef.current += 1;
+    setFetchedModels((prev) => (prev.length === 0 ? prev : []));
+  }, [
+    codexBaseUrl,
+    codexApiKey,
+    isFullUrl,
+    isXaiOauthPreset,
+    isXaiOauthAuthenticated,
+    selectedXaiAccountId,
+  ]);
+
   const handleFetchModels = useCallback(() => {
+    if (isXaiOauthPreset) {
+      if (!isXaiOauthAuthenticated) {
+        toast.error(
+          t("xaiOauth.loginRequired", {
+            defaultValue: "请先登录 xAI 账号",
+          }),
+        );
+        return;
+      }
+
+      const seq = ++fetchModelsSeqRef.current;
+      setIsFetchingModels(true);
+      fetchXaiOauthModels(selectedXaiAccountId ?? null)
+        .then((models) => {
+          if (seq !== fetchModelsSeqRef.current) return;
+          setFetchedModels(models);
+          if (models.length === 0) {
+            toast.info(t("providerForm.fetchModelsEmpty"));
+          } else {
+            toast.success(
+              t("providerForm.fetchModelsSuccess", { count: models.length }),
+            );
+          }
+        })
+        .catch((err) => {
+          if (seq !== fetchModelsSeqRef.current) return;
+          console.warn("[XaiOAuth] Failed to fetch models:", err);
+          showFetchModelsError(err, t);
+        })
+        .finally(() => setIsFetchingModels(false));
+      return;
+    }
+
     if (!codexBaseUrl || !codexApiKey) {
       showFetchModelsError(null, t, {
         hasApiKey: !!codexApiKey,
@@ -85,9 +148,11 @@ export function CodexFormFields({
       });
       return;
     }
+    const seq = ++fetchModelsSeqRef.current;
     setIsFetchingModels(true);
     fetchModelsForConfig(codexBaseUrl, codexApiKey, isFullUrl)
       .then((models) => {
+        if (seq !== fetchModelsSeqRef.current) return;
         setFetchedModels(models);
         if (models.length === 0) {
           toast.info(t("providerForm.fetchModelsEmpty"));
@@ -98,37 +163,55 @@ export function CodexFormFields({
         }
       })
       .catch((err) => {
+        if (seq !== fetchModelsSeqRef.current) return;
         console.warn("[ModelFetch] Failed:", err);
         showFetchModelsError(err, t);
       })
       .finally(() => setIsFetchingModels(false));
-  }, [codexBaseUrl, codexApiKey, isFullUrl, t]);
+  }, [
+    codexBaseUrl,
+    codexApiKey,
+    isFullUrl,
+    isXaiOauthPreset,
+    isXaiOauthAuthenticated,
+    selectedXaiAccountId,
+    t,
+  ]);
 
   return (
     <>
-      {/* Codex API Key 输入框 */}
-      <ApiKeySection
-        id="codexApiKey"
-        label="API Key"
-        value={codexApiKey}
-        onChange={onApiKeyChange}
-        category={category}
-        shouldShowLink={shouldShowApiKeyLink}
-        websiteUrl={websiteUrl}
-        isPartner={isPartner}
-        partnerPromotionKey={partnerPromotionKey}
-        placeholder={{
-          official: t("providerForm.codexOfficialNoApiKey", {
-            defaultValue: "官方供应商无需 API Key",
-          }),
-          thirdParty: t("providerForm.codexApiKeyAutoFill", {
-            defaultValue: "输入 API Key，将自动填充到配置",
-          }),
-        }}
-      />
+      {isXaiOauthPreset && (
+        <XaiOAuthSection
+          selectedAccountId={selectedXaiAccountId}
+          onAccountSelect={onXaiAccountSelect}
+        />
+      )}
 
-      {/* Codex Base URL 输入框 */}
-      {shouldShowSpeedTest && (
+      {/* Codex API Key 输入框（托管 OAuth 预设无需 Key） */}
+      {!isXaiOauthPreset && (
+        <ApiKeySection
+          id="codexApiKey"
+          label="API Key"
+          value={codexApiKey}
+          onChange={onApiKeyChange}
+          category={category}
+          shouldShowLink={shouldShowApiKeyLink}
+          websiteUrl={websiteUrl}
+          isPartner={isPartner}
+          partnerPromotionKey={partnerPromotionKey}
+          placeholder={{
+            official: t("providerForm.codexOfficialNoApiKey", {
+              defaultValue: "官方供应商无需 API Key",
+            }),
+            thirdParty: t("providerForm.codexApiKeyAutoFill", {
+              defaultValue: "输入 API Key，将自动填充到配置",
+            }),
+          }}
+        />
+      )}
+
+      {/* Codex Base URL 输入框（托管 OAuth 端点由 adapter 硬定向） */}
+      {shouldShowSpeedTest && !isXaiOauthPreset && (
         <EndpointField
           id="codexBaseUrl"
           label={t("codexConfig.apiUrlLabel")}
@@ -192,9 +275,9 @@ export function CodexFormFields({
       )}
 
       {/* 端点测速弹窗 - Codex */}
-      {shouldShowSpeedTest && isEndpointModalOpen && (
+      {shouldShowSpeedTest && !isXaiOauthPreset && isEndpointModalOpen && (
         <EndpointSpeedTest
-          appId="codex"
+          appId={appId}
           providerId={providerId}
           value={codexBaseUrl}
           onChange={onBaseUrlChange}

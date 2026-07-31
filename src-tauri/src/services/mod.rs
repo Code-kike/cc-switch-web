@@ -7,6 +7,7 @@ pub mod env_manager;
 pub mod mcp;
 pub mod model_fetch;
 pub mod omo;
+pub mod profile;
 pub mod prompt;
 pub mod provider;
 pub mod proxy;
@@ -22,6 +23,7 @@ pub mod session_usage_gemini;
 pub mod session_usage_opencode;
 pub mod skill;
 pub mod speedtest;
+pub mod sql_helpers;
 pub mod stream_check;
 pub mod subscription;
 pub mod sync_protocol;
@@ -36,6 +38,7 @@ pub mod webdav_auto_sync;
 #[cfg(not(feature = "desktop"))]
 pub mod webdav_auto_sync_web;
 pub mod webdav_sync;
+pub mod xai_oauth;
 
 pub use config::ConfigService;
 pub use mcp::McpService;

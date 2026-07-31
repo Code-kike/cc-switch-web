@@ -49,6 +49,7 @@ pub async fn get_codex_oauth_quota(
         }
     };
 
+    // 瞬时传输失败以 Err 传播（前端 reject → retry + 保留上次成功值）。
     query_codex_quota(
         &token,
         Some(&id),

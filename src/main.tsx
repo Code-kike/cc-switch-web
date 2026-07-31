@@ -10,10 +10,16 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { ThemeProvider } from "@/components/theme-provider";
 import { queryClient } from "@/lib/query";
 import { Toaster } from "@/components/ui/sonner";
-import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { FrontendErrorBoundary } from "@/components/FrontendErrorBoundary";
+import {
+  installGlobalErrorHandlers,
+  reportFrontendError,
+} from "@/lib/frontendLogger";
 import { listen } from "@/lib/api/event-adapter";
 import { invoke } from "@/lib/api/adapter";
 import { isWebMode } from "@/lib/api/adapter";
+
+installGlobalErrorHandlers();
 
 // 根据平台添加 body class，便于平台特定样式
 try {
@@ -73,7 +79,7 @@ try {
   });
 } catch (e) {
   // 忽略事件订阅异常（例如在非 Tauri 环境下）
-  console.error("订阅 configLoadError 事件失败", e);
+  reportFrontendError("config_load_error_listener", e);
 }
 
 async function bootstrap() {
@@ -85,12 +91,12 @@ async function bootstrap() {
     if (initError && initError.kind === "db_version_too_new") {
       ReactDOM.createRoot(document.getElementById("root")!).render(
         <React.StrictMode>
-          <ErrorBoundary>
+          <FrontendErrorBoundary>
             <ThemeProvider defaultTheme="system" storageKey="cc-switch-theme">
               <DatabaseUpgrade payload={initError} />
               <Toaster />
             </ThemeProvider>
-          </ErrorBoundary>
+          </FrontendErrorBoundary>
         </React.StrictMode>,
       );
       return;
@@ -102,12 +108,12 @@ async function bootstrap() {
     }
   } catch (e) {
     // 忽略拉取错误，继续渲染
-    console.error("拉取初始化错误失败", e);
+    reportFrontendError("get_init_error", e);
   }
 
   ReactDOM.createRoot(document.getElementById("root")!).render(
     <React.StrictMode>
-      <ErrorBoundary>
+      <FrontendErrorBoundary>
         <QueryClientProvider client={queryClient}>
           <ThemeProvider defaultTheme="system" storageKey="cc-switch-theme">
             <UpdateProvider>
@@ -116,7 +122,7 @@ async function bootstrap() {
             </UpdateProvider>
           </ThemeProvider>
         </QueryClientProvider>
-      </ErrorBoundary>
+      </FrontendErrorBoundary>
     </React.StrictMode>,
   );
 }

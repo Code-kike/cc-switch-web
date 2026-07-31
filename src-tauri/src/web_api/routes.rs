@@ -90,6 +90,7 @@ fn api_router(state: ApiState) -> Router {
         .merge(handlers::openclaw::router(state.clone()))
         .merge(handlers::parity::router(state.clone()))
         .merge(handlers::prompts::router(state.clone()))
+        .merge(handlers::profiles::router(state.clone()))
         .merge(handlers::providers::router(state.clone()))
         .merge(handlers::proxy::router(state.clone()))
         .merge(handlers::s3::router(state.clone()))

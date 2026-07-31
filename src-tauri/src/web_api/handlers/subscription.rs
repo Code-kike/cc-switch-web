@@ -18,6 +18,14 @@ struct ToolQuery {
 struct BalanceQuery {
     base_url: String,
     api_key: String,
+    /// Zhipu's team plan shares the personal plan's base_url, so the explicit
+    /// provider id + organization/project IDs are what route the query.
+    #[serde(default)]
+    coding_plan_provider: Option<String>,
+    #[serde(default)]
+    team_organization_id: Option<String>,
+    #[serde(default)]
+    team_project_id: Option<String>,
 }
 
 pub fn router(_state: ApiState) -> Router {
@@ -53,9 +61,14 @@ async fn get_coding_plan_quota(
 ) -> ApiResult<crate::services::subscription::SubscriptionQuota> {
     // Audit F4: ZenMux and other coding-plan providers dial base_url; guard it.
     validate_outbound_url(&query.base_url).await?;
-    let quota =
-        crate::services::coding_plan::get_coding_plan_quota(&query.base_url, &query.api_key)
-            .await
-            .map_err(super::common::ApiError::from_service_message)?;
+    let quota = crate::services::coding_plan::get_coding_plan_quota(
+        &query.base_url,
+        &query.api_key,
+        query.coding_plan_provider.as_deref(),
+        query.team_organization_id.as_deref(),
+        query.team_project_id.as_deref(),
+    )
+    .await
+    .map_err(super::common::ApiError::from_service_message)?;
     Ok(json_ok(quota))
 }

@@ -94,6 +94,13 @@ pub async fn get_skills_migration_result() -> Result<Option<SkillsMigrationPaylo
     Ok(crate::init_status::take_skills_migration_result())
 }
 
+/// 把（前端已脱敏的）渲染进程错误持久化到 `<app_config_dir>/logs/frontend.log`。
+/// 白屏崩溃也能留痕；Web 模式经 `POST /api/system/log_frontend_error` 汇聚到同一实现。
+#[tauri::command]
+pub async fn log_frontend_error(message: String) -> Result<(), String> {
+    crate::logging::append_frontend_error(&message).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn get_tool_versions(
     tools: Option<Vec<String>>,

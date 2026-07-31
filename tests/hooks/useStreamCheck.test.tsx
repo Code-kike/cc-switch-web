@@ -21,7 +21,11 @@ vi.mock("react-i18next", () => ({
   useTranslation: () => ({
     t: (
       key: string,
-      options?: { providerName?: string; error?: string; defaultValue?: string },
+      options?: {
+        providerName?: string;
+        error?: string;
+        defaultValue?: string;
+      },
     ) => {
       if (options?.error) return `${key}:${options.error}`;
       return options?.defaultValue ?? key;
@@ -29,7 +33,7 @@ vi.mock("react-i18next", () => ({
   }),
 }));
 
-vi.mock("@/lib/api/model-test", () => ({
+vi.mock("@/lib/api/connectivity-check", () => ({
   streamCheckProvider: (...args: unknown[]) => streamCheckProviderMock(...args),
 }));
 

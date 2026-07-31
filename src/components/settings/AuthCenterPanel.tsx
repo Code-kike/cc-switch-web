@@ -4,6 +4,8 @@ import { Badge } from "@/components/ui/badge";
 import { CodexIcon } from "@/components/BrandIcons";
 import { CopilotAuthSection } from "@/components/providers/forms/CopilotAuthSection";
 import { CodexOAuthSection } from "@/components/providers/forms/CodexOAuthSection";
+import { XaiOAuthSection } from "@/components/providers/forms/XaiOAuthSection";
+import { ProviderIcon } from "@/components/ProviderIcon";
 import { isWebMode } from "@/lib/api/adapter";
 
 export function AuthCenterPanel() {
@@ -49,7 +51,7 @@ export function AuthCenterPanel() {
               <p className="text-amber-800/90 dark:text-amber-300/90">
                 {t("settings.authCenter.webRemoteHintDescription", {
                   defaultValue:
-                    "授权页面会在当前浏览器打开，但登录成功后的 Copilot / ChatGPT 账号会绑定到运行 cc-switch Web 的那台机器。仅在您信任该服务端时继续。",
+                    "授权页面会在当前浏览器打开，但登录成功后的 Copilot / ChatGPT / xAI 账号会绑定到运行 cc-switch Web 的那台机器。仅在您信任该服务端时继续。",
                 })}
               </p>
             </div>
@@ -91,6 +93,24 @@ export function AuthCenterPanel() {
         </div>
 
         <CodexOAuthSection />
+      </section>
+
+      <section className="rounded-xl border border-border/60 bg-card/60 p-6">
+        <div className="mb-4 flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-muted">
+            <ProviderIcon icon="xai" name="xAI" size={20} />
+          </div>
+          <div>
+            <h4 className="font-medium">xAI (Grok OAuth)</h4>
+            <p className="text-sm text-muted-foreground">
+              {t("settings.authCenter.xaiOauthDescription", {
+                defaultValue: "管理 xAI / Grok 账号",
+              })}
+            </p>
+          </div>
+        </div>
+
+        <XaiOAuthSection />
       </section>
     </div>
   );

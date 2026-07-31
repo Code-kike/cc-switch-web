@@ -119,6 +119,7 @@ const UnifiedSkillsPanel = React.forwardRef<
       claude: 0,
       codex: 0,
       gemini: 0,
+      grokbuild: 0,
       opencode: 0,
       openclaw: 0,
       hermes: 0,
@@ -574,7 +575,7 @@ const InstalledSkillListItem: React.FC<InstalledSkillListItemProps> = ({
       </div>
 
       <AppToggleGroup
-        apps={skill.apps}
+        apps={{ ...skill.apps, grokbuild: skill.apps.grokbuild ?? false }}
         onToggle={(app, enabled) => onToggleApp(skill.id, app, enabled)}
         appIds={SKILLS_APP_IDS}
       />
@@ -766,6 +767,7 @@ const ImportSkillsDialog: React.FC<ImportSkillsDialogProps> = ({
           claude: skill.foundIn.includes("claude"),
           codex: skill.foundIn.includes("codex"),
           gemini: skill.foundIn.includes("gemini"),
+          grokbuild: skill.foundIn.includes("grokbuild"),
           opencode: skill.foundIn.includes("opencode"),
           openclaw: skill.foundIn.includes("openclaw"),
           hermes: skill.foundIn.includes("hermes"),
@@ -792,6 +794,7 @@ const ImportSkillsDialog: React.FC<ImportSkillsDialogProps> = ({
           claude: false,
           codex: false,
           gemini: false,
+          grokbuild: false,
           opencode: false,
           openclaw: false,
           hermes: false,
@@ -830,16 +833,19 @@ const ImportSkillsDialog: React.FC<ImportSkillsDialogProps> = ({
                   )}
                   <div className="mt-2">
                     <AppToggleGroup
-                      apps={
-                        selectedApps[skill.directory] ?? {
+                      apps={{
+                        ...(selectedApps[skill.directory] ?? {
                           claude: false,
                           codex: false,
                           gemini: false,
+                          grokbuild: false,
                           opencode: false,
                           openclaw: false,
                           hermes: false,
-                        }
-                      }
+                        }),
+                        grokbuild:
+                          selectedApps[skill.directory]?.grokbuild ?? false,
+                      }}
                       onToggle={(app, enabled) => {
                         setSelectedApps((prev) => ({
                           ...prev,
@@ -848,6 +854,7 @@ const ImportSkillsDialog: React.FC<ImportSkillsDialogProps> = ({
                               claude: false,
                               codex: false,
                               gemini: false,
+                              grokbuild: false,
                               opencode: false,
                               openclaw: false,
                               hermes: false,

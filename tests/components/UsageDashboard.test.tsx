@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import type { ComponentProps, ReactNode } from "react";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -165,7 +165,9 @@ vi.mock("@/components/usage/UsageDateRangePicker", () => ({
   ),
 }));
 
-function renderDashboard() {
+function renderDashboard(
+  props: ComponentProps<typeof UsageDashboard> = {},
+) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
@@ -173,7 +175,7 @@ function renderDashboard() {
 
   render(
     <QueryClientProvider client={queryClient}>
-      <UsageDashboard />
+      <UsageDashboard {...props} />
     </QueryClientProvider>,
   );
 
@@ -309,6 +311,53 @@ describe("UsageDashboard", () => {
     fireEvent.click(screen.getByRole("button", { name: "当天" }));
     await waitFor(() =>
       expect(tabsValueSpy).toHaveBeenLastCalledWith("models"),
+    );
+  });
+
+  it("uses the saved refresh interval when mounted", () => {
+    renderDashboard({ refreshIntervalMs: 5000 });
+
+    expect(heroPropsSpy).toHaveBeenLastCalledWith(
+      expect.objectContaining({ refreshIntervalMs: 5000 }),
+    );
+  });
+
+  it("falls back to the default when the saved interval is not an option", () => {
+    renderDashboard({ refreshIntervalMs: 1234 });
+
+    expect(heroPropsSpy).toHaveBeenLastCalledWith(
+      expect.objectContaining({ refreshIntervalMs: 30000 }),
+    );
+  });
+
+  it("persists refresh interval changes", async () => {
+    const onRefreshIntervalChange = vi.fn().mockResolvedValue(true);
+    renderDashboard({ onRefreshIntervalChange });
+
+    // 循环按钮：30s -> 60s
+    fireEvent.click(screen.getByRole("button", { name: "30s" }));
+
+    await waitFor(() =>
+      expect(onRefreshIntervalChange).toHaveBeenCalledWith(60000),
+    );
+    expect(heroPropsSpy).toHaveBeenLastCalledWith(
+      expect.objectContaining({ refreshIntervalMs: 60000 }),
+    );
+  });
+
+  it("rolls back optimistic interval changes when persistence fails", async () => {
+    const onRefreshIntervalChange = vi.fn().mockResolvedValue(false);
+    renderDashboard({ onRefreshIntervalChange });
+
+    fireEvent.click(screen.getByRole("button", { name: "30s" }));
+
+    await waitFor(() =>
+      expect(onRefreshIntervalChange).toHaveBeenCalledWith(60000),
+    );
+    await waitFor(() =>
+      expect(heroPropsSpy).toHaveBeenLastCalledWith(
+        expect.objectContaining({ refreshIntervalMs: 30000 }),
+      ),
     );
   });
 });

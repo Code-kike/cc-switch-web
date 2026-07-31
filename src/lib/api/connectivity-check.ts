@@ -1,7 +1,7 @@
 import { invoke } from "./adapter";
 import type { AppId } from "./types";
 
-// ===== 流式健康检查类型 =====
+// ===== 流式连通性检查类型 =====
 
 export type HealthStatus = "operational" | "degraded" | "failed";
 
@@ -28,10 +28,10 @@ export interface StreamCheckResult {
   errorCategory?: string;
 }
 
-// ===== 流式健康检查 API =====
+// ===== 流式连通性检查 API =====
 
 /**
- * 流式健康检查（单个供应商）
+ * 流式连通性检查（单个供应商）
  */
 export async function streamCheckProvider(
   appType: AppId,
@@ -41,7 +41,7 @@ export async function streamCheckProvider(
 }
 
 /**
- * 批量流式健康检查
+ * 批量流式连通性检查
  */
 export async function streamCheckAllProviders(
   appType: AppId,

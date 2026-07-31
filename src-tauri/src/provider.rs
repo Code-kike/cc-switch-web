@@ -70,6 +70,10 @@ impl Provider {
         self.provider_type() == Some("codex_oauth")
     }
 
+    pub fn is_xai_oauth(&self) -> bool {
+        self.provider_type() == Some("xai_oauth")
+    }
+
     pub fn is_github_copilot(&self) -> bool {
         self.provider_type() == Some("github_copilot")
             || self.claude_base_url_contains("githubcopilot.com")
@@ -78,6 +82,7 @@ impl Provider {
     pub fn uses_managed_account_auth(&self) -> bool {
         self.is_github_copilot()
             || self.is_codex_oauth()
+            || self.is_xai_oauth()
             || self.claude_base_url_contains("chatgpt.com/backend-api/codex")
     }
 
@@ -152,6 +157,14 @@ pub struct UsageScript {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "codingPlanProvider")]
     pub coding_plan_provider: Option<String>,
+    /// 智谱团队套餐（Team Plan）的组织 ID（用量查询请求头 bigmodel-organization）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "teamOrganizationId")]
+    pub team_organization_id: Option<String>,
+    /// 智谱团队套餐（Team Plan）的项目 ID（用量查询请求头 bigmodel-project）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "teamProjectId")]
+    pub team_project_id: Option<String>,
 }
 
 /// 用量数据
@@ -186,32 +199,6 @@ pub struct UsageResult {
     pub data: Option<Vec<UsageData>>, // 支持返回多个套餐
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
-}
-
-/// 供应商单独的模型测试配置
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct ProviderTestConfig {
-    /// 是否启用单独配置（false 时使用全局配置）
-    #[serde(default)]
-    pub enabled: bool,
-    /// 测试用的模型名称（覆盖全局配置）
-    #[serde(rename = "testModel", skip_serializing_if = "Option::is_none")]
-    pub test_model: Option<String>,
-    /// 超时时间（秒）
-    #[serde(rename = "timeoutSecs", skip_serializing_if = "Option::is_none")]
-    pub timeout_secs: Option<u64>,
-    /// 测试提示词
-    #[serde(rename = "testPrompt", skip_serializing_if = "Option::is_none")]
-    pub test_prompt: Option<String>,
-    /// 降级阈值（毫秒）
-    #[serde(
-        rename = "degradedThresholdMs",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub degraded_threshold_ms: Option<u64>,
-    /// 最大重试次数
-    #[serde(rename = "maxRetries", skip_serializing_if = "Option::is_none")]
-    pub max_retries: Option<u32>,
 }
 
 /// 认证绑定来源
@@ -278,9 +265,6 @@ pub struct ProviderMeta {
     /// 每月消费限额（USD）
     #[serde(rename = "limitMonthlyUsd", skip_serializing_if = "Option::is_none")]
     pub limit_monthly_usd: Option<String>,
-    /// 供应商单独的模型测试配置
-    #[serde(rename = "testConfig", skip_serializing_if = "Option::is_none")]
-    pub test_config: Option<ProviderTestConfig>,
     /// Claude API 格式（仅 Claude 供应商使用）
     /// - "anthropic": 原生 Anthropic Messages API，直接透传
     /// - "openai_chat": OpenAI Chat Completions 格式，需要转换
@@ -304,6 +288,10 @@ pub struct ProviderMeta {
     /// conversions fall back to provider ID.
     #[serde(rename = "promptCacheKey", skip_serializing_if = "Option::is_none")]
     pub prompt_cache_key: Option<String>,
+    /// Session-based prompt-cache routing for Codex Responses -> Chat conversions.
+    /// "auto" enables known-compatible upstreams; "enabled" / "disabled" are overrides.
+    #[serde(rename = "promptCacheRouting", skip_serializing_if = "Option::is_none")]
+    pub prompt_cache_routing: Option<String>,
     /// Codex OAuth FAST mode: inject `service_tier = "priority"` for ChatGPT Codex requests.
     #[serde(rename = "codexFastMode", skip_serializing_if = "Option::is_none")]
     pub codex_fast_mode: Option<bool>,

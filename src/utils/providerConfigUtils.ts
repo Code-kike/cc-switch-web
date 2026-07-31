@@ -441,7 +441,14 @@ const TOML_EXPERIMENTAL_BEARER_TOKEN_PATTERN =
   /^\s*experimental_bearer_token\s*=\s*(["'])([^"'\r\n]+)\1\s*(?:#.*)?$/;
 const TOML_EXPERIMENTAL_BEARER_TOKEN_REPLACE_PATTERN =
   /^(\s*experimental_bearer_token\s*=\s*)(?:"(?:\\.|[^"\\\r\n])*"|'[^'\r\n]*')(\s*(?:#.*)?)$/;
-const TOML_MODEL_PATTERN = /^\s*model\s*=\s*(["'])([^"'\r\n]+)\1\s*(?:#.*)?$/;
+// 双引号基本字符串（支持 \" \\ 等转义序列，识别 setCodexModelName 自己的
+// 转义输出），提取后需反转义。刻意只做整行严格匹配、不做键名宽匹配——
+// 宽匹配会误伤多行字符串里长得像赋值的文本；认不出的怪值由用户负责。
+const TOML_MODEL_DOUBLE_QUOTED_PATTERN =
+  /^\s*model\s*=\s*"((?:[^"\\\r\n]|\\.)*)"\s*(?:#.*)?$/;
+// 单引号字面字符串（TOML 语义：无转义）
+const TOML_MODEL_SINGLE_QUOTED_PATTERN =
+  /^\s*model\s*=\s*'([^'\r\n]*)'\s*(?:#.*)?$/;
 // $1 = `model = ` prefix, $2 = trailing whitespace + optional inline comment.
 const TOML_MODEL_REPLACE_PATTERN =
   /^(\s*model\s*=\s*)(?:"(?:\\.|[^"\\\r\n])*"|'[^'\r\n]*')(\s*(?:#.*)?)$/;
@@ -688,6 +695,26 @@ const escapeTomlBasicString = (value: string): string =>
 
 const tomlBasicString = (value: string): string =>
   `"${escapeTomlBasicString(value)}"`;
+
+const TOML_BASIC_STRING_UNESCAPES: Record<string, string> = {
+  '"': '"',
+  "\\": "\\",
+  b: "\b",
+  t: "\t",
+  n: "\n",
+  f: "\f",
+  r: "\r",
+};
+
+// escapeTomlBasicString 的逆运算；未知转义序列原样保留
+const unescapeTomlBasicString = (value: string): string =>
+  value.replace(
+    /\\(?:u([0-9a-fA-F]{4})|U([0-9a-fA-F]{8})|(.))/g,
+    (match, u4, u8, ch) => {
+      if (u4 || u8) return String.fromCodePoint(parseInt(u4 || u8, 16));
+      return TOML_BASIC_STRING_UNESCAPES[ch] ?? match;
+    },
+  );
 
 const findTomlLineInRange = (
   lines: string[],
@@ -952,7 +979,7 @@ export const setCodexBaseUrl = (
   }
 
   const normalizedUrl = trimmed.replace(/\s+/g, "");
-  const replacementLine = `base_url = "${normalizedUrl}"`;
+  const replacementLine = `base_url = ${tomlBasicString(normalizedUrl)}`;
 
   if (targetSectionName) {
     let targetSectionRange = getTomlSectionRange(lines, targetSectionName);
@@ -1034,7 +1061,24 @@ export const setCodexBaseUrl = (
 
 // ========== Codex model name utils ==========
 
-// 从 Codex 的 TOML 配置文本中提取 model 字段（支持单/双引号）
+// 顶层范围内第一个能被严格模式识别的 model 行；-1 表示没有
+const findTopLevelModelLineIndex = (
+  lines: string[],
+  topLevelEndIndex: number,
+): number => {
+  for (let i = 0; i < topLevelEndIndex; i += 1) {
+    if (
+      TOML_MODEL_DOUBLE_QUOTED_PATTERN.test(lines[i]) ||
+      TOML_MODEL_SINGLE_QUOTED_PATTERN.test(lines[i])
+    ) {
+      return i;
+    }
+  }
+  return -1;
+};
+
+// 从 Codex 的 TOML 配置文本中提取 model 字段（支持单/双引号；
+// 双引号串按 TOML 基本字符串反转义，保证与 setCodexModelName round-trip）
 export const extractCodexModelName = (
   configText: string | undefined | null,
 ): string | undefined => {
@@ -1043,13 +1087,14 @@ export const extractCodexModelName = (
     const text = normalizeTomlText(raw);
     if (!text) return undefined;
     const lines = text.split("\n");
-    const topLevelMatch = findTomlAssignmentInRange(
-      lines,
-      TOML_MODEL_PATTERN,
-      0,
-      getTopLevelEndIndex(lines),
-    );
-    return topLevelMatch?.value;
+    const topLevelEndIndex = getTopLevelEndIndex(lines);
+    for (let i = 0; i < topLevelEndIndex; i += 1) {
+      const doubleQuoted = lines[i].match(TOML_MODEL_DOUBLE_QUOTED_PATTERN);
+      if (doubleQuoted) return unescapeTomlBasicString(doubleQuoted[1]);
+      const singleQuoted = lines[i].match(TOML_MODEL_SINGLE_QUOTED_PATTERN);
+      if (singleQuoted) return singleQuoted[1];
+    }
+    return undefined;
   } catch {
     return undefined;
   }
@@ -1064,26 +1109,24 @@ export const setCodexModelName = (
   const normalizedText = normalizeTomlText(configText);
   const lines = normalizedText ? normalizedText.split("\n") : [];
   const topLevelEndIndex = getTopLevelEndIndex(lines);
-  const topLevelMatch = findTomlAssignmentInRange(
-    lines,
-    TOML_MODEL_PATTERN,
-    0,
-    topLevelEndIndex,
-  );
+  const modelLineIndex = findTopLevelModelLineIndex(lines, topLevelEndIndex);
 
   if (!trimmed) {
     if (!normalizedText) return normalizedText;
-    if (topLevelMatch) {
-      lines.splice(topLevelMatch.index, 1);
+    if (modelLineIndex !== -1) {
+      lines.splice(modelLineIndex, 1);
     }
     return finalizeTomlText(lines);
   }
 
-  const replacementLine = `model = "${trimmed}"`;
-  if (topLevelMatch) {
-    const existingLine = lines[topLevelMatch.index];
-    lines[topLevelMatch.index] = TOML_MODEL_REPLACE_PATTERN.test(existingLine)
-      ? existingLine.replace(TOML_MODEL_REPLACE_PATTERN, `$1"${trimmed}"$2`)
+  // 模型名可能来自远端 /models 响应（下拉选择），必须转义——裸插值会让
+  // 含引号/控制字符的 id 破坏甚至注入 config.toml（如伪造 [mcp_servers.*]）
+  const escapedModel = tomlBasicString(trimmed);
+  const replacementLine = `model = ${escapedModel}`;
+  if (modelLineIndex !== -1) {
+    const existingLine = lines[modelLineIndex];
+    lines[modelLineIndex] = TOML_MODEL_REPLACE_PATTERN.test(existingLine)
+      ? existingLine.replace(TOML_MODEL_REPLACE_PATTERN, `$1${escapedModel}$2`)
       : replacementLine;
     return finalizeTomlText(lines);
   }

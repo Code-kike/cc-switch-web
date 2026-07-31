@@ -54,18 +54,23 @@ pub fn is_openai_o_series(model: &str) -> bool {
         && model.as_bytes().get(1).is_some_and(|b| b.is_ascii_digit())
 }
 
-/// Detect OpenAI models that support reasoning_effort.
+/// Detect Responses-compatible models that support reasoning effort.
 ///
 /// Supported families:
 /// - o-series: o1, o3, o4-mini, etc.
 /// - GPT-5+: gpt-5, gpt-5.1, gpt-5.4, gpt-5-codex, etc.
+/// - xAI Grok Build models. `grok-4.5` is the current documented Grok Build
+///   model; retain the previous `grok-build-*` family for saved providers.
 pub fn supports_reasoning_effort(model: &str) -> bool {
-    is_openai_o_series(model)
-        || model
-            .to_lowercase()
+    let normalized = model.to_lowercase();
+    is_openai_o_series(&normalized)
+        || normalized
             .strip_prefix("gpt-")
             .and_then(|rest| rest.chars().next())
             .is_some_and(|c| c.is_ascii_digit() && c >= '5')
+        || normalized == "grok-4.5"
+        || normalized.starts_with("grok-4.5-")
+        || normalized.starts_with("grok-build-")
 }
 
 /// Resolve the appropriate OpenAI `reasoning_effort` from an Anthropic request body.
@@ -457,8 +462,9 @@ fn convert_message_to_openai(
     Ok(result)
 }
 
-/// 清理 JSON schema：移除 OpenAI 严格 schema 校验拒绝的 `format: "uri"`，
-/// 并对所有承载子 schema 的关键字递归应用同样的清理。
+/// 清理 JSON schema：移除 OpenAI 严格 schema 校验拒绝的 `format: "uri"`，为根
+/// schema 补齐 OpenAI 要求的 `type: "object"`，并对所有承载子 schema 的关键字
+/// 递归应用同样的清理。
 ///
 /// OpenAI Chat / Responses 的 function/tool `parameters` 校验不接受
 /// `format: "uri"`，整条工具定义会被以 HTTP 400 拒绝。早期实现只递归
@@ -467,11 +473,26 @@ fn convert_message_to_openai(
 /// `format: "uri"` 会漏网并继续触发 400（M30）。这里遍历 JSON Schema 全部
 /// 子 schema 承载/组合关键字，使清理覆盖整棵树。
 ///
+/// 同一校验也要求根 `parameters` 显式声明 `type: "object"`；缺失时补齐（连同
+/// 空的 `properties`），否则声明不完整的工具同样被 400 拒绝（上游 #5069）。
+/// 该补齐**只作用于根**——嵌套子 schema 的类型由调用方自己声明。
+///
 /// 仅移除 `format: "uri"`（与历史行为一致），不扩大删除集合，避免对宽松后端
 /// 误删合法约束（`enum` / `const` / `default` 等非 schema 值保持不变）。
 pub fn clean_schema(schema: Value) -> Value {
+    clean_schema_inner(schema, true)
+}
+
+fn clean_schema_inner(schema: Value, is_root: bool) -> Value {
     match schema {
         Value::Object(mut obj) => {
+            // 根 schema 缺 `type` 时补 object（并在没有 `properties` 时补空对象）。
+            let missing_type = is_root && !obj.contains_key("type");
+            if missing_type {
+                obj.insert("type".to_string(), json!("object"));
+                obj.entry("properties").or_insert_with(|| json!({}));
+            }
+
             // 移除 OpenAI 不支持的 "format": "uri"
             if obj.get("format").and_then(|v| v.as_str()) == Some("uri") {
                 obj.remove("format");
@@ -489,7 +510,7 @@ pub fn clean_schema(schema: Value) -> Value {
     }
 }
 
-/// 按关键字承载子 schema 的形态，把 [`clean_schema`] 递归到对应位置。
+/// 按关键字承载子 schema 的形态，把 [`clean_schema_inner`] 递归到对应位置。
 ///
 /// 覆盖三类承载方式：
 /// - **子 schema 映射**（每个 value 都是独立 schema）
@@ -498,13 +519,16 @@ pub fn clean_schema(schema: Value) -> Value {
 ///
 /// `enum` / `const` / `default` / `examples` 等承载的是普通取值而非 schema，
 /// 不在递归之列，避免把合法数据当 schema 误清理。
+///
+/// 递归一律以 `is_root = false` 进入：补 `type: "object"` 只对根 `parameters`
+/// 成立，嵌套子 schema 的类型由调用方自己声明。
 fn clean_schema_child(key: &str, value: &mut Value) {
     match key {
         // 子 schema 映射：每个 value 都是独立 schema。
         "properties" | "$defs" | "definitions" | "patternProperties" | "dependentSchemas" => {
             if let Some(map) = value.as_object_mut() {
                 for sub in map.values_mut() {
-                    *sub = clean_schema(std::mem::take(sub));
+                    *sub = clean_schema_inner(std::mem::take(sub), false);
                 }
             }
         }
@@ -512,7 +536,7 @@ fn clean_schema_child(key: &str, value: &mut Value) {
         "anyOf" | "oneOf" | "allOf" | "prefixItems" => {
             if let Some(arr) = value.as_array_mut() {
                 for sub in arr.iter_mut() {
-                    *sub = clean_schema(std::mem::take(sub));
+                    *sub = clean_schema_inner(std::mem::take(sub), false);
                 }
             }
         }
@@ -520,11 +544,11 @@ fn clean_schema_child(key: &str, value: &mut Value) {
         "items" => match value {
             Value::Array(arr) => {
                 for sub in arr.iter_mut() {
-                    *sub = clean_schema(std::mem::take(sub));
+                    *sub = clean_schema_inner(std::mem::take(sub), false);
                 }
             }
             Value::Object(_) => {
-                *value = clean_schema(std::mem::take(value));
+                *value = clean_schema_inner(std::mem::take(value), false);
             }
             _ => {}
         },
@@ -541,7 +565,7 @@ fn clean_schema_child(key: &str, value: &mut Value) {
         | "unevaluatedItems"
             if value.is_object() =>
         {
-            *value = clean_schema(std::mem::take(value));
+            *value = clean_schema_inner(std::mem::take(value), false);
         }
         _ => {}
     }
@@ -683,22 +707,13 @@ pub fn openai_to_anthropic(body: Value) -> Result<Value, ProxyError> {
 
     // usage — map cache tokens from OpenAI format to Anthropic format
     let usage = body.get("usage").cloned().unwrap_or(json!({}));
-    let prompt_tokens = usage
-        .get("prompt_tokens")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
-    let output_tokens = usage
-        .get("completion_tokens")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0) as u32;
-
-    // OpenAI 的 prompt_tokens 已包含缓存命中部分；Anthropic 语义里 input_tokens
-    // 是不含缓存的 fresh input，且成本计算器对 app_type=="claude" 不再扣减缓存。
-    // 若原样照搬 prompt_tokens 到 input_tokens，再单独发出 cache_read_input_tokens，
-    // 缓存命中部分会被「按 input 价 + 按 cache_read 价」重复计费两次。
-    // 先解析缓存命中数，再令 input_tokens = prompt_tokens - cached，对齐原生 Anthropic。
-    // 直接字段（兼容服务端）优先于 OpenAI 标准的 prompt_tokens_details.cached_tokens。
-    let cached_tokens = usage
+    // OpenAI prompt_tokens 含缓存命中，Anthropic input_tokens 不含 → 减去 cache_read 与
+    // cache_creation，使 input 成为 fresh input。本路径以 app_type="claude" 记账（calculator
+    // 不再扣减），若不减则缓存会被计入 input 与各 cache 桶两次。三桶互斥，恒等：
+    // input + cache_read + cache_creation == prompt_tokens（inclusive 上游）。
+    // 与流式 build_anthropic_usage_json (#2774) 及 transform_gemini 的 saturating_sub 对称。
+    // 最终 cache_read/cache_creation：直传字段优先于 OpenAI nested details。
+    let cached = usage
         .get("cache_read_input_tokens")
         .and_then(|v| v.as_u64())
         .or_else(|| {
@@ -707,18 +722,37 @@ pub fn openai_to_anthropic(body: Value) -> Result<Value, ProxyError> {
                 .and_then(|v| v.as_u64())
         })
         .unwrap_or(0);
-    let input_tokens = prompt_tokens.saturating_sub(cached_tokens) as u32;
+    let cache_creation = usage
+        .get("cache_creation_input_tokens")
+        .and_then(|v| v.as_u64())
+        .or_else(|| {
+            usage
+                .pointer("/prompt_tokens_details/cache_write_tokens")
+                .or_else(|| usage.pointer("/input_tokens_details/cache_write_tokens"))
+                .and_then(|v| v.as_u64())
+        })
+        .unwrap_or(0);
+    let input_tokens = usage
+        .get("prompt_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0)
+        .saturating_sub(cached)
+        .saturating_sub(cache_creation) as u32;
+    let output_tokens = usage
+        .get("completion_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as u32;
 
     let mut usage_json = json!({
         "input_tokens": input_tokens,
         "output_tokens": output_tokens
     });
 
-    if cached_tokens > 0 {
-        usage_json["cache_read_input_tokens"] = json!(cached_tokens);
+    if cached > 0 {
+        usage_json["cache_read_input_tokens"] = json!(cached);
     }
-    if let Some(v) = usage.get("cache_creation_input_tokens") {
-        usage_json["cache_creation_input_tokens"] = v.clone();
+    if cache_creation > 0 {
+        usage_json["cache_creation_input_tokens"] = json!(cache_creation);
     }
 
     let result = json!({
@@ -935,6 +969,75 @@ mod tests {
         let result = anthropic_to_openai(input).unwrap();
         assert_eq!(result["tools"][0]["type"], "function");
         assert_eq!(result["tools"][0]["function"]["name"], "get_weather");
+        assert_eq!(
+            result["tools"][0]["function"]["parameters"]["type"],
+            json!("object")
+        );
+        assert_eq!(
+            result["tools"][0]["function"]["parameters"]["properties"]["location"]["type"],
+            json!("string")
+        );
+    }
+
+    #[test]
+    fn test_anthropic_to_openai_defaults_missing_tool_schema_type() {
+        let input = json!({
+            "model": "claude-3-opus",
+            "max_tokens": 1024,
+            "messages": [{"role": "user", "content": "What's the weather?"}],
+            "tools": [{
+                "name": "get_weather",
+                "description": "Get weather info",
+                "input_schema": {"properties": {"location": {"type": "string"}}}
+            }]
+        });
+
+        let result = anthropic_to_openai(input).unwrap();
+        let parameters = &result["tools"][0]["function"]["parameters"];
+        assert_eq!(parameters["type"], json!("object"));
+        assert_eq!(
+            parameters["properties"]["location"]["type"],
+            json!("string")
+        );
+    }
+
+    #[test]
+    fn test_anthropic_to_openai_defaults_empty_tool_schema() {
+        let input = json!({
+            "model": "claude-3-opus",
+            "max_tokens": 1024,
+            "messages": [{"role": "user", "content": "Do work"}],
+            "tools": [{"name": "do_work", "input_schema": {}}]
+        });
+
+        let result = anthropic_to_openai(input).unwrap();
+        let parameters = &result["tools"][0]["function"]["parameters"];
+        assert_eq!(parameters, &json!({"type": "object", "properties": {}}));
+    }
+
+    #[test]
+    fn test_clean_schema_only_defaults_root_to_object() {
+        let schema = json!({
+            "properties": {
+                "nullable_value": {
+                    "anyOf": [{"type": "string"}, {"type": "null"}]
+                },
+                "list": {
+                    "items": {"type": "string"}
+                }
+            }
+        });
+
+        let result = clean_schema(schema);
+        assert_eq!(result["type"], json!("object"));
+        assert_eq!(
+            result["properties"]["nullable_value"],
+            json!({"anyOf": [{"type": "string"}, {"type": "null"}]})
+        );
+        assert_eq!(
+            result["properties"]["list"],
+            json!({"items": {"type": "string"}})
+        );
     }
 
     #[test]
@@ -1193,7 +1296,7 @@ mod tests {
             Some("chatcmpl-claude-compatible")
         );
         assert_eq!(
-            usage.dedup_request_id(),
+            usage.dedup_request_id(None),
             "session:chatcmpl-claude-compatible"
         );
     }
@@ -1556,6 +1659,8 @@ mod tests {
         assert!(supports_reasoning_effort("gpt-5"));
         assert!(supports_reasoning_effort("gpt-5.4"));
         assert!(supports_reasoning_effort("gpt-5-codex"));
+        assert!(supports_reasoning_effort("grok-4.5"));
+        assert!(supports_reasoning_effort("grok-build-0.1"));
         assert!(!supports_reasoning_effort("gpt-4o"));
         assert!(!supports_reasoning_effort("claude-sonnet-4-6"));
     }

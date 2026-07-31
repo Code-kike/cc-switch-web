@@ -10,6 +10,7 @@ type AppDirectoryKey =
   | "claude"
   | "codex"
   | "gemini"
+  | "grokbuild"
   | "opencode"
   | "openclaw"
   | "hermes";
@@ -20,6 +21,7 @@ export interface ResolvedDirectories {
   claude: string;
   codex: string;
   gemini: string;
+  grokbuild: string;
   opencode: string;
   openclaw: string;
   hermes: string;
@@ -33,6 +35,7 @@ const APP_DIRECTORY_META: Record<
   claude: { key: "claude", defaultFolder: ".claude" },
   codex: { key: "codex", defaultFolder: ".codex" },
   gemini: { key: "gemini", defaultFolder: ".gemini" },
+  grokbuild: { key: "grokbuild", defaultFolder: ".grok" },
   opencode: { key: "opencode", defaultFolder: ".config/opencode" },
   openclaw: { key: "openclaw", defaultFolder: ".openclaw" },
   hermes: { key: "hermes", defaultFolder: ".hermes" },
@@ -45,6 +48,7 @@ const DIRECTORY_KEY_TO_SETTINGS_FIELD: Record<
   claude: "claudeConfigDir",
   codex: "codexConfigDir",
   gemini: "geminiConfigDir",
+  grokbuild: "grokConfigDir",
   opencode: "opencodeConfigDir",
   openclaw: "openclawConfigDir",
   hermes: "hermesConfigDir",
@@ -84,6 +88,7 @@ const EMPTY_RESOLVED_DIRECTORIES: ResolvedDirectories = {
   claude: "",
   codex: "",
   gemini: "",
+  grokbuild: "",
   opencode: "",
   openclaw: "",
   hermes: "",
@@ -98,6 +103,7 @@ const normalizeDefaultDirectories = (
   claude: sanitizeDir(defaults?.claude) ?? "",
   codex: sanitizeDir(defaults?.codex) ?? "",
   gemini: sanitizeDir(defaults?.gemini) ?? "",
+  grokbuild: sanitizeDir(defaults?.grokbuild) ?? "",
   opencode: sanitizeDir(defaults?.opencode) ?? "",
   openclaw: sanitizeDir(defaults?.openclaw) ?? "",
   hermes: sanitizeDir(defaults?.hermes) ?? "",
@@ -114,6 +120,7 @@ const resolveDesktopDefaultDirectories =
         claude: await path.join(home, ".claude"),
         codex: await path.join(home, ".codex"),
         gemini: await path.join(home, ".gemini"),
+        grokbuild: await path.join(home, ".grok"),
         opencode: await path.join(home, ".config/opencode"),
         openclaw: await path.join(home, ".openclaw"),
         hermes: await path.join(home, ".hermes"),
@@ -182,6 +189,7 @@ export function useDirectorySettings({
           claudeDir,
           codexDir,
           geminiDir,
+          grokDir,
           opencodeDir,
           openclawDir,
           hermesDir,
@@ -191,6 +199,7 @@ export function useDirectorySettings({
           settingsApi.getConfigDir("claude"),
           settingsApi.getConfigDir("codex"),
           settingsApi.getConfigDir("gemini"),
+          settingsApi.getConfigDir("grokbuild"),
           settingsApi.getConfigDir("opencode"),
           settingsApi.getConfigDir("openclaw"),
           settingsApi.getConfigDir("hermes"),
@@ -211,6 +220,7 @@ export function useDirectorySettings({
           claude: claudeDir || defaultDirs.claude,
           codex: codexDir || defaultDirs.codex,
           gemini: geminiDir || defaultDirs.gemini,
+          grokbuild: grokDir || defaultDirs.grokbuild,
           opencode: opencodeDir || defaultDirs.opencode,
           openclaw: openclawDir || defaultDirs.openclaw,
           hermes: hermesDir || defaultDirs.hermes,
@@ -340,6 +350,7 @@ export function useDirectorySettings({
         claude: overrides?.claude ?? defaultsRef.current.claude,
         codex: overrides?.codex ?? defaultsRef.current.codex,
         gemini: overrides?.gemini ?? defaultsRef.current.gemini,
+        grokbuild: overrides?.grokbuild ?? defaultsRef.current.grokbuild,
         opencode: overrides?.opencode ?? defaultsRef.current.opencode,
         openclaw: overrides?.openclaw ?? defaultsRef.current.openclaw,
         hermes: overrides?.hermes ?? defaultsRef.current.hermes,

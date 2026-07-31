@@ -2,8 +2,8 @@ import { useState, useCallback, useEffect, useRef } from "react";
 import {
   extractCodexBaseUrl,
   extractCodexExperimentalBearerToken,
-  setCodexBaseUrl as setCodexBaseUrlInConfig,
   extractCodexModelName,
+  setCodexBaseUrl as setCodexBaseUrlInConfig,
   setCodexModelName as setCodexModelNameInConfig,
   updateCodexExperimentalBearerToken,
 } from "@/utils/providerConfigUtils";
@@ -183,14 +183,15 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps) {
     [setCodexConfig],
   );
 
-  // 处理 Codex Model Name 变化
+  // 处理 Codex Model Name 变化（写回 TOML 顶层 model；清空则删掉该行）
+  // 剥控制字符：值可能来自远端模型列表，换行等会破坏单行 TOML 语义
   const handleCodexModelNameChange = useCallback(
     (modelName: string) => {
-      const trimmed = modelName.trim();
-      setCodexModelName(trimmed);
+      const sanitized = modelName.replace(/[\u0000-\u001f\u007f]/g, "").trim();
+      setCodexModelName(sanitized);
 
       isUpdatingCodexModelNameRef.current = true;
-      setCodexConfig((prev) => setCodexModelNameInConfig(prev, trimmed));
+      setCodexConfig((prev) => setCodexModelNameInConfig(prev, sanitized));
       setTimeout(() => {
         isUpdatingCodexModelNameRef.current = false;
       }, 0);

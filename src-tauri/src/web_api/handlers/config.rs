@@ -268,6 +268,7 @@ async fn get_config_dir(Query(query): Query<AppQuery>) -> ApiResult<String> {
         crate::app_config::AppType::Claude => crate::config::get_claude_config_dir(),
         crate::app_config::AppType::Codex => crate::codex_config::get_codex_config_dir(),
         crate::app_config::AppType::Gemini => crate::gemini_config::get_gemini_dir(),
+        crate::app_config::AppType::GrokBuild => crate::grok_config::get_grok_config_dir(),
         crate::app_config::AppType::OpenCode => crate::opencode_config::get_opencode_dir(),
         crate::app_config::AppType::OpenClaw => crate::openclaw_config::get_openclaw_dir(),
         crate::app_config::AppType::Hermes => crate::hermes_config::get_hermes_dir(),
@@ -564,6 +565,15 @@ async fn get_config_status(
                     .to_string(),
             }
         }
+        crate::app_config::AppType::GrokBuild => {
+            let config_path = crate::grok_config::get_grok_config_path();
+            crate::config::ConfigStatus {
+                exists: config_path.exists(),
+                path: crate::grok_config::get_grok_config_dir()
+                    .to_string_lossy()
+                    .to_string(),
+            }
+        }
         crate::app_config::AppType::OpenCode => {
             let config_path = crate::opencode_config::get_opencode_config_path();
             crate::config::ConfigStatus {
@@ -633,14 +643,6 @@ async fn set_optimizer_config(
     State(state): State<ApiState>,
     Json(request): Json<SetOptimizerConfigRequest>,
 ) -> ApiResult<bool> {
-    match request.config.cache_ttl.as_str() {
-        "5m" | "1h" => {}
-        other => {
-            return Err(ApiError::bad_request(format!(
-                "Invalid cache_ttl value: '{other}'. Allowed values: '5m', '1h'"
-            )));
-        }
-    }
     state
         .app_state
         .db

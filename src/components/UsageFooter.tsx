@@ -87,11 +87,12 @@ const UsageFooter: React.FC<UsageFooterProps> = ({
     return () => clearInterval(interval);
   }, [lastQueriedAt]);
 
-  // 只在启用用量查询且有数据时显示。瞬时 transport reject 有 last-good 时会
-  // 继续展示成功值；首次失败没有数据时也要渲染失败态，保留手动重试入口。
+  // 只在启用用量查询且有数据时显示。后端把瞬时传输失败转成了 reject：有缓存
+  // 成功值时 react-query 保留 data 照常展示；首次查询就失败则 data 为空——
+  // 此时（isError）仍要渲染失败态给出重试入口，否则 footer 整体消失、无从重查。
   if (!usageEnabled || (!usage && !isError)) return null;
 
-  // 错误状态
+  // 错误状态（业务失败，或无缓存成功值的 reject）
   if (!usage || !usage.success) {
     if (inline) {
       return (

@@ -9,8 +9,18 @@ export const subscriptionApi = {
   getCodingPlanQuota: (
     baseUrl: string,
     apiKey: string,
+    // 智谱团队版（zhipu_team）靠显式标识路由（base_url 与个人版相同无法区分）。
+    codingPlanProvider?: string,
+    teamOrganizationId?: string,
+    teamProjectId?: string,
   ): Promise<SubscriptionQuota> =>
-    invoke("get_coding_plan_quota", { baseUrl, apiKey }),
+    invoke("get_coding_plan_quota", {
+      baseUrl,
+      apiKey,
+      codingPlanProvider,
+      teamOrganizationId,
+      teamProjectId,
+    }),
   getBalance: (
     baseUrl: string,
     apiKey: string,

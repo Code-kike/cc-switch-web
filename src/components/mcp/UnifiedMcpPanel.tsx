@@ -64,6 +64,7 @@ const UnifiedMcpPanel = React.forwardRef<
       claude: 0,
       codex: 0,
       gemini: 0,
+      grokbuild: 0,
       opencode: 0,
       openclaw: 0,
       hermes: 0,
@@ -305,7 +306,7 @@ const UnifiedMcpListItem: React.FC<UnifiedMcpListItemProps> = ({
       </div>
 
       <AppToggleGroup
-        apps={server.apps}
+        apps={{ ...server.apps, grokbuild: server.apps.grokbuild ?? false }}
         onToggle={(app, enabled) => onToggleApp(id, app, enabled)}
         appIds={MCP_APP_IDS}
       />
