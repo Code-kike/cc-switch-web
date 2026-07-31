@@ -147,6 +147,16 @@ async fn get_balance(Json(query): Json<BalanceQuery>) -> ApiResult<_> { ... }
 - Bare default IDs used by presets, such as `claude-sonnet-4-6` and
   `claude-haiku-4-5`, must have seed rows when they are not only aliases for a
   dated model ID.
+- Repricing an existing FE preset entry moves three things together: the preset
+  `cost` values, the matching `seed_model_pricing` row, and a
+  `repair_current_model_pricing` entry (updates only rows still equal to the old
+  built-ins so user overrides survive). Search seeds for the whole model family,
+  including documented peg rows (e.g. `kat-coder-air` pegged to
+  `kat-coder-pro`), not just the id named in the preset.
+- The preset↔seed SSOT test (`tests/config/openclawPresetPricing.test.ts`) must
+  compare ids lowercased (runtime lookup lowercases) and tolerate extra cost
+  fields (`cacheRead`/`cacheWrite`) after `input`/`output`; pin mixed-case and
+  recently-repriced ids as sentinels that must appear on both sides.
 
 #### 4. Validation & Error Matrix
 
@@ -156,6 +166,11 @@ async fn get_balance(Json(query): Json<BalanceQuery>) -> ApiResult<_> { ... }
   be bypassed.
 - Adding a preset default without searching `model_pricing` seeds -> reject;
   this creates a cost-reporting regression.
+- Preset repriced but seed/repair rows untouched -> reject; runtime bills at the
+  stale seed price (v3.18.0 sync caught `kat-coder-pro` at 1/150 of list price).
+- SSOT test compares case-sensitively or requires exact `{input, output}` cost
+  shape -> reject; mixed-case ids and entries with cache fields silently drop
+  out of comparison and the test goes vacuous.
 
 #### 5. Good/Base/Bad Cases
 
@@ -1085,6 +1100,12 @@ crate::services::s3_auto_sync::notify_db_changed(table);
 - Run:
   - `cargo check --manifest-path src-tauri/Cargo.toml --no-default-features --features web-server --example server`
 - Run `git diff --check` on the files included in the sync patch before final review.
+- When a multi-batch sync defers `pnpm test:integration` to the final batch,
+  expect stale-expectation pileup: triage every failure against server logs and
+  the batch reports before editing a test. Each test-side fix must be traced to
+  a named intentional upstream/port behavior (e.g. fixture stems must carry a
+  trailing 36-char UUID once the importer defers non-UUID rollout names); a fix
+  that cannot be traced is a masked product regression.
 
 #### 7. Wrong vs Correct
 
@@ -1139,6 +1160,11 @@ git diff v3.14.1..upstream-v3.15.0 -- <focused-area>
   (e.g. `session_manager/providers/opencode.rs`) resolve through
   `dirs::home_dir()`/XDG, so without this the smoke server reads the developer's
   real `~/.local/share/opencode/opencode.db` (mirror the Rust example `TempHome`).
+- When the spawn env overrides `HOME`, pin `RUSTUP_HOME` and `CARGO_HOME` to the
+  real home directory: the rustup shim otherwise resolves `$HOME/.rustup` inside
+  the throwaway dir and re-downloads the whole toolchain, timing out server
+  startup. These two only affect build caches; cc-switch config resolution never
+  reads them, so app-data isolation is not weakened.
 - `CC_SWITCH_WEB_DIST_DIR` must point at the built Web bundle that should be
   served by the standalone server.
 - The smoke result should be interpreted by probe expectations, not by status
@@ -2801,6 +2827,178 @@ if (ensureGrokBuildOfficialSeed) {
 ```rust
 // Restricted writer: atomic/private regular-file write, final symlink rejected.
 write_text_file(&storage_path, json)?;
+```
+
+---
+
+### Scenario: Serialized Session-Usage Sync and Destructive Codex Usage Rebuild
+
+#### 1. Scope / Trigger
+
+- Trigger: changing session-usage import/sync (`services/session_usage*.rs`),
+  usage refresh notifications, proxy usage logging keys, or the Codex usage
+  reset/rebuild path (schema v16+).
+- Applies to both runtimes: desktop startup/timer, Web startup/timer
+  (`examples/server.rs`), and manual Tauri/Web commands.
+
+#### 2. Signatures
+
+- `session_sync_mutex()` — one process-wide mutex; every sync entry path locks
+  it and runs `sync_all_unlocked` on a blocking worker
+  (`spawn_blocking`; timers use `MissedTickBehavior::Skip`).
+- `services::session_usage::finish_codex_rebuild(...)` — tauri-free shared tail
+  of the rebuild (reset → reimport → notify). Desktop command
+  `rebuild_codex_usage` and Web `POST /api/usage/rebuild-codex-usage` both call
+  it; the shared body lives under `services/` because `commands/` is
+  desktop-only in the web build.
+- Stable proxy usage keys (`proxy/usage/parser.rs` +
+  `dedup_request_id(scope)`): Claude stays bare `session:{message_id}`
+  (cross-source session-log convergence); every other app is scoped
+  `session:{app}:{provider}:{id}`; semantic collisions fall back to a
+  deterministic SHA-256 id.
+- Codex importer parent alignment: rollout thread id = trailing 36-char UUID of
+  the file stem; parent resolution uses strict token-signature prefix
+  alignment.
+
+#### 3. Contracts
+
+- Exactly one usage-refresh notification per completed sync pass. Per-insert
+  notifies inside importers are forbidden; rebuild notifies unconditionally,
+  even when reimport is empty or fails after the reset.
+- Rebuild order is fixed: database backup hard-fails BEFORE any reset; reset
+  runs in a savepoint (rollback on failure); reset scope is only
+  `codex_session` detail rows, `_codex_session` rollups, and Codex rollout
+  cursors.
+- Missing or ambiguous rollout parents defer the file WITHOUT advancing its
+  sync cursor (`mark_deferred` returns before `update_sync_state`).
+- Only `session_log` primary rows may be upgraded in place
+  (`INSERT OR REPLACE`); all other collisions use `INSERT OR IGNORE` +
+  SHA-256 fallback, all under one connection guard.
+- Nanosecond mtime cursors are shared via `metadata_modified_nanos`; archived
+  files inherit cursors.
+
+#### 4. Validation & Error Matrix
+
+- New sync entry path skips the process-wide mutex -> reject; concurrent
+  imports double-count.
+- Importer emits its own refresh notification -> reject; UI refresh storms and
+  pass-level coalescing breaks.
+- Reset without a verified backup, or backup failure treated as soft ->
+  reject; destructive reset with no recovery path.
+- Deferred file advances its cursor -> reject; the rows are silently never
+  imported.
+- Non-Claude envelope id written unscoped -> reject; cross-provider replay
+  collides and drops rows.
+
+#### 5. Good/Base/Bad Cases
+
+- Good: manual Web sync locks the mutex, runs on a blocking worker, returns
+  `SessionSyncResult`, one notification fires.
+- Base: rebuild on an empty data dir still notifies so the dashboard clears.
+- Bad: timer tick fires while a sync holds the mutex and queues instead of
+  skipping.
+
+#### 6. Tests Required
+
+- Rust: mutex serialization, notification-coalescing regressions, reset-scope
+  (only Codex rows), notify-on-empty and notify-on-failed-reimport,
+  missing-parent deferral without cursor advance, stable-key scoping +
+  SHA-256 fallback determinism.
+- Web example: `web_api::` route test for the rebuild endpoint; dual-runtime
+  parity suites stay green.
+
+#### 7. Wrong vs Correct
+
+##### Wrong
+
+```rust
+for row in imported_rows {
+    insert_usage(row)?;
+    notify_log_recorded(&app); // per-insert refresh
+}
+```
+
+##### Correct
+
+```rust
+let _guard = session_sync_mutex().lock();
+let result = sync_all_unlocked(...)?; // imports, no notifications
+notify_usage_refreshed(&app, &result); // once per pass
+```
+
+---
+
+### Scenario: Shared Logging Module and Frontend Error-Log Persistence
+
+#### 1. Scope / Trigger
+
+- Trigger: adding/changing any log sink, log formatting of request/response
+  data, or the frontend error reporting pipeline.
+- Applies to `src-tauri/src/logging.rs`, `panic_hook.rs`, proxy
+  forwarder/handlers/hyper_client/response_processor, `mcp/codex.rs`,
+  `services/{webdav,model_fetch}.rs`, `deeplink/`, `src/lib/frontendLogger.ts`,
+  `src/components/FrontendErrorBoundary.tsx`.
+
+#### 2. Signatures
+
+- `src-tauri/src/logging.rs` is tauri-free and shared into the web binary via a
+  `#[path]` shim in `examples/server.rs`.
+- `logging::append_frontend_error(...)` — single convergence point for both
+  sinks: desktop Tauri command `log_frontend_error` and Web
+  `POST /api/system/log_frontend_error` (route in `web-commands.ts` SSOT).
+- Frontend: `frontendLogger.ts` redacts client-side, then writes through the
+  runtime adapter (`invoke(...)` or the Web route); `FrontendErrorBoundary`
+  replaces the old console-only ErrorBoundary.
+
+#### 3. Contracts
+
+- `frontend.log` lands in `<app_config_dir>/logs/` with mode `0600` and
+  rotation (5 MiB × 2); main log KeepSome(4) × 20 MiB, no startup wipe;
+  crash.log rotates 5 MiB × 2 under a lock.
+- No plaintext secrets or full request/response bodies in ANY sink: forwarder
+  logs origin-only/secret-redacted targets and metadata-only bodies, proxy
+  headers go through the allowlisted `format_headers`, SSE content is omitted
+  at trace level, MCP logs core header fields only, webdav/model_fetch/deeplink
+  redact credentials.
+- Adding a Tauri command for logging requires the exact Web route +
+  `web-commands.ts` entry + regenerated manifest (`check:web-routes` green).
+
+#### 4. Validation & Error Matrix
+
+- New log statement includes a request/response body or bearer token ->
+  reject; log-privacy is a preserved fork-hardening contract.
+- Frontend errors only reach the console in web mode -> reject; they must
+  persist server-side via the shared sink.
+- `logging.rs` grows a `tauri::` dependency -> reject; the web example build
+  breaks or forks behavior.
+
+#### 5. Good/Base/Bad Cases
+
+- Good: a React render crash in web mode ends up as one redacted line in
+  `<dataDir>/logs/frontend.log` (0600) and mirrors to the server log.
+- Base: desktop writes the same line via the Tauri command path.
+- Bad: adding a debug log of the full upstream response "temporarily".
+
+#### 6. Tests Required
+
+- Rust `logging::` unit tests must pass in BOTH the desktop lib and the web
+  example build (disk write + permissions proven in the web runtime).
+- Smoke probe `log-frontend-error-persists`: POST the route, assert the marker
+  reaches `${dataDir}/logs/frontend.log`.
+- Vitest coverage for `frontendLogger` redaction and the error boundary.
+
+#### 7. Wrong vs Correct
+
+##### Wrong
+
+```rust
+log::debug!("upstream response: {}", body_text); // full body into the log
+```
+
+##### Correct
+
+```rust
+log::debug!("upstream response: {}", summarize_upstream_body(&body_text)); // metadata only
 ```
 
 ---
