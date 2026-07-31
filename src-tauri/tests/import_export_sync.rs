@@ -1398,16 +1398,16 @@ fn import_sql_rejects_tampered_schema_and_foreign_key_violations() {
             "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT, injected TEXT);",
         ),
         (
-            "app_type TEXT PRIMARY KEY CHECK (app_type IN ('claude','codex','gemini'))",
+            "app_type TEXT PRIMARY KEY CHECK (app_type IN ('claude','codex','gemini','grokbuild'))",
             "app_type TEXT PRIMARY KEY",
         ),
         (
-            "app_type TEXT PRIMARY KEY CHECK (app_type IN ('claude','codex','gemini'))",
-            "app_type TEXT PRIMARY KEY /* CHECK (app_type IN ('claude','codex','gemini')) */",
+            "app_type TEXT PRIMARY KEY CHECK (app_type IN ('claude','codex','gemini','grokbuild'))",
+            "app_type TEXT PRIMARY KEY /* CHECK (app_type IN ('claude','codex','gemini','grokbuild')) */",
         ),
         (
-            "app_type IN ('claude','codex','gemini')",
-            "app_type IN ('claude','codex','gemini','claude ')",
+            "app_type IN ('claude','codex','gemini','grokbuild')",
+            "app_type IN ('claude','codex','gemini','grokbuild','claude ')",
         ),
         (
             "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT);",

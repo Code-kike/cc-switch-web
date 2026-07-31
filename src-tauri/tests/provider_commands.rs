@@ -129,7 +129,9 @@ command = "echo"
                 "Latest".to_string(),
                 json!({
                     "auth": {"OPENAI_API_KEY": "fresh-key"},
-                    "config": r#"[mcp_servers.latest]
+                    "config": r#"model = "marker-latest"
+
+[mcp_servers.latest]
 type = "stdio"
 command = "say"
 "#
@@ -213,10 +215,16 @@ command = "say"
         .and_then(|v| v.as_str())
         .unwrap_or_default();
     // 供应商配置应该包含在 live 文件中
-    // 注意：live 文件还会包含 MCP 同步后的内容
+    // 注意：live 的 mcp_servers.* 段由 DB 派生态独占管理（见 spec
+    // “Codex Common Configuration and MCP Derived-State Atomicity”），
+    // 供应商快照里未注册的 mcp_servers.latest 不会存活，用非 MCP 键作标记
     assert!(
-        config_text.contains("mcp_servers.latest"),
+        config_text.contains("marker-latest"),
         "live file should contain provider's original config"
+    );
+    assert!(
+        !config_text.contains("mcp_servers.latest"),
+        "unregistered mcp_servers sections from the provider snapshot must be replaced by DB-derived state"
     );
     assert!(
         new_config_text.contains("mcp_servers.latest"),
