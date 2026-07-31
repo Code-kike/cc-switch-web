@@ -926,3 +926,41 @@ Archived 07-10-web-bug: all 5 fix batches (A' supply-chain/secrets, B upstream d
 ### Next Steps
 
 - None - task complete
+
+
+## Session 27: Sync upstream v3.18.0: batches S6-S8, version bump, full gate
+
+**Date**: 2026-07-31
+**Task**: Sync upstream v3.18.0: batches S6-S8, version bump, full gate
+**Branch**: `sync/upstream-v3.18.0`
+
+### Summary
+
+Completed the v3.16.5->v3.18.0 upstream sync task. S6: Codex usage rebuild + session correctness (schema v16, serialized session sync with single-notification passes, stable proxy usage keys, shared rebuild_codex_usage across Tauri/Axum). S7: frontend error-log persistence to server disk via shared tauri-free logging.rs + full log-redaction hardening + pricing seeds; check caught 4 preset<->seed repricing defects incl. SSOT-test blind spots. S8: version 3.18.0 in 4 SSOT files, fork-authored changelog/release notes, integration triage (7 stale expectations traced to intentional behavior), smoke RUSTUP_HOME fix; full gate green incl. 124-probe web-server E2E with fresh-DB v16 migration. Spec: repricing-consistency, smoke toolchain pin, integration-deferral triage + 2 new contract scenarios (S6 sync/rebuild, S7 logging). Follow-ups: push branch, PR to main, then DB backup + rebuild + systemd restart per PRD.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `0bea3f54` | (see git log) |
+| `9026406b` | (see git log) |
+| `f5b453c6` | (see git log) |
+| `c5651b4e` | (see git log) |
+| `bdadebf4` | (see git log) |
+| `73bfa123` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
