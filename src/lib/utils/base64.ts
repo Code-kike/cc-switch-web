@@ -13,6 +13,12 @@ function toStandardBase64Alphabet(value: string): string {
   return value.replace(/ /g, "+").replace(/-/g, "+").replace(/_/g, "/");
 }
 
+// Match the backend decoder: line breaks around a URL parameter are noise,
+// while spaces inside the payload may represent a URL-decoded `+`.
+function trimOuterLineBreaks(value: string): string {
+  return value.replace(/^[\r\n]+|[\r\n]+$/g, "");
+}
+
 /**
  * Decode Base64 encoded UTF-8 string
  *
@@ -27,7 +33,7 @@ function toStandardBase64Alphabet(value: string): string {
  */
 export function decodeBase64Utf8(str: string): string {
   try {
-    let cleaned = toStandardBase64Alphabet(str.trim());
+    let cleaned = toStandardBase64Alphabet(trimOuterLineBreaks(str));
 
     // Try to decode with standard Base64 first
     try {
@@ -49,7 +55,9 @@ export function decodeBase64Utf8(str: string): string {
     // Last resort: decode without the padding fix-ups, still via TextDecoder
     // (avoids the deprecated escape()/unescape() pair).
     try {
-      const binString = atob(toStandardBase64Alphabet(str));
+      const binString = atob(
+        toStandardBase64Alphabet(trimOuterLineBreaks(str)),
+      );
       const bytes = Uint8Array.from(binString, (m) => m.codePointAt(0)!);
       return new TextDecoder("utf-8", { fatal: false }).decode(bytes);
     } catch {

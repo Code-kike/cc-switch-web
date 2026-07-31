@@ -317,7 +317,7 @@ describe("DeepLinkImportDialog Web paste flow", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("LD_PRELOAD=/tmp/evil.so")).toBeInTheDocument();
     expect(
-      screen.getByText("API_TOKEN=secret-t************"),
+      screen.getByText("API_TOKEN=secr************"),
     ).toBeInTheDocument();
     expect(screen.getByText("deeplink.risk.envHijack")).toBeInTheDocument();
     expect(screen.getByText("deeplink.risk.shellCommand")).toBeInTheDocument();
