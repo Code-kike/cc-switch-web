@@ -1,8 +1,0 @@
-{"file":".trellis/spec/frontend/component-guidelines.md","reason":"Frontend pass: review ProfileSwitcher/ProfileManageDialog/connectivity settings component behavior and composition."}
-{"file":".trellis/spec/frontend/state-management.md","reason":"Frontend pass: verify TanStack query mutations/invalidation, runtime profile events, and settings form persistence."}
-{"file":".trellis/spec/frontend/type-safety.md","reason":"Frontend pass: verify profile/currentIds/scope/settings/connectivity TypeScript contracts."}
-{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Frontend pass: canonical Web adapter parity, testing, security boundary, and quality requirements."}
-{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Frontend pass: review Web/desktop API serialization through adapter/query/component/event boundaries."}
-{"file":".trellis/tasks/07-25-sync-upstream-v3-18-0/research/S4-brief.md","reason":"Authoritative S4 frontend/health-check scope, exclusions, Web parity, and hard rules."}
-{"file":".trellis/tasks/07-25-sync-upstream-v3-18-0/research/S4-progress.md","reason":"Exact implementation, backend review fix, and gate evidence."}
-{"file":".trellis/tasks/07-25-sync-upstream-v3-18-0/research/S4-report.md","reason":"Per-commit adaptations, non-port inventory, and review addendum to audit."}
