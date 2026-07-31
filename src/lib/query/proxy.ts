@@ -2,21 +2,54 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { proxyApi } from "@/lib/api/proxy";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
-import type { GlobalProxyConfig, AppProxyConfig } from "@/types/proxy";
+import type {
+  GlobalProxyConfig,
+  AppProxyConfig,
+  ProxyTakeoverStatus,
+} from "@/types/proxy";
 import { extractErrorMessage } from "@/utils/errorUtils";
 
+export const proxyKeys = {
+  status: ["proxyStatus"] as const,
+  takeoverStatus: ["proxyTakeoverStatus"] as const,
+  globalConfig: ["globalProxyConfig"] as const,
+  appConfig: (appType: string) => ["appProxyConfig", appType] as const,
+};
+
+// ========== 代理服务器状态 Hooks ==========
+
+/**
+ * 获取代理服务器状态
+ */
+export function useProxyStatusQuery() {
+  return useQuery({
+    queryKey: proxyKeys.status,
+    queryFn: () => proxyApi.getProxyStatus(),
+    // 仅在服务运行时轮询
+    refetchInterval: (query) => (query.state.data?.running ? 2000 : false),
+    // 保持之前的数据，避免闪烁
+    placeholderData: (previousData) => previousData,
+  });
+}
+
+/**
+ * 获取各应用接管状态
+ */
+export function useProxyTakeoverStatus(poll = true) {
+  return useQuery({
+    queryKey: proxyKeys.takeoverStatus,
+    queryFn: () => proxyApi.getProxyTakeoverStatus(),
+    refetchInterval: poll ? 2000 : false,
+    ...(poll
+      ? {}
+      : {
+          placeholderData: (previousData: ProxyTakeoverStatus | undefined) =>
+            previousData,
+        }),
+  });
+}
+
 // ========== 代理服务器控制 Hooks ==========
-//
-// 注意（M37）：代理状态/总开关/接管状态等查询的唯一来源是
-// `@/hooks/useProxyStatus`（canonical）。本文件历史上重复实现了一整套
-// `useProxyStatus` / `useIsProxyRunning` / `useStartProxyServer` 等 hook，
-// 它们与 canonical 共用同样的 query key（如 `["proxyStatus"]` /
-// `["proxyTakeoverStatus"]`）却带不同的轮询配置，是一处"双观察者各自为战"的
-// 隐患，且在应用代码中零引用——已全部删除。接管状态请从
-// `useProxyStatus()` 返回的 `takeoverStatus` 读取，不要再开第二个查询。
-//
-// 本文件仅保留仍被 ProxyPanel / AutoFailoverConfigPanel 引用的接管开关与
-// 全局/应用级代理配置 hook。
 
 /**
  * 设置应用接管状态
@@ -28,9 +61,7 @@ export function useSetProxyTakeoverForApp() {
     mutationFn: ({ appType, enabled }: { appType: string; enabled: boolean }) =>
       proxyApi.setProxyTakeoverForApp(appType, enabled),
     onSuccess: () => {
-      // 接管状态由 canonical `useProxyStatus` 的 `["proxyTakeoverStatus"]`
-      // 查询持有，失效它即可让 ProxyPanel 立即反映新状态。
-      queryClient.invalidateQueries({ queryKey: ["proxyTakeoverStatus"] });
+      queryClient.invalidateQueries({ queryKey: proxyKeys.takeoverStatus });
     },
   });
 }
@@ -42,7 +73,7 @@ export function useSetProxyTakeoverForApp() {
  */
 export function useGlobalProxyConfig() {
   return useQuery({
-    queryKey: ["globalProxyConfig"],
+    queryKey: proxyKeys.globalConfig,
     queryFn: () => proxyApi.getGlobalProxyConfig(),
   });
 }
@@ -61,8 +92,8 @@ export function useUpdateGlobalProxyConfig() {
       proxyApi.updateGlobalProxyConfig(config),
     onSuccess: () => {
       toast.success(t("proxy.settings.toast.saved"), { closeButton: true });
-      queryClient.invalidateQueries({ queryKey: ["globalProxyConfig"] });
-      queryClient.invalidateQueries({ queryKey: ["proxyStatus"] });
+      queryClient.invalidateQueries({ queryKey: proxyKeys.globalConfig });
+      queryClient.invalidateQueries({ queryKey: proxyKeys.status });
     },
     onError: (error: unknown) => {
       toast.error(
@@ -77,7 +108,7 @@ export function useUpdateGlobalProxyConfig() {
  */
 export function useAppProxyConfig(appType: string) {
   return useQuery({
-    queryKey: ["appProxyConfig", appType],
+    queryKey: proxyKeys.appConfig(appType),
     queryFn: () => proxyApi.getProxyConfigForApp(appType),
     enabled: !!appType,
   });
@@ -98,9 +129,13 @@ export function useUpdateAppProxyConfig() {
     onSuccess: (_, variables) => {
       toast.success(t("proxy.settings.toast.saved"), { closeButton: true });
       queryClient.invalidateQueries({
-        queryKey: ["appProxyConfig", variables.appType],
+        queryKey: proxyKeys.appConfig(variables.appType),
+      });
+      queryClient.invalidateQueries({
+        queryKey: ["autoFailoverEnabled", variables.appType],
       });
       queryClient.invalidateQueries({ queryKey: ["circuitBreakerConfig"] });
+      queryClient.invalidateQueries({ queryKey: proxyKeys.status });
     },
     onError: (error: unknown) => {
       toast.error(

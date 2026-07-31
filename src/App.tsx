@@ -32,7 +32,7 @@ import type { Provider, VisibleApps } from "@/types";
 import type { EnvConflict } from "@/types/env";
 import { invoke, isWebMode } from "@/lib/api/adapter";
 import { listen } from "@/lib/api/event-adapter";
-import { useProvidersQuery, useSettingsQuery } from "@/lib/query";
+import { proxyKeys, useProvidersQuery, useSettingsQuery } from "@/lib/query";
 import { universalProviderKeys } from "@/lib/query/universal";
 import {
   providersApi,
@@ -392,9 +392,9 @@ function App() {
             queryClient.invalidateQueries({ queryKey: ["mcp", "all"] }),
             queryClient.invalidateQueries({ queryKey: ["skills"] }),
             queryClient.invalidateQueries({
-              queryKey: ["proxyTakeoverStatus"],
+              queryKey: proxyKeys.takeoverStatus,
             }),
-            queryClient.invalidateQueries({ queryKey: ["proxyStatus"] }),
+            queryClient.invalidateQueries({ queryKey: proxyKeys.status }),
             ...scopedInvalidations,
           ]);
           if (payload.scope === activeApp) {
