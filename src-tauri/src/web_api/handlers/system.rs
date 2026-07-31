@@ -40,6 +40,7 @@ pub fn router(state: ApiState) -> Router {
     Router::new()
         .route("/system/get_migration_result", post(get_migration_result))
         .route("/system/get_init_error", post(get_init_error))
+        .route("/system/log_frontend_error", post(log_frontend_error))
         .route(
             "/system/is_live_takeover_active",
             post(is_live_takeover_active),
@@ -83,6 +84,22 @@ async fn get_migration_result() -> ApiResult<bool> {
 
 async fn get_init_error() -> ApiResult<Option<crate::init_status::InitErrorPayload>> {
     Ok(json_ok(crate::init_status::get_init_error()))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LogFrontendErrorRequest {
+    message: String,
+}
+
+/// 前端错误日志落盘（Web 运行时）：与桌面 Tauri command 汇聚到同一
+/// `logging::append_frontend_error` 实现，把（前端已脱敏的）错误写入
+/// 服务端 `<app_config_dir>/logs/frontend.log` 并镜像到 journald/stdout。
+async fn log_frontend_error(Json(request): Json<LogFrontendErrorRequest>) -> ApiResult<()> {
+    // 落盘是同步小写入（带大小上限与轮转），无需 spawn_blocking。
+    crate::logging::append_frontend_error(&request.message)
+        .map_err(|e| ApiError::from_service_message(e.to_string()))?;
+    Ok(json_ok(()))
 }
 
 async fn is_live_takeover_active(State(state): State<ApiState>) -> ApiResult<bool> {

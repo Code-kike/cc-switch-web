@@ -168,6 +168,8 @@ mod hermes_config;
 mod init_status;
 #[path = "../src/json5_doc.rs"]
 mod json5_doc;
+#[path = "../src/logging.rs"]
+mod logging;
 #[path = "../src/mcp/mod.rs"]
 mod mcp;
 #[path = "../src/model_capabilities.rs"]

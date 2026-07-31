@@ -2097,7 +2097,7 @@ impl Database {
                 "0.14",
                 "0",
             ),
-            ("kimi-k2.5", "Kimi K2.5", "0.60", "2.50", "0.10", "0"),
+            ("kimi-k2.5", "Kimi K2.5", "0.60", "3.00", "0.10", "0"),
             ("kimi-k2.6", "Kimi K2.6", "0.95", "4.00", "0.16", "0"),
             (
                 "kimi-k2.7-code",
@@ -2107,6 +2107,10 @@ impl Database {
                 "0.19",
                 "0",
             ),
+            // Kimi K3（官方 list 价 $3/M in、$15/M out、$0.30/M cache read；1M 上下文）
+            ("kimi-k3", "Kimi K3", "3.00", "15.00", "0.30", "0"),
+            // Kimi For Coding 套餐里 K3 的裸名（无 kimi- 前缀），同标准 list 价
+            ("k3", "Kimi K3", "3.00", "15.00", "0.30", "0"),
             // 腾讯混元 (Tencent Hunyuan)（官方 CNY 1/4/0.25 按 1 USD ≈ 7.14 折算；Hy3 阶梯计价取最低档）
             ("hunyuan-hy3", "Hunyuan Hy3", "0.14", "0.56", "0.035", "0"),
             ("hy3", "Hunyuan Hy3", "0.14", "0.56", "0.035", "0"),
@@ -2156,13 +2160,27 @@ impl Database {
             // 注：lookup key 一律小写，与既有 minimax/glm 约定一致；pricing_lookup_candidates
             // 会对来料 model_id 生成小写候选，故小写 seed 对任意大小写来料都能命中
             // （含预设里的混合大小写 id，如 katcoder/KAT-Coder-Pro → cleaned KAT-Coder-Pro → lower kat-coder-pro）。
-            // KAT-Coder Pro — openclawProviderPresets.ts:674 cost {input:0.002, output:0.006}
-            ("kat-coder-pro", "KAT-Coder Pro", "0.002", "0.006", "0", "0"),
+            // KAT-Coder Pro — 官方 list 价（e356fc6e 与 openclaw 预设同步：0.3/1.2/0.06）
+            (
+                "kat-coder-pro",
+                "KAT-Coder Pro",
+                "0.30",
+                "1.20",
+                "0.06",
+                "0",
+            ),
             // KAT-Coder Air — claudeProviderPresets.ts KAT-Coder 预设的 HAIKU 默认模型
             // (`KAT-Coder-Air V1`)。openclaw 预设未内嵌 Air 价格，暂按同族 Pro 套餐价
-            // 兜底（量级可忽略），待厂商公布后细化。归一链：`KAT-Coder-Air V1` →
+            // 兜底，待厂商公布后细化。归一链：`KAT-Coder-Air V1` →
             // 小写空格转横线 `kat-coder-air-v1` → 去 `-vN` → `kat-coder-air`。
-            ("kat-coder-air", "KAT-Coder Air", "0.002", "0.006", "0", "0"),
+            (
+                "kat-coder-air",
+                "KAT-Coder Air",
+                "0.30",
+                "1.20",
+                "0.06",
+                "0",
+            ),
             // LongCat Flash Chat — openclawProviderPresets.ts:719 cost {input:0.001, output:0.004}
             (
                 "longcat-flash-chat",
@@ -2172,15 +2190,16 @@ impl Database {
                 "0",
                 "0",
             ),
-            // Ling 2.5 1T — openclawProviderPresets.ts:756 cost {input:0.001, output:0.004}
-            ("ling-2.5-1t", "Ling 2.5 1T", "0.001", "0.004", "0", "0"),
-            // Kimi For Coding — openclawProviderPresets.ts:469 cost {input:0.002, output:0.006}
+            // Ling 2.5 1T — 官方 CNY 4/16 按 1 USD ≈ 7.14 折算（e356fc6e 与 openclaw 预设同步）
+            ("ling-2.5-1t", "Ling 2.5 1T", "0.56", "2.24", "0", "0"),
+            // Kimi For Coding — 套餐端点别名按 K2.7 Code 官方 list 价展示
+            // （e356fc6e 与 openclaw 预设同步）
             (
                 "kimi-for-coding",
                 "Kimi For Coding",
-                "0.002",
-                "0.006",
-                "0",
+                "0.95",
+                "4.00",
+                "0.19",
                 "0",
             ),
             // 云网关 coding 别名（claudeProviderPresets.ts / openclawProviderPresets.ts 引用）。
@@ -2240,7 +2259,7 @@ impl Database {
             ("mimo-v2.5-pro", "MiMo V2.5 Pro", "1", "3", "0", "0"),
             // Qwen 系列 (阿里巴巴)
             ("qwen3.6-plus", "Qwen3.6 Plus", "0.325", "1.95", "0", "0"),
-            ("qwen3.5-plus", "Qwen3.5 Plus", "0.26", "1.56", "0", "0"),
+            ("qwen3.5-plus", "Qwen3.5 Plus", "0.26", "1.56", "0.052", "0"),
             ("qwen3-max", "Qwen3 Max", "0.78", "3.90", "0", "0"),
             (
                 "qwen3-235b-a22b",
@@ -2508,6 +2527,84 @@ impl Database {
                 "0.20",
                 "1.50",
                 "0.02",
+                "0",
+            ),
+            // 2026-07 e356fc6e：openclaw 预设改按官方 list 价计价，
+            // 同步修复早期按旧预设值播种的两行（仅未被用户改过的行）。
+            (
+                "kimi-for-coding",
+                "Kimi For Coding",
+                "0.95",
+                "4.00",
+                "0.19",
+                "0",
+                "0.002",
+                "0.006",
+                "0",
+                "0",
+            ),
+            (
+                "ling-2.5-1t",
+                "Ling 2.5 1T",
+                "0.56",
+                "2.24",
+                "0",
+                "0",
+                "0.001",
+                "0.004",
+                "0",
+                "0",
+            ),
+            // Kimi K2.5 官方 output 3.00
+            (
+                "kimi-k2.5",
+                "Kimi K2.5",
+                "0.60",
+                "3.00",
+                "0.10",
+                "0",
+                "0.60",
+                "2.50",
+                "0.10",
+                "0",
+            ),
+            // KAT-Coder：早期按旧 openclaw 预设值播种（0.002/0.006），e356fc6e 预设
+            // 改按官方 list 价后 seed 同步修复；Air 维持“同族 Pro 套餐价兜底”锚定。
+            (
+                "kat-coder-pro",
+                "KAT-Coder Pro",
+                "0.30",
+                "1.20",
+                "0.06",
+                "0",
+                "0.002",
+                "0.006",
+                "0",
+                "0",
+            ),
+            (
+                "kat-coder-air",
+                "KAT-Coder Air",
+                "0.30",
+                "1.20",
+                "0.06",
+                "0",
+                "0.002",
+                "0.006",
+                "0",
+                "0",
+            ),
+            // Qwen3.5 Plus cache read 0.052（上游 seed/修复项同值；e356fc6e 预设同步携带）
+            (
+                "qwen3.5-plus",
+                "Qwen3.5 Plus",
+                "0.26",
+                "1.56",
+                "0.052",
+                "0",
+                "0.26",
+                "1.56",
+                "0",
                 "0",
             ),
         ];

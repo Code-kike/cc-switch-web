@@ -7,12 +7,15 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::panic;
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 /// 应用版本号（从 Cargo.toml 读取）
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+const CRASH_LOG_MAX_SIZE: u64 = 5 * 1024 * 1024;
+const CRASH_LOG_ARCHIVES_TO_KEEP: usize = 2;
 
 static APP_CONFIG_DIR: OnceLock<PathBuf> = OnceLock::new();
+static CRASH_LOG_LOCK: Mutex<()> = Mutex::new(());
 
 pub fn init_app_config_dir(dir: PathBuf) {
     let _ = APP_CONFIG_DIR.set(dir);
@@ -167,11 +170,27 @@ Stack Trace (Backtrace)
 "#
         );
 
-        // 写入文件（追加模式）
-        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&log_path) {
-            let _ = file.write_all(crash_entry.as_bytes());
-            let _ = file.flush();
+        // 将 size check、轮转和追加合成同一个临界区，避免多线程同时 panic
+        // 时两个 hook 竞争 rename 而丢失归档。
+        let crash_log_guard = CRASH_LOG_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _ = crate::logging::rotate_log_if_needed_with_limit(
+            &log_path,
+            CRASH_LOG_MAX_SIZE,
+            CRASH_LOG_ARCHIVES_TO_KEEP,
+        );
+        let saved =
+            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&log_path) {
+                let _ = file.write_all(crash_entry.as_bytes());
+                let _ = file.flush();
+                true
+            } else {
+                false
+            };
+        drop(crash_log_guard);
 
+        if saved {
             // 记录日志文件位置到 stderr
             eprintln!("\n[CC-Switch] Crash log saved to: {}", log_path.display());
         }

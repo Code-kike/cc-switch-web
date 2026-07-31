@@ -28,6 +28,7 @@ mod json5_doc;
 mod lightweight;
 #[cfg(target_os = "linux")]
 mod linux_fix;
+mod logging;
 mod mcp;
 mod model_capabilities;
 mod openclaw_config;
@@ -84,35 +85,8 @@ use tauri::tray::{TrayIconBuilder, TrayIconEvent};
 use tauri::RunEvent;
 use tauri::{Emitter, Manager};
 
-fn redact_url_for_log(url_str: &str) -> String {
-    match url::Url::parse(url_str) {
-        Ok(url) => {
-            let mut output = format!("{}://", url.scheme());
-            if let Some(host) = url.host_str() {
-                output.push_str(host);
-            }
-            output.push_str(url.path());
-
-            let mut keys: Vec<String> = url.query_pairs().map(|(k, _)| k.to_string()).collect();
-            keys.sort();
-            keys.dedup();
-
-            if !keys.is_empty() {
-                output.push_str("?[keys:");
-                output.push_str(&keys.join(","));
-                output.push(']');
-            }
-
-            output
-        }
-        Err(_) => {
-            let base = url_str.split('#').next().unwrap_or(url_str);
-            match base.split_once('?') {
-                Some((prefix, _)) => format!("{prefix}?[redacted]"),
-                None => base.to_string(),
-            }
-        }
-    }
+fn runtime_log_level_allows(level: log::Level, max_level: log::LevelFilter) -> bool {
+    max_level.to_level().is_some_and(|maximum| level <= maximum)
 }
 
 /// 统一处理 ccswitch:// 深链接 URL
@@ -130,9 +104,10 @@ fn handle_deeplink_url(
         return false;
     }
 
-    let redacted_url = redact_url_for_log(url_str);
-    log::info!("✓ Deep link URL detected from {source}: {redacted_url}");
-    log::debug!("Deep link URL (raw) from {source}: {url_str}");
+    log::info!(
+        "✓ Deep link URL detected from {source}: {}",
+        crate::logging::url_for_log(url_str)
+    );
 
     match crate::deeplink::parse_deeplink_url(url_str) {
         Ok(request) => {
@@ -228,7 +203,7 @@ pub fn run() {
             log::info!("=== Single Instance Callback Triggered ===");
             log::debug!("Args count: {}", args.len());
             for (i, arg) in args.iter().enumerate() {
-                log::debug!("  arg[{i}]: {}", redact_url_for_log(arg));
+                log::debug!("  arg[{i}]: {}", crate::logging::url_for_log(arg));
             }
 
             if crate::lightweight::is_lightweight_mode() {
@@ -298,18 +273,7 @@ pub fn run() {
             app_store::refresh_app_config_dir_override(app.handle());
             panic_hook::init_app_config_dir(crate::config::get_app_config_dir());
 
-            // 注册 Updater 插件（桌面端）
-            #[cfg(desktop)]
-            {
-                if let Err(e) = app
-                    .handle()
-                    .plugin(tauri_plugin_updater::Builder::new().build())
-                {
-                    // 若配置不完整（如缺少 pubkey），跳过 Updater 而不中断应用
-                    log::warn!("初始化 Updater 插件失败，已跳过：{e}");
-                }
-            }
-            // 初始化日志（单文件输出到 <app_config_dir>/logs/cc-switch.log）
+            // 初始化日志（输出到 <app_config_dir>/logs/cc-switch.log）
             {
                 use tauri_plugin_log::{RotationStrategy, Target, TargetKind, TimezoneStrategy};
 
@@ -320,14 +284,16 @@ pub fn run() {
                     eprintln!("创建日志目录失败: {e}");
                 }
 
-                // 启动时删除旧日志文件，实现单文件覆盖效果
-                let log_file_path = log_dir.join("cc-switch.log");
-                let _ = std::fs::remove_file(&log_file_path);
-
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()
-                        // 初始化为 Trace，允许后续通过 log::set_max_level() 动态调整级别
+                        // 底层保留 Trace 能力，便于加载用户配置后动态调高级别。
+                        // 插件注册后会立即把全局级别收紧到 Info，避免启动阶段全量 Trace。
                         .level(log::LevelFilter::Trace)
+                        // plugin-log 的前端 command 会直达 logger，绕过 log 宏的全局
+                        // max_level；在分发层补一次过滤，确保动态总开关同样约束前端日志。
+                        .filter(|metadata| {
+                            runtime_log_level_allows(metadata.level(), log::max_level())
+                        })
                         .targets([
                             Target::new(TargetKind::Stdout),
                             Target::new(TargetKind::Folder {
@@ -335,15 +301,33 @@ pub fn run() {
                                 file_name: Some("cc-switch".into()),
                             }),
                         ])
-                        // 单文件模式：启动时删除旧文件，达到大小时轮转
-                        // 注意：KeepSome(n) 内部会做 n-2 运算，n=1 会导致 usize 下溢
-                        // KeepSome(2) 是最小安全值，表示不保留轮转文件
-                        .rotation_strategy(RotationStrategy::KeepSome(2))
-                        // 单文件大小限制 1GB
-                        .max_file_size(1024 * 1024 * 1024)
+                        // KeepSome(4) 保留 4 个轮转归档，加上当前文件最多约 100 MiB。
+                        // 轮转仅按大小触发；跨重启继续追加，不再丢失上一次运行的日志。
+                        .rotation_strategy(RotationStrategy::KeepSome(4))
+                        .max_file_size(20 * 1024 * 1024)
                         .timezone_strategy(TimezoneStrategy::UseLocal)
                         .build(),
                 )?;
+
+                // 用户配置存在数据库中，数据库尚未打开时使用保守的 Info 级别。
+                log::set_max_level(log::LevelFilter::Info);
+                log::info!("=== CC Switch v{} started ===", env!("CARGO_PKG_VERSION"));
+            }
+
+            // 首次读取覆盖路径时 logger 尚未可用；此处重放一次，
+            // 让 Store 损坏或路径无效等启动警告能够真正落盘。
+            let _ = app_store::refresh_app_config_dir_override(app.handle());
+
+            // 注册 Updater 插件（桌面端）；放在 logger 之后，确保失败可诊断。
+            #[cfg(desktop)]
+            {
+                if let Err(e) = app
+                    .handle()
+                    .plugin(tauri_plugin_updater::Builder::new().build())
+                {
+                    // 若配置不完整（如缺少 pubkey），跳过 Updater 而不中断应用
+                    log::warn!("初始化 Updater 插件失败，已跳过：{e}");
+                }
             }
 
             // 注入运行时事件 sink 给 usage_events，让无 sink/AppHandle 持有的写
@@ -442,6 +426,23 @@ pub fn run() {
                 }
             };
 
+            // 数据库可用后立即应用持久化日志级别，避免后续服务初始化
+            // 继续使用启动阶段的 Info 回退。损坏配置显式 fail-closed 到 Info。
+            match db.get_log_config() {
+                Ok(log_config) => {
+                    log::set_max_level(log_config.to_level_filter());
+                    log::info!(
+                        "已加载日志配置: enabled={}, level={}",
+                        log_config.enabled,
+                        log_config.level
+                    );
+                }
+                Err(e) => {
+                    log::set_max_level(log::LevelFilter::Info);
+                    log::warn!("读取日志配置失败，已回退到 info: {e}");
+                }
+            }
+
             // 如果有预加载的配置，执行迁移（迁移核心与归档逻辑由 bootstrap 共享，
             // 桌面/Web 两端复用；桌面端的对话框/重试/退出循环保留在上方加载阶段）
             if let Some(config) = migration_config {
@@ -525,7 +526,7 @@ pub fn run() {
 
                     for (i, url) in urls.iter().enumerate() {
                         let url_str = url.as_str();
-                        log::debug!("  URL[{i}]: {}", redact_url_for_log(url_str));
+                        log::debug!("  URL[{i}]: {}", crate::logging::url_for_log(url_str));
 
                         if handle_deeplink_url(&app_handle, url_str, true, "on_open_url") {
                             break; // Process only first ccswitch:// URL
@@ -588,19 +589,6 @@ pub fn run() {
             crate::services::s3_auto_sync::start_worker(app_state.db.clone(), app.handle().clone());
             // 将同一个实例注入到全局状态，避免重复创建导致的不一致
             app.manage(app_state);
-
-            // 从数据库加载日志配置并应用
-            {
-                let db = &app.state::<AppState>().db;
-                if let Ok(log_config) = db.get_log_config() {
-                    log::set_max_level(log_config.to_level_filter());
-                    log::info!(
-                        "已加载日志配置: enabled={}, level={}",
-                        log_config.enabled,
-                        log_config.level
-                    );
-                }
-            }
 
             // 初始化 SkillService
             let skill_service = SkillService::new();
@@ -855,6 +843,7 @@ pub fn run() {
             commands::get_init_error,
             commands::get_migration_result,
             commands::get_skills_migration_result,
+            commands::log_frontend_error,
             commands::get_app_config_path,
             commands::open_app_config_folder,
             commands::get_claude_common_config_snippet,
@@ -1210,7 +1199,10 @@ pub fn run() {
                 RunEvent::Opened { urls } => {
                     if let Some(url) = urls.first() {
                         let url_str = url.to_string();
-                        log::info!("RunEvent::Opened with URL: {url_str}");
+                        log::info!(
+                            "RunEvent::Opened with URL: {}",
+                            crate::logging::url_for_log(&url_str)
+                        );
 
                         if url_str.starts_with("ccswitch://") {
                             if crate::lightweight::is_lightweight_mode() {
@@ -1582,4 +1574,33 @@ fn show_database_init_error_dialog(
             exit_text.to_string(),
         ))
         .blocking_show()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::runtime_log_level_allows;
+
+    #[test]
+    fn runtime_log_filter_honors_dynamic_max_level() {
+        assert!(!runtime_log_level_allows(
+            log::Level::Error,
+            log::LevelFilter::Off
+        ));
+        assert!(runtime_log_level_allows(
+            log::Level::Error,
+            log::LevelFilter::Info
+        ));
+        assert!(runtime_log_level_allows(
+            log::Level::Info,
+            log::LevelFilter::Info
+        ));
+        assert!(!runtime_log_level_allows(
+            log::Level::Debug,
+            log::LevelFilter::Info
+        ));
+        assert!(runtime_log_level_allows(
+            log::Level::Trace,
+            log::LevelFilter::Trace
+        ));
+    }
 }

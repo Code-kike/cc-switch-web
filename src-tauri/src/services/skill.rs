@@ -3007,6 +3007,36 @@ mod tests {
     }
 
     #[test]
+    // serial：与其他同样读写进程级 CC_SWITCH_TEST_HOME 的测试互斥，
+    // EnvGuard 只负责恢复不提供互斥。
+    #[serial_test::serial]
+    fn get_app_skills_dir_honors_test_home_override() {
+        // 回归：曾直呼 dirs::home_dir() 绕过 CC_SWITCH_TEST_HOME——Unix 上碰巧跟 $HOME
+        // 一致所以测试能过，Windows 上 dirs 走 Known Folder API，测试隔离整体失效
+        // （tests/skill_sync.rs 扫到 runner 真实用户目录）。
+        struct EnvGuard(Option<std::ffi::OsString>);
+        impl Drop for EnvGuard {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(value) => std::env::set_var("CC_SWITCH_TEST_HOME", value),
+                    None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
+                }
+            }
+        }
+        let temp = tempdir().expect("tempdir");
+        let _guard = EnvGuard(std::env::var_os("CC_SWITCH_TEST_HOME"));
+        std::env::set_var("CC_SWITCH_TEST_HOME", temp.path());
+
+        let dir =
+            SkillService::get_app_skills_dir(&AppType::Claude).expect("resolve claude skills dir");
+        assert!(
+            dir.starts_with(temp.path()),
+            "skills dir must live under the overridden test home, got {}",
+            dir.display()
+        );
+    }
+
+    #[test]
     fn resolve_skill_source_dir_returns_repo_root_for_root_level_skill() {
         let temp = tempdir().expect("tempdir");
         write_skill(temp.path(), "Root Skill");

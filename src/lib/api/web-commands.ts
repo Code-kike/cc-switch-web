@@ -559,6 +559,10 @@ const cmds = defineCommands({
   list_db_backups: { method: "GET", path: "/api/backups/list-db-backups" },
   list_profiles: { method: "GET", path: "/api/profiles/list-profiles" },
   list_sessions: { method: "GET", path: "/api/sessions/list-sessions" },
+  log_frontend_error: {
+    method: "POST",
+    path: "/api/system/log_frontend_error",
+  },
   merge_deeplink_config: {
     method: "POST",
     path: "/api/config/merge-deeplink-config",
