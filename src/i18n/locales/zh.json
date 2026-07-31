@@ -138,7 +138,6 @@
     "noProvidersDescriptionSnippet": "除 Key 和请求地址外的数据（如插件配置）会被保存到通用配置片段，用于在不同供应商之间共享",
     "importCurrent": "导入当前配置",
     "importCurrentDescription": "将当前正在使用的配置导入为默认供应商",
-    "importCurrentNoChanges": "当前配置中没有可导入的新供应商",
     "currentlyUsing": "当前使用",
     "enable": "启用",
     "inUse": "使用中",
@@ -204,7 +203,9 @@
         "oauthHint": "Google 官方使用 OAuth 个人认证，无需填写 API Key。首次使用时会自动打开浏览器进行登录。",
         "apiKeyPlaceholder": "请输入 Gemini API Key"
       }
-    }
+    },
+    "duplicateLiveIdsLoadFailed": "读取配置中的供应商标识失败，请先修复配置后再试",
+    "importCurrentNoChanges": "当前配置中没有可导入的新供应商"
   },
   "claudeCode": {
     "needsRouting": "需要路由",
@@ -257,7 +258,8 @@
     "backfillWarning": "切换成功，但旧供应商配置回填失败，您手动修改的配置可能未保存",
     "windowControlFailed": "窗口控制失败：{{error}}",
     "officialBlockedByProxy": "本地路由模式下不能切换到官方供应商，使用路由访问官方 API 可能导致账号被封禁",
-    "proxyOfficialWarning": "当前供应商 {{name}} 是官方供应商，建议切换到第三方供应商后再使用本地路由"
+    "proxyOfficialWarning": "当前供应商 {{name}} 是官方供应商，建议切换到第三方供应商后再使用本地路由",
+    "proxyReasonClaudeDesktop": "使用 Claude Desktop 本地路由模式"
   },
   "confirm": {
     "deleteProvider": "删除供应商",
@@ -1045,11 +1047,9 @@
     "anthropicDefaultHaikuModel": "Haiku 默认模型",
     "anthropicDefaultSonnetModel": "Sonnet 默认模型",
     "anthropicDefaultOpusModel": "Opus 默认模型",
-    "claudeCodeSubagentModel": "子代理模型",
     "modelPlaceholder": "",
     "smallModelPlaceholder": "",
     "haikuModelPlaceholder": "",
-    "subagentModelPlaceholder": "",
     "modelHelper": "可选：指定默认使用的 Claude 模型，留空则使用系统默认。",
     "modelMappingLabel": "模型映射",
     "modelMappingHint": "如果供应商原生提供 Claude 系列模型，通常无需配置。仅在需要将请求映射到不同模型名称时填写。",
@@ -1070,9 +1070,12 @@
     "fetchModelsNeedEndpoint": "请先填写 API 端点",
     "fetchModelsNeedConfig": "请先填写 API 端点和 API Key",
     "fetchModelsAuthFailed": "API Key 无效或无权限",
-    "fetchModelsEndpointNotFound": "未找到模型列表端点",
     "fetchModelsNotSupported": "该供应商不支持获取模型列表",
-    "fetchModelsTimeout": "请求超时，请检查网络连接"
+    "fetchModelsEndpointNotFound": "未找到模型列表端点",
+    "fetchModelsTimeout": "请求超时，请检查网络连接",
+    "requiredFields": "请填写供应商名称、API 地址、API Key 和模型",
+    "claudeCodeSubagentModel": "子代理模型",
+    "subagentModelPlaceholder": ""
   },
   "copilot": {
     "authSection": "GitHub Copilot 认证",
@@ -1221,7 +1224,8 @@
     "modelNamePlaceholder": "例如: gpt-5-codex",
     "contextWindow1M": "1M 上下文窗口",
     "autoCompactLimit": "压缩阈值",
-    "autoCompactLimitHint": "上下文 token 数达到此阈值时自动压缩历史"
+    "autoCompactLimitHint": "上下文 token 数达到此阈值时自动压缩历史",
+    "noCommonConfigToApply": "通用配置片段为空或没有可写入的内容"
   },
   "geminiConfig": {
     "envFile": "环境变量 (.env)",
@@ -1313,6 +1317,7 @@
     "totalRequests": "总请求数",
     "totalCost": "总成本",
     "cost": "成本",
+    "unpriced": "未定价",
     "perMillion": "(每百万)",
     "trends": "使用趋势",
     "rangeToday": "过去 24 小时 (按小时)",
@@ -1352,23 +1357,6 @@
       "codex": "Codex",
       "gemini": "Gemini",
       "opencode": "OpenCode"
-    },
-    "dataSources": "数据来源",
-    "dataSource": {
-      "proxy": "路由",
-      "session_log": "会话日志",
-      "codex_db": "Codex 数据库",
-      "codex_session": "Codex 会话日志",
-      "gemini_session": "Gemini 会话日志",
-      "opencode_session": "OpenCode 会话日志"
-    },
-    "sessionSync": {
-      "trigger": "同步会话日志",
-      "import": "导入会话",
-      "resync": "同步",
-      "imported": "从会话日志导入了 {{count}} 条记录",
-      "upToDate": "会话日志已是最新",
-      "failed": "会话同步失败"
     },
     "rebuildCodex": {
       "title": "Codex 用量维护",
@@ -1413,10 +1401,7 @@
     "modelIdPlaceholder": "例如: claude-3-5-sonnet-20241022",
     "displayNamePlaceholder": "例如: Claude 3.5 Sonnet",
     "appType": "应用类型",
-    "allApps": "全部应用",
     "statusCode": "状态码",
-    "searchProviderPlaceholder": "搜索供应商...",
-    "searchModelPlaceholder": "搜索模型...",
     "timeRange": "时间范围",
     "customRange": "日历筛选",
     "customRangeHint": "支持日期与时间",
@@ -1457,11 +1442,31 @@
     "timeRangeTooLarge": "时间范围过大，请缩小范围",
     "addPricing": "新增定价",
     "editPricing": "编辑定价",
-    "pricingSaveFailed": "保存定价失败：{{error}}",
     "pricingAdded": "定价已添加",
     "pricingUpdated": "定价已更新",
     "cacheReadCostPerMillion": "缓存读取成本 (每百万 tokens, USD)",
-    "cacheCreationCostPerMillion": "缓存写入成本 (每百万 tokens, USD)"
+    "cacheCreationCostPerMillion": "缓存写入成本 (每百万 tokens, USD)",
+    "dataSources": "数据来源",
+    "dataSource": {
+      "proxy": "路由",
+      "session_log": "会话日志",
+      "codex_db": "Codex 数据库",
+      "codex_session": "Codex 会话日志",
+      "gemini_session": "Gemini 会话日志",
+      "opencode_session": "OpenCode 会话日志"
+    },
+    "sessionSync": {
+      "trigger": "同步会话日志",
+      "import": "导入会话",
+      "resync": "同步",
+      "imported": "从会话日志导入了 {{count}} 条记录",
+      "upToDate": "会话日志已是最新",
+      "failed": "会话同步失败"
+    },
+    "allApps": "全部应用",
+    "searchProviderPlaceholder": "搜索供应商...",
+    "searchModelPlaceholder": "搜索模型...",
+    "pricingSaveFailed": "保存定价失败：{{error}}"
   },
   "usageScript": {
     "title": "配置用量查询",
@@ -2309,7 +2314,8 @@
     },
     "tooltip": {
       "enabled": "{{app}} 故障转移已启用\n按队列优先级（P1→P2→...）选择供应商",
-      "disabled": "启用 {{app}} 故障转移\n将立即切换到队列 P1，并在失败时自动切换到下一个"
+      "disabled": "启用 {{app}} 故障转移\n将立即切换到队列 P1，并在失败时自动切换到下一个",
+      "takeoverRequired": "请先接管 {{app}}，再启用故障转移"
     }
   },
   "proxy": {
@@ -2494,7 +2500,9 @@
     },
     "server": {
       "started": "路由服务已启动 - {{address}}:{{port}}",
-      "startFailed": "启动路由服务失败: {{detail}}"
+      "startFailed": "启动路由服务失败: {{detail}}",
+      "stopped": "路由服务已停止",
+      "stopFailed": "停止路由服务失败：{{detail}}"
     },
     "stoppedWithRestore": "路由服务已关闭，已恢复所有路由配置",
     "stopWithRestoreFailed": "停止失败: {{detail}}"

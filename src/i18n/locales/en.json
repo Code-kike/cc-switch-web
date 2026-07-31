@@ -138,7 +138,6 @@
     "noProvidersDescriptionSnippet": "Settings other than API key and endpoint (e.g. plugins) will be saved to a common config snippet for sharing across providers",
     "importCurrent": "Import Current Config",
     "importCurrentDescription": "Import current live config as default provider",
-    "importCurrentNoChanges": "No new providers were found in the current config",
     "currentlyUsing": "Currently Using",
     "enable": "Enable",
     "inUse": "In Use",
@@ -204,7 +203,9 @@
         "oauthHint": "Google official uses OAuth personal authentication, no need to fill in API Key. The browser will automatically open for login on first use.",
         "apiKeyPlaceholder": "Enter Gemini API Key"
       }
-    }
+    },
+    "duplicateLiveIdsLoadFailed": "Failed to read provider identifiers from config, please fix the config and try again",
+    "importCurrentNoChanges": "No new providers were found in the current config"
   },
   "claudeCode": {
     "needsRouting": "Needs Routing",
@@ -257,7 +258,8 @@
     "backfillWarning": "Switched successfully, but failed to save changes back to the previous provider",
     "windowControlFailed": "Window control failed: {{error}}",
     "officialBlockedByProxy": "Cannot switch to official provider while local routing is active. Using routing with official APIs may cause account bans.",
-    "proxyOfficialWarning": "Current provider {{name}} is official. Consider switching to a third-party provider before using local routing."
+    "proxyOfficialWarning": "Current provider {{name}} is official. Consider switching to a third-party provider before using local routing.",
+    "proxyReasonClaudeDesktop": "Using Claude Desktop local routing mode"
   },
   "confirm": {
     "deleteProvider": "Delete Provider",
@@ -1045,11 +1047,9 @@
     "anthropicDefaultHaikuModel": "Default Haiku Model",
     "anthropicDefaultSonnetModel": "Default Sonnet Model",
     "anthropicDefaultOpusModel": "Default Opus Model",
-    "claudeCodeSubagentModel": "Subagent Model",
     "modelPlaceholder": "",
     "smallModelPlaceholder": "",
     "haikuModelPlaceholder": "",
-    "subagentModelPlaceholder": "",
     "modelHelper": "Optional: Specify default Claude model to use, leave blank to use system default.",
     "modelMappingLabel": "Model Mapping",
     "modelMappingHint": "Usually not needed if the provider natively serves Claude models. Only configure when you need to map requests to different model names.",
@@ -1070,9 +1070,12 @@
     "fetchModelsNeedEndpoint": "Please fill in API endpoint first",
     "fetchModelsNeedConfig": "Please fill in API endpoint and API Key first",
     "fetchModelsAuthFailed": "API Key is invalid or lacks permission",
-    "fetchModelsEndpointNotFound": "Model list endpoint was not found",
     "fetchModelsNotSupported": "This provider does not support fetching model list",
-    "fetchModelsTimeout": "Request timed out, please check network connection"
+    "fetchModelsEndpointNotFound": "Model list endpoint was not found",
+    "fetchModelsTimeout": "Request timed out, please check network connection",
+    "requiredFields": "Please fill in provider name, API endpoint, API Key and model",
+    "claudeCodeSubagentModel": "Subagent Model",
+    "subagentModelPlaceholder": ""
   },
   "copilot": {
     "authSection": "GitHub Copilot Authentication",
@@ -1221,7 +1224,8 @@
     "modelNamePlaceholder": "e.g., gpt-5-codex",
     "contextWindow1M": "1M Context Window",
     "autoCompactLimit": "Auto Compact Limit",
-    "autoCompactLimitHint": "Auto-compacts history when context reaches this token limit"
+    "autoCompactLimitHint": "Auto-compacts history when context reaches this token limit",
+    "noCommonConfigToApply": "The common config snippet is empty or contains nothing to write"
   },
   "geminiConfig": {
     "envFile": "Environment Variables (.env)",
@@ -1313,6 +1317,7 @@
     "totalRequests": "Total Requests",
     "totalCost": "Total Cost",
     "cost": "Cost",
+    "unpriced": "Unpriced",
     "perMillion": "(per million)",
     "trends": "Usage Trends",
     "rangeToday": "Last 24 hours (hourly)",
@@ -1352,23 +1357,6 @@
       "codex": "Codex",
       "gemini": "Gemini",
       "opencode": "OpenCode"
-    },
-    "dataSources": "Data Sources",
-    "dataSource": {
-      "proxy": "Routing",
-      "session_log": "Session Log",
-      "codex_db": "Codex DB",
-      "codex_session": "Codex Session",
-      "gemini_session": "Gemini Session",
-      "opencode_session": "OpenCode Session"
-    },
-    "sessionSync": {
-      "trigger": "Sync session logs",
-      "import": "Import Sessions",
-      "resync": "Sync",
-      "imported": "Imported {{count}} records from session logs",
-      "upToDate": "Session logs are up to date",
-      "failed": "Session sync failed"
     },
     "rebuildCodex": {
       "title": "Codex Usage Maintenance",
@@ -1413,10 +1401,7 @@
     "modelIdPlaceholder": "e.g., claude-3-5-sonnet-20241022",
     "displayNamePlaceholder": "e.g., Claude 3.5 Sonnet",
     "appType": "App Type",
-    "allApps": "All Apps",
     "statusCode": "Status Code",
-    "searchProviderPlaceholder": "Search provider...",
-    "searchModelPlaceholder": "Search model...",
     "timeRange": "Time Range",
     "customRange": "Calendar Filter",
     "customRangeHint": "Supports both date and time",
@@ -1457,11 +1442,31 @@
     "timeRangeTooLarge": "Time range is too large, please narrow it down",
     "addPricing": "Add Pricing",
     "editPricing": "Edit Pricing",
-    "pricingSaveFailed": "Failed to save pricing: {{error}}",
     "pricingAdded": "Pricing added",
     "pricingUpdated": "Pricing updated",
     "cacheReadCostPerMillion": "Cache Read Cost (per million tokens, USD)",
-    "cacheCreationCostPerMillion": "Cache Write Cost (per million tokens, USD)"
+    "cacheCreationCostPerMillion": "Cache Write Cost (per million tokens, USD)",
+    "dataSources": "Data Sources",
+    "dataSource": {
+      "proxy": "Routing",
+      "session_log": "Session Log",
+      "codex_db": "Codex DB",
+      "codex_session": "Codex Session",
+      "gemini_session": "Gemini Session",
+      "opencode_session": "OpenCode Session"
+    },
+    "sessionSync": {
+      "trigger": "Sync session logs",
+      "import": "Import Sessions",
+      "resync": "Sync",
+      "imported": "Imported {{count}} records from session logs",
+      "upToDate": "Session logs are up to date",
+      "failed": "Session sync failed"
+    },
+    "allApps": "All Apps",
+    "searchProviderPlaceholder": "Search provider...",
+    "searchModelPlaceholder": "Search model...",
+    "pricingSaveFailed": "Failed to save pricing: {{error}}"
   },
   "usageScript": {
     "title": "Configure Usage Query",
@@ -2309,7 +2314,8 @@
     },
     "tooltip": {
       "enabled": "{{app}} failover enabled\nRequests follow queue priority (P1→P2→...)",
-      "disabled": "Enable {{app}} failover\nSwitches to queue P1 immediately, then falls back on failures"
+      "disabled": "Enable {{app}} failover\nSwitches to queue P1 immediately, then falls back on failures",
+      "takeoverRequired": "Take over {{app}} first, then enable failover"
     }
   },
   "proxy": {
@@ -2494,7 +2500,9 @@
     },
     "server": {
       "started": "Routing service started - {{address}}:{{port}}",
-      "startFailed": "Failed to start routing service: {{detail}}"
+      "startFailed": "Failed to start routing service: {{detail}}",
+      "stopped": "Routing service stopped",
+      "stopFailed": "Failed to stop routing service: {{detail}}"
     },
     "stoppedWithRestore": "Routing service stopped, all routing configs restored",
     "stopWithRestoreFailed": "Stop failed: {{detail}}"

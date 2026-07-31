@@ -138,7 +138,6 @@
     "noProvidersDescriptionSnippet": "API キーとリクエスト URL 以外のデータ（プラグインなど）は共通設定スニペットに保存され、プロバイダー間で共有できます",
     "importCurrent": "現在の設定をインポート",
     "importCurrentDescription": "現在使用中の設定をデフォルトプロバイダーとしてインポート",
-    "importCurrentNoChanges": "現在の設定から新しく取り込めるプロバイダーはありません",
     "currentlyUsing": "現在使用中",
     "enable": "有効化",
     "inUse": "使用中",
@@ -204,7 +203,9 @@
         "oauthHint": "Google 公式は OAuth 個人認証を使用するため API Key は不要です。初回利用時にブラウザが開きます。",
         "apiKeyPlaceholder": "Gemini API Key を入力"
       }
-    }
+    },
+    "duplicateLiveIdsLoadFailed": "設定内のプロバイダー識別子を読み込めませんでした。設定を修正してから再度お試しください",
+    "importCurrentNoChanges": "現在の設定から新しく取り込めるプロバイダーはありません"
   },
   "claudeCode": {
     "needsRouting": "ルーティングが必要",
@@ -257,7 +258,8 @@
     "backfillWarning": "切り替え成功しましたが、前のプロバイダーへの設定保存に失敗しました",
     "windowControlFailed": "ウィンドウ操作に失敗しました: {{error}}",
     "officialBlockedByProxy": "ローカルルーティングモード中は公式プロバイダーに切り替えできません。ルーティング経由で公式 API にアクセスするとアカウントが停止される可能性があります。",
-    "proxyOfficialWarning": "現在のプロバイダー {{name}} は公式です。ローカルルーティングを使用する前にサードパーティプロバイダーに切り替えてください。"
+    "proxyOfficialWarning": "現在のプロバイダー {{name}} は公式です。ローカルルーティングを使用する前にサードパーティプロバイダーに切り替えてください。",
+    "proxyReasonClaudeDesktop": "Claude Desktop ローカルルーティングモードを使用中"
   },
   "confirm": {
     "deleteProvider": "プロバイダーを削除",
@@ -1045,11 +1047,9 @@
     "anthropicDefaultHaikuModel": "既定 Haiku モデル",
     "anthropicDefaultSonnetModel": "既定 Sonnet モデル",
     "anthropicDefaultOpusModel": "既定 Opus モデル",
-    "claudeCodeSubagentModel": "サブエージェントモデル",
     "modelPlaceholder": "",
     "smallModelPlaceholder": "",
     "haikuModelPlaceholder": "",
-    "subagentModelPlaceholder": "",
     "modelHelper": "任意: 既定で使いたい Claude モデルを指定。空欄ならシステム既定を使用します。",
     "modelMappingLabel": "モデルマッピング",
     "modelMappingHint": "プロバイダーが Claude モデルをネイティブ提供している場合、通常は設定不要です。リクエストを別のモデル名にマッピングする場合のみ設定してください。",
@@ -1070,9 +1070,12 @@
     "fetchModelsNeedEndpoint": "先に API エンドポイントを入力してください",
     "fetchModelsNeedConfig": "先に API エンドポイントと API Key を入力してください",
     "fetchModelsAuthFailed": "API Key が無効か、権限がありません",
-    "fetchModelsEndpointNotFound": "モデル一覧エンドポイントが見つかりません",
     "fetchModelsNotSupported": "このプロバイダーはモデル一覧の取得に対応していません",
-    "fetchModelsTimeout": "リクエストがタイムアウトしました。ネットワーク接続を確認してください"
+    "fetchModelsEndpointNotFound": "モデル一覧エンドポイントが見つかりません",
+    "fetchModelsTimeout": "リクエストがタイムアウトしました。ネットワーク接続を確認してください",
+    "requiredFields": "プロバイダー名、API エンドポイント、API Key、モデルを入力してください",
+    "claudeCodeSubagentModel": "サブエージェントモデル",
+    "subagentModelPlaceholder": ""
   },
   "copilot": {
     "authSection": "GitHub Copilot 認証",
@@ -1221,7 +1224,8 @@
     "modelNamePlaceholder": "例: gpt-5-codex",
     "contextWindow1M": "1M コンテキストウィンドウ",
     "autoCompactLimit": "自動圧縮しきい値",
-    "autoCompactLimitHint": "コンテキストトークン数がこのしきい値に達すると履歴を自動圧縮"
+    "autoCompactLimitHint": "コンテキストトークン数がこのしきい値に達すると履歴を自動圧縮",
+    "noCommonConfigToApply": "共通設定スニペットが空か、書き込む内容がありません"
   },
   "geminiConfig": {
     "envFile": "環境変数 (.env)",
@@ -1313,6 +1317,7 @@
     "totalRequests": "総リクエスト数",
     "totalCost": "総コスト",
     "cost": "コスト",
+    "unpriced": "価格未設定",
     "perMillion": "(100万あたり)",
     "trends": "利用トレンド",
     "rangeToday": "直近24時間 (時間別)",
@@ -1352,23 +1357,6 @@
       "codex": "Codex",
       "gemini": "Gemini",
       "opencode": "OpenCode"
-    },
-    "dataSources": "データソース",
-    "dataSource": {
-      "proxy": "ルーティング",
-      "session_log": "セッションログ",
-      "codex_db": "Codex DB",
-      "codex_session": "Codex セッション",
-      "gemini_session": "Gemini セッション",
-      "opencode_session": "OpenCode セッション"
-    },
-    "sessionSync": {
-      "trigger": "セッションログを同期",
-      "import": "セッションをインポート",
-      "resync": "同期",
-      "imported": "セッションログから {{count}} 件のレコードをインポートしました",
-      "upToDate": "セッションログは最新です",
-      "failed": "セッション同期に失敗しました"
     },
     "rebuildCodex": {
       "title": "Codex 使用量メンテナンス",
@@ -1413,10 +1401,7 @@
     "modelIdPlaceholder": "例: claude-3-5-sonnet-20241022",
     "displayNamePlaceholder": "例: Claude 3.5 Sonnet",
     "appType": "アプリ種別",
-    "allApps": "すべてのアプリ",
     "statusCode": "ステータスコード",
-    "searchProviderPlaceholder": "プロバイダーを検索...",
-    "searchModelPlaceholder": "モデルを検索...",
     "timeRange": "期間",
     "customRange": "カレンダーフィルター",
     "customRangeHint": "日付と時刻の両方に対応",
@@ -1457,11 +1442,31 @@
     "timeRangeTooLarge": "時間範囲が大きすぎます。範囲を縮小してください",
     "addPricing": "価格設定を追加",
     "editPricing": "価格設定を編集",
-    "pricingSaveFailed": "価格設定の保存に失敗しました: {{error}}",
     "pricingAdded": "価格設定が追加されました",
     "pricingUpdated": "価格設定が更新されました",
     "cacheReadCostPerMillion": "キャッシュ読み取りコスト（100万トークンあたり、USD）",
-    "cacheCreationCostPerMillion": "キャッシュ書き込みコスト（100万トークンあたり、USD）"
+    "cacheCreationCostPerMillion": "キャッシュ書き込みコスト（100万トークンあたり、USD）",
+    "dataSources": "データソース",
+    "dataSource": {
+      "proxy": "ルーティング",
+      "session_log": "セッションログ",
+      "codex_db": "Codex DB",
+      "codex_session": "Codex セッション",
+      "gemini_session": "Gemini セッション",
+      "opencode_session": "OpenCode セッション"
+    },
+    "sessionSync": {
+      "trigger": "セッションログを同期",
+      "import": "セッションをインポート",
+      "resync": "同期",
+      "imported": "セッションログから {{count}} 件のレコードをインポートしました",
+      "upToDate": "セッションログは最新です",
+      "failed": "セッション同期に失敗しました"
+    },
+    "allApps": "すべてのアプリ",
+    "searchProviderPlaceholder": "プロバイダーを検索...",
+    "searchModelPlaceholder": "モデルを検索...",
+    "pricingSaveFailed": "価格設定の保存に失敗しました: {{error}}"
   },
   "usageScript": {
     "title": "利用状況を設定",
@@ -2309,7 +2314,8 @@
     },
     "tooltip": {
       "enabled": "{{app}} フェイルオーバーが有効\nキューの優先度（P1→P2→...）で使用します",
-      "disabled": "{{app}} フェイルオーバーを有効にする\nキューの P1 に即時切替し、失敗時は次を順に試行します"
+      "disabled": "{{app}} フェイルオーバーを有効にする\nキューの P1 に即時切替し、失敗時は次を順に試行します",
+      "takeoverRequired": "先に {{app}} を引き継いでから、フェイルオーバーを有効にしてください"
     }
   },
   "proxy": {
@@ -2494,7 +2500,9 @@
     },
     "server": {
       "started": "ルーティングサービスが開始されました - {{address}}:{{port}}",
-      "startFailed": "ルーティングサービスの開始に失敗しました: {{detail}}"
+      "startFailed": "ルーティングサービスの開始に失敗しました: {{detail}}",
+      "stopped": "ルーティングサービスが停止しました",
+      "stopFailed": "ルーティングサービスの停止に失敗しました: {{detail}}"
     },
     "stoppedWithRestore": "ルーティングサービスが停止し、すべてのルーティング設定が復元されました",
     "stopWithRestoreFailed": "停止に失敗しました: {{detail}}"
