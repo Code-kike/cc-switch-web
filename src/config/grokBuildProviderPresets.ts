@@ -142,18 +142,6 @@ export const grokBuildProviderPresets: GrokBuildProviderPreset[] = [
     icon: "subrouter",
   },
   {
-    name: "Unity2.ai",
-    websiteUrl: "https://unity2.ai",
-    apiKeyUrl: "https://unity2.ai/register?source=ccs",
-    auth: grokAuth(),
-    config: grokPresetConfig("Unity2.ai", "https://api.unity2.ai"),
-    endpointCandidates: ["https://api.unity2.ai"],
-    category: "aggregator",
-    isPartner: true,
-    partnerPromotionKey: "unity2",
-    icon: "unity2",
-  },
-  {
     name: "Qiniu",
     nameKey: "providerForm.presets.qiniu",
     websiteUrl: "https://s.qiniu.com/nMvAvy",
