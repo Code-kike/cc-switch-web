@@ -2323,6 +2323,7 @@ impl Database {
             ("mimo-v2.5", "MiMo V2.5", "0.09", "0.29", "0.009", "0"),
             ("mimo-v2.5-pro", "MiMo V2.5 Pro", "1", "3", "0", "0"),
             // Qwen 系列 (阿里巴巴)
+            ("qwen3.8-max", "Qwen3.8 Max", "2", "6", "0.25", "2.50"),
             (
                 "qwen3.6-plus",
                 "Qwen3.6 Plus",
