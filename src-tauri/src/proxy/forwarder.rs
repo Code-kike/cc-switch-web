@@ -1057,10 +1057,13 @@ impl RequestForwarder {
                 super::providers::copilot_model_map::apply_copilot_model_normalization(mapped_body);
             self.apply_copilot_live_model_resolution(provider, &mut mapped_body)
                 .await;
-        } else {
-            mapped_body =
-                super::model_mapper::strip_one_m_suffix_for_upstream_from_body(mapped_body);
         }
+
+        // Strip the [1M] context-capability marker only after Copilot's own
+        // normalization and live-model resolution. Claude model markers that
+        // Copilot accepts have already become `-1m`; mapped third-party model
+        // names such as `gpt-5.6-sol[1M]` must not reach the upstream API.
+        mapped_body = super::model_mapper::strip_one_m_suffix_for_upstream_from_body(mapped_body);
 
         // --- Copilot 优化器：分类 + 请求体优化（在格式转换之前执行） ---
         // 注意：确定性 ID 也在此处计算，因为 mapped_body 在格式转换时会被 move
