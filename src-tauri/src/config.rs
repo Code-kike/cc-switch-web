@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::fs;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use crate::error::AppError;
 
@@ -45,6 +45,58 @@ pub fn get_claude_config_dir() -> PathBuf {
 /// 默认 Claude MCP 配置文件路径 (~/.claude.json)
 pub fn get_default_claude_mcp_path() -> PathBuf {
     get_home_dir().join(".claude.json")
+}
+
+fn normalize_path_lexically(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !normalized.pop() {
+                    normalized.push(component.as_os_str());
+                }
+            }
+            Component::Normal(part) => normalized.push(part),
+            Component::RootDir | Component::Prefix(_) => normalized.push(component.as_os_str()),
+        }
+    }
+
+    normalized
+}
+
+fn comparable_path_key(path: &Path) -> String {
+    let mut key = normalize_path_lexically(path).to_string_lossy().to_string();
+
+    #[cfg(windows)]
+    {
+        key = key.replace('\\', "/");
+    }
+
+    while key.len() > 1 && key.ends_with('/') {
+        key.pop();
+    }
+
+    #[cfg(windows)]
+    {
+        key.make_ascii_lowercase();
+    }
+
+    key
+}
+
+/// Returns true when `path` is lexically contained within `base`.
+///
+/// Both paths are normalized lexically without touching the filesystem, so this
+/// also works for paths that do not exist. This is not a symlink defense: callers
+/// that open an existing path must canonicalize it and re-check containment.
+/// Windows comparisons are case-insensitive.
+pub(crate) fn path_is_within(base: &Path, path: &Path) -> bool {
+    let base_key = comparable_path_key(base);
+    let path_key = comparable_path_key(path);
+
+    path_key == base_key || path_key.starts_with(&format!("{base_key}/"))
 }
 
 fn derive_mcp_path_from_override(dir: &Path) -> Option<PathBuf> {

@@ -2265,6 +2265,8 @@
     "usageScriptDisabled": "未启用",
     "usageApiKey": "用量 API Key",
     "usageBaseUrl": "用量查询地址",
+    "usageAccessToken": "用量访问令牌",
+    "usageUserId": "用量用户 ID",
     "usageAutoInterval": "自动查询",
     "usageAutoIntervalValue": "每 {{minutes}} 分钟"
   },

@@ -730,35 +730,43 @@ export const DeepLinkImportDialog = forwardRef<DeepLinkImportDialogHandle>(
                       </div>
                     )}
 
-                    {/* Usage Script Configuration (v3.9+) */}
-                    {request.usageScript && (
+                    {/* Keep this gate aligned with backend persistence: any usage field can be imported. */}
+                    {(request.usageScript ||
+                      request.usageEnabled !== undefined ||
+                      request.usageApiKey ||
+                      request.usageBaseUrl ||
+                      request.usageAccessToken ||
+                      request.usageUserId ||
+                      request.usageAutoInterval !== undefined) && (
                       <div className="space-y-3 pt-2 border-t border-border-default">
-                        <div className="grid grid-cols-3 items-center gap-4">
-                          <div className="font-medium text-sm text-muted-foreground">
-                            {t("deeplink.usageScript", {
-                              defaultValue: "用量查询",
-                            })}
+                        {(request.usageScript ||
+                          request.usageEnabled !== undefined) && (
+                          <div className="grid grid-cols-3 items-center gap-4">
+                            <div className="font-medium text-sm text-muted-foreground">
+                              {t("deeplink.usageScript", {
+                                defaultValue: "用量查询",
+                              })}
+                            </div>
+                            <div className="col-span-2 text-sm">
+                              <span
+                                className={`inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium ${
+                                  request.usageEnabled === true
+                                    ? "bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300"
+                                    : "bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400"
+                                }`}
+                              >
+                                {request.usageEnabled === true
+                                  ? t("deeplink.usageScriptEnabled", {
+                                      defaultValue: "已启用",
+                                    })
+                                  : t("deeplink.usageScriptDisabled", {
+                                      defaultValue: "未启用",
+                                    })}
+                              </span>
+                            </div>
                           </div>
-                          <div className="col-span-2 text-sm">
-                            <span
-                              className={`inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium ${
-                                request.usageEnabled !== false
-                                  ? "bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300"
-                                  : "bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400"
-                              }`}
-                            >
-                              {request.usageEnabled !== false
-                                ? t("deeplink.usageScriptEnabled", {
-                                    defaultValue: "已启用",
-                                  })
-                                : t("deeplink.usageScriptDisabled", {
-                                    defaultValue: "未启用",
-                                  })}
-                            </span>
-                          </div>
-                        </div>
+                        )}
 
-                        {/* Usage API Key (if different from provider) */}
                         {request.usageApiKey &&
                           request.usageApiKey !== request.apiKey && (
                             <div className="grid grid-cols-3 items-center gap-4">
@@ -775,7 +783,6 @@ export const DeepLinkImportDialog = forwardRef<DeepLinkImportDialogHandle>(
                             </div>
                           )}
 
-                        {/* Usage Base URL (if different from provider) */}
                         {request.usageBaseUrl &&
                           request.usageBaseUrl !== request.endpoint && (
                             <div className="grid grid-cols-3 items-center gap-4">
@@ -790,7 +797,34 @@ export const DeepLinkImportDialog = forwardRef<DeepLinkImportDialogHandle>(
                             </div>
                           )}
 
-                        {/* Auto Query Interval */}
+                        {request.usageAccessToken && (
+                          <div className="grid grid-cols-3 items-center gap-4">
+                            <div className="font-medium text-sm text-muted-foreground">
+                              {t("deeplink.usageAccessToken", {
+                                defaultValue: "用量访问令牌",
+                              })}
+                            </div>
+                            <div className="col-span-2 text-sm font-mono text-muted-foreground">
+                              {request.usageAccessToken.length > 4
+                                ? `${request.usageAccessToken.substring(0, 4)}${"*".repeat(12)}`
+                                : "****"}
+                            </div>
+                          </div>
+                        )}
+
+                        {request.usageUserId && (
+                          <div className="grid grid-cols-3 items-center gap-4">
+                            <div className="font-medium text-sm text-muted-foreground">
+                              {t("deeplink.usageUserId", {
+                                defaultValue: "用量用户 ID",
+                              })}
+                            </div>
+                            <div className="col-span-2 text-sm font-mono break-all">
+                              {request.usageUserId}
+                            </div>
+                          </div>
+                        )}
+
                         {request.usageAutoInterval &&
                           request.usageAutoInterval > 0 && (
                             <div className="grid grid-cols-3 items-center gap-4">

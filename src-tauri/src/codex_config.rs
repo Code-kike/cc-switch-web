@@ -1,10 +1,11 @@
 use std::collections::HashSet;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::config::{
-    atomic_write_managed, delete_file, get_home_dir, read_json_file, sanitize_provider_name,
-    write_json_file_managed, write_text_file_managed,
+    atomic_write_managed, delete_file, get_home_dir, path_is_within, read_json_file,
+    sanitize_provider_name, write_json_file_managed, write_text_file_managed,
 };
 use crate::error::AppError;
 use crate::model_capabilities::{image_input_capability_from_modalities, ImageInputCapability};
@@ -939,18 +940,29 @@ pub fn prepare_codex_config_text_with_model_catalog(
     }
 }
 
+/// Maximum size of a generated Codex model catalog (32 MiB). Catalogs are
+/// normally only a few hundred KiB; larger files are treated as untrusted.
+const MAX_CODEX_CATALOG_BYTES: u64 = 32 * 1024 * 1024;
+
 #[allow(dead_code)]
 pub fn read_codex_model_catalog_simplified_from_live() -> Result<Option<Value>, AppError> {
     let config_text = read_codex_config_text()?;
-    let generated_path = get_codex_model_catalog_path();
-    let Some(catalog_path) = resolve_cc_switch_catalog_path(&config_text, &generated_path) else {
+    let config_dir = get_codex_config_dir();
+    let Some(catalog_path) = resolve_cc_switch_catalog_path(&config_text, &config_dir) else {
         return Ok(None);
     };
     if !catalog_path.exists() {
         return Ok(None);
     }
-    let Ok(catalog_text) = fs::read_to_string(&catalog_path) else {
-        return Ok(None);
+    let catalog_text = match read_codex_model_catalog_text(&catalog_path) {
+        Ok(text) => text,
+        Err(error) => {
+            log::warn!(
+                "Refusing to read an out-of-bounds or oversized Codex model catalog {}: {error}",
+                catalog_path.display()
+            );
+            return Ok(None);
+        }
     };
     Ok(build_simplified_catalog_from_texts(
         &config_text,
@@ -958,10 +970,44 @@ pub fn read_codex_model_catalog_simplified_from_live() -> Result<Option<Value>, 
     ))
 }
 
-#[allow(dead_code)]
+/// Read a UTF-8 text file while enforcing the byte limit on the actual stream.
+pub(crate) fn read_limited_string(path: &Path, max_bytes: u64) -> Result<String, AppError> {
+    let file = fs::File::open(path).map_err(|error| AppError::io(path, error))?;
+    let metadata = file.metadata().map_err(|error| AppError::io(path, error))?;
+    if metadata.len() > max_bytes {
+        return Err(AppError::Config(format!(
+            "File {} exceeds the {max_bytes}-byte limit",
+            path.display()
+        )));
+    }
+
+    let mut text = String::new();
+    let bytes_read = file
+        .take(max_bytes.saturating_add(1))
+        .read_to_string(&mut text)
+        .map_err(|error| AppError::io(path, error))?;
+    if bytes_read as u64 > max_bytes {
+        return Err(AppError::Config(format!(
+            "File {} exceeds the {max_bytes}-byte limit",
+            path.display()
+        )));
+    }
+    Ok(text)
+}
+
+/// Read the cc-switch Codex model catalog file with a size cap.
+pub(crate) fn read_codex_model_catalog_text(path: &Path) -> Result<String, AppError> {
+    read_limited_string(path, MAX_CODEX_CATALOG_BYTES)
+}
+
+/// Resolve the cc-switch-owned catalog under `base_dir`.
+///
+/// Relative paths are resolved under `base_dir`; absolute paths must still be
+/// contained within it. Existing files are canonicalized and checked again so
+/// a symlink inside the config directory cannot escape the boundary.
 pub(crate) fn resolve_cc_switch_catalog_path(
     config_text: &str,
-    generated_path: &Path,
+    base_dir: &Path,
 ) -> Option<PathBuf> {
     if config_text.trim().is_empty() {
         return None;
@@ -980,11 +1026,49 @@ pub(crate) fn resolve_cc_switch_catalog_path(
         return None;
     }
 
-    if referenced_path.is_absolute() {
-        Some(referenced_path.to_path_buf())
+    // Treat Unix-style absolute paths as absolute on Windows too. Accepting them
+    // as relative would make `/tmp/...` appear to be under the config directory.
+    let is_unix_absolute = catalog_path_str.starts_with('/');
+    let resolved = if referenced_path.is_absolute() || is_unix_absolute {
+        referenced_path.to_path_buf()
     } else {
-        Some(generated_path.to_path_buf())
+        base_dir.join(referenced_path)
+    };
+
+    if !path_is_within(base_dir, &resolved) {
+        log::warn!(
+            "Codex model_catalog_json points outside the config directory: {} (base: {})",
+            resolved.display(),
+            base_dir.display()
+        );
+        return None;
     }
+
+    if resolved.exists() {
+        let canonical = match fs::canonicalize(&resolved) {
+            Ok(path) => path,
+            Err(error) => {
+                log::warn!(
+                    "Failed to canonicalize Codex model_catalog_json {}: {error}",
+                    resolved.display()
+                );
+                return None;
+            }
+        };
+        let canonical_base = fs::canonicalize(base_dir).unwrap_or_else(|_| base_dir.to_path_buf());
+        if !path_is_within(&canonical_base, &canonical) {
+            log::warn!(
+                "Codex model_catalog_json escapes the config directory through a symlink: {} -> {} (base: {})",
+                resolved.display(),
+                canonical.display(),
+                canonical_base.display()
+            );
+            return None;
+        }
+        return Some(canonical);
+    }
+
+    Some(resolved)
 }
 
 #[allow(dead_code)]
@@ -2224,5 +2308,105 @@ base_url = "https://production.api/v1"
             .and_then(|v| v.get("base_url"))
             .and_then(|v| v.as_str());
         assert_eq!(base_url, Some("https://production.api/v1"));
+    }
+
+    #[test]
+    fn resolve_catalog_path_requires_cc_switch_owned_filename() {
+        let base = PathBuf::from("/tmp/.codex");
+        assert!(resolve_cc_switch_catalog_path("", &base).is_none());
+        assert!(resolve_cc_switch_catalog_path("model = \"gpt-5\"", &base).is_none());
+        assert!(resolve_cc_switch_catalog_path(
+            "model_catalog_json = \"my-handwritten-catalog.json\"",
+            &base,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn resolve_catalog_path_accepts_relative_owned_file() {
+        let base = PathBuf::from("/home/user/.codex");
+        let resolved = resolve_cc_switch_catalog_path(
+            "model_catalog_json = \"cc-switch-model-catalog.json\"",
+            &base,
+        );
+        assert_eq!(
+            resolved,
+            Some(base.join(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME))
+        );
+    }
+
+    #[test]
+    fn resolve_catalog_path_rejects_absolute_and_relative_escapes() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let base = temp.path().join("codex");
+        let outside = temp.path().join(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME);
+        let absolute_config = format!("model_catalog_json = '{}'", outside.display());
+
+        assert!(resolve_cc_switch_catalog_path(&absolute_config, &base).is_none());
+        assert!(resolve_cc_switch_catalog_path(
+            "model_catalog_json = \"../cc-switch-model-catalog.json\"",
+            &base,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn resolve_catalog_path_accepts_absolute_file_inside_config_dir() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let base = temp.path().join("codex");
+        let inside = base.join(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME);
+        let config = format!("model_catalog_json = '{}'", inside.display());
+
+        assert_eq!(resolve_cc_switch_catalog_path(&config, &base), Some(inside));
+    }
+
+    #[test]
+    #[cfg(any(unix, windows))]
+    fn resolve_catalog_path_rejects_symlink_escape() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let base = temp.path().join("codex");
+        let outside = temp.path().join("outside");
+        fs::create_dir_all(&base).expect("create base");
+        fs::create_dir_all(&outside).expect("create outside");
+        fs::write(
+            outside.join(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME),
+            r#"{"models":[]}"#,
+        )
+        .expect("write escaped catalog");
+
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, base.join("link")).expect("symlink");
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_dir(&outside, base.join("link")).expect("symlink");
+
+        let config = "model_catalog_json = \"link/cc-switch-model-catalog.json\"";
+        assert!(resolve_cc_switch_catalog_path(config, &base).is_none());
+    }
+
+    #[test]
+    fn resolve_catalog_path_accepts_real_file_inside_config_dir() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let base = temp.path().join("codex");
+        fs::create_dir_all(&base).expect("create base");
+        let catalog = base.join(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME);
+        fs::write(&catalog, r#"{"models":[]}"#).expect("write catalog");
+
+        let resolved = resolve_cc_switch_catalog_path(
+            "model_catalog_json = \"cc-switch-model-catalog.json\"",
+            &base,
+        )
+        .expect("catalog should resolve");
+        assert_eq!(resolved, fs::canonicalize(catalog).expect("canonical file"));
+    }
+
+    #[test]
+    fn read_limited_string_rejects_oversized_file() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("huge.json");
+        let file = fs::File::create(&path).expect("create catalog");
+        file.set_len(MAX_CODEX_CATALOG_BYTES + 1)
+            .expect("extend catalog");
+
+        assert!(read_codex_model_catalog_text(&path).is_err());
     }
 }

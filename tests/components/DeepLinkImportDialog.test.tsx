@@ -251,4 +251,32 @@ describe("DeepLinkImportDialog Web paste flow", () => {
     );
     expect(screen.getByText("Broken Import Provider")).toBeInTheDocument();
   });
+
+  it("shows token-only usage credentials before import", async () => {
+    const parsedRequest = {
+      version: "v1",
+      resource: "provider" as const,
+      app: "claude" as const,
+      name: "Token Only Provider",
+      endpoint: "https://api.example.com",
+      apiKey: "sk-provider-key",
+      usageAccessToken: "pat-secret-token",
+      usageUserId: "user-12345",
+    };
+
+    parseDeeplinkMock.mockResolvedValue(parsedRequest);
+    const { ref } = renderDialog();
+
+    act(() => {
+      ref.current?.openManualImport("ccswitch://token-only");
+    });
+    fireEvent.click(screen.getByText("deeplink.parseAction"));
+
+    await waitFor(() =>
+      expect(screen.getByText("deeplink.usageAccessToken")).toBeInTheDocument(),
+    );
+    expect(screen.getByText("pat-************")).toBeInTheDocument();
+    expect(screen.getByText("deeplink.usageUserId")).toBeInTheDocument();
+    expect(screen.getByText("user-12345")).toBeInTheDocument();
+  });
 });

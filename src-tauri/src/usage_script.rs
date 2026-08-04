@@ -7,6 +7,8 @@ use url::{Host, Url};
 use crate::error::AppError;
 
 const JS_EXECUTION_TIMEOUT: Duration = Duration::from_secs(2);
+const JS_MEMORY_LIMIT_BYTES: usize = 16 * 1024 * 1024;
+const JS_MAX_STACK_BYTES: usize = 256 * 1024;
 
 fn create_bounded_js_runtime() -> Result<(Runtime, Instant), AppError> {
     let runtime = Runtime::new().map_err(|e| {
@@ -16,6 +18,10 @@ fn create_bounded_js_runtime() -> Result<(Runtime, Instant), AppError> {
             format!("Failed to create JS runtime: {e}"),
         )
     })?;
+    // Usage scripts can arrive through deeplinks or synced settings. Apply all
+    // resource limits before evaluating any untrusted JavaScript.
+    runtime.set_memory_limit(JS_MEMORY_LIMIT_BYTES);
+    runtime.set_max_stack_size(JS_MAX_STACK_BYTES);
     let started_at = Instant::now();
     let deadline = started_at + JS_EXECUTION_TIMEOUT;
     runtime.set_interrupt_handler(Some(Box::new(move || Instant::now() >= deadline)));

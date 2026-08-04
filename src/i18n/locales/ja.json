@@ -2265,6 +2265,8 @@
     "usageScriptDisabled": "無効",
     "usageApiKey": "使用量 API キー",
     "usageBaseUrl": "使用量クエリ URL",
+    "usageAccessToken": "使用量アクセストークン",
+    "usageUserId": "使用量ユーザー ID",
     "usageAutoInterval": "自動クエリ",
     "usageAutoIntervalValue": "{{minutes}} 分ごと"
   },
