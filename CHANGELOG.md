@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.19.2] - 2026-08-08
+
+Synced product-upstream `farion1231/cc-switch` `v3.18.0..v3.19.2` batch S1 (docs, presets, sponsors, i18n) into this Web-first fork. Highlights: default preset models advanced to Claude Opus 5, GPT-5.6 Sol and Gemini 3.6 Flash; sponsor domain and referral migrations (PackyCode -> `packyapi.ai`, RightCode -> `rightapi.ai`, ClaudeAPI -> `apito.ai`, APINebula -> `apinebula.ai`, AICodeMirror -> `.ai`, AICoding -> `.inc`, AIGoCode -> `.app`); the A6API sponsor preset added across all supported apps; PackyCode backup endpoints; the Unity2.ai and NekoCode partners dropped; the Kimi first-top-up bonus surfaced; and eight missing translation keys added to every locale.
+
+Fork-specific deviations: sponsor tables in the READMEs, Claude Desktop scope, the `zh-TW` locale, `README_DE`, and the desktop updater / release CI mirrors remain excluded, so upstream hunks touching them were dropped. Upstream's full release prose is not mirrored into this changelog; see the upstream release notes under `docs/release-notes/` for the product-side detail.
+
 ## [3.18.0] - 2026-07-31
 
 Synced product-upstream `farion1231/cc-switch` `v3.16.5..v3.18.0` (v3.17.0 + v3.18.0) into this Web-first fork in seven themed batches, preserving the standalone Web server deployment model, dual-runtime parity, and the fork's security hardening. Highlights: Project Profiles (snapshot-based Claude/Codex config switching with autosave and takeover-safe apply), Grok OAuth + Grok Build (xAI device-flow accounts, managed providers pinned to `api.x.ai`, Grok Build as a first-class app), a Codex usage rebuild with the schema v16 migration (automatic pre-migration backup; Codex rows re-import for corrected totals), usage/pricing correctness (three-bucket cache-write accounting, last-good display on transient failures, GPT-5.6/Hunyuan Hy3/Kimi K3/grok-4.5 pricing seeds), a logging privacy overhaul, and frontend error-log persistence to server-side disk in Web mode. This release also ships the fork's own unreleased audit hardening since v3.16.5, including the deliberate removal of Web Basic Auth (unauthenticated by design). The desktop updater remains disabled and no authentication was introduced; sponsor/marketing, Claude Desktop scope, `zh-TW`, and the Codex Chat bridge cluster remain excluded.
