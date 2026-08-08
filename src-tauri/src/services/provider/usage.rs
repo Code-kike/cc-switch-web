@@ -244,15 +244,19 @@ fn extract_provider_usage_credentials(provider: &Provider, app_type: &AppType) -
                 .or_else(|| setting_base_url(settings, &["baseURL"])),
         ),
         AppType::GrokBuild => {
-            let (base_url, api_key) = settings
-                .get("config")
-                .and_then(Value::as_str)
+            // Resolve the endpoint independently from credentials. A declared
+            // `env_key` may be unavailable to the GUI/Web process; dropping the
+            // valid base URL with the missing key makes `{{baseUrl}}` relative
+            // and hides the actionable "missing credential" error.
+            let config_text = settings.get("config").and_then(Value::as_str);
+            let base_url = config_text
+                .and_then(crate::grok_config::extract_base_url)
+                .and_then(|url| non_empty_opt_base_url(Some(&url)));
+            let api_key = config_text
                 .and_then(crate::grok_config::extract_credentials)
-                .unwrap_or_default();
-            (
-                non_empty_opt_string(Some(&api_key)),
-                non_empty_opt_base_url(Some(&base_url)),
-            )
+                .map(|(_, key)| key)
+                .and_then(|key| non_empty_opt_string(Some(&key)));
+            (api_key, base_url)
         }
         AppType::OpenCode => (
             setting_string(settings, &["options", "apiKey"]),
@@ -1170,6 +1174,32 @@ base_url = "https://azure.example/openai/"
 
         assert_eq!(credentials.api_key, "codex-key");
         assert_eq!(credentials.base_url, "https://azure.example/openai");
+    }
+
+    #[test]
+    fn extracts_grok_base_url_when_declared_env_key_is_unset() {
+        // The S2 credential hardening must not erase a valid endpoint merely
+        // because the GUI/Web process cannot resolve the declared env_key.
+        let provider = provider_with_config(json!({
+            "config": r#"
+[models]
+default = "grok-3"
+
+[model."grok-3"]
+model = "grok-3"
+base_url = "https://grok.example/v1"
+name = "Grok"
+env_key = "CC_SWITCH_TEST_GROK_KEY_THAT_IS_UNSET"
+api_backend = "openai"
+context_window = 131072
+"#
+        }));
+
+        let credentials =
+            resolve_usage_credentials(&provider, &AppType::GrokBuild, &usage_script());
+
+        assert!(credentials.api_key.is_empty());
+        assert_eq!(credentials.base_url, "https://grok.example/v1");
     }
 
     #[test]

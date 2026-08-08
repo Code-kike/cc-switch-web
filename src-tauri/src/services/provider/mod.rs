@@ -3183,7 +3183,7 @@ impl ProviderService {
     /// 模式匹配覆盖整类，而非枚举具体名字（枚举永远会漏掉下一个 `*_API_KEY`）。
     ///
     /// 覆盖：Anthropic / OpenRouter / Google / OpenAI / Gemini 等 `*_API_KEY`
-    /// （Claude provider 的凭据见 `Provider::resolve_usage_credentials`，确实支持
+    /// （Claude provider 的用量凭据解析见 `services/provider/usage.rs`，确实支持
     /// `OPENROUTER_API_KEY` / `GOOGLE_API_KEY` 等回退）、各类 `*_AUTH_TOKEN` /
     /// 单数 `*_TOKEN`、AWS Bedrock / Vertex 凭据、以及通用 secret / password /
     /// 私钥命名。

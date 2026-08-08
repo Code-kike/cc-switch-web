@@ -396,6 +396,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // 幂等（无备份时 restore 为 no-op，标志/备份清理可重复执行）。
     recover_proxy_from_crash_residue(app_state.as_ref()).await;
 
+    // S2 security parity with desktop: scrub credentials leaked by older
+    // Gemini common snippets before auto-extraction can inspect and persist the
+    // restored live config again. The scrub is one-shot/idempotent and must run
+    // after crash recovery but before snippet initialization.
+    if let Err(error) = crate::services::ProviderService::scrub_leaked_gemini_common_config(
+        state.app_state.as_ref(),
+    )
+    .await
+    {
+        log::warn!("failed to scrub leaked Gemini common-config credentials: {error}");
+    }
+
     // Startup parity with the desktop `initialize_common_config_snippets`
     // hook: auto-extract common config snippets from clean live files, run the
     // one-shot legacy common-config migration, and strip legacy
@@ -1084,6 +1096,7 @@ mod web_proxy_lifecycle {
             ".set_runtime_ctx(",
             "init_global_proxy_http_client(",
             "recover_proxy_from_crash_residue(",
+            "scrub_leaked_gemini_common_config(",
             "initialize_common_config_snippets(",
             "restore_proxy_state_on_startup(",
             "axum::serve(",
