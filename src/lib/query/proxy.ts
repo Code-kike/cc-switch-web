@@ -124,8 +124,19 @@ export function useUpdateAppProxyConfig() {
     extractErrorMessage(error) || t("common.unknown");
 
   return useMutation({
-    mutationFn: (config: AppProxyConfig) =>
-      proxyApi.updateProxyConfigForApp(config),
+    mutationFn: (config: AppProxyConfig) => {
+      // The dedicated failover toggle owns this field. The config editor can
+      // hold an older AppProxyConfig snapshot while that toggle changes; do
+      // not let a timeout/strategy save silently revert the live flag.
+      const autoFailoverEnabled = queryClient.getQueryData<boolean>([
+        "autoFailoverEnabled",
+        config.appType,
+      ]);
+      return proxyApi.updateProxyConfigForApp({
+        ...config,
+        autoFailoverEnabled: autoFailoverEnabled ?? config.autoFailoverEnabled,
+      });
+    },
     onSuccess: (_, variables) => {
       toast.success(t("proxy.settings.toast.saved"), { closeButton: true });
       queryClient.invalidateQueries({

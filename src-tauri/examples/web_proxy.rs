@@ -45,9 +45,6 @@ pub mod handler_context;
 #[path = "../src/proxy/handlers.rs"]
 mod handlers;
 
-#[path = "../src/proxy/health.rs"]
-mod health;
-
 #[path = "../src/proxy/http_client.rs"]
 pub mod http_client;
 
