@@ -135,6 +135,12 @@ vi.mock("@/components/BrandIcons", () => ({
   CodexIcon: () => <span>codex-icon</span>,
 }));
 
+vi.mock("@/components/CodexOauthAccountQuota", () => ({
+  default: ({ accountId }: { accountId: string }) => (
+    <div data-account-quota={accountId} />
+  ),
+}));
+
 vi.mock("@/components/providers/forms/hooks/useCopilotAuth", () => ({
   useCopilotAuth: () => copilotState,
 }));

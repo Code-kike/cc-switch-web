@@ -2,7 +2,16 @@
 //!
 //! 提供 Tauri 命令，供前端在供应商表单中获取可用模型列表。
 
-use crate::services::model_fetch::{self, FetchedModel};
+use crate::services::model_fetch::{self, FetchedModel, OpenCodeModelRef};
+
+/// 获取 OpenCode 当前运行时可用的模型。
+///
+/// 复用工具更新页的 CLI 定位逻辑执行 `opencode models`，因此会包含 OpenCode
+/// 已加载的 OAuth 模型与 Zen 免费模型，而不是只读取 opencode.json。
+#[tauri::command]
+pub async fn get_opencode_models() -> Result<Vec<OpenCodeModelRef>, String> {
+    model_fetch::get_opencode_models().await
+}
 
 /// 获取供应商的可用模型列表
 ///

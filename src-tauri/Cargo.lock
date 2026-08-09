@@ -837,6 +837,7 @@ dependencies = [
  "indexmap 2.13.0",
  "json-five",
  "json5",
+ "libc",
  "log",
  "mime_guess",
  "nix",

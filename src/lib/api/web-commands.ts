@@ -218,6 +218,10 @@ const cmds = defineCommands({
     method: "POST",
     path: "/api/config/fetch-models-for-config",
   },
+  get_opencode_models: {
+    method: "GET",
+    path: "/api/config/get-opencode-models",
+  },
   get_app_config_dir_override: {
     method: "GET",
     path: "/api/config/get-app-config-dir-override",
@@ -366,6 +370,10 @@ const cmds = defineCommands({
     path: "/api/system/get_migration_result",
   },
   get_model_pricing: { method: "POST", path: "/api/system/get_model_pricing" },
+  get_models_dev_sync_config: {
+    method: "POST",
+    path: "/api/system/get_models_dev_sync_config",
+  },
   get_model_stats: { method: "POST", path: "/api/system/get_model_stats" },
   get_openclaw_agents_defaults: {
     method: "GET",
@@ -649,6 +657,10 @@ const cmds = defineCommands({
     method: "POST",
     path: "/api/usage/rebuild-codex-usage",
   },
+  record_models_dev_sync_result: {
+    method: "POST",
+    path: "/api/system/record_models_dev_sync_result",
+  },
   remove_custom_endpoint: {
     method: "POST",
     path: "/api/system/remove_custom_endpoint",
@@ -704,6 +716,10 @@ const cmds = defineCommands({
     method: "POST",
     path: "/api/system/save_file_dialog",
     webReplacement: true as const,
+  },
+  save_models_dev_sync_config: {
+    method: "POST",
+    path: "/api/system/save_models_dev_sync_config",
   },
   save_settings: { method: "PUT", path: "/api/settings/save-settings" },
   save_stream_check_config: {
@@ -872,6 +888,10 @@ const cmds = defineCommands({
   update_model_pricing: {
     method: "POST",
     path: "/api/system/update_model_pricing",
+  },
+  update_model_pricing_batch: {
+    method: "POST",
+    path: "/api/system/update_model_pricing_batch",
   },
   update_provider: { method: "PUT", path: "/api/providers/update-provider" },
   update_profile: { method: "PUT", path: "/api/profiles/update-profile" },

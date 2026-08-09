@@ -432,6 +432,11 @@ export const hermesProviderPresets: HermesProviderPreset[] = [
       api_key: "",
       api_mode: "chat_completions",
       models: [
+        {
+          id: "qwen3.8-max",
+          name: "Qwen3.8 Max",
+          context_length: 1000000,
+        },
         { id: "qwen3-coder-plus", name: "Qwen3 Coder Plus" },
         { id: "qwen3-max", name: "Qwen3 Max" },
       ],
@@ -452,6 +457,11 @@ export const hermesProviderPresets: HermesProviderPreset[] = [
       api_key: "",
       api_mode: "anthropic_messages",
       models: [
+        {
+          id: "qwen3.8-max",
+          name: "Qwen3.8 Max",
+          context_length: 1000000,
+        },
         { id: "qwen3-coder-plus", name: "Qwen3 Coder Plus" },
         { id: "qwen3-max", name: "Qwen3 Max" },
       ],

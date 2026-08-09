@@ -206,6 +206,7 @@ pub fn router(state: ApiState) -> Router {
             "/config/fetch-models-for-config",
             post(fetch_models_for_config),
         )
+        .route("/config/get-opencode-models", get(get_opencode_models))
         .route(
             "/config/get-stream-check-config",
             get(get_stream_check_config),
@@ -493,6 +494,13 @@ async fn fetch_models_for_config(
     )
     .await
     .map_err(ApiError::bad_request)?;
+    Ok(json_ok(models))
+}
+
+async fn get_opencode_models() -> ApiResult<Vec<crate::services::model_fetch::OpenCodeModelRef>> {
+    let models = crate::services::model_fetch::get_opencode_models()
+        .await
+        .map_err(ApiError::internal)?;
     Ok(json_ok(models))
 }
 

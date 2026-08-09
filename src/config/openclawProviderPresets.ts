@@ -387,6 +387,20 @@ export const openclawProviderPresets: OpenClawProviderPreset[] = [
       api: "openai-completions",
       models: [
         {
+          id: "qwen3.8-max",
+          name: "Qwen3.8 Max",
+          reasoning: true,
+          input: ["text", "image", "video", "pdf"],
+          contextWindow: 1000000,
+          maxTokens: 131072,
+          cost: {
+            input: 2,
+            output: 6,
+            cacheRead: 0.25,
+            cacheWrite: 2.5,
+          },
+        },
+        {
           id: "qwen3.5-plus",
           name: "Qwen3.5 Plus",
           contextWindow: 32000,
@@ -412,7 +426,10 @@ export const openclawProviderPresets: OpenClawProviderPreset[] = [
     },
     suggestedDefaults: {
       model: { primary: "qwen/qwen3.5-plus" },
-      modelCatalog: { "qwen/qwen3.5-plus": { alias: "Qwen" } },
+      modelCatalog: {
+        "qwen/qwen3.8-max": { alias: "Qwen Max" },
+        "qwen/qwen3.5-plus": { alias: "Qwen" },
+      },
     },
   },
   {
@@ -2009,10 +2026,10 @@ export const openclawProviderPresets: OpenClawProviderPreset[] = [
         {
           contextWindow: 200000,
           cost: {
-            cacheRead: 0,
+            cacheRead: 0.175,
             cacheWrite: 0,
-            input: 0,
-            output: 0,
+            input: 1.75,
+            output: 14,
           },
           id: "gpt-5.3-codex",
           maxTokens: 32000,

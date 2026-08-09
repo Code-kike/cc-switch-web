@@ -270,15 +270,29 @@ fn upsert_pricing(
         .map_err(|error| AppError::Database(format!("更新模型定价失败: {error}")))
 }
 
+#[derive(Debug, Default)]
+struct LocalPricingSyncResult {
+    upserted_model_ids: Vec<String>,
+    deleted: usize,
+}
+
+impl LocalPricingSyncResult {
+    fn changed(&self) -> usize {
+        self.upserted_model_ids.len() + self.deleted
+    }
+}
+
 fn apply_file_to_database(
     db: &Database,
     file: &ModelPricingFile,
-) -> Result<(usize, usize), AppError> {
+) -> Result<LocalPricingSyncResult, AppError> {
     let mut conn = lock_conn!(db.conn);
     let transaction = conn.transaction()?;
-    let mut upserted = 0;
+    let mut upserted_model_ids = Vec::new();
     for entry in &file.models {
-        upserted += upsert_pricing(&transaction, entry)?;
+        if upsert_pricing(&transaction, entry)? > 0 {
+            upserted_model_ids.push(entry.model_id.clone());
+        }
     }
     let mut deleted = 0;
     for model_id in &file.deleted_model_ids {
@@ -288,30 +302,80 @@ fn apply_file_to_database(
         )?;
     }
     transaction.commit()?;
-    Ok((upserted, deleted))
+    Ok(LocalPricingSyncResult {
+        upserted_model_ids,
+        deleted,
+    })
+}
+
+/// Apply the local override/tombstone file without running usage backfill.
+/// Compound pricing mutations use this so all newly available prices become
+/// visible before one deliberate post-transaction backfill pass.
+fn sync_local_model_pricing_without_backfill(
+    db: &Database,
+) -> Result<LocalPricingSyncResult, AppError> {
+    let _file_guard = file_lock()
+        .lock()
+        .map_err(|error| AppError::Config(format!("模型定价文件锁失败: {error}")))?;
+    let file = load_or_create_file_unlocked()?;
+    apply_file_to_database(db, &file)
 }
 
 /// Load user-maintained overrides from `~/.cc-switch/model-pricing.json`.
 /// Built-in rows remain database-owned so application updates can repair them;
 /// the file contains only explicit overrides and deletion tombstones.
 pub fn sync_local_model_pricing(db: &Database) -> Result<usize, AppError> {
-    let (upserted, deleted) = {
-        let _file_guard = file_lock()
-            .lock()
-            .map_err(|error| AppError::Config(format!("模型定价文件锁失败: {error}")))?;
-        let file = load_or_create_file_unlocked()?;
-        apply_file_to_database(db, &file)?
-    };
+    let result = sync_local_model_pricing_without_backfill(db)?;
 
     // Deleting pricing cannot make a zero-cost usage row calculable. In
     // particular, seeded rows covered by tombstones may be reinserted and
     // deleted on every startup; they must not trigger a full-table backfill.
-    if upserted > 0 {
+    if !result.upserted_model_ids.is_empty() {
         if let Err(error) = db.backfill_missing_usage_costs() {
             log::warn!("本地模型定价同步后回填历史用量成本失败: {error}");
         }
     }
-    Ok(upserted + deleted)
+    Ok(result.changed())
+}
+
+/// Return the effective pricing table after applying built-in seeds and the
+/// local override/tombstone file. Both the desktop command and Web handler use
+/// this entry point so a read has identical reload semantics in both runtimes.
+pub fn get_model_pricing(db: &Database) -> Result<Vec<ModelPricingInfo>, AppError> {
+    db.ensure_model_pricing_seeded()?;
+    sync_local_model_pricing(db)?;
+
+    let conn = lock_conn!(db.conn);
+    let table_exists = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='model_pricing'",
+            [],
+            |row| row.get::<_, i64>(0).map(|count| count > 0),
+        )
+        .unwrap_or(false);
+    if !table_exists {
+        log::error!("model_pricing 表不存在,可能需要重启应用以触发数据库迁移");
+        return Ok(Vec::new());
+    }
+
+    let mut stmt = conn.prepare(
+        "SELECT model_id, display_name, input_cost_per_million, output_cost_per_million,
+                cache_read_cost_per_million, cache_creation_cost_per_million
+         FROM model_pricing
+         ORDER BY display_name",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(ModelPricingInfo {
+            model_id: row.get(0)?,
+            display_name: row.get(1)?,
+            input_cost_per_million: row.get(2)?,
+            output_cost_per_million: row.get(3)?,
+            cache_read_cost_per_million: row.get(4)?,
+            cache_creation_cost_per_million: row.get(5)?,
+        })
+    })?;
+
+    rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
 }
 
 pub fn get_models_dev_sync_state(db: &Database) -> Result<ModelsDevSyncState, AppError> {
@@ -379,7 +443,10 @@ fn update_model_pricing_batch_inner(
         .map(|entry| entry.model_id.clone())
         .collect::<Vec<_>>();
 
-    sync_local_model_pricing(db)?;
+    // Apply pending edits first, but defer their backfill until this mutation's
+    // transaction commits. Calling the public sync here would run a full pass
+    // now and a second full pass below for models.dev batches.
+    let local_sync = sync_local_model_pricing_without_backfill(db)?;
     let changed = {
         let _file_guard = file_lock()
             .lock()
@@ -412,16 +479,29 @@ fn update_model_pricing_batch_inner(
         changed
     };
 
-    if changed > 0 {
-        if backfill_all {
+    if backfill_all {
+        // A pending local override and the batch entries are now committed, so
+        // one full pass can price rows for both sets. Do not call the public
+        // local-file sync above: that would make this edge perform two passes.
+        if changed > 0 || !local_sync.upserted_model_ids.is_empty() {
             if let Err(error) = db.backfill_missing_usage_costs() {
                 log::warn!("批量更新模型定价后回填历史用量成本失败: {error}");
             }
-        } else {
-            for model_id in model_ids {
-                if let Err(error) = db.backfill_missing_usage_costs_for_model(&model_id) {
-                    log::warn!("模型定价更新后回填历史用量成本失败 (model_id={model_id}): {error}");
-                }
+        }
+    } else {
+        // Preserve the ordinary single-model path: normalize through the
+        // shared lookup candidates and recalculate only affected model rows.
+        // Include pending local overrides because their full pass was deferred.
+        let mut affected_model_ids = local_sync
+            .upserted_model_ids
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        if changed > 0 {
+            affected_model_ids.extend(model_ids);
+        }
+        for model_id in affected_model_ids {
+            if let Err(error) = db.backfill_missing_usage_costs_for_model(&model_id) {
+                log::warn!("模型定价更新后回填历史用量成本失败 (model_id={model_id}): {error}");
             }
         }
     }
@@ -474,7 +554,24 @@ pub fn delete_model_pricing(db: &Database, model_id: &str) -> Result<(), AppErro
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
     use serial_test::serial;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static FULL_BACKFILL_SELECTS: AtomicUsize = AtomicUsize::new(0);
+
+    fn count_full_backfill_selects(context: AuthContext<'_>) -> Authorization {
+        if matches!(
+            context.action,
+            AuthAction::Read {
+                table_name: "proxy_request_logs",
+                column_name: "pricing_model",
+            }
+        ) {
+            FULL_BACKFILL_SELECTS.fetch_add(1, Ordering::SeqCst);
+        }
+        Authorization::Allow
+    }
 
     fn with_test_home(test: impl FnOnce(&Database, &PathBuf)) {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -500,6 +597,43 @@ mod tests {
             cache_read_cost_per_million: "0.1".to_string(),
             cache_creation_cost_per_million: "1.5".to_string(),
         }
+    }
+
+    fn insert_zero_cost_usage(db: &Database, request_id: &str, model: &str) {
+        let conn = db.conn.lock().expect("lock test database");
+        conn.execute(
+            "INSERT OR IGNORE INTO providers (
+                id, app_type, name, settings_config, meta
+             ) VALUES ('priced-provider', 'codex', 'Priced Provider', '{}',
+                       '{\"costMultiplier\":\"2\"}')",
+            [],
+        )
+        .expect("insert priced provider");
+        conn.execute(
+            "INSERT INTO proxy_request_logs (
+                request_id, provider_id, app_type, model, request_model,
+                input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+                input_cost_usd, output_cost_usd, cache_read_cost_usd,
+                cache_creation_cost_usd, total_cost_usd, latency_ms,
+                status_code, created_at, data_source
+             ) VALUES (
+                ?1, 'priced-provider', 'codex', ?2, ?2,
+                1000000, 0, 0, 0, '0', '0', '0', '0', '0', 100, 200, 1, 'proxy'
+             )",
+            params![request_id, model],
+        )
+        .expect("insert zero-cost usage");
+    }
+
+    fn usage_costs(db: &Database, request_id: &str) -> (String, String) {
+        let conn = db.conn.lock().expect("lock test database");
+        conn.query_row(
+            "SELECT input_cost_usd, total_cost_usd
+             FROM proxy_request_logs WHERE request_id = ?1",
+            params![request_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("query usage costs")
     }
 
     #[test]
@@ -529,7 +663,7 @@ mod tests {
                     conn.execute(
                         "UPDATE model_pricing
                          SET input_cost_per_million = '99'
-                         WHERE model_id = 'claude-sonnet-5'",
+                         WHERE model_id = 'claude-opus-5'",
                         [],
                     )
                     .expect("simulate built-in pricing repair"),
@@ -543,7 +677,7 @@ mod tests {
             let input: String = conn
                 .query_row(
                     "SELECT input_cost_per_million
-                     FROM model_pricing WHERE model_id = 'claude-sonnet-5'",
+                     FROM model_pricing WHERE model_id = 'claude-opus-5'",
                     [],
                     |row| row.get(0),
                 )
@@ -695,7 +829,7 @@ mod tests {
                 .expect("insert zero-cost usage");
             }
 
-            delete_model_pricing(db, "claude-sonnet-5").expect("create tombstone");
+            delete_model_pricing(db, "claude-opus-5").expect("create tombstone");
             db.ensure_model_pricing_seeded()
                 .expect("reseed built-in pricing");
             assert_eq!(sync_local_model_pricing(db).expect("apply tombstone"), 1);
@@ -704,7 +838,7 @@ mod tests {
             let deleted_count: i64 = conn
                 .query_row(
                     "SELECT COUNT(*) FROM model_pricing
-                     WHERE model_id = 'claude-sonnet-5'",
+                     WHERE model_id = 'claude-opus-5'",
                     [],
                     |row| row.get(0),
                 )
@@ -719,6 +853,109 @@ mod tests {
                 .expect("query pending usage cost");
             assert_eq!(deleted_count, 0);
             assert_eq!(total_cost, 0.0);
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn batch_applies_pending_local_edit_before_exactly_one_full_backfill() {
+        with_test_home(|db, path| {
+            get_models_dev_sync_state(db).expect("create pricing file");
+            let content = fs::read_to_string(path).expect("read pricing file");
+            let mut file: ModelPricingFile =
+                serde_json::from_str(&content).expect("parse pricing file");
+            let mut local_pricing = sample_pricing();
+            local_pricing.model_id = "pending-local".to_string();
+            local_pricing.display_name = "Pending Local".to_string();
+            file.models.push(local_pricing);
+            fs::write(
+                path,
+                serde_json::to_vec_pretty(&file).expect("serialize local edit"),
+            )
+            .expect("write local edit");
+
+            insert_zero_cost_usage(db, "pending-local-cost", "relay/PENDING.LOCAL");
+            insert_zero_cost_usage(db, "batch-cost", "relay/BATCH.MODEL");
+
+            FULL_BACKFILL_SELECTS.store(0, Ordering::SeqCst);
+            {
+                let conn = db.conn.lock().expect("lock test database");
+                conn.authorizer(Some(count_full_backfill_selects));
+            }
+
+            let mut batch_pricing = sample_pricing();
+            batch_pricing.model_id = "batch-model".to_string();
+            batch_pricing.display_name = "Batch Model".to_string();
+            batch_pricing.input_cost_per_million = "3".to_string();
+            assert_eq!(
+                update_model_pricing_batch(db, vec![batch_pricing]).expect("batch pricing update"),
+                1
+            );
+
+            {
+                let conn = db.conn.lock().expect("lock test database");
+                conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>);
+            }
+            assert_eq!(FULL_BACKFILL_SELECTS.load(Ordering::SeqCst), 1);
+            assert_eq!(
+                usage_costs(db, "pending-local-cost"),
+                ("1.250000".to_string(), "2.500000".to_string())
+            );
+            assert_eq!(
+                usage_costs(db, "batch-cost"),
+                ("3.000000".to_string(), "6.000000".to_string())
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn standalone_local_sync_still_runs_a_full_backfill() {
+        with_test_home(|db, path| {
+            get_models_dev_sync_state(db).expect("create pricing file");
+            let content = fs::read_to_string(path).expect("read pricing file");
+            let mut file: ModelPricingFile =
+                serde_json::from_str(&content).expect("parse pricing file");
+            let mut local_pricing = sample_pricing();
+            local_pricing.model_id = "standalone-model".to_string();
+            local_pricing.display_name = "Standalone Model".to_string();
+            file.models.push(local_pricing);
+            fs::write(
+                path,
+                serde_json::to_vec_pretty(&file).expect("serialize local edit"),
+            )
+            .expect("write local edit");
+
+            insert_zero_cost_usage(db, "standalone-cost", "relay/STANDALONE.MODEL");
+            insert_zero_cost_usage(db, "unrelated-seeded-cost", "openai/gpt-5");
+
+            assert_eq!(sync_local_model_pricing(db).expect("sync local pricing"), 1);
+            assert_eq!(
+                usage_costs(db, "standalone-cost"),
+                ("1.250000".to_string(), "2.500000".to_string())
+            );
+            assert_ne!(usage_costs(db, "unrelated-seeded-cost").1, "0");
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn single_update_keeps_normalized_targeted_backfill_and_provider_multiplier() {
+        with_test_home(|db, _path| {
+            get_models_dev_sync_state(db).expect("create pricing file");
+            insert_zero_cost_usage(db, "single-cost", "relay/SINGLE.MODEL");
+            insert_zero_cost_usage(db, "single-unrelated-cost", "openai/gpt-5");
+
+            let mut pricing = sample_pricing();
+            pricing.model_id = "single-model".to_string();
+            pricing.display_name = "Single Model".to_string();
+            assert_eq!(update_model_pricing(db, pricing).expect("single update"), 1);
+
+            assert_eq!(
+                usage_costs(db, "single-cost"),
+                ("1.250000".to_string(), "2.500000".to_string())
+            );
+            assert_eq!(usage_costs(db, "single-unrelated-cost").1, "0");
         });
     }
 

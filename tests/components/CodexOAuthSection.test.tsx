@@ -2,9 +2,11 @@ import React, { createContext } from "react";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CodexOAuthSection } from "@/components/providers/forms/CodexOAuthSection";
+import { AuthCenterPanel } from "@/components/settings/AuthCenterPanel";
 
 const copyTextMock = vi.fn();
 const useCodexOauthMock = vi.fn();
+const renderAccountQuotaMock = vi.fn();
 const selectContext = createContext<((value: string) => void) | null>(null);
 
 const state = {
@@ -99,6 +101,21 @@ vi.mock("@/lib/clipboard", () => ({
   copyText: (...args: unknown[]) => copyTextMock(...args),
 }));
 
+vi.mock("@/components/CodexOauthAccountQuota", () => ({
+  default: ({ accountId }: { accountId: string }) => {
+    renderAccountQuotaMock(accountId);
+    return <div data-testid="account-quota">{accountId}</div>;
+  },
+}));
+
+vi.mock("@/components/providers/forms/CopilotAuthSection", () => ({
+  CopilotAuthSection: () => <div />,
+}));
+
+vi.mock("@/components/providers/forms/XaiOAuthSection", () => ({
+  XaiOAuthSection: () => <div />,
+}));
+
 describe("CodexOAuthSection", () => {
   beforeEach(() => {
     Object.assign(state, {
@@ -116,6 +133,7 @@ describe("CodexOAuthSection", () => {
     useCodexOauthMock.mockReset();
     useCodexOauthMock.mockImplementation(() => state);
     copyTextMock.mockReset();
+    renderAccountQuotaMock.mockReset();
     state.addAccount.mockReset();
     state.removeAccount.mockReset();
     state.setDefaultAccount.mockReset();
@@ -199,5 +217,31 @@ describe("CodexOAuthSection", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "重试" }));
     expect(state.addAccount).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not render per-account quota in provider forms by default", () => {
+    Object.assign(state, {
+      hasAnyAccount: true,
+      accounts: [{ id: "account-1", login: "user@example.com" }],
+      defaultAccountId: "account-1",
+    });
+
+    render(<CodexOAuthSection />);
+
+    expect(renderAccountQuotaMock).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("account-quota")).not.toBeInTheDocument();
+  });
+
+  it("renders each account quota in Auth Center", () => {
+    Object.assign(state, {
+      hasAnyAccount: true,
+      accounts: [{ id: "account-1", login: "user@example.com" }],
+      defaultAccountId: "account-1",
+    });
+
+    render(<AuthCenterPanel />);
+
+    expect(renderAccountQuotaMock).toHaveBeenCalledWith("account-1");
+    expect(screen.getByTestId("account-quota")).toHaveTextContent("account-1");
   });
 });

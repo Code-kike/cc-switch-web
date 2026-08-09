@@ -355,6 +355,70 @@ pub fn codex_auth_has_oauth_login_material(auth: &Value) -> bool {
     })
 }
 
+/// Detect first-class Codex login credentials without treating metadata or a
+/// third-party OPENAI_API_KEY as an official login.
+pub fn codex_auth_has_credential_login_material(auth: &Value) -> bool {
+    let Some(obj) = auth.as_object() else {
+        return false;
+    };
+
+    let value_present = |value: &Value| match value {
+        Value::Null => false,
+        Value::String(text) => !text.trim().is_empty(),
+        Value::Array(items) => !items.is_empty(),
+        Value::Object(map) => !map.is_empty(),
+        _ => true,
+    };
+
+    if ["personal_access_token", "agent_identity", "bedrock_api_key"]
+        .iter()
+        .any(|key| obj.get(*key).is_some_and(value_present))
+    {
+        return true;
+    }
+
+    obj.get("tokens")
+        .and_then(Value::as_object)
+        .is_some_and(|tokens| {
+            ["id_token", "access_token", "refresh_token"]
+                .iter()
+                .any(|key| tokens.get(*key).is_some_and(value_present))
+        })
+}
+
+pub fn codex_live_auth_is_stale_third_party_residue(live_auth: &Value) -> bool {
+    if codex_auth_has_credential_login_material(live_auth) {
+        return false;
+    }
+    live_auth
+        .get("OPENAI_API_KEY")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .is_some_and(|key| !key.is_empty())
+}
+
+/// Delete a stale third-party live key after it has been safely backfilled and
+/// the switch to a material-less official provider has completed. A missing
+/// auth.json makes Codex show its login screen; writing `{}` does not.
+pub fn clear_stale_codex_live_auth_after_official_switch(
+    db_auth: &Value,
+) -> Result<bool, AppError> {
+    if codex_auth_has_login_material(db_auth) {
+        return Ok(false);
+    }
+
+    let auth_path = get_codex_auth_path();
+    if !auth_path.exists() {
+        return Ok(false);
+    }
+    let live_auth: Value = read_json_file(&auth_path)?;
+    if !codex_live_auth_is_stale_third_party_residue(&live_auth) {
+        return Ok(false);
+    }
+    delete_file(&auth_path)?;
+    Ok(true)
+}
+
 pub fn should_restore_codex_provider_token_for_backfill(
     category: Option<&str>,
     template_settings: &Value,
@@ -402,8 +466,12 @@ fn codex_catalog_input_modalities(
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CodexCatalogModelSpec {
     model: String,
-    display_name: String,
-    context_window: u64,
+    /// Explicit user value only. Synthetic catalog entries fall back to the
+    /// model id; official vendor entries retain the vendor display name.
+    display_name: Option<String>,
+    /// Explicit user value only. Synthetic entries fall back to the active
+    /// config's context window; official entries retain the vendor value.
+    context_window: Option<u64>,
     supports_parallel_tool_calls: Option<bool>,
     /// Hidden per-row capability declaration from built-in provider metadata.
     /// When omitted, all catalog profiles consult the shared text-only model
@@ -417,17 +485,20 @@ fn codex_catalog_model_entry(
     spec: &CodexCatalogModelSpec,
     priority: usize,
     profile: CodexCatalogToolProfile,
+    default_context_window: u64,
 ) -> Value {
     let mut entry = template.clone();
     let Some(entry_obj) = entry.as_object_mut() else {
         return json!({});
     };
 
+    let display_name = spec.display_name.as_deref().unwrap_or(&spec.model);
+    let context_window = spec.context_window.unwrap_or(default_context_window);
     entry_obj.insert("slug".to_string(), json!(spec.model));
-    entry_obj.insert("display_name".to_string(), json!(spec.display_name));
-    entry_obj.insert("description".to_string(), json!(spec.display_name));
-    entry_obj.insert("context_window".to_string(), json!(spec.context_window));
-    entry_obj.insert("max_context_window".to_string(), json!(spec.context_window));
+    entry_obj.insert("display_name".to_string(), json!(display_name));
+    entry_obj.insert("description".to_string(), json!(display_name));
+    entry_obj.insert("context_window".to_string(), json!(context_window));
+    entry_obj.insert("max_context_window".to_string(), json!(context_window));
     entry_obj.insert("priority".to_string(), json!(1000 + priority));
     entry_obj.insert("additional_speed_tiers".to_string(), json!([]));
     entry_obj.insert("service_tiers".to_string(), json!([]));
@@ -473,7 +544,7 @@ fn codex_catalog_model_entry(
     entry
 }
 
-fn codex_catalog_model_specs(settings: &Value, config_text: &str) -> Vec<CodexCatalogModelSpec> {
+fn codex_catalog_model_specs(settings: &Value) -> Vec<CodexCatalogModelSpec> {
     let Some(models) = settings
         .get("modelCatalog")
         .and_then(|catalog| catalog.get("models"))
@@ -482,8 +553,6 @@ fn codex_catalog_model_specs(settings: &Value, config_text: &str) -> Vec<CodexCa
         return Vec::new();
     };
 
-    let default_context_window =
-        extract_codex_top_level_u64(config_text, "model_context_window").unwrap_or(128_000);
     let mut seen = HashSet::new();
     let mut specs = Vec::new();
 
@@ -507,13 +576,12 @@ fn codex_catalog_model_specs(settings: &Value, config_text: &str) -> Vec<CodexCa
             .and_then(|value| value.as_str())
             .map(str::trim)
             .filter(|name| !name.is_empty())
-            .unwrap_or(model);
+            .map(str::to_string);
         let context_window = parse_codex_positive_u64(
             model_config
                 .get("contextWindow")
                 .or_else(|| model_config.get("context_window")),
-        )
-        .unwrap_or(default_context_window);
+        );
         let supports_parallel_tool_calls = model_config
             .get("supportsParallelToolCalls")
             .or_else(|| model_config.get("supports_parallel_tool_calls"))
@@ -540,7 +608,7 @@ fn codex_catalog_model_specs(settings: &Value, config_text: &str) -> Vec<CodexCa
 
         specs.push(CodexCatalogModelSpec {
             model: model.to_string(),
-            display_name: display_name.to_string(),
+            display_name,
             context_window,
             supports_parallel_tool_calls,
             input_modalities,
@@ -785,6 +853,114 @@ fn load_codex_native_responses_template() -> Value {
     serde_json::from_str(text).expect("bundled codex native responses template must be valid JSON")
 }
 
+/// Hosts whose native `/responses` gateway publishes an official Codex model
+/// catalog. Match the gateway host, not the model brand: these entries grant
+/// capabilities such as freeform `apply_patch` that aggregators may reject.
+const CODEX_DEEPSEEK_OFFICIAL_CATALOG_HOSTS: &[&str] = &["deepseek.com"];
+
+fn codex_url_matches_vendor_host(base_url: &str, vendor_host: &str) -> bool {
+    let Ok(parsed) = url::Url::parse(base_url) else {
+        return false;
+    };
+    let Some(host) = parsed.host_str() else {
+        return false;
+    };
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    host == vendor_host
+        || host
+            .strip_suffix(vendor_host)
+            .is_some_and(|prefix| prefix.ends_with('.'))
+}
+
+/// Bundled copy of DeepSeek's official Codex models.json.
+fn load_codex_deepseek_official_catalog_models() -> Vec<Value> {
+    let text = include_str!("resources/codex_deepseek_catalog_template.json");
+    let catalog: Value =
+        serde_json::from_str(text).expect("bundled DeepSeek official catalog must be valid JSON");
+    catalog
+        .get("models")
+        .and_then(|models| models.as_array())
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// Return an official vendor catalog only for the vendor's own native
+/// Responses gateway. ProxyChat keeps the fork's converter-oriented template.
+fn codex_official_vendor_catalog_models(
+    config_text: &str,
+    profile: CodexCatalogToolProfile,
+) -> Option<Vec<Value>> {
+    if profile != CodexCatalogToolProfile::NativeResponses {
+        return None;
+    }
+    let base_url = extract_codex_base_url(config_text)?;
+    if CODEX_DEEPSEEK_OFFICIAL_CATALOG_HOSTS
+        .iter()
+        .any(|host| codex_url_matches_vendor_host(&base_url, host))
+    {
+        let models = load_codex_deepseek_official_catalog_models();
+        if !models.is_empty() {
+            return Some(models);
+        }
+    }
+    None
+}
+
+/// Build one row from an official vendor entry. Explicit per-row settings win;
+/// otherwise the vendor's capabilities, harness, and context window survive.
+fn codex_vendor_catalog_model_entry(
+    vendor_models: &[Value],
+    spec: &CodexCatalogModelSpec,
+    priority: usize,
+) -> Value {
+    let matched = vendor_models.iter().find(|entry| {
+        entry
+            .get("slug")
+            .and_then(|slug| slug.as_str())
+            .is_some_and(|slug| slug.eq_ignore_ascii_case(&spec.model))
+    });
+    let mut entry = match matched {
+        Some(found) => found.clone(),
+        None => vendor_models.first().cloned().unwrap_or_else(|| json!({})),
+    };
+    let Some(entry_obj) = entry.as_object_mut() else {
+        return json!({});
+    };
+
+    if matched.is_none() {
+        let display_name = spec.display_name.as_deref().unwrap_or(&spec.model);
+        entry_obj.insert("slug".to_string(), json!(spec.model));
+        entry_obj.insert("display_name".to_string(), json!(display_name));
+        entry_obj.insert("description".to_string(), json!(display_name));
+        entry_obj.insert("priority".to_string(), json!(1000 + priority));
+    }
+
+    if let Some(display_name) = spec.display_name.as_deref() {
+        entry_obj.insert("display_name".to_string(), json!(display_name));
+    }
+    if let Some(context_window) = spec.context_window {
+        entry_obj.insert("context_window".to_string(), json!(context_window));
+        entry_obj.insert("max_context_window".to_string(), json!(context_window));
+    }
+    if let Some(parallel) = spec.supports_parallel_tool_calls {
+        entry_obj.insert("supports_parallel_tool_calls".to_string(), json!(parallel));
+    }
+    if let Some(modalities) = spec.input_modalities.as_deref() {
+        entry_obj.insert("input_modalities".to_string(), json!(modalities));
+    }
+    if let Some(base_instructions) = spec
+        .base_instructions
+        .as_deref()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+    {
+        entry_obj.insert("base_instructions".to_string(), json!(base_instructions));
+    }
+
+    fill_template_fields_from_static(&mut entry);
+    entry
+}
+
 /// Fields Codex's external-catalog parser REQUIRES (no serde default): when
 /// one is missing Codex rejects the whole catalog file at startup ("missing
 /// field ..."). `base_instructions` is the other known required field; the
@@ -841,11 +1017,14 @@ fn codex_model_catalog_from_specs(
     specs: &[CodexCatalogModelSpec],
     template: &Value,
     profile: CodexCatalogToolProfile,
+    default_context_window: u64,
 ) -> Value {
     let entries: Vec<Value> = specs
         .iter()
         .enumerate()
-        .map(|(index, spec)| codex_catalog_model_entry(template, spec, index, profile))
+        .map(|(index, spec)| {
+            codex_catalog_model_entry(template, spec, index, profile, default_context_window)
+        })
         .collect();
 
     json!({ "models": entries })
@@ -856,18 +1035,38 @@ fn codex_model_catalog_from_settings(
     config_text: &str,
     profile: CodexCatalogToolProfile,
 ) -> Result<Option<Value>, AppError> {
-    let specs = codex_catalog_model_specs(settings, config_text);
+    let specs = codex_catalog_model_specs(settings);
     if specs.is_empty() {
         return Ok(None);
     }
+
+    if let Some(vendor_models) = codex_official_vendor_catalog_models(config_text, profile) {
+        let entries = specs
+            .iter()
+            .enumerate()
+            .map(|(index, spec)| codex_vendor_catalog_model_entry(&vendor_models, spec, index))
+            .collect::<Vec<_>>();
+        return Ok(Some(json!({ "models": entries })));
+    }
+
+    let default_context_window =
+        extract_codex_top_level_u64(config_text, "model_context_window").unwrap_or(128_000);
 
     let template = match profile {
         CodexCatalogToolProfile::NativeResponses => load_codex_native_responses_template(),
         CodexCatalogToolProfile::ProxyChat => load_codex_model_catalog_template()?,
     };
     Ok(Some(codex_model_catalog_from_specs(
-        &specs, &template, profile,
+        &specs,
+        &template,
+        profile,
+        default_context_window,
     )))
+}
+
+fn is_cc_switch_owned_catalog_reference(path: &str) -> bool {
+    Path::new(path).file_name().and_then(|name| name.to_str())
+        == Some(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME)
 }
 
 fn set_codex_model_catalog_json_field(
@@ -880,17 +1079,22 @@ fn set_codex_model_catalog_json_field(
 
     match catalog_path {
         Some(_) => {
-            doc["model_catalog_json"] = toml_edit::value(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME);
+            let should_set = match doc.get("model_catalog_json") {
+                None => true,
+                Some(item) => item
+                    .as_str()
+                    .is_some_and(is_cc_switch_owned_catalog_reference),
+            };
+            if should_set {
+                doc["model_catalog_json"] =
+                    toml_edit::value(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME);
+            }
         }
         None => {
             let should_remove = doc
                 .get("model_catalog_json")
                 .and_then(|item| item.as_str())
-                .map(|path| {
-                    Path::new(path).file_name().and_then(|name| name.to_str())
-                        == Some(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME)
-                })
-                .unwrap_or(false);
+                .is_some_and(is_cc_switch_owned_catalog_reference);
             if should_remove {
                 doc.as_table_mut().remove("model_catalog_json");
             }
@@ -1020,9 +1224,7 @@ pub(crate) fn resolve_cc_switch_catalog_path(
         .filter(|s| !s.is_empty())?;
 
     let referenced_path = Path::new(catalog_path_str);
-    let is_cc_switch_owned = referenced_path.file_name().and_then(|name| name.to_str())
-        == Some(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME);
-    if !is_cc_switch_owned {
+    if !is_cc_switch_owned_catalog_reference(catalog_path_str) {
         return None;
     }
 
@@ -1285,7 +1487,8 @@ pub fn remove_codex_experimental_bearer_token(config_text: &str) -> Result<Strin
 /// Read the current Codex live settings as a `{ auth, config }` object.
 ///
 /// Missing `auth.json` collapses to `{}` so a config-only third-party install
-/// is still importable; both files empty is treated as "no live install".
+/// is still importable. An existing empty config.toml is also valid after an
+/// official switch clears stale auth; only two missing files mean no install.
 pub fn read_codex_live_settings() -> Result<Value, AppError> {
     let auth_path = get_codex_auth_path();
     let auth_present = auth_path.exists();
@@ -1296,7 +1499,7 @@ pub fn read_codex_live_settings() -> Result<Value, AppError> {
     };
     let cfg_text = read_and_validate_codex_config_text()?;
 
-    if !auth_present && cfg_text.trim().is_empty() {
+    if !auth_present && !get_codex_config_path().exists() {
         return Err(AppError::localized(
             "codex.live.missing",
             "Codex 配置文件不存在",
@@ -1623,14 +1826,18 @@ mod tests {
         fill_template_fields_from_static(&mut template);
         let specs = vec![CodexCatalogModelSpec {
             model: "k3".to_string(),
-            display_name: "Kimi K3".to_string(),
-            context_window: 262_144,
+            display_name: Some("Kimi K3".to_string()),
+            context_window: Some(262_144),
             supports_parallel_tool_calls: None,
             input_modalities: None,
             base_instructions: None,
         }];
-        let catalog =
-            codex_model_catalog_from_specs(&specs, &template, CodexCatalogToolProfile::ProxyChat);
+        let catalog = codex_model_catalog_from_specs(
+            &specs,
+            &template,
+            CodexCatalogToolProfile::ProxyChat,
+            128_000,
+        );
         assert_eq!(
             catalog["models"][0]
                 .get("supports_reasoning_summaries")
@@ -1687,6 +1894,204 @@ mod tests {
         assert_eq!(
             entry.get("base_instructions").and_then(Value::as_str),
             Some("You are MiniMax M3.")
+        );
+    }
+
+    #[test]
+    fn synthetic_catalog_uses_config_defaults_when_row_omits_metadata() {
+        let settings = json!({
+            "modelCatalog": { "models": [{ "model": "custom-model" }] }
+        });
+        let catalog = codex_model_catalog_from_settings(
+            &settings,
+            "model_context_window = 256000\n",
+            CodexCatalogToolProfile::NativeResponses,
+        )
+        .expect("catalog should build")
+        .expect("catalog should be present");
+        let entry = &catalog["models"][0];
+
+        assert_eq!(
+            entry.get("display_name").and_then(Value::as_str),
+            Some("custom-model")
+        );
+        assert_eq!(
+            entry.get("context_window").and_then(Value::as_u64),
+            Some(256_000)
+        );
+    }
+
+    const DEEPSEEK_NATIVE_CONFIG: &str = r#"model = "deepseek-v4-flash"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "deepseek"
+base_url = "https://api.deepseek.com"
+wire_api = "responses"
+"#;
+
+    #[test]
+    fn deepseek_host_native_catalog_mirrors_official_entries() {
+        let settings = json!({
+            "modelCatalog": {
+                "models": [
+                    { "model": "deepseek-v4-flash", "displayName": "DeepSeek V4 Flash" },
+                    { "model": "deepseek-v4-pro", "contextWindow": 500_000 }
+                ]
+            }
+        });
+
+        let catalog = codex_model_catalog_from_settings(
+            &settings,
+            DEEPSEEK_NATIVE_CONFIG,
+            CodexCatalogToolProfile::NativeResponses,
+        )
+        .expect("vendor catalog should build")
+        .expect("vendor catalog should be present");
+
+        let flash = &catalog["models"][0];
+        assert_eq!(
+            flash.get("slug").and_then(Value::as_str),
+            Some("deepseek-v4-flash")
+        );
+        assert_eq!(
+            flash.get("apply_patch_tool_type").and_then(Value::as_str),
+            Some("freeform")
+        );
+        assert!(flash
+            .get("base_instructions")
+            .and_then(Value::as_str)
+            .is_some_and(|text| text.starts_with("You are Codex, an agent based on GPT-5")));
+        let efforts = flash["supported_reasoning_levels"]
+            .as_array()
+            .expect("reasoning levels")
+            .iter()
+            .filter_map(|level| level.get("effort").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+        assert_eq!(efforts, vec!["low", "high", "max"]);
+        assert_eq!(flash.get("supports_search_tool"), Some(&json!(true)));
+        assert_eq!(flash.get("web_search_tool_type"), Some(&json!("text")));
+        assert_eq!(flash.get("input_modalities"), Some(&json!(["text"])));
+        assert!(flash.get("model_messages").is_some());
+        assert_eq!(
+            flash.get("context_window").and_then(Value::as_u64),
+            Some(1_048_576)
+        );
+        assert_eq!(
+            flash.get("display_name").and_then(Value::as_str),
+            Some("DeepSeek V4 Flash")
+        );
+
+        let pro = &catalog["models"][1];
+        assert_eq!(
+            pro.get("slug").and_then(Value::as_str),
+            Some("deepseek-v4-pro")
+        );
+        assert_eq!(
+            pro.get("context_window").and_then(Value::as_u64),
+            Some(500_000)
+        );
+        assert_eq!(
+            pro.get("max_context_window").and_then(Value::as_u64),
+            Some(500_000)
+        );
+        assert_eq!(
+            pro.get("display_name").and_then(Value::as_str),
+            Some("DeepSeek-V4-Pro")
+        );
+    }
+
+    #[test]
+    fn deepseek_official_catalog_unknown_model_clones_flagship() {
+        let settings = json!({
+            "modelCatalog": { "models": [{ "model": "deepseek-v4-lite" }] }
+        });
+        let catalog = codex_model_catalog_from_settings(
+            &settings,
+            DEEPSEEK_NATIVE_CONFIG,
+            CodexCatalogToolProfile::NativeResponses,
+        )
+        .expect("vendor catalog should build")
+        .expect("vendor catalog should be present");
+        let entry = &catalog["models"][0];
+
+        assert_eq!(
+            entry.get("slug").and_then(Value::as_str),
+            Some("deepseek-v4-lite")
+        );
+        assert_eq!(
+            entry.get("display_name").and_then(Value::as_str),
+            Some("deepseek-v4-lite")
+        );
+        assert!(entry
+            .get("priority")
+            .and_then(Value::as_u64)
+            .is_some_and(|value| value >= 1000));
+        assert_eq!(entry.get("apply_patch_tool_type"), Some(&json!("freeform")));
+        assert_eq!(
+            entry.get("context_window").and_then(Value::as_u64),
+            Some(1_048_576)
+        );
+    }
+
+    #[test]
+    fn official_vendor_catalog_is_gated_by_native_profile_and_host() {
+        assert!(codex_official_vendor_catalog_models(
+            DEEPSEEK_NATIVE_CONFIG,
+            CodexCatalogToolProfile::NativeResponses,
+        )
+        .is_some_and(|models| !models.is_empty()));
+        assert!(codex_official_vendor_catalog_models(
+            DEEPSEEK_NATIVE_CONFIG,
+            CodexCatalogToolProfile::ProxyChat,
+        )
+        .is_none());
+
+        let aggregator = DEEPSEEK_NATIVE_CONFIG
+            .replace("https://api.deepseek.com", "https://aggregator.example/v1");
+        assert!(codex_official_vendor_catalog_models(
+            &aggregator,
+            CodexCatalogToolProfile::NativeResponses,
+        )
+        .is_none());
+
+        for hostile_url in [
+            "https://api.deepseek.com.evil.example/v1",
+            "https://deepseek.com@evil.example/v1",
+        ] {
+            let hostile = DEEPSEEK_NATIVE_CONFIG.replace("https://api.deepseek.com", hostile_url);
+            assert!(codex_official_vendor_catalog_models(
+                &hostile,
+                CodexCatalogToolProfile::NativeResponses,
+            )
+            .is_none());
+        }
+    }
+
+    #[test]
+    fn proxy_chat_profile_keeps_apply_patch() {
+        let mut template = load_codex_native_responses_template();
+        template["apply_patch_tool_type"] = json!("freeform");
+        let specs = vec![CodexCatalogModelSpec {
+            model: "x".to_string(),
+            display_name: Some("x".to_string()),
+            context_window: Some(128_000),
+            supports_parallel_tool_calls: None,
+            input_modalities: None,
+            base_instructions: None,
+        }];
+        let catalog = codex_model_catalog_from_specs(
+            &specs,
+            &template,
+            CodexCatalogToolProfile::ProxyChat,
+            128_000,
+        );
+
+        assert_eq!(
+            catalog["models"][0]
+                .get("apply_patch_tool_type")
+                .and_then(Value::as_str),
+            Some("freeform")
         );
     }
 
@@ -1973,6 +2378,49 @@ experimental_bearer_token = "sk-live"
             !should_restore_codex_provider_token_for_backfill(Some("official"), &api_key_template),
             "official providers should never restore third-party bearer tokens"
         );
+    }
+
+    #[test]
+    fn credential_login_material_only_counts_real_credentials() {
+        assert!(codex_auth_has_credential_login_material(&json!({
+            "tokens": { "access_token": "t" }
+        })));
+        assert!(codex_auth_has_credential_login_material(&json!({
+            "tokens": { "refresh_token": "r" }
+        })));
+        assert!(codex_auth_has_credential_login_material(&json!({
+            "personal_access_token": "pat"
+        })));
+
+        assert!(!codex_auth_has_credential_login_material(&json!({
+            "OPENAI_API_KEY": "sk-x"
+        })));
+        assert!(!codex_auth_has_credential_login_material(&json!({
+            "OPENAI_API_KEY": "sk-x",
+            "last_refresh": "2026-01-01T00:00:00Z",
+            "tokens": { "account_id": "acct-meta-only" }
+        })));
+        assert!(!codex_auth_has_credential_login_material(&json!({})));
+    }
+
+    #[test]
+    fn stale_third_party_residue_detection() {
+        assert!(codex_live_auth_is_stale_third_party_residue(&json!({
+            "OPENAI_API_KEY": "sk-third-party"
+        })));
+        assert!(codex_live_auth_is_stale_third_party_residue(&json!({
+            "auth_mode": "apikey",
+            "OPENAI_API_KEY": "sk-third-party",
+            "tokens": { "account_id": "metadata-only" }
+        })));
+        assert!(!codex_live_auth_is_stale_third_party_residue(&json!({
+            "OPENAI_API_KEY": "sk-x",
+            "tokens": { "access_token": "official-token" }
+        })));
+        assert!(!codex_live_auth_is_stale_third_party_residue(&json!({})));
+        assert!(!codex_live_auth_is_stale_third_party_residue(&json!({
+            "OPENAI_API_KEY": ""
+        })));
     }
 
     #[test]
@@ -2308,6 +2756,70 @@ base_url = "https://production.api/v1"
             .and_then(|v| v.get("base_url"))
             .and_then(|v| v.as_str());
         assert_eq!(base_url, Some("https://production.api/v1"));
+    }
+
+    #[test]
+    fn set_catalog_json_some_preserves_user_owned_full_path() {
+        let input = r#"model_provider = "custom"
+model_catalog_json = "/Users/me/.codex/my-custom-catalog.json"
+"#;
+
+        let result = set_codex_model_catalog_json_field(
+            input,
+            Some(Path::new("/tmp/cc-switch-model-catalog.json")),
+        )
+        .expect("update catalog pointer");
+        let parsed: toml::Value = toml::from_str(&result).expect("parse updated config");
+
+        assert_eq!(
+            parsed
+                .get("model_catalog_json")
+                .and_then(|value| value.as_str()),
+            Some("/Users/me/.codex/my-custom-catalog.json")
+        );
+    }
+
+    #[test]
+    fn set_catalog_json_some_preserves_user_owned_relative_filename() {
+        let input = r#"model_provider = "custom"
+model_catalog_json = "my-custom-catalog.json"
+"#;
+
+        let result = set_codex_model_catalog_json_field(
+            input,
+            Some(Path::new("/tmp/cc-switch-model-catalog.json")),
+        )
+        .expect("update catalog pointer");
+        let parsed: toml::Value = toml::from_str(&result).expect("parse updated config");
+
+        assert_eq!(
+            parsed
+                .get("model_catalog_json")
+                .and_then(|value| value.as_str()),
+            Some("my-custom-catalog.json")
+        );
+    }
+
+    #[test]
+    fn set_catalog_json_some_claims_absent_or_owned_pointer() {
+        for input in [
+            "model_provider = \"custom\"\n",
+            "model_catalog_json = \"nested/cc-switch-model-catalog.json\"\n",
+        ] {
+            let result = set_codex_model_catalog_json_field(
+                input,
+                Some(Path::new("/tmp/cc-switch-model-catalog.json")),
+            )
+            .expect("update catalog pointer");
+            let parsed: toml::Value = toml::from_str(&result).expect("parse updated config");
+
+            assert_eq!(
+                parsed
+                    .get("model_catalog_json")
+                    .and_then(|value| value.as_str()),
+                Some(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME)
+            );
+        }
     }
 
     #[test]

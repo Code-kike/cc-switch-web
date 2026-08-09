@@ -40,8 +40,78 @@ describe("provider preset order", () => {
     ]);
   });
 
-  it("places PatewayAI after Shengsuanyun for Codex", () => {
-    expectInOrder(namesOf(codexProviderPresets), ["Shengsuanyun", "PatewayAI"]);
+  it("prioritizes current partner presets for Codex", () => {
+    expectInOrder(namesOf(codexProviderPresets), [
+      "Shengsuanyun",
+      "PatewayAI",
+      "火山Agentplan",
+    ]);
+  });
+
+  it("uses native Responses for the Volcengine coding plan endpoint", () => {
+    const preset = findPreset(codexProviderPresets, "火山Agentplan");
+
+    expect(preset.apiFormat).toBe("openai_responses");
+    expect(preset.endpointCandidates).toEqual([
+      "https://ark.cn-beijing.volces.com/api/coding/v3",
+    ]);
+    expect(preset.modelCatalog).toEqual([
+      {
+        model: "ark-code-latest",
+        displayName: "Ark Code Latest",
+        contextWindow: 256000,
+        supportsParallelToolCalls: undefined,
+        inputModalities: undefined,
+        baseInstructions: undefined,
+      },
+    ]);
+  });
+
+  it("uses native Responses for Tencent Hunyuan TokenHub", () => {
+    const preset = findPreset(codexProviderPresets, "Tencent Hunyuan");
+
+    expect(preset.apiFormat).toBe("openai_responses");
+    expect(preset.config).toContain('wire_api = "responses"');
+    expect(preset.endpointCandidates).toEqual([
+      "https://tokenhub.tencentmaas.com/v1",
+      "https://tokenhub.tencentmaas.cn/v1",
+    ]);
+    expect(
+      (preset.modelCatalog ?? []).map((model) => ({
+        model: model.model,
+        contextWindow: model.contextWindow,
+        inputModalities: model.inputModalities,
+      })),
+    ).toEqual([
+      {
+        model: "hy3",
+        contextWindow: 256000,
+        inputModalities: ["text"],
+      },
+      {
+        model: "hy3-preview",
+        contextWindow: 256000,
+        inputModalities: ["text"],
+      },
+    ]);
+  });
+
+  it("uses DeepSeek native Responses with the official context windows", () => {
+    const preset = findPreset(codexProviderPresets, "DeepSeek");
+
+    expect(preset.apiFormat).toBe("openai_responses");
+    expect(preset.config).toContain('wire_api = "responses"');
+    expect(
+      Object.fromEntries(
+        (preset.modelCatalog ?? []).map((model) => [
+          model.model,
+          model.contextWindow,
+        ]),
+      ),
+    ).toEqual({
+      "deepseek-v4-flash": 1048576,
+      "deepseek-v4-pro": 1048576,
+    });
   });
 
   it("prioritizes OpenCode partner presets", () => {

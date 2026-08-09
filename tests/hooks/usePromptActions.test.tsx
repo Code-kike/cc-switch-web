@@ -2,22 +2,27 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { usePromptActions } from "@/hooks/usePromptActions";
-import type { Prompt } from "@/lib/api/prompts";
+import type { AppId, Prompt } from "@/lib/api";
 
-const toastSuccessMock = vi.fn();
-const toastErrorMock = vi.fn();
+const mocks = vi.hoisted(() => ({
+  getPrompts: vi.fn(),
+  getCurrentFileContent: vi.fn(),
+  enablePrompt: vi.fn(),
+  upsertPrompt: vi.fn(),
+  deletePrompt: vi.fn(),
+  importFromFile: vi.fn(),
+  toastError: vi.fn(),
+  toastSuccess: vi.fn(),
+}));
 
-const getPromptsMock = vi.fn();
-const getCurrentFileContentMock = vi.fn();
-const upsertPromptMock = vi.fn();
-const deletePromptMock = vi.fn();
-const enablePromptMock = vi.fn();
-const importFromFileMock = vi.fn();
-
-vi.mock("sonner", () => ({
-  toast: {
-    success: (...args: unknown[]) => toastSuccessMock(...args),
-    error: (...args: unknown[]) => toastErrorMock(...args),
+vi.mock("@/lib/api", () => ({
+  promptsApi: {
+    getPrompts: mocks.getPrompts,
+    getCurrentFileContent: mocks.getCurrentFileContent,
+    enablePrompt: mocks.enablePrompt,
+    upsertPrompt: mocks.upsertPrompt,
+    deletePrompt: mocks.deletePrompt,
+    importFromFile: mocks.importFromFile,
   },
 }));
 
@@ -25,18 +30,6 @@ vi.mock("react-i18next", () => ({
   useTranslation: () => ({
     t: (key: string) => key,
   }),
-}));
-
-vi.mock("@/lib/api", () => ({
-  promptsApi: {
-    getPrompts: (...args: unknown[]) => getPromptsMock(...args),
-    getCurrentFileContent: (...args: unknown[]) =>
-      getCurrentFileContentMock(...args),
-    upsertPrompt: (...args: unknown[]) => upsertPromptMock(...args),
-    deletePrompt: (...args: unknown[]) => deletePromptMock(...args),
-    enablePrompt: (...args: unknown[]) => enablePromptMock(...args),
-    importFromFile: (...args: unknown[]) => importFromFileMock(...args),
-  },
 }));
 
 describe("usePromptActions", () => {
@@ -49,34 +42,34 @@ describe("usePromptActions", () => {
   };
 
   beforeEach(() => {
-    toastSuccessMock.mockReset();
-    toastErrorMock.mockReset();
-    getPromptsMock.mockReset();
-    getCurrentFileContentMock.mockReset();
-    upsertPromptMock.mockReset();
-    deletePromptMock.mockReset();
-    enablePromptMock.mockReset();
-    importFromFileMock.mockReset();
+    mocks.toastSuccess.mockReset();
+    mocks.toastError.mockReset();
+    mocks.getPrompts.mockReset();
+    mocks.getCurrentFileContent.mockReset();
+    mocks.upsertPrompt.mockReset();
+    mocks.deletePrompt.mockReset();
+    mocks.enablePrompt.mockReset();
+    mocks.importFromFile.mockReset();
   });
 
   it("treats prompt import cancellation as a no-op in web mode", async () => {
-    importFromFileMock.mockResolvedValue(null);
+    mocks.importFromFile.mockResolvedValue(null);
     const { result } = renderHook(() => usePromptActions("claude"));
 
     await act(async () => {
       await expect(result.current.importFromFile()).resolves.toBeNull();
     });
 
-    expect(importFromFileMock).toHaveBeenCalledWith("claude");
-    expect(getPromptsMock).not.toHaveBeenCalled();
-    expect(getCurrentFileContentMock).not.toHaveBeenCalled();
-    expect(toastSuccessMock).not.toHaveBeenCalled();
-    expect(toastErrorMock).not.toHaveBeenCalled();
+    expect(mocks.importFromFile).toHaveBeenCalledWith("claude");
+    expect(mocks.getPrompts).not.toHaveBeenCalled();
+    expect(mocks.getCurrentFileContent).not.toHaveBeenCalled();
+    expect(mocks.toastSuccess).not.toHaveBeenCalled();
+    expect(mocks.toastError).not.toHaveBeenCalled();
   });
 
   it("reloads prompt data and shows success after a prompt import succeeds", async () => {
-    importFromFileMock.mockResolvedValue("imported-prompt");
-    getPromptsMock.mockResolvedValue({
+    mocks.importFromFile.mockResolvedValue("imported-prompt");
+    mocks.getPrompts.mockResolvedValue({
       "imported-prompt": {
         id: "imported-prompt",
         name: "Imported Prompt",
@@ -84,7 +77,7 @@ describe("usePromptActions", () => {
         enabled: true,
       },
     });
-    getCurrentFileContentMock.mockResolvedValue("# imported");
+    mocks.getCurrentFileContent.mockResolvedValue("# imported");
 
     const { result } = renderHook(() => usePromptActions("codex"));
 
@@ -94,18 +87,18 @@ describe("usePromptActions", () => {
       );
     });
 
-    expect(importFromFileMock).toHaveBeenCalledWith("codex");
-    expect(getPromptsMock).toHaveBeenCalledWith("codex");
-    expect(getCurrentFileContentMock).toHaveBeenCalledWith("codex");
-    expect(toastSuccessMock).toHaveBeenCalledWith("prompts.importSuccess", {
+    expect(mocks.importFromFile).toHaveBeenCalledWith("codex");
+    expect(mocks.getPrompts).toHaveBeenCalledWith("codex");
+    expect(mocks.getCurrentFileContent).toHaveBeenCalledWith("codex");
+    expect(mocks.toastSuccess).toHaveBeenCalledWith("prompts.importSuccess", {
       closeButton: true,
     });
-    expect(toastErrorMock).not.toHaveBeenCalled();
+    expect(mocks.toastError).not.toHaveBeenCalled();
   });
 
   it("updates local prompt state immediately after saving and refreshes silently", async () => {
-    upsertPromptMock.mockResolvedValue(undefined);
-    getPromptsMock.mockResolvedValue({
+    mocks.upsertPrompt.mockResolvedValue(undefined);
+    mocks.getPrompts.mockResolvedValue({
       "gemini-smoke": {
         id: "gemini-smoke",
         name: "Gemini Smoke Prompt",
@@ -114,7 +107,9 @@ describe("usePromptActions", () => {
         enabled: true,
       },
     });
-    getCurrentFileContentMock.mockResolvedValue("# GEMINI.md\n\nSaved content");
+    mocks.getCurrentFileContent.mockResolvedValue(
+      "# GEMINI.md\n\nSaved content",
+    );
 
     const { result } = renderHook(() => usePromptActions("gemini"));
     const prompt = {
@@ -131,18 +126,18 @@ describe("usePromptActions", () => {
 
     expect(result.current.prompts["gemini-smoke"]).toEqual(prompt);
     expect(result.current.currentFileContent).toBe(prompt.content);
-    expect(toastSuccessMock).toHaveBeenCalledWith("prompts.saveSuccess", {
+    expect(mocks.toastSuccess).toHaveBeenCalledWith("prompts.saveSuccess", {
       closeButton: true,
     });
 
     await waitFor(() => {
-      expect(getPromptsMock).toHaveBeenCalledWith("gemini");
-      expect(getCurrentFileContentMock).toHaveBeenCalledWith("gemini");
+      expect(mocks.getPrompts).toHaveBeenCalledWith("gemini");
+      expect(mocks.getCurrentFileContent).toHaveBeenCalledWith("gemini");
     });
   });
 
   it("shows extracted detail when loading prompt list fails", async () => {
-    getPromptsMock.mockRejectedValue(new Error("prompt db unavailable"));
+    mocks.getPrompts.mockRejectedValue(new Error("prompt db unavailable"));
 
     const { result } = renderHook(() => usePromptActions("claude"));
 
@@ -150,14 +145,14 @@ describe("usePromptActions", () => {
       await result.current.reload();
     });
 
-    expect(toastErrorMock).toHaveBeenCalledWith("prompts.loadFailed", {
+    expect(mocks.toastError).toHaveBeenCalledWith("prompts.loadFailed", {
       description: "prompt db unavailable",
     });
   });
 
   it("keeps missing current prompt file silent but surfaces unexpected current-file read failures", async () => {
-    getPromptsMock.mockResolvedValue({ "prompt-1": prompt });
-    getCurrentFileContentMock.mockResolvedValueOnce(null);
+    mocks.getPrompts.mockResolvedValue({ "prompt-1": prompt });
+    mocks.getCurrentFileContent.mockResolvedValueOnce(null);
 
     const { result } = renderHook(() => usePromptActions("claude"));
 
@@ -166,10 +161,10 @@ describe("usePromptActions", () => {
     });
 
     expect(result.current.currentFileContent).toBeNull();
-    expect(toastErrorMock).not.toHaveBeenCalled();
+    expect(mocks.toastError).not.toHaveBeenCalled();
 
-    toastErrorMock.mockReset();
-    getCurrentFileContentMock.mockRejectedValueOnce(
+    mocks.toastError.mockReset();
+    mocks.getCurrentFileContent.mockRejectedValueOnce(
       new Error("permission denied"),
     );
 
@@ -178,7 +173,7 @@ describe("usePromptActions", () => {
     });
 
     expect(result.current.currentFileContent).toBeNull();
-    expect(toastErrorMock).toHaveBeenCalledWith(
+    expect(mocks.toastError).toHaveBeenCalledWith(
       "prompts.currentFileLoadFailed",
       {
         description: "permission denied",
@@ -187,23 +182,23 @@ describe("usePromptActions", () => {
   });
 
   it("shows extracted detail when save fails", async () => {
-    upsertPromptMock.mockRejectedValue(new Error("save denied"));
+    mocks.upsertPrompt.mockRejectedValue(new Error("save denied"));
 
     const { result } = renderHook(() => usePromptActions("claude"));
 
     await act(async () => {
-      await expect(result.current.savePrompt(prompt.id, prompt)).rejects.toThrow(
-        "save denied",
-      );
+      await expect(
+        result.current.savePrompt(prompt.id, prompt),
+      ).rejects.toThrow("save denied");
     });
 
-    expect(toastErrorMock).toHaveBeenCalledWith("prompts.saveFailed", {
+    expect(mocks.toastError).toHaveBeenCalledWith("prompts.saveFailed", {
       description: "save denied",
     });
   });
 
   it("shows extracted detail when deleting a prompt fails", async () => {
-    deletePromptMock.mockRejectedValue(new Error("delete denied"));
+    mocks.deletePrompt.mockRejectedValue(new Error("delete denied"));
 
     const { result } = renderHook(() => usePromptActions("claude"));
 
@@ -213,15 +208,15 @@ describe("usePromptActions", () => {
       );
     });
 
-    expect(toastErrorMock).toHaveBeenCalledWith("prompts.deleteFailed", {
+    expect(mocks.toastError).toHaveBeenCalledWith("prompts.deleteFailed", {
       description: "delete denied",
     });
   });
 
   it("shows extracted detail and rolls back when disabling a prompt fails", async () => {
-    getPromptsMock.mockResolvedValue({ [prompt.id]: prompt });
-    getCurrentFileContentMock.mockResolvedValue("# Prompt");
-    upsertPromptMock.mockRejectedValue(new Error("disable denied"));
+    mocks.getPrompts.mockResolvedValue({ [prompt.id]: prompt });
+    mocks.getCurrentFileContent.mockResolvedValue("# Prompt");
+    mocks.upsertPrompt.mockRejectedValue(new Error("disable denied"));
 
     const { result } = renderHook(() => usePromptActions("claude"));
 
@@ -230,19 +225,19 @@ describe("usePromptActions", () => {
     });
 
     await act(async () => {
-      await expect(result.current.toggleEnabled(prompt.id, false)).rejects.toThrow(
-        "disable denied",
-      );
+      await expect(
+        result.current.toggleEnabled(prompt.id, false),
+      ).rejects.toThrow("disable denied");
     });
 
     expect(result.current.prompts[prompt.id]?.enabled).toBe(true);
-    expect(toastErrorMock).toHaveBeenCalledWith("prompts.disableFailed", {
+    expect(mocks.toastError).toHaveBeenCalledWith("prompts.disableFailed", {
       description: "disable denied",
     });
   });
 
   it("shows extracted detail when importing a prompt fails", async () => {
-    importFromFileMock.mockRejectedValue(new Error("import denied"));
+    mocks.importFromFile.mockRejectedValue(new Error("import denied"));
 
     const { result } = renderHook(() => usePromptActions("claude"));
 
@@ -252,8 +247,348 @@ describe("usePromptActions", () => {
       );
     });
 
-    expect(toastErrorMock).toHaveBeenCalledWith("prompts.importFailed", {
+    expect(mocks.toastError).toHaveBeenCalledWith("prompts.importFailed", {
       description: "import denied",
+    });
+  });
+});
+
+vi.mock("sonner", () => ({
+  toast: {
+    error: mocks.toastError,
+    success: mocks.toastSuccess,
+  },
+}));
+
+interface Deferred<T> {
+  promise: Promise<T>;
+  resolve: (value: T | PromiseLike<T>) => void;
+  reject: (reason?: unknown) => void;
+}
+
+function createDeferred<T>(): Deferred<T> {
+  let resolve!: Deferred<T>["resolve"];
+  let reject!: Deferred<T>["reject"];
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+function makePrompts(id: string, name: string): Record<string, Prompt> {
+  return {
+    [id]: {
+      id,
+      name,
+      content: `${name} content`,
+      enabled: false,
+    },
+  };
+}
+
+function renderPromptActions(initialAppId: AppId) {
+  return renderHook(({ appId }: { appId: AppId }) => usePromptActions(appId), {
+    initialProps: { appId: initialAppId },
+  });
+}
+
+describe("usePromptActions reload concurrency", () => {
+  beforeEach(() => {
+    mocks.getPrompts.mockReset();
+    mocks.getCurrentFileContent.mockReset();
+    mocks.getCurrentFileContent.mockResolvedValue(null);
+    mocks.enablePrompt.mockReset();
+    mocks.enablePrompt.mockResolvedValue(undefined);
+    mocks.upsertPrompt.mockReset();
+    mocks.upsertPrompt.mockResolvedValue(undefined);
+    mocks.deletePrompt.mockReset();
+    mocks.deletePrompt.mockResolvedValue(undefined);
+    mocks.importFromFile.mockReset();
+    mocks.importFromFile.mockResolvedValue(null);
+    mocks.toastError.mockReset();
+    mocks.toastSuccess.mockReset();
+  });
+
+  it("does not let an older app request overwrite the current app", async () => {
+    const claudeRequest = createDeferred<Record<string, Prompt>>();
+    const codexRequest = createDeferred<Record<string, Prompt>>();
+    mocks.getPrompts.mockImplementation((appId: AppId) =>
+      appId === "claude" ? claudeRequest.promise : codexRequest.promise,
+    );
+    mocks.getCurrentFileContent.mockImplementation(
+      async (appId: AppId) => `${appId} live content`,
+    );
+
+    const { result, rerender } = renderPromptActions("claude");
+    let claudeReload!: Promise<boolean>;
+    act(() => {
+      claudeReload = result.current.reload();
+    });
+
+    rerender({ appId: "codex" });
+    let codexReload!: Promise<boolean>;
+    act(() => {
+      codexReload = result.current.reload();
+    });
+
+    codexRequest.resolve(makePrompts("codex-prompt", "Codex Prompt"));
+    await act(async () => {
+      await codexReload;
+    });
+
+    expect(result.current.prompts).toEqual(
+      makePrompts("codex-prompt", "Codex Prompt"),
+    );
+    expect(result.current.currentFileContent).toBe("codex live content");
+
+    claudeRequest.resolve(makePrompts("claude-prompt", "Claude Prompt"));
+    await act(async () => {
+      await claudeReload;
+    });
+
+    expect(result.current.prompts).toEqual(
+      makePrompts("codex-prompt", "Codex Prompt"),
+    );
+    expect(result.current.currentFileContent).toBe("codex live content");
+    expect(mocks.getCurrentFileContent).toHaveBeenCalledTimes(1);
+    expect(mocks.getCurrentFileContent).toHaveBeenCalledWith("codex");
+  });
+
+  it("keeps the newer result when same-app reloads finish out of order", async () => {
+    const olderRequest = createDeferred<Record<string, Prompt>>();
+    const newerRequest = createDeferred<Record<string, Prompt>>();
+    mocks.getPrompts
+      .mockReturnValueOnce(olderRequest.promise)
+      .mockReturnValueOnce(newerRequest.promise);
+    mocks.getCurrentFileContent.mockResolvedValue("latest live content");
+
+    const { result } = renderPromptActions("claude");
+    let olderReload!: Promise<boolean>;
+    let newerReload!: Promise<boolean>;
+    act(() => {
+      olderReload = result.current.reload();
+      newerReload = result.current.reload();
+    });
+
+    newerRequest.resolve(makePrompts("newer-prompt", "Newer Prompt"));
+    await act(async () => {
+      await newerReload;
+    });
+
+    olderRequest.resolve(makePrompts("older-prompt", "Older Prompt"));
+    await act(async () => {
+      await olderReload;
+    });
+
+    expect(result.current.prompts).toEqual(
+      makePrompts("newer-prompt", "Newer Prompt"),
+    );
+    expect(result.current.currentFileContent).toBe("latest live content");
+    expect(mocks.getCurrentFileContent).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores an older request error while the current app is loading", async () => {
+    const claudeRequest = createDeferred<Record<string, Prompt>>();
+    const codexRequest = createDeferred<Record<string, Prompt>>();
+    mocks.getPrompts.mockImplementation((appId: AppId) =>
+      appId === "claude" ? claudeRequest.promise : codexRequest.promise,
+    );
+
+    const { result, rerender } = renderPromptActions("claude");
+    let claudeReload!: Promise<boolean>;
+    act(() => {
+      claudeReload = result.current.reload();
+    });
+
+    rerender({ appId: "codex" });
+    let codexReload!: Promise<boolean>;
+    act(() => {
+      codexReload = result.current.reload();
+    });
+    await waitFor(() => expect(result.current.loading).toBe(true));
+
+    claudeRequest.reject(new Error("stale Claude failure"));
+    await act(async () => {
+      await claudeReload;
+    });
+
+    expect(result.current.loading).toBe(true);
+    expect(mocks.toastError).not.toHaveBeenCalled();
+
+    codexRequest.resolve(makePrompts("codex-prompt", "Codex Prompt"));
+    await act(async () => {
+      await codexReload;
+    });
+
+    expect(result.current.loading).toBe(false);
+    expect(result.current.prompts).toEqual(
+      makePrompts("codex-prompt", "Codex Prompt"),
+    );
+    expect(mocks.toastError).not.toHaveBeenCalled();
+  });
+
+  it("does not show an error when a pending reload fails after unmount", async () => {
+    const request = createDeferred<Record<string, Prompt>>();
+    mocks.getPrompts.mockReturnValue(request.promise);
+
+    const { result, unmount } = renderPromptActions("claude");
+    let reload!: Promise<boolean>;
+    act(() => {
+      reload = result.current.reload();
+    });
+
+    unmount();
+    request.reject(new Error("failure after unmount"));
+    await act(async () => {
+      await reload;
+    });
+
+    expect(mocks.toastError).not.toHaveBeenCalled();
+  });
+
+  it("hides the previous app prompts when the new app reload fails", async () => {
+    const claudePrompts = makePrompts("claude-prompt", "Claude Prompt");
+    mocks.getPrompts
+      .mockResolvedValueOnce(claudePrompts)
+      .mockRejectedValueOnce(new Error("Codex load failed"));
+    mocks.getCurrentFileContent.mockResolvedValueOnce("claude live content");
+
+    const { result, rerender } = renderPromptActions("claude");
+    await act(async () => {
+      expect(await result.current.reload()).toBe(true);
+    });
+    expect(result.current.prompts).toEqual(claudePrompts);
+    expect(result.current.currentFileContent).toBe("claude live content");
+
+    rerender({ appId: "codex" });
+    expect(result.current.prompts).toEqual({});
+    expect(result.current.currentFileContent).toBeNull();
+
+    await act(async () => {
+      expect(await result.current.reload()).toBe(false);
+    });
+
+    expect(result.current.loading).toBe(false);
+    expect(result.current.prompts).toEqual({});
+    expect(result.current.currentFileContent).toBeNull();
+    expect(mocks.toastError).toHaveBeenCalledWith("prompts.loadFailed", {
+      description: "Codex load failed",
+    });
+  });
+
+  it("does not roll back the current app when an older app toggle fails", async () => {
+    const claudePrompts = makePrompts("claude-prompt", "Claude Prompt");
+    const codexPrompts = makePrompts("codex-prompt", "Codex Prompt");
+    const enableRequest = createDeferred<void>();
+    mocks.getPrompts.mockImplementation(async (appId: AppId) =>
+      appId === "claude" ? claudePrompts : codexPrompts,
+    );
+    mocks.enablePrompt.mockReturnValueOnce(enableRequest.promise);
+
+    const { result, rerender } = renderPromptActions("claude");
+    await act(async () => {
+      expect(await result.current.reload()).toBe(true);
+    });
+
+    let togglePromise!: Promise<boolean>;
+    act(() => {
+      togglePromise = result.current.toggleEnabled("claude-prompt", true);
+    });
+    await waitFor(() => {
+      expect(mocks.enablePrompt).toHaveBeenCalledWith(
+        "claude",
+        "claude-prompt",
+      );
+    });
+
+    rerender({ appId: "codex" });
+    await act(async () => {
+      expect(await result.current.reload()).toBe(true);
+    });
+    expect(result.current.prompts).toEqual(codexPrompts);
+
+    enableRequest.reject(new Error("stale Claude toggle failed"));
+    await act(async () => {
+      await expect(togglePromise).rejects.toThrow("stale Claude toggle failed");
+    });
+
+    expect(result.current.prompts).toEqual(codexPrompts);
+    expect(result.current.currentFileContent).toBeNull();
+  });
+
+  it("keeps a saved prompt locally when the follow-up reload fails", async () => {
+    const initialPrompts = makePrompts("existing", "Existing Prompt");
+    const savedPrompt: Prompt = {
+      id: "saved",
+      name: "Saved Prompt",
+      content: "Saved content",
+      enabled: false,
+    };
+    mocks.getPrompts
+      .mockResolvedValueOnce(initialPrompts)
+      .mockRejectedValueOnce(new Error("refresh failed"));
+
+    const { result } = renderPromptActions("claude");
+    await act(async () => {
+      expect(await result.current.reload()).toBe(true);
+      expect(await result.current.savePrompt("saved", savedPrompt)).toBe(false);
+    });
+
+    expect(mocks.upsertPrompt).toHaveBeenCalledWith(
+      "claude",
+      "saved",
+      savedPrompt,
+    );
+    expect(result.current.prompts).toEqual({
+      ...initialPrompts,
+      saved: savedPrompt,
+    });
+    expect(mocks.toastSuccess).toHaveBeenCalledWith("prompts.saveSuccess", {
+      closeButton: true,
+    });
+  });
+
+  it("keeps a deleted prompt removed when the follow-up reload fails", async () => {
+    const initialPrompts = {
+      ...makePrompts("keep", "Keep Prompt"),
+      ...makePrompts("remove", "Remove Prompt"),
+    };
+    mocks.getPrompts
+      .mockResolvedValueOnce(initialPrompts)
+      .mockRejectedValueOnce(new Error("refresh failed"));
+
+    const { result } = renderPromptActions("claude");
+    await act(async () => {
+      expect(await result.current.reload()).toBe(true);
+      expect(await result.current.deletePrompt("remove")).toBe(false);
+    });
+
+    expect(mocks.deletePrompt).toHaveBeenCalledWith("claude", "remove");
+    expect(result.current.prompts).toEqual(makePrompts("keep", "Keep Prompt"));
+    expect(mocks.toastSuccess).toHaveBeenCalledWith("prompts.deleteSuccess", {
+      closeButton: true,
+    });
+  });
+
+  it("keeps an optimistic toggle when the follow-up reload fails", async () => {
+    const initialPrompts = makePrompts("toggle", "Toggle Prompt");
+    mocks.getPrompts
+      .mockResolvedValueOnce(initialPrompts)
+      .mockRejectedValueOnce(new Error("refresh failed"));
+
+    const { result } = renderPromptActions("claude");
+    await act(async () => {
+      expect(await result.current.reload()).toBe(true);
+    });
+    await act(async () => {
+      expect(await result.current.toggleEnabled("toggle", true)).toBe(false);
+    });
+
+    expect(mocks.enablePrompt).toHaveBeenCalledWith("claude", "toggle");
+    expect(result.current.prompts.toggle.enabled).toBe(true);
+    expect(mocks.toastSuccess).toHaveBeenCalledWith("prompts.enableSuccess", {
+      closeButton: true,
     });
   });
 });

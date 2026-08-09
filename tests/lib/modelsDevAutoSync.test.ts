@@ -42,29 +42,31 @@ describe("syncModelsDevPricing", () => {
     recordModelsDevSyncResult.mockResolvedValue(undefined);
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({
-          openai: {
-            models: {
-              "gpt-5": {
-                name: "GPT-5",
-                release_date: "2025-08-01",
-                cost: { input: 1, output: 2 },
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            openai: {
+              models: {
+                "gpt-5": {
+                  name: "GPT-5",
+                  release_date: "2025-08-01",
+                  cost: { input: 1, output: 2 },
+                },
               },
             },
-          },
-          relay: {
-            models: {
-              "custom-model": {
-                name: "Custom Model",
-                release_date: "2025-07-01",
-                cost: { input: 0.5, output: 1 },
+            relay: {
+              models: {
+                "custom-model": {
+                  name: "Custom Model",
+                  release_date: "2025-07-01",
+                  cost: { input: 0.5, output: 1 },
+                },
               },
             },
-          },
-        }),
-      }),
+          }),
+          { headers: { "Content-Type": "application/json" } },
+        ),
+      ),
     );
   });
 

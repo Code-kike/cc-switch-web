@@ -18,6 +18,7 @@ import {
 import "@/lib/api/web-commands";
 import { AboutSection } from "@/components/settings/AboutSection";
 import { UpdateProvider } from "@/contexts/UpdateContext";
+import { getOpenCodeModels } from "@/lib/api/model-fetch";
 import { server } from "../msw/server";
 import { startTestWebServer, type TestWebServer } from "../helpers/web-server";
 
@@ -495,5 +496,23 @@ describe.sequential("AboutSection against real web server", () => {
       "_blank",
       "noopener,noreferrer",
     );
+  });
+
+  it("returns OpenCode runtime models through the real Web route", async () => {
+    await fakeToolBin.setToolBehavior("opencode", {
+      stdout: [
+        "openrouter/vendor/model",
+        "opencode/zen-free",
+        "oauth/account-model",
+        "opencode/zen-free",
+        "notice: ignored",
+      ].join("\n"),
+    });
+
+    await expect(getOpenCodeModels()).resolves.toEqual([
+      { providerId: "oauth", modelId: "account-model" },
+      { providerId: "opencode", modelId: "zen-free" },
+      { providerId: "openrouter", modelId: "vendor/model" },
+    ]);
   });
 });

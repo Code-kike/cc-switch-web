@@ -3,9 +3,9 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
-use crate::error::AppError;
+use crate::services::model_pricing::{ModelPricingInfo, ModelsDevSyncConfig, ModelsDevSyncState};
 
 use super::super::ApiState;
 use super::common::{json_ok, validate_outbound_url, ApiError, ApiResult};
@@ -51,6 +51,25 @@ struct ModelIdRequest {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct ModelPricingBatchRequest {
+    entries: Vec<ModelPricingInfo>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ModelsDevSyncConfigRequest {
+    config: ModelsDevSyncConfig,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RecordModelsDevSyncResultRequest {
+    synced_at: Option<i64>,
+    error: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct TestUsageScriptRequest {
     provider_id: String,
     app: String,
@@ -61,17 +80,6 @@ struct TestUsageScriptRequest {
     access_token: Option<String>,
     user_id: Option<String>,
     template_type: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ModelPricingInfo {
-    model_id: String,
-    display_name: String,
-    input_cost_per_million: String,
-    output_cost_per_million: String,
-    cache_read_cost_per_million: String,
-    cache_creation_cost_per_million: String,
 }
 
 pub fn router(state: ApiState) -> Router {
@@ -88,7 +96,23 @@ pub fn router(state: ApiState) -> Router {
         .route("/system/get_request_detail", post(get_request_detail))
         .route("/system/get_model_pricing", post(get_model_pricing))
         .route("/system/update_model_pricing", post(update_model_pricing))
+        .route(
+            "/system/update_model_pricing_batch",
+            post(update_model_pricing_batch),
+        )
         .route("/system/delete_model_pricing", post(delete_model_pricing))
+        .route(
+            "/system/get_models_dev_sync_config",
+            post(get_models_dev_sync_config),
+        )
+        .route(
+            "/system/save_models_dev_sync_config",
+            post(save_models_dev_sync_config),
+        )
+        .route(
+            "/system/record_models_dev_sync_result",
+            post(record_models_dev_sync_result),
+        )
         .route("/usage/testusagescript", post(test_usage_script))
         .route("/sessions/sync-session-usage", post(sync_session_usage))
         .route("/usage/rebuild-codex-usage", post(rebuild_codex_usage))
@@ -214,51 +238,12 @@ async fn get_usage_data_sources(
 }
 
 async fn get_model_pricing(State(state): State<ApiState>) -> ApiResult<Vec<ModelPricingInfo>> {
-    state
-        .app_state
-        .db
-        .ensure_model_pricing_seeded()
-        .map_err(ApiError::from_anyhow)?;
-
     let db = state.app_state.db.clone();
-    let pricing = tokio::task::spawn_blocking(move || {
-        let conn = crate::database::lock_conn!(db.conn);
-        let table_exists: bool = conn
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='model_pricing'",
-                [],
-                |row| row.get::<_, i64>(0).map(|count| count > 0),
-            )
-            .unwrap_or(false);
-        if !table_exists {
-            return Ok(Vec::new());
-        }
-
-        let mut stmt = conn.prepare(
-            "SELECT model_id, display_name, input_cost_per_million, output_cost_per_million,
-                    cache_read_cost_per_million, cache_creation_cost_per_million
-             FROM model_pricing
-             ORDER BY display_name",
-        )?;
-        let rows = stmt
-            .query_map([], |row| {
-                Ok(ModelPricingInfo {
-                    model_id: row.get(0)?,
-                    display_name: row.get(1)?,
-                    input_cost_per_million: row.get(2)?,
-                    output_cost_per_million: row.get(3)?,
-                    cache_read_cost_per_million: row.get(4)?,
-                    cache_creation_cost_per_million: row.get(5)?,
-                })
-            })
-            .map_err(|err| AppError::Database(err.to_string()))?;
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(|err| AppError::Database(err.to_string()))
-    })
-    .await
-    .map_err(ApiError::from_anyhow)?
-    .map_err(ApiError::from_anyhow)?;
-
+    let pricing =
+        tokio::task::spawn_blocking(move || crate::services::model_pricing::get_model_pricing(&db))
+            .await
+            .map_err(ApiError::from_anyhow)?
+            .map_err(ApiError::from_anyhow)?;
     Ok(json_ok(pricing))
 }
 
@@ -268,28 +253,36 @@ async fn update_model_pricing(
 ) -> ApiResult<()> {
     let db = state.app_state.db.clone();
     tokio::task::spawn_blocking(move || {
-        let conn = crate::database::lock_conn!(db.conn);
-        conn.execute(
-            "INSERT OR REPLACE INTO model_pricing (
-                model_id, display_name, input_cost_per_million, output_cost_per_million,
-                cache_read_cost_per_million, cache_creation_cost_per_million
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            rusqlite::params![
-                request.model_id,
-                request.display_name,
-                request.input_cost,
-                request.output_cost,
-                request.cache_read_cost,
-                request.cache_creation_cost,
-            ],
+        crate::services::model_pricing::update_model_pricing(
+            &db,
+            ModelPricingInfo {
+                model_id: request.model_id,
+                display_name: request.display_name,
+                input_cost_per_million: request.input_cost,
+                output_cost_per_million: request.output_cost,
+                cache_read_cost_per_million: request.cache_read_cost,
+                cache_creation_cost_per_million: request.cache_creation_cost,
+            },
         )
-        .map(|_| ())
-        .map_err(|err| AppError::Database(err.to_string()))
     })
     .await
     .map_err(ApiError::from_anyhow)?
     .map_err(ApiError::from_anyhow)?;
     Ok(json_ok(()))
+}
+
+async fn update_model_pricing_batch(
+    State(state): State<ApiState>,
+    Json(request): Json<ModelPricingBatchRequest>,
+) -> ApiResult<usize> {
+    let db = state.app_state.db.clone();
+    let changed = tokio::task::spawn_blocking(move || {
+        crate::services::model_pricing::update_model_pricing_batch(&db, request.entries)
+    })
+    .await
+    .map_err(ApiError::from_anyhow)?
+    .map_err(ApiError::from_anyhow)?;
+    Ok(json_ok(changed))
 }
 
 async fn delete_model_pricing(
@@ -298,13 +291,52 @@ async fn delete_model_pricing(
 ) -> ApiResult<()> {
     let db = state.app_state.db.clone();
     tokio::task::spawn_blocking(move || {
-        let conn = crate::database::lock_conn!(db.conn);
-        conn.execute(
-            "DELETE FROM model_pricing WHERE model_id = ?1",
-            rusqlite::params![request.model_id],
+        crate::services::model_pricing::delete_model_pricing(&db, &request.model_id)
+    })
+    .await
+    .map_err(ApiError::from_anyhow)?
+    .map_err(ApiError::from_anyhow)?;
+    Ok(json_ok(()))
+}
+
+async fn get_models_dev_sync_config(
+    State(state): State<ApiState>,
+) -> ApiResult<ModelsDevSyncState> {
+    let db = state.app_state.db.clone();
+    let sync_state = tokio::task::spawn_blocking(move || {
+        crate::services::model_pricing::get_models_dev_sync_state(&db)
+    })
+    .await
+    .map_err(ApiError::from_anyhow)?
+    .map_err(ApiError::from_anyhow)?;
+    Ok(json_ok(sync_state))
+}
+
+async fn save_models_dev_sync_config(
+    State(state): State<ApiState>,
+    Json(request): Json<ModelsDevSyncConfigRequest>,
+) -> ApiResult<()> {
+    let db = state.app_state.db.clone();
+    tokio::task::spawn_blocking(move || {
+        crate::services::model_pricing::save_models_dev_sync_config(&db, request.config)
+    })
+    .await
+    .map_err(ApiError::from_anyhow)?
+    .map_err(ApiError::from_anyhow)?;
+    Ok(json_ok(()))
+}
+
+async fn record_models_dev_sync_result(
+    State(state): State<ApiState>,
+    Json(request): Json<RecordModelsDevSyncResultRequest>,
+) -> ApiResult<()> {
+    let db = state.app_state.db.clone();
+    tokio::task::spawn_blocking(move || {
+        crate::services::model_pricing::record_models_dev_sync_result(
+            &db,
+            request.synced_at,
+            request.error,
         )
-        .map(|_| ())
-        .map_err(|err| AppError::Database(err.to_string()))
     })
     .await
     .map_err(ApiError::from_anyhow)?

@@ -1,7 +1,13 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import {
   afterAll,
   beforeAll,
@@ -15,10 +21,7 @@ import {
 import "@/lib/api/web-commands";
 import { AuthCenterPanel } from "@/components/settings/AuthCenterPanel";
 import { server } from "../msw/server";
-import {
-  startTestWebServer,
-  type TestWebServer,
-} from "../helpers/web-server";
+import { startTestWebServer, type TestWebServer } from "../helpers/web-server";
 import {
   startTestAuthServer,
   type TestAuthServer,
@@ -44,6 +47,7 @@ const logoutAllRegex =
   /(copilot\.logoutAll|codexOauth\.logoutAll|注销所有账号|Log out all accounts)/;
 const copilotHeadingRegex = /GitHub Copilot/;
 const codexHeadingRegex = /ChatGPT \(Codex OAuth\)/;
+const realServerWaitOptions = { timeout: 5_000 };
 
 type CopilotAuthStore = {
   version: number;
@@ -98,13 +102,16 @@ function getSection(titlePattern: RegExp): HTMLElement {
   return section;
 }
 
-function getAccountRow(section: HTMLElement, accountLabel: string): HTMLElement {
+function getAccountRow(
+  section: HTMLElement,
+  accountLabel: string,
+): HTMLElement {
   const label = within(section).getByText(accountLabel);
   let current: HTMLElement | null = label instanceof HTMLElement ? label : null;
 
   while (
     current &&
-    !current.className.includes("flex items-center justify-between p-2 rounded-md border bg-muted/30")
+    !current.className.includes("p-2 rounded-md border bg-muted/30")
   ) {
     current = current.parentElement;
   }
@@ -261,7 +268,7 @@ describe.sequential("AuthCenterPanel against real web server", () => {
       expect(store?.default_account_id).toBe("20001");
       expect(store?.accounts["20001"]?.user.login).toBe("copilot-octo");
       expect(store?.accounts["20001"]?.github_domain).toBe("github.com");
-    });
+    }, realServerWaitOptions);
   });
 
   it("drives Codex OAuth login, default switching, removal, failure retry, and logout through the rendered panel", async () => {
@@ -290,14 +297,22 @@ describe.sequential("AuthCenterPanel against real web server", () => {
       within(codexSection).getByRole("button", { name: codexLoginRegex }),
     );
     expect(
-      await within(codexSection).findByText("plus-user@example.com"),
+      await within(codexSection).findByText(
+        "plus-user@example.com",
+        undefined,
+        realServerWaitOptions,
+      ),
     ).toBeInTheDocument();
 
     fireEvent.click(
       within(codexSection).getByRole("button", { name: addAnotherRegex }),
     );
     expect(
-      await within(codexSection).findByText("pro-user@example.com"),
+      await within(codexSection).findByText(
+        "pro-user@example.com",
+        undefined,
+        realServerWaitOptions,
+      ),
     ).toBeInTheDocument();
 
     fireEvent.click(
@@ -313,7 +328,7 @@ describe.sequential("AuthCenterPanel against real web server", () => {
       );
       expect(store?.default_account_id).toBe("codex-acc-2");
       expect(Object.keys(store?.accounts ?? {})).toHaveLength(2);
-    });
+    }, realServerWaitOptions);
 
     fireEvent.click(
       within(getAccountRow(codexSection, "plus-user@example.com")).getByTitle(
@@ -327,7 +342,7 @@ describe.sequential("AuthCenterPanel against real web server", () => {
       );
       expect(Object.keys(store?.accounts ?? {})).toEqual(["codex-acc-2"]);
       expect(store?.default_account_id).toBe("codex-acc-2");
-    });
+    }, realServerWaitOptions);
 
     authServer.queueCodexFlow({
       mode: "error",
@@ -356,7 +371,11 @@ describe.sequential("AuthCenterPanel against real web server", () => {
     );
 
     expect(
-      await within(codexSection).findByText("team-user@example.com"),
+      await within(codexSection).findByText(
+        "team-user@example.com",
+        undefined,
+        realServerWaitOptions,
+      ),
     ).toBeInTheDocument();
 
     fireEvent.click(
@@ -369,6 +388,6 @@ describe.sequential("AuthCenterPanel against real web server", () => {
       );
       expect(store?.default_account_id ?? null).toBeNull();
       expect(Object.keys(store?.accounts ?? {})).toHaveLength(0);
-    });
+    }, realServerWaitOptions);
   });
 });

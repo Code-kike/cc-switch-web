@@ -3003,6 +3003,120 @@ log::debug!("upstream response: {}", summarize_upstream_body(&body_text)); // me
 
 ---
 
+### Scenario: Skill Source Resolution and Documentation URLs
+
+#### 1. Scope / Trigger
+
+- Trigger: installing or updating a repository-backed Skill when discovery
+  metadata may contain only a terminal skill ID instead of the repository's
+  full nested directory.
+- Applies when changing `src-tauri/src/services/skill.rs` source discovery,
+  repository extraction, SSOT copying, or `InstalledSkill.readme_url`
+  generation.
+
+#### 2. Signatures
+
+- `SkillService::resolve_skill_source_dir(root: &Path, raw_directory: &str)
+  -> Option<PathBuf>`
+- `SkillService::doc_path_for_source(repo_root: &Path, source: &Path)
+  -> Option<String>`
+- `SkillService::choose_doc_path(resolved_source_doc_path: Option<String>,
+  readme_url: Option<&str>, directory: &str) -> String`
+- `SkillService::build_skill_doc_url(owner, repo, branch, doc_path)
+  -> Option<String>`
+
+#### 3. Contracts
+
+- A resolved source directory is anchored by `SKILL.md`; a same-name wrapper
+  directory without the manifest is not a Skill source.
+- Resolution order is deterministic: an explicit sanitized relative path with
+  `SKILL.md`, then a bounded recursive name match with `SKILL.md`, then the
+  repository root when it contains `SKILL.md`.
+- The canonical resolved source must remain inside the canonical extracted
+  repository root before any files are copied into the SSOT directory.
+- For a freshly downloaded repository, documentation path priority is:
+  canonical resolved source path, existing `readme_url` path, then
+  `directory/SKILL.md`. The resolved source must win because skills.sh may
+  return only the last path segment.
+- `doc_path_for_source` emits a repository-relative, forward-slash path ending
+  in `SKILL.md`. `build_skill_doc_url` uses the branch that actually downloaded
+  successfully, including branch fallback.
+- When an existing SSOT directory skips download and no fresh resolved path is
+  available, retain the prior `readme_url` path before falling back to
+  `directory`.
+
+#### 4. Validation & Error Matrix
+
+- Direct same-name directory exists but has no `SKILL.md` -> skip it and search
+  for a real nested Skill; do not copy the wrapper.
+- No candidate containing `SKILL.md` exists -> return `SKILL_DIR_NOT_FOUND` and
+  leave the destination untouched.
+- Canonical source escapes the extracted repository root -> reject with
+  `INVALID_SKILL_DIRECTORY`.
+- skills.sh returns `foo`, while the manifest is at
+  `skills/category/foo/SKILL.md` -> resolve the nested directory and persist
+  that full document path.
+- A stale root-level `readme_url` conflicts with a freshly resolved nested
+  source -> the resolved nested path wins.
+- Repository owner/name/branch is invalid -> omit the external documentation
+  URL rather than storing an unsafe URL.
+
+#### 5. Good/Base/Bad Cases
+
+- Good: `directory = "ast-grep"` skips a wrapper at `ast-grep/` and resolves
+  `ast-grep/skills/ast-grep/SKILL.md`.
+- Base: a repository whose root contains `SKILL.md` resolves to the root and
+  produces the document path `SKILL.md`.
+- Base: an already-installed Skill reuses a valid prior `blob` or `tree`
+  `readme_url` path when no repository is downloaded.
+- Bad: accepting the first directory whose basename matches the skill ID, even
+  though it has no `SKILL.md`.
+- Bad: always generating `readme_url` as `{directory}/SKILL.md`; nested catalog
+  Skills then open a 404 page.
+
+#### 6. Tests Required
+
+- Direct nested path and repository-root resolution tests.
+- Regression for a same-name wrapper without `SKILL.md` plus a real nested
+  Skill.
+- Negative tests for a wrapper with no inner Skill and a repository with no
+  `SKILL.md` anywhere.
+- Nested catalog regression proving the resolved directory is found within the
+  bounded search.
+- `choose_doc_path` tests proving resolved source > prior `readme_url` >
+  directory fallback.
+- `doc_path_for_source` tests for nested and repository-root Skills using
+  forward slashes.
+- Installation/update coverage must assert the stored branch and
+  `readme_url` match the repository content that was actually downloaded.
+
+#### 7. Wrong vs Correct
+
+##### Wrong
+
+```rust
+let source = root.join(&skill.directory);
+if source.is_dir() {
+    copy_dir_recursive(&source, &dest)?;
+}
+let doc_path = format!("{}/SKILL.md", skill.directory);
+```
+
+##### Correct
+
+```rust
+let source = SkillService::resolve_skill_source_dir(root, &skill.directory)
+    .ok_or_else(|| anyhow!("Skill directory not found: {}", skill.directory))?;
+let resolved_doc_path = SkillService::doc_path_for_source(root, &source);
+let doc_path = SkillService::choose_doc_path(
+    resolved_doc_path,
+    skill.readme_url.as_deref(),
+    &skill.directory,
+);
+```
+
+---
+
 ## Testing Requirements
 
 <!-- What level of testing is expected -->

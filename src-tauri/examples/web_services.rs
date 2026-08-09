@@ -19,6 +19,9 @@ pub mod mcp;
 #[path = "../src/services/model_fetch.rs"]
 pub mod model_fetch;
 
+#[path = "../src/services/model_pricing.rs"]
+pub mod model_pricing;
+
 #[path = "../src/services/omo.rs"]
 pub mod omo;
 

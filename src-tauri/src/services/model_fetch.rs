@@ -6,6 +6,8 @@
 
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// 获取到的模型信息
@@ -14,6 +16,13 @@ use std::time::Duration;
 pub struct FetchedModel {
     pub id: String,
     pub owned_by: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenCodeModelRef {
+    pub provider_id: String,
+    pub model_id: String,
 }
 
 /// OpenAI 兼容的 /v1/models 响应格式
@@ -29,6 +38,7 @@ struct ModelEntry {
 }
 
 const FETCH_TIMEOUT_SECS: u64 = 15;
+const OPENCODE_MODELS_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// 404/405 响应体截断长度：避免把几十 KB HTML 404 页整页保留到错误串里。
 const ERROR_BODY_MAX_CHARS: usize = 512;
@@ -46,6 +56,87 @@ const KNOWN_COMPAT_SUFFIXES: &[&str] = &[
     "/coding",
     "/claude",
 ];
+
+fn existing_tool_working_dir(config_dir: &Path) -> PathBuf {
+    config_dir
+        .ancestors()
+        .find(|candidate| candidate.is_dir())
+        .map(Path::to_path_buf)
+        .unwrap_or_else(crate::config::get_home_dir)
+}
+
+/// Load the models visible to the installed OpenCode runtime.
+///
+/// The command and arguments are fixed; only cc-switch's configured OpenCode
+/// directory is passed through the environment. The shared runner bounds the
+/// entire lookup to 20 seconds and caps captured stdout/stderr.
+pub async fn get_opencode_models() -> Result<Vec<OpenCodeModelRef>, String> {
+    tokio::task::spawn_blocking(|| {
+        let config_dir = crate::opencode_config::get_opencode_dir();
+        let working_dir = existing_tool_working_dir(&config_dir);
+        let extra_env = [
+            (
+                "OPENCODE_CONFIG_DIR",
+                config_dir.to_string_lossy().into_owned(),
+            ),
+            ("OPENCODE_DISABLE_PROJECT_CONFIG", "true".to_string()),
+        ];
+        let output = crate::services::tool_version::run_detected_tool_command_with_timeout(
+            "opencode",
+            &["models"],
+            OPENCODE_MODELS_TIMEOUT,
+            &extra_env,
+            &working_dir,
+        )?;
+        if !output.status.success() {
+            let stderr = crate::services::tool_version::decode_command_output(&output.stderr);
+            let stdout = crate::services::tool_version::decode_command_output(&output.stdout);
+            let detail = if stderr.trim().is_empty() {
+                stdout.trim()
+            } else {
+                stderr.trim()
+            };
+            return Err(if detail.is_empty() {
+                "Failed to load OpenCode models".to_string()
+            } else {
+                format!("Failed to load OpenCode models: {detail}")
+            });
+        }
+
+        Ok(parse_opencode_models(
+            &crate::services::tool_version::decode_command_output(&output.stdout),
+        ))
+    })
+    .await
+    .map_err(|error| format!("OpenCode model discovery task failed: {error}"))?
+}
+
+fn parse_opencode_models(output: &str) -> Vec<OpenCodeModelRef> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let (provider_id, model_id) = line.trim().split_once('/')?;
+            if provider_id.is_empty()
+                || model_id.is_empty()
+                || !provider_id.chars().all(|character| {
+                    character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.')
+                })
+                || model_id
+                    .chars()
+                    .any(|character| character.is_whitespace() || character.is_control())
+            {
+                return None;
+            }
+            Some((provider_id.to_string(), model_id.to_string()))
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .map(|(provider_id, model_id)| OpenCodeModelRef {
+            provider_id,
+            model_id,
+        })
+        .collect()
+}
 
 /// 获取供应商的可用模型列表
 ///
@@ -238,6 +329,33 @@ mod tests {
     fn test_candidates_plain_root() {
         let c = build_models_url_candidates("https://api.siliconflow.cn", false, None).unwrap();
         assert_eq!(c, vec!["https://api.siliconflow.cn/v1/models"]);
+    }
+
+    #[test]
+    fn parses_sorts_and_deduplicates_opencode_models() {
+        assert_eq!(
+            parse_opencode_models(
+                "openrouter/vendor/model\nopencode/free-model\ninvalid\nopencode/free-model\n"
+            ),
+            vec![
+                OpenCodeModelRef {
+                    provider_id: "opencode".to_string(),
+                    model_id: "free-model".to_string(),
+                },
+                OpenCodeModelRef {
+                    provider_id: "openrouter".to_string(),
+                    model_id: "vendor/model".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn skips_malformed_opencode_model_output() {
+        assert!(parse_opencode_models(
+            "notice: loading models\n/model\nprovider/\nbad provider/model\nprovider/bad model\nprovider/bad\u{1b}[0m\n"
+        )
+        .is_empty());
     }
 
     #[test]

@@ -73,6 +73,14 @@ function renderPanel() {
 describe("ModelsDevAutoSyncPanel", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: undefined,
+    });
+    Object.defineProperty(window, "__TAURI__", {
+      configurable: true,
+      value: undefined,
+    });
     getModelsDevSyncConfig.mockResolvedValue(state);
     saveModelsDevSyncConfig.mockResolvedValue(undefined);
     getModelPricing.mockResolvedValue([]);
@@ -86,31 +94,33 @@ describe("ModelsDevAutoSyncPanel", () => {
     });
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({
-          openai: {
-            name: "OpenAI",
-            models: {
-              "gpt-5": {
-                name: "GPT-5",
-                release_date: "2025-08-01",
-                cost: { input: 1, output: 2 },
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            openai: {
+              name: "OpenAI",
+              models: {
+                "gpt-5": {
+                  name: "GPT-5",
+                  release_date: "2025-08-01",
+                  cost: { input: 1, output: 2 },
+                },
               },
             },
-          },
-          deepseek: {
-            name: "DeepSeek",
-            models: {
-              "deepseek-chat": {
-                name: "DeepSeek Chat",
-                release_date: "2025-12-01",
-                cost: { input: 0.3, output: 1.2 },
+            deepseek: {
+              name: "DeepSeek",
+              models: {
+                "deepseek-chat": {
+                  name: "DeepSeek Chat",
+                  release_date: "2025-12-01",
+                  cost: { input: 0.3, output: 1.2 },
+                },
               },
             },
-          },
-        }),
-      }),
+          }),
+          { headers: { "Content-Type": "application/json" } },
+        ),
+      ),
     );
   });
 
@@ -123,6 +133,34 @@ describe("ModelsDevAutoSyncPanel", () => {
     expect(screen.getByText(state.configPath)).toBeInTheDocument();
     expect(screen.getByRole("switch")).not.toBeChecked();
     expect(saveModelsDevSyncConfig).not.toHaveBeenCalled();
+  });
+
+  it("hides the desktop-only open-folder action in Web mode", async () => {
+    renderPanel();
+
+    await screen.findByText("usage.modelsDevAutoSync.title");
+    expect(
+      screen.queryByRole("button", {
+        name: "usage.modelsDevAutoSync.openFolder",
+      }),
+    ).not.toBeInTheDocument();
+    expect(openAppConfigFolder).not.toHaveBeenCalled();
+  });
+
+  it("preserves the open-folder action in desktop mode", async () => {
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: {},
+    });
+    renderPanel();
+
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "usage.modelsDevAutoSync.openFolder",
+      }),
+    );
+
+    await waitFor(() => expect(openAppConfigFolder).toHaveBeenCalledTimes(1));
   });
 
   it("persists disabling without showing the overwrite warning", async () => {

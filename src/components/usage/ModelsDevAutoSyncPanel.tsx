@@ -30,6 +30,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { isWebMode } from "@/lib/api/adapter";
 import { settingsApi } from "@/lib/api/settings";
 import { usageApi } from "@/lib/api/usage";
 import {
@@ -422,6 +423,7 @@ function AutoSyncDialog({ state, onClose, onSaved }: AutoSyncDialogProps) {
 export function ModelsDevAutoSyncPanel() {
   const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
+  const webMode = isWebMode();
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
@@ -604,14 +606,16 @@ export function ModelsDevAutoSyncPanel() {
         </div>
 
         <div className="flex flex-wrap justify-end gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => void openLocalFileFolder()}
-          >
-            <FolderOpen className="mr-1.5 h-3.5 w-3.5" />
-            {t("usage.modelsDevAutoSync.openFolder")}
-          </Button>
+          {!webMode && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void openLocalFileFolder()}
+            >
+              <FolderOpen className="mr-1.5 h-3.5 w-3.5" />
+              {t("usage.modelsDevAutoSync.openFolder")}
+            </Button>
+          )}
           <Button
             variant="outline"
             size="sm"

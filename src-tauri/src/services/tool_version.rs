@@ -10,6 +10,7 @@ use std::os::windows::process::CommandExt;
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 const VALID_TOOLS: [&str; 5] = ["claude", "codex", "gemini", "grok", "opencode"];
+const TOOL_COMMAND_OUTPUT_LIMIT: usize = 4 * 1024 * 1024;
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ToolVersion {
@@ -661,74 +662,10 @@ fn tool_executable_candidates(tool: &str, dir: &Path) -> Vec<PathBuf> {
     }
 }
 
-/// Windows 双引号包裹基础原语：无条件加引号 + 内部 `"` 转义为 `\"`。
-#[cfg(target_os = "windows")]
-fn win_double_quote(value: &str) -> String {
-    format!("\"{}\"", value.replace('"', "\\\""))
-}
-
-/// 给 batch/`call` 用的路径引用：`%` 经历 batch parser + `call` 两轮 expansion，
-/// 要让 call 最终看到字面 `%` 需要 4 个 → `%%%%`。`needs_quote` 基于原路径判断。
-#[cfg(target_os = "windows")]
-fn win_quote_path_for_batch(p: &str) -> String {
-    let escaped = if p.contains('%') {
-        p.replace('%', "%%%%")
-    } else {
-        p.to_string()
-    };
-    let needs_quote = p
-        .chars()
-        .any(|c| matches!(c, ' ' | '&' | '(' | ')' | '^' | ';' | '<' | '>' | '|' | ','));
-    if needs_quote {
-        win_double_quote(&escaped)
-    } else {
-        escaped
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn is_windows_command_script(path: &Path) -> bool {
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| ext.eq_ignore_ascii_case("cmd") || ext.eq_ignore_ascii_case("bat"))
-        .unwrap_or(false)
-}
-
-/// Windows 版本探测：.exe 直接执行（绕开 cmd 的嵌套引号误解析）；.cmd/.bat 走
-/// `cmd /D /S /C call <quoted> --version`，用 raw_arg 绕过 Rust 的参数引用，
-/// 保证 cmd 看到确定的引号形态。
-#[cfg(target_os = "windows")]
-fn run_windows_tool_version_command(
-    tool_path: &Path,
-    new_path: &str,
-) -> std::io::Result<std::process::Output> {
-    use std::process::Command;
-
-    if is_windows_command_script(tool_path) {
-        let path = tool_path.to_string_lossy();
-        let command = format!("call {} --version", win_quote_path_for_batch(&path));
-        let mut cmd = Command::new("cmd");
-        return cmd
-            .args(["/D", "/S", "/C"])
-            .raw_arg(&command)
-            .env("PATH", new_path)
-            .creation_flags(CREATE_NO_WINDOW)
-            .output();
-    }
-
-    Command::new(tool_path)
-        .arg("--version")
-        .env("PATH", new_path)
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-}
-
-fn scan_cli_version(tool: &str) -> (Option<String>, Option<String>) {
-    #[cfg(not(target_os = "windows"))]
-    use std::process::Command;
-
+fn build_tool_search_paths(tool: &str) -> Vec<PathBuf> {
     let home = dirs::home_dir().unwrap_or_default();
-    let mut search_paths: Vec<PathBuf> = Vec::new();
+    let mut search_paths = Vec::new();
+
     if !home.as_os_str().is_empty() {
         push_unique_path(&mut search_paths, home.join(".local/bin"));
         push_unique_path(&mut search_paths, home.join(".npm-global/bin"));
@@ -795,6 +732,110 @@ fn scan_cli_version(tool: &str) -> (Option<String>, Option<String>) {
         }
     }
 
+    if let Some(path_env) = std::env::var_os("PATH") {
+        for path in std::env::split_paths(&path_env) {
+            push_unique_path(&mut search_paths, path);
+        }
+    }
+
+    search_paths
+}
+
+/// Windows 双引号包裹基础原语：无条件加引号 + 内部 `"` 转义为 `\"`。
+#[cfg(target_os = "windows")]
+fn win_double_quote(value: &str) -> String {
+    format!("\"{}\"", value.replace('"', "\\\""))
+}
+
+#[cfg(target_os = "windows")]
+fn windows_cmd_double_quote_arg(value: &str) -> String {
+    win_double_quote(value)
+}
+
+/// 给 batch/`call` 用的路径引用：`%` 经历 batch parser + `call` 两轮 expansion，
+/// 要让 call 最终看到字面 `%` 需要 4 个 → `%%%%`。`needs_quote` 基于原路径判断。
+#[cfg(target_os = "windows")]
+fn win_quote_path_for_batch(p: &str) -> String {
+    let escaped = if p.contains('%') {
+        p.replace('%', "%%%%")
+    } else {
+        p.to_string()
+    };
+    let needs_quote = p
+        .chars()
+        .any(|c| matches!(c, ' ' | '&' | '(' | ')' | '^' | ';' | '<' | '>' | '|' | ','));
+    if needs_quote {
+        win_double_quote(&escaped)
+    } else {
+        escaped
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn is_windows_command_script(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.eq_ignore_ascii_case("cmd") || ext.eq_ignore_ascii_case("bat"))
+        .unwrap_or(false)
+}
+
+/// Windows 版本探测：.exe 直接执行（绕开 cmd 的嵌套引号误解析）；.cmd/.bat 走
+/// `cmd /D /S /C call <quoted> --version`，用 raw_arg 绕过 Rust 的参数引用，
+/// 保证 cmd 看到确定的引号形态。
+#[cfg(target_os = "windows")]
+fn run_windows_tool_command(
+    tool_path: &Path,
+    args: &[&str],
+    new_path: &str,
+) -> std::io::Result<std::process::Output> {
+    use std::process::Command;
+
+    if is_windows_command_script(tool_path) {
+        let path = tool_path.to_string_lossy();
+        let args = args
+            .iter()
+            .map(|arg| windows_cmd_double_quote_arg(arg))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let command = format!(
+            "call {}{}",
+            win_quote_path_for_batch(&path),
+            if args.is_empty() {
+                String::new()
+            } else {
+                format!(" {args}")
+            }
+        );
+        let mut cmd = Command::new("cmd");
+        return cmd
+            .args(["/D", "/S", "/C"])
+            .raw_arg(&command)
+            .env("PATH", new_path)
+            .creation_flags(CREATE_NO_WINDOW)
+            .output();
+    }
+
+    Command::new(tool_path)
+        .args(args)
+        .env("PATH", new_path)
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+}
+
+#[cfg(target_os = "windows")]
+fn run_windows_tool_version_command(
+    tool_path: &Path,
+    new_path: &str,
+) -> std::io::Result<std::process::Output> {
+    run_windows_tool_command(tool_path, &["--version"], new_path)
+}
+
+fn scan_cli_version(tool: &str) -> (Option<String>, Option<String>) {
+    #[cfg(not(target_os = "windows"))]
+    use std::process::Command;
+
+    let search_paths = build_tool_search_paths(tool);
+
     let current_path = std::env::var("PATH").unwrap_or_default();
 
     for path in &search_paths {
@@ -832,6 +873,580 @@ fn scan_cli_version(tool: &str) -> (Option<String>, Option<String>) {
     }
 
     (None, Some("not installed or not executable".to_string()))
+}
+
+#[derive(Clone, Copy)]
+struct CommandDeadline {
+    expires_at: std::time::Instant,
+    limit: std::time::Duration,
+}
+
+impl CommandDeadline {
+    fn new(limit: std::time::Duration) -> Self {
+        Self {
+            expires_at: std::time::Instant::now() + limit,
+            limit,
+        }
+    }
+
+    fn remaining(self) -> Result<std::time::Duration, String> {
+        self.expires_at
+            .checked_duration_since(std::time::Instant::now())
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or_else(|| self.timeout_error())
+    }
+
+    fn timeout_error(self) -> String {
+        format!("Command timed out after {}s", self.limit.as_secs())
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn first_abs_path_line(raw: &str) -> Option<&str> {
+    raw.lines()
+        .map(str::trim)
+        .find(|line| line.starts_with('/'))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn resolve_path_default(tool: &str, deadline: CommandDeadline) -> Result<Option<PathBuf>, String> {
+    use std::process::{Command, Stdio};
+
+    let shell = std::env::var("SHELL")
+        .ok()
+        .filter(|shell| is_valid_shell(shell))
+        .unwrap_or_else(|| "sh".to_string());
+    let flag = default_flag_for_shell(&shell);
+    let mut cmd = Command::new(shell);
+    cmd.arg(flag)
+        .arg(format!("command -v {tool}"))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    isolate_child_process_group(&mut cmd);
+    let child = cmd
+        .spawn()
+        .map_err(|error| format!("Failed to locate {tool}: {error}"))?;
+    let output = wait_child_output(child, deadline)?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+
+    let raw = decode_command_output(&output.stdout);
+    let Some(first) = first_abs_path_line(&raw) else {
+        return Ok(None);
+    };
+    Ok(std::fs::canonicalize(first).ok())
+}
+
+#[cfg(target_os = "windows")]
+fn windows_runnable_sibling_for_extensionless_tool(path: &Path) -> Option<PathBuf> {
+    if path.extension().is_some() {
+        return None;
+    }
+
+    ["cmd", "exe"]
+        .iter()
+        .map(|extension| path.with_extension(extension))
+        .find(|candidate| candidate.is_file())
+}
+
+#[cfg(target_os = "windows")]
+fn resolve_path_default(tool: &str, deadline: CommandDeadline) -> Result<Option<PathBuf>, String> {
+    use std::process::{Command, Stdio};
+
+    let child = Command::new("cmd")
+        .args(["/C", &format!("where {tool}")])
+        .creation_flags(CREATE_NO_WINDOW)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("Failed to locate {tool}: {error}"))?;
+    let output = wait_child_output(child, deadline)?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+
+    let raw = decode_command_output(&output.stdout);
+    let Some(first) = raw.lines().next().map(str::trim) else {
+        return Ok(None);
+    };
+    if first.is_empty() {
+        return Ok(None);
+    }
+    let path = Path::new(first);
+    let preferred =
+        windows_runnable_sibling_for_extensionless_tool(path).unwrap_or_else(|| path.to_path_buf());
+    Ok(std::fs::canonicalize(preferred).ok())
+}
+
+fn locate_default_tool(tool: &str, deadline: CommandDeadline) -> Result<PathBuf, String> {
+    let path_default = resolve_path_default(tool, deadline)?;
+    let mut seen = std::collections::HashSet::new();
+    let mut candidates = Vec::new();
+
+    for dir in build_tool_search_paths(tool) {
+        for candidate in tool_executable_candidates(tool, &dir) {
+            if !candidate.is_file() {
+                continue;
+            }
+            let real = std::fs::canonicalize(&candidate).unwrap_or_else(|_| candidate.clone());
+            if path_default.as_ref() == Some(&real) {
+                return Ok(candidate);
+            }
+            if seen.insert(real) {
+                candidates.push(candidate);
+            }
+        }
+    }
+
+    if let Some(path) = path_default {
+        return Ok(path);
+    }
+
+    match candidates.as_slice() {
+        [only] => Ok(only.clone()),
+        [] => Err(format!("{tool} is not installed")),
+        _ => Err(format!(
+            "{tool} is installed but its default installation is ambiguous"
+        )),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn terminate_child_tree(child: &mut std::process::Child) -> bool {
+    use std::process::{Command, Stdio};
+
+    let status = Command::new("taskkill")
+        .args(["/PID", &child.id().to_string(), "/T", "/F"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    matches!(status, Ok(status) if status.success()) || child.kill().is_ok()
+}
+
+#[cfg(not(target_os = "windows"))]
+fn terminate_child_tree(child: &mut std::process::Child) -> bool {
+    let process_group = -(child.id() as libc::pid_t);
+    // SAFETY: bounded runtime commands are placed in a dedicated process group before spawn.
+    (unsafe { libc::kill(process_group, libc::SIGKILL) == 0 }) || child.kill().is_ok()
+}
+
+#[cfg(not(target_os = "windows"))]
+fn isolate_child_process_group(command: &mut std::process::Command) {
+    use std::os::unix::process::CommandExt;
+
+    command.process_group(0);
+}
+
+fn read_bounded_pipe<R: std::io::Read>(
+    mut pipe: R,
+    overflow: &std::sync::atomic::AtomicBool,
+) -> Vec<u8> {
+    use std::sync::atomic::Ordering;
+
+    let mut output = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        let count = match pipe.read(&mut chunk) {
+            Ok(0) | Err(_) => break,
+            Ok(count) => count,
+        };
+        let remaining = TOOL_COMMAND_OUTPUT_LIMIT.saturating_sub(output.len());
+        output.extend_from_slice(&chunk[..count.min(remaining)]);
+        if count > remaining {
+            overflow.store(true, Ordering::Release);
+            break;
+        }
+    }
+    output
+}
+
+fn spawn_bounded_reader<R: std::io::Read + Send + 'static>(
+    pipe: Option<R>,
+    overflow: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> Option<std::thread::JoinHandle<Vec<u8>>> {
+    pipe.map(|pipe| std::thread::spawn(move || read_bounded_pipe(pipe, &overflow)))
+}
+
+fn wait_child_output(
+    mut child: std::process::Child,
+    deadline: CommandDeadline,
+) -> Result<std::process::Output, String> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    let overflow = Arc::new(AtomicBool::new(false));
+    let stdout_handle = spawn_bounded_reader(child.stdout.take(), Arc::clone(&overflow));
+    let stderr_handle = spawn_bounded_reader(child.stderr.take(), Arc::clone(&overflow));
+
+    let status = loop {
+        if overflow.load(Ordering::Acquire) {
+            if terminate_child_tree(&mut child) {
+                let _ = child.wait();
+            }
+            drop(stdout_handle);
+            drop(stderr_handle);
+            return Err(format!(
+                "Command output exceeded {} MiB",
+                TOOL_COMMAND_OUTPUT_LIMIT / (1024 * 1024)
+            ));
+        }
+
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {
+                let remaining = match deadline.remaining() {
+                    Ok(remaining) => remaining,
+                    Err(error) => {
+                        if terminate_child_tree(&mut child) {
+                            let _ = child.wait();
+                        }
+                        drop(stdout_handle);
+                        drop(stderr_handle);
+                        return Err(error);
+                    }
+                };
+                std::thread::sleep(std::cmp::min(
+                    std::time::Duration::from_millis(50),
+                    remaining,
+                ));
+            }
+            Err(error) => {
+                if terminate_child_tree(&mut child) {
+                    let _ = child.wait();
+                }
+                return Err(format!("Failed to wait for command: {error}"));
+            }
+        }
+    };
+
+    while stdout_handle
+        .as_ref()
+        .is_some_and(|handle| !handle.is_finished())
+        || stderr_handle
+            .as_ref()
+            .is_some_and(|handle| !handle.is_finished())
+    {
+        if overflow.load(Ordering::Acquire) {
+            let _ = terminate_child_tree(&mut child);
+            drop(stdout_handle);
+            drop(stderr_handle);
+            return Err(format!(
+                "Command output exceeded {} MiB",
+                TOOL_COMMAND_OUTPUT_LIMIT / (1024 * 1024)
+            ));
+        }
+        let remaining = match deadline.remaining() {
+            Ok(remaining) => remaining,
+            Err(error) => {
+                let _ = terminate_child_tree(&mut child);
+                drop(stdout_handle);
+                drop(stderr_handle);
+                return Err(error);
+            }
+        };
+        std::thread::sleep(std::cmp::min(
+            std::time::Duration::from_millis(50),
+            remaining,
+        ));
+    }
+
+    if overflow.load(Ordering::Acquire) {
+        return Err(format!(
+            "Command output exceeded {} MiB",
+            TOOL_COMMAND_OUTPUT_LIMIT / (1024 * 1024)
+        ));
+    }
+
+    let stdout = stdout_handle
+        .map(|handle| handle.join().unwrap_or_default())
+        .unwrap_or_default();
+    let stderr = stderr_handle
+        .map(|handle| handle.join().unwrap_or_default())
+        .unwrap_or_default();
+
+    Ok(std::process::Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
+fn apply_extra_env(command: &mut std::process::Command, extra_env: &[(&str, String)]) {
+    for (key, value) in extra_env {
+        command.env(key, value);
+    }
+}
+
+pub(crate) fn run_detected_tool_command_with_timeout(
+    tool: &str,
+    args: &[&str],
+    timeout: std::time::Duration,
+    extra_env: &[(&str, String)],
+    working_dir: &Path,
+) -> Result<std::process::Output, String> {
+    if !VALID_TOOLS.contains(&tool) {
+        return Err(format!("Unsupported tool: {tool}"));
+    }
+    if args.iter().any(|arg| {
+        arg.is_empty()
+            || !arg.chars().all(|character| {
+                character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.')
+            })
+    }) {
+        return Err("Invalid tool command arguments".to_string());
+    }
+    if !working_dir.is_dir() {
+        return Err(format!(
+            "Tool working directory does not exist: {}",
+            working_dir.display()
+        ));
+    }
+
+    let deadline = CommandDeadline::new(timeout);
+
+    #[cfg(target_os = "windows")]
+    if let Some(distro) = wsl_distro_for_tool(tool) {
+        return run_wsl_tool_command(tool, args, &distro, deadline, extra_env, working_dir);
+    }
+
+    let tool_path = locate_default_tool(tool, deadline)?;
+    let directory = tool_path
+        .parent()
+        .ok_or_else(|| format!("Invalid {tool} executable path"))?;
+    let current_path = std::env::var_os("PATH")
+        .map(|value| value.to_string_lossy().into_owned())
+        .unwrap_or_default();
+
+    #[cfg(target_os = "windows")]
+    {
+        run_windows_tool_command_capture(
+            &tool_path,
+            args,
+            &format!("{};{current_path}", directory.display()),
+            deadline,
+            extra_env,
+            working_dir,
+        )
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        use std::process::{Command, Stdio};
+
+        let mut command = Command::new(&tool_path);
+        command
+            .args(args)
+            .env("PATH", format!("{}:{current_path}", directory.display()))
+            .current_dir(working_dir)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        apply_extra_env(&mut command, extra_env);
+        isolate_child_process_group(&mut command);
+        let child = command
+            .spawn()
+            .map_err(|error| format!("Failed to run {tool}: {error}"))?;
+        wait_child_output(child, deadline)
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn run_windows_tool_command_capture(
+    tool_path: &Path,
+    args: &[&str],
+    new_path: &str,
+    deadline: CommandDeadline,
+    extra_env: &[(&str, String)],
+    working_dir: &Path,
+) -> Result<std::process::Output, String> {
+    use std::process::{Command, Stdio};
+
+    let mut command = if is_windows_command_script(tool_path) {
+        let path = tool_path.to_string_lossy();
+        let args = args
+            .iter()
+            .map(|arg| windows_cmd_double_quote_arg(arg))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let command_line = format!(
+            "call {}{}",
+            win_quote_path_for_batch(&path),
+            if args.is_empty() {
+                String::new()
+            } else {
+                format!(" {args}")
+            }
+        );
+        let mut command = Command::new("cmd");
+        command
+            .args(["/D", "/S", "/C"])
+            .raw_arg(&command_line)
+            .env("PATH", new_path)
+            .creation_flags(CREATE_NO_WINDOW);
+        command
+    } else {
+        let mut command = Command::new(tool_path);
+        command
+            .args(args)
+            .env("PATH", new_path)
+            .creation_flags(CREATE_NO_WINDOW);
+        command
+    };
+
+    apply_extra_env(&mut command, extra_env);
+    command
+        .current_dir(working_dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = command
+        .spawn()
+        .map_err(|error| format!("Failed to run tool: {error}"))?;
+    wait_child_output(child, deadline)
+}
+
+#[cfg(target_os = "windows")]
+fn wsl_unc_path_to_linux(path: &Path) -> Option<String> {
+    use std::path::{Component, Prefix};
+
+    let mut components = path.components();
+    let Component::Prefix(prefix) = components.next()? else {
+        return None;
+    };
+    match prefix.kind() {
+        Prefix::UNC(server, _share) | Prefix::VerbatimUNC(server, _share) => {
+            let server_name = server.to_string_lossy();
+            if !(server_name.eq_ignore_ascii_case("wsl$")
+                || server_name.eq_ignore_ascii_case("wsl.localhost"))
+            {
+                return None;
+            }
+        }
+        _ => return None,
+    }
+
+    let mut linux = String::new();
+    for component in components {
+        match component {
+            Component::RootDir => {}
+            Component::Normal(part) => {
+                linux.push('/');
+                linux.push_str(&part.to_string_lossy());
+            }
+            Component::CurDir | Component::ParentDir | Component::Prefix(_) => return None,
+        }
+    }
+    (!linux.is_empty()).then_some(linux)
+}
+
+#[cfg(target_os = "windows")]
+fn build_wsl_env_argv(extra_env: &[(&str, String)]) -> Result<Vec<String>, String> {
+    let mut env_argv = Vec::new();
+    for (key, value) in extra_env {
+        if key.is_empty()
+            || key.contains('=')
+            || key
+                .chars()
+                .any(|character| character.is_whitespace() || character.is_control())
+        {
+            return Err(format!("invalid env for {key}"));
+        }
+
+        let linux_value = if *key == "OPENCODE_CONFIG_DIR" {
+            let Some(value) = wsl_unc_path_to_linux(Path::new(value)) else {
+                continue;
+            };
+            value
+        } else {
+            value.clone()
+        };
+        if linux_value.chars().any(char::is_control) {
+            return Err(format!("invalid env for {key}"));
+        }
+        env_argv.push(format!("{key}={linux_value}"));
+    }
+    Ok(env_argv)
+}
+
+#[cfg(target_os = "windows")]
+fn shell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+#[cfg(target_os = "windows")]
+fn build_wsl_tool_command(
+    tool: &str,
+    args: &[&str],
+    deadline: CommandDeadline,
+) -> Result<String, String> {
+    let invocation = std::iter::once(tool)
+        .chain(args.iter().copied())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let command = format!(
+        "for flag in -lic -lc -c; do if \"${{SHELL:-sh}}\" \"$flag\" 'command -v {tool}' >/dev/null 2>&1; then exec \"${{SHELL:-sh}}\" \"$flag\" '{invocation}'; fi; done; exit 127"
+    );
+    let remaining = deadline.remaining()?;
+    let timeout_arg = format!("{:.3}s", remaining.as_secs_f64());
+    Ok(format!(
+        "command -v timeout >/dev/null 2>&1 || {{ echo 'timeout is required for bounded CLI execution' >&2; exit 127; }}; exec timeout --signal=TERM --kill-after=1s {timeout_arg} sh -c {}",
+        shell_single_quote(&command)
+    ))
+}
+
+#[cfg(target_os = "windows")]
+fn run_wsl_tool_command(
+    tool: &str,
+    args: &[&str],
+    distro: &str,
+    deadline: CommandDeadline,
+    extra_env: &[(&str, String)],
+    working_dir: &Path,
+) -> Result<std::process::Output, String> {
+    use std::process::{Command, Stdio};
+
+    if !is_valid_wsl_distro_name(distro) {
+        return Err(format!("[WSL:{distro}] invalid distro name"));
+    }
+
+    let command_line = build_wsl_tool_command(tool, args, deadline)?;
+    let linux_working_dir = wsl_unc_path_to_linux(working_dir)
+        .ok_or_else(|| format!("[WSL:{distro}] invalid working directory"))?;
+    let env_argv =
+        build_wsl_env_argv(extra_env).map_err(|error| format!("[WSL:{distro}] {error}"))?;
+
+    let mut command = Command::new("wsl.exe");
+    command
+        .arg("-d")
+        .arg(distro)
+        .arg("--cd")
+        .arg(linux_working_dir)
+        .arg("--");
+    if !env_argv.is_empty() {
+        command.arg("env");
+        for item in &env_argv {
+            command.arg(item);
+        }
+    }
+    command
+        .args(["sh", "-c", &command_line])
+        .creation_flags(CREATE_NO_WINDOW)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = command
+        .spawn()
+        .map_err(|error| format!("[WSL:{distro}] failed to run {tool}: {error}"))?;
+    let output = wait_child_output(child, deadline).map_err(|error| {
+        if error.starts_with("Command timed out") {
+            format!("[WSL:{distro}] {error}")
+        } else {
+            error
+        }
+    })?;
+    if output.status.code() == Some(124) {
+        return Err(format!("[WSL:{distro}] {}", deadline.timeout_error()));
+    }
+    Ok(output)
 }
 
 #[cfg(target_os = "windows")]
@@ -888,6 +1503,33 @@ mod tests {
     fn grok_is_registered_for_version_discovery() {
         assert!(VALID_TOOLS.contains(&"grok"));
         assert!(npm_prerelease_tags("grok").is_empty());
+    }
+
+    #[test]
+    fn runtime_command_rejects_shell_metacharacters_before_tool_lookup() {
+        let dir = tempfile::tempdir().unwrap();
+        let error = run_detected_tool_command_with_timeout(
+            "opencode",
+            &["models;echo"],
+            std::time::Duration::from_secs(1),
+            &[],
+            dir.path(),
+        )
+        .unwrap_err();
+
+        assert_eq!(error, "Invalid tool command arguments");
+    }
+
+    #[test]
+    fn runtime_command_pipe_reader_caps_captured_output() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let overflow = AtomicBool::new(false);
+        let input = vec![b'x'; TOOL_COMMAND_OUTPUT_LIMIT + 1];
+        let output = read_bounded_pipe(std::io::Cursor::new(input), &overflow);
+
+        assert_eq!(output.len(), TOOL_COMMAND_OUTPUT_LIMIT);
+        assert!(overflow.load(Ordering::Acquire));
     }
 
     #[test]
