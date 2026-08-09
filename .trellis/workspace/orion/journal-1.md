@@ -964,3 +964,36 @@ Completed the v3.16.5->v3.18.0 upstream sync task. S6: Codex usage rebuild + ses
 ### Next Steps
 
 - None - task complete
+
+
+## Session 28: Complete Product upstream v3.19.2 sync
+
+**Date**: 2026-08-09
+**Task**: Complete Product upstream v3.19.2 sync
+**Branch**: `sync/upstream-v3.19.2`
+
+### Summary
+
+Ported and verified Product upstream v3.19.2 plus the catalog ownership fix with Web-first adaptations across pricing, usage, backup, Codex, OMO, management UI, Skills, and Hermes.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `f2d951d9` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

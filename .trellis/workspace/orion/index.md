@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 27
-- **Last Active**: 2026-07-31
+- **Total Sessions**: 28
+- **Last Active**: 2026-08-09
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~966 | Active |
+| `journal-1.md` | ~999 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 28 | 2026-08-09 | Complete Product upstream v3.19.2 sync | `f2d951d9` | `sync/upstream-v3.19.2` |
 | 27 | 2026-07-31 | Sync upstream v3.18.0: batches S6-S8, version bump, full gate | `0bea3f54`, `9026406b`, `f5b453c6`, `c5651b4e`, `bdadebf4`, `73bfa123` | `sync/upstream-v3.18.0` |
 | 26 | 2026-07-25 | Close out web-bug audit fixes (batches A'-E) | `0a82bfb1`, `6bb1f70b`, `06e84520`, `9714c727`, `17c0bf80`, `9e483c97` | `fix/web-audit-phase1-2` |
 | 25 | 2026-07-10 | Redeploy Web server as persistent service | `f3631c18` | `fix/web-audit-phase1-2` |
