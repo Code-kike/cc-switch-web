@@ -3284,22 +3284,28 @@ impl ProviderService {
             "smallFastModel",
         ];
 
-        // Remove env fields
+        // Remove provider-specific fields and every credential-shaped key.
+        // The explicit list covers Claude model/endpoint fields; the shared
+        // predicate prevents credentials such as OPENROUTER_API_KEY or a
+        // future *_API_KEY variant from leaking into every provider.
         if let Some(env) = config.get_mut("env").and_then(|v| v.as_object_mut()) {
             for key in ENV_EXCLUDES {
                 env.remove(*key);
             }
+            env.retain(|key, _| !Self::is_sensitive_config_key(key));
             // If env is empty after removal, remove the env object itself
             if env.is_empty() {
                 config.as_object_mut().map(|obj| obj.remove("env"));
             }
         }
 
-        // Remove top-level fields
+        // Remove top-level fields and credential-shaped aliases (for example
+        // legacy `apiKey` / `api_key` fields) using the same security predicate.
         if let Some(obj) = config.as_object_mut() {
             for key in TOP_LEVEL_EXCLUDES {
                 obj.remove(*key);
             }
+            obj.retain(|key, _| !Self::is_sensitive_config_key(key));
         }
 
         // `ui.displayName` mirrors the provider's own name (written per-provider
