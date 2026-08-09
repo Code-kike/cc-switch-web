@@ -1,0 +1,82 @@
+3a9fb13a docs(guides): add en/ja translations for Claude Code GPT guide and retitle
+846fbdd1 docs(guides): retitle Codex Claude guide to match
+a377d793 docs: sync v3.18.0 release notes and guide cross-links to new guide titles
+15d5dbe0 feat: add Grok official subscription quota query
+3cf84ca3 fix(usage): centralize cache-inclusive app set and cover grokbuild in cost backfill
+cd161f44 feat(usage): import Grok Build official-mode usage from session logs
+34cbb375 feat(usage): surface Grok Build session source in usage UI
+6c9d444c fix(proxy): move Codex tool-result media out of stringified tool text
+878c26f3 feat(proxy): extend tool-result media handling to all conversion bridges
+414b7150 ci: mirror release assets to Cloudflare R2 for ccswitch.io downloads
+876e9f89 feat(presets): restore AICoding partner across seven app types
+9cf4ae41 feat(pricing): add Claude Opus 5 to built-in model pricing table
+b0482320 chore(presets): refresh sponsor domains and referral links
+b972f0a3 feat(presets): upgrade default models to Opus 5, GPT-5.6 Sol and Gemini 3.6 Flash
+bc7c8222 fix(presets): correct OpenClaw Kimi For Coding base URL to /coding/v1
+934a2d03 chore(presets): sync sponsor listing across apps and READMEs
+708b3879 ci: add sha256 and real publish date to download manifest
+2b2f2cfa ci: mirror in-app updater to Cloudflare R2 with release-gated sync
+ccda04bf chore(presets): migrate AICodeMirror and AICoding sponsor domains
+ff3bc242 fix(Security): zip-slip on skill install, two credential leaks, and three panic paths (#5811)
+12b972a6 feat(usage): add automatic models.dev pricing sync (#5734)
+993077c6 chore(presets): migrate AIGoCode sponsor domain to .app
+c98913df fix(database): reject cross-file statements during SQL import
+35486afd fix(sessions): use POSIX single-quote escaping for terminal cwd
+134bdc0e docs(sessions): record the renderer trust boundary for terminal launch
+cd17912f fix(config): stop common config snippet walkers touching Object.prototype
+6dbb944b feat(deeplink): add risk classification helpers for import confirmation
+a443eae9 fix(deeplink): surface MCP args/env and flag risky values on import
+19bf236e fix(deeplink): decode URL-safe Base64 in import confirmations
+cfa90f39 fix(deeplink): import usage scripts disabled and show their code
+245d180c docs(user-manual): correct the deeplink usageEnabled default
+b33d300d docs(security): document the threat model and reporting scope
+87b0e3fb fix(test): pin zip extraction temp dir instead of hijacking TMPDIR
+dbb26595 feat(presets): add A6API sponsor preset across all supported apps
+bfb767ae chore(presets): align Code0 and Qiniu Gemini defaults to 3.6 Flash
+30409878 chore(presets): add PackyCode backup endpoints
+56fb46c0 perf(codex): cache parent rollout timelines across fork cutoffs (#5626)
+f5f4281d refactor(ui): always show icon-only app switcher, drop auto-compact
+6b13d018 chore(release): v3.19.0
+3b9d0593 docs(release): add v3.19.0 release notes
+c0ff89b9 docs(changelog): sync 3.19.0 security section with the release notes
+3c1154be refactor: remove superseded dead code (#5916)
+4317bd99 refactor: remove redundant proxy query paths (#5928)
+b884595a fix(i18n): prevent zh-TW tool management fallbacks (#5943)
+c49cf96a fix(grokbuild): complete proxy and deep-link integrations (#5677)
+4bfb3fc3 fix(usage): dedupe Claude Desktop proxy and session logs (#5951)
+a354f08a fix(i18n): add 9 missing translation keys to all locales (#5960)
+f07edc76 fix(settings): make Grok Build upgrade work from the GUI
+e3f80a98 fix(codex): clear stale auth on official switch
+f42534ed fix(pricing): sync seeded model prices with vendor list prices
+8ae1ce85 feat(codex): add DeepSeek native Responses support with official catalog mirror
+56a66eea feat(codex): switch Volcengine Agentplan preset to native Responses
+58dd376d feat(codex): add Tencent Hunyuan TokenHub preset with native Responses
+b3a20e58 chore(release): v3.19.1
+28529620 docs(release): add v3.19.1 release notes
+a4bba43f docs(guides): update Codex DeepSeek routing guide for v3.19.1
+fbf52cff docs(release): correct the v3.19.1 pointer to the DeepSeek routing guide
+ebbf141f chore(sponsors): drop Unity2.ai partner from README, presets and i18n
+83830767 fix(hermes): use SOUL.md instead of AGENTS.md for Hermes prompt filename (#5779)
+13ea497a fix(proxy): improve GitHub Copilot compatibility with modern Claude Code (#5832)
+f38722a4 feat(pricing): seed Qwen3.8 Max built-in model pricing (#6053)
+eb356e15 fix(skills): resolve source dir by SKILL.md anchor instead of name (#4153)
+9db9c56f fix(proxy): report dropped Chat tool calls instead of faking completion
+996d512f chore(sponsors): drop NekoCode partner from README, presets and i18n
+4d3e2c35 chore(sponsors): update RunAPI in-app promo to first top-up discount
+0e604b75 feat(sponsors): surface Kimi first top-up bonus in README and presets
+492245dc feat(codex-oauth): show per-account usage in Auth Center (#4887)
+968794e3 fix(ui): reduce idle GPU usage for route status (#5767)
+92ca95ff feat(opencode): load OMO models from runtime opencode models (#5522)
+9f19d8fd feat(management): add searchable lists and bulk app toggles (#5967)
+6b8f3643 fix(security): cap scripts, file reads, and proxy bodies; surface deeplink usage fields (#5919)
+59a2bd10 fix(usage): handle interleaved Codex token counters (#5854)
+668bbda9 perf(backup): batch dump INSERTs and restore preserved tables in one transaction (#6122)
+40b6376b fix(skills): build readme_url from the resolved source directory (#6119)
+5b697abc chore(sponsors): move Qiniu right after AIGoCode in preset order
+0cb6e014 fix(ui): keep header actions visible when all apps are enabled
+290b65c0 chore(sponsors): point Sponsor button to GitHub Sponsors profile
+0345fad6 fix(opencode): support unified OMO config (#6011)
+baf07a27 perf(usage): batch Codex session inserts and preload sync cursors
+425e932b chore(release): v3.19.2
+43eaf073 docs(release): add v3.19.2 release notes
+413c09e0 fix(codex): respect user-owned model_catalog_json when generating catalog (#6087)
