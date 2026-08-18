@@ -72,6 +72,22 @@ _Avoid_: local patch, audit fix, security tweak
 A deployment posture where cc-switch-web exposes its browser API without an application-layer access challenge.
 _Avoid_: no login, no security, remove password
 
+**Pi application**:
+A coding-agent application supported by CC Switch, whose provider configuration, prompt resources, and session usage are managed as product capabilities.
+_Avoid_: pi tooling, .pi directory, Pi CLI
+
+**Workspace Pi tooling**:
+The developer's own Pi agent configuration living inside this repository's working tree, unrelated to the Pi application managed by the product.
+_Avoid_: Pi app config, Pi support files
+
+**Managed OAuth account**:
+An OAuth login identity stored by CC Switch that one or more providers can be assigned to use.
+_Avoid_: token, credential, login session
+
+**Follow-login provider**:
+A provider configured to reuse the login identity of another provider rather than holding its own credentials.
+_Avoid_: linked provider, child provider
+
 **Same-origin intent check**:
 A browser-request guard that rejects cross-site mutating Web API calls without identifying the caller.
 _Avoid_: authentication, login, user session
