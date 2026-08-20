@@ -151,20 +151,24 @@ export const codexProviderPresets: CodexProviderPreset[] = [
     icon: "pateway",
   },
   {
-    name: "火山Agentplan",
+    name: "火山 Agent Plan",
     websiteUrl:
-      "https://www.volcengine.com/activity/codingplan?ac=MMAP8JTTCAQ2&rc=6J6FV5N2&utm_campaign=hw&utm_content=ccswitch&utm_medium=devrel_tool_web&utm_source=OWO&utm_term=ccswitch",
+      "https://www.volcengine.com/activity/agentplan?ac=MMAP8JTTCAQ2&rc=6J6FV5N2&utm_source=OWO&utm_medium=devrel-1&utm_campaign=hw&utm_term=ccswitch&utm_content=hw",
     apiKeyUrl:
-      "https://www.volcengine.com/activity/codingplan?ac=MMAP8JTTCAQ2&rc=6J6FV5N2&utm_campaign=hw&utm_content=ccswitch&utm_medium=devrel_tool_web&utm_source=OWO&utm_term=ccswitch",
+      "https://www.volcengine.com/activity/agentplan?ac=MMAP8JTTCAQ2&rc=6J6FV5N2&utm_source=OWO&utm_medium=devrel-1&utm_campaign=hw&utm_term=ccswitch&utm_content=hw",
     auth: generateThirdPartyAuth(""),
     config: generateThirdPartyConfig(
       "ark_agentplan",
-      "https://ark.cn-beijing.volces.com/api/coding/v3",
+      "https://ark.cn-beijing.volces.com/api/plan/v3",
       "ark-code-latest",
     ),
-    // Coding Plan must use /api/coding/v3. The metered /api/v3 endpoint does
-    // not consume the plan allowance and must not be offered as a candidate.
-    endpointCandidates: ["https://ark.cn-beijing.volces.com/api/coding/v3"],
+    // ⚠️ 计费红线（官方 warning）：Agent Plan 必须走 /api/plan/v3；
+    // 按量端点 /api/v3 不消耗套餐额度、按量另计费，Coding Plan 的
+    // /api/coding/v3 是另一份订阅——两者都绝不能混入候选
+    endpointCandidates: ["https://ark.cn-beijing.volces.com/api/plan/v3"],
+    // 官方 Codex 文档（volcengine.com/docs/82379/2556056，2026-07 更新）：
+    // Agent Plan /api/plan/v3 与 Coding Plan /api/coding/v3 均已支持
+    // Responses API（wire_api=responses），无需路由接管转换
     apiFormat: "openai_responses",
     modelCatalog: modelCatalog([
       {
@@ -176,6 +180,39 @@ export const codexProviderPresets: CodexProviderPreset[] = [
     category: "cn_official",
     isPartner: true,
     partnerPromotionKey: "volcengine_agentplan",
+    icon: "huoshan",
+    iconColor: "#3370FF",
+  },
+  {
+    name: "火山 Coding Plan",
+    websiteUrl:
+      "https://www.volcengine.com/activity/codingplan?ac=MMAP8JTTCAQ2&rc=6J6FV5N2&utm_campaign=hw&utm_content=ccswitch&utm_medium=devrel_tool_web&utm_source=OWO&utm_term=ccswitch",
+    apiKeyUrl:
+      "https://www.volcengine.com/activity/codingplan?ac=MMAP8JTTCAQ2&rc=6J6FV5N2&utm_campaign=hw&utm_content=ccswitch&utm_medium=devrel_tool_web&utm_source=OWO&utm_term=ccswitch",
+    auth: generateThirdPartyAuth(""),
+    config: generateThirdPartyConfig(
+      "ark_codingplan",
+      "https://ark.cn-beijing.volces.com/api/coding/v3",
+      "ark-code-latest",
+    ),
+    // ⚠️ 计费红线（官方 warning）：Coding Plan 必须走 /api/coding/v3；
+    // 按量端点 /api/v3 不消耗套餐额度、按量另计费，Agent Plan 的
+    // /api/plan/v3 是另一份订阅——两者都绝不能混入候选
+    endpointCandidates: ["https://ark.cn-beijing.volces.com/api/coding/v3"],
+    // 官方 Codex 文档（volcengine.com/docs/82379/2556056，2026-07 更新）：
+    // Coding Plan /api/coding/v3 已支持 Responses API（wire_api=responses），
+    // 无需路由接管转换
+    apiFormat: "openai_responses",
+    modelCatalog: modelCatalog([
+      {
+        model: "ark-code-latest",
+        displayName: "Ark Code Latest",
+        contextWindow: 256000,
+      },
+    ]),
+    category: "cn_official",
+    isPartner: true,
+    partnerPromotionKey: "volcengine_codingplan",
     icon: "huoshan",
     iconColor: "#3370FF",
   },
@@ -402,15 +439,16 @@ requires_openai_auth = true`,
   },
   {
     name: "RunAPI",
-    websiteUrl: "https://runapi.co",
-    apiKeyUrl: "https://runapi.co",
+    websiteUrl: "https://runapi.host",
+    apiKeyUrl: "https://runapi.host",
     category: "aggregator",
     auth: generateThirdPartyAuth(""),
     config: generateThirdPartyConfig(
       "runapi",
-      "https://runapi.co/v1",
+      "https://runapi.host/v1",
       "gpt-5.6-sol",
     ),
+    endpointCandidates: ["https://runapi.host/v1", "https://runapi.co/v1"],
     isPartner: true,
     partnerPromotionKey: "runapi",
     icon: "runapi",
@@ -751,5 +789,74 @@ base_url = "https://cc-api.pipellm.ai/v1"`,
     isPartner: true,
     partnerPromotionKey: "a6api",
     icon: "a6api",
+  },
+  {
+    name: "PPIO",
+    websiteUrl: "https://ppio.com",
+    apiKeyUrl: "https://ppio.com/activity/ccswitch",
+    auth: generateThirdPartyAuth(""),
+    config: generateThirdPartyConfig(
+      "ppio",
+      "https://api.ppio.com/openai/v1",
+      "deepseek/deepseek-v4-flash-0731",
+    ),
+    endpointCandidates: ["https://api.ppio.com/openai/v1"],
+    apiFormat: "openai_chat",
+    modelCatalog: modelCatalog([
+      {
+        model: "deepseek/deepseek-v4-flash-0731",
+        displayName: "Deepseek V4 Flash 0731",
+        contextWindow: 1048576,
+        inputModalities: ["text"],
+      },
+    ]),
+    category: "aggregator",
+    isPartner: true,
+    partnerPromotionKey: "ppio",
+    icon: "ppio",
+    iconColor: "#2874FF",
+  },
+  {
+    name: "JieKou AI",
+    websiteUrl: "https://jiekou.ai/#model-library",
+    apiKeyUrl: "https://jiekou.ai/settings/key-management",
+    auth: generateThirdPartyAuth(""),
+    config: generateThirdPartyConfig(
+      "jiekou",
+      "https://api.jiekou.ai/openai/v1",
+      "claude-fable-5",
+    ),
+    endpointCandidates: ["https://api.jiekou.ai/openai/v1"],
+    apiFormat: "openai_chat",
+    modelCatalog: modelCatalog([
+      {
+        model: "claude-fable-5",
+        displayName: "Claude Fable 5",
+        contextWindow: 1000000,
+        inputModalities: ["text", "image"],
+      },
+    ]),
+    category: "aggregator",
+    icon: "jiekou",
+    iconColor: "#000000",
+  },
+  {
+    name: "XycAi",
+    websiteUrl: "https://xycai.us",
+    apiKeyUrl: "https://xycai.us/register?aff=Uhu9",
+    category: "aggregator",
+    auth: generateThirdPartyAuth(""),
+    config: generateThirdPartyConfig(
+      "xycai",
+      "https://apicdn.xycai.us/v1",
+      "gpt-5.6-sol",
+    ),
+    endpointCandidates: [
+      "https://apicdn.xycai.us/v1",
+      "https://apicdn.xyc.ai/v1",
+    ],
+    isPartner: true,
+    partnerPromotionKey: "xycai",
+    icon: "xycai",
   },
 ];

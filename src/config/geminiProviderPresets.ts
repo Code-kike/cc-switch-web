@@ -399,6 +399,26 @@ export const geminiProviderPresets: GeminiProviderPreset[] = [
     partnerPromotionKey: "a6api",
     icon: "a6api",
   },
+  {
+    name: "XycAi",
+    websiteUrl: "https://xycai.us",
+    apiKeyUrl: "https://xycai.us/register?aff=Uhu9",
+    settingsConfig: {
+      env: {
+        GOOGLE_GEMINI_BASE_URL: "https://apicdn.xycai.us",
+        GEMINI_API_KEY: "",
+        GEMINI_MODEL: "gemini-3.6-flash",
+      },
+    },
+    baseURL: "https://apicdn.xycai.us",
+    model: "gemini-3.6-flash",
+    description: "XycAi",
+    category: "aggregator",
+    isPartner: true,
+    partnerPromotionKey: "xycai",
+    endpointCandidates: ["https://apicdn.xycai.us", "https://apicdn.xyc.ai"],
+    icon: "xycai",
+  },
 ];
 
 export function getGeminiPresetByName(

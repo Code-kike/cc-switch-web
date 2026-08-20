@@ -34,7 +34,8 @@ describe("provider preset order", () => {
     expectInOrder(namesOf(providerPresets), [
       "Shengsuanyun",
       "PatewayAI",
-      "火山Agentplan",
+      "火山 Agent Plan",
+      "火山 Coding Plan",
       "BytePlus",
       "DouBaoSeed",
     ]);
@@ -44,12 +45,12 @@ describe("provider preset order", () => {
     expectInOrder(namesOf(codexProviderPresets), [
       "Shengsuanyun",
       "PatewayAI",
-      "火山Agentplan",
+      "火山 Agent Plan",
     ]);
   });
 
   it("uses native Responses for the Volcengine coding plan endpoint", () => {
-    const preset = findPreset(codexProviderPresets, "火山Agentplan");
+    const preset = findPreset(codexProviderPresets, "火山 Coding Plan");
 
     expect(preset.apiFormat).toBe("openai_responses");
     expect(preset.endpointCandidates).toEqual([
@@ -117,7 +118,8 @@ describe("provider preset order", () => {
   it("prioritizes OpenCode partner presets", () => {
     expectInOrder(namesOf(opencodeProviderPresets), [
       "Shengsuanyun",
-      "火山Agentplan",
+      "火山 Agent Plan",
+      "火山 Coding Plan",
       "BytePlus",
       "DouBaoSeed",
     ]);
@@ -126,7 +128,8 @@ describe("provider preset order", () => {
   it("prioritizes OpenClaw partner presets", () => {
     expectInOrder(namesOf(openclawProviderPresets), [
       "Shengsuanyun",
-      "火山Agentplan",
+      "火山 Agent Plan",
+      "火山 Coding Plan",
       "BytePlus",
       "DouBaoSeed",
     ]);
@@ -143,7 +146,8 @@ describe("provider preset order", () => {
   it("prioritizes Hermes partner presets", () => {
     expectInOrder(namesOf(hermesProviderPresets), [
       "Shengsuanyun",
-      "火山Agentplan",
+      "火山 Agent Plan",
+      "火山 Coding Plan",
       "BytePlus",
       "DouBaoSeed",
     ]);

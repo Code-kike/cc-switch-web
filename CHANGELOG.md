@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.20.0] - 2026-08-18
+
+Synced product-upstream `farion1231/cc-switch` `v3.19.2..v3.20.0` batch S1 (docs, presets, i18n) into this Web-first fork. This is the first batch of the v3.20.0 sync. Highlights: the PPIO, JieKou AI and XycAi partner presets added across all supported apps with brand icons and, where supported, endpoint fallbacks; the RunAPI preset migrated to `runapi.host` as its primary domain with `runapi.co` retained as an `endpointCandidates` fallback on Claude Code, Codex and Grok Build; the legacy partner ⭐ badge removed from the main-panel provider cards (partner stars now live only in the preset selector) and the now-unused `officialPartner` translation key dropped from every locale; the `xycai` partner promotion surfaced in every locale; and the version bumped to 3.20.0. Fork-specific deviations: the `zh-TW` locale and `README_DE` are not restored, the `claudeDesktopProviderPresets` surface and the desktop-only README sponsor banner tables remain excluded (so upstream's desktop-preset and FennoAI-offer README hunks were dropped as no-ops), the OpenCode Go Claude preset that upstream rerouted to `/messages` does not exist in this fork (no-op), and the `codexChatReasoning` field on the PPIO/JieKou Codex presets is deferred to the per-model reasoning-levels batch.
+
 ## [3.19.2] - 2026-08-08
 
 Synced product-upstream `farion1231/cc-switch` `v3.18.0..v3.19.2` batch S1 (docs, presets, sponsors, i18n) into this Web-first fork. Highlights: default preset models advanced to Claude Opus 5, GPT-5.6 Sol and Gemini 3.6 Flash; sponsor domain and referral migrations (PackyCode -> `packyapi.ai`, RightCode -> `rightapi.ai`, ClaudeAPI -> `apito.ai`, APINebula -> `apinebula.ai`, AICodeMirror -> `.ai`, AICoding -> `.inc`, AIGoCode -> `.app`); the A6API sponsor preset added across all supported apps; PackyCode backup endpoints; the Unity2.ai and NekoCode partners dropped; the Kimi first-top-up bonus surfaced; and eight missing translation keys added to every locale.
