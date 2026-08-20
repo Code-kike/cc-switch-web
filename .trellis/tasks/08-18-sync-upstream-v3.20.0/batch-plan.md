@@ -110,3 +110,31 @@ S1 由先前会话的子代理完成 cherry-pick + `git add` 并跑过 `pnpm tes
 - S3(定价/usage,5 提交)按 grilling #7 仍需 FE-preset↔Rust-seed 一致性核对;`dfb2e523` 的 `dump_sqlite_sequences`/`restore_sqlite_sequences` 已为 S3 的 usage/backup 种子回填提供高水位保真基础。
 - 子任务 `feat-managed-oauth-accounts` 的前置依赖(`d2b070c9` never clobber Codex login)已在 S2 落地,可启动。
 - 下一批:S3 定价/usage(`bad9c151`/`5602324b`/`7dc0a725`/`3d126f45`/`46f19a15`)。
+
+## S1 follow-up：Qianfan scoped-id API 安全性证据复核（2026-08-20，grounded-reviewer 触发）
+
+S1 落地时对"OpenClaw 千帆模型 id 限定为 `qianfan-tokenplan/deepseek-v4-pro`"的 API 安全性主张
+（`settingsConfig.models[].id` 是 UI/目录元数据，API 模型名来自 `primary` 后缀）原缺证据。
+grounded-reviewer 指出：`rebaseOpenClawModelRef` 仅 rebase `suggestedDefaults`（primary/
+fallbacks/catalog），不触及 `models[].id`；`modelsDevPricing.ts:359 lastIndexOf` 属定价归一函数，
+非 API 请求路径证据。事后补验：
+
+- **`models[].id` 既有约定是混合的，且 scoped 形态早于 S1 存在**：bare（DeepSeek-direct
+  `deepseek-v4-pro`、AiHubMix `claude-opus-5`）与 scoped（OpenRouter `anthropic/claude-opus-5`、
+  TheRouter `openai/gpt-5.3-codex`、PPIO `deepseek/deepseek-v4-flash-0731`、Novita
+  `zai-org/glm-5.1`、Nvidia `moonshotai/kimi-k2.5` 等）共存。S1 的 `qianfan-tokenplan/deepseek-v4-pro`
+  沿用既有 reseller scoped `vendor/model` 形态，非新发明。
+- **`models[].id` 是目录/展示元数据，非 API 模型名**：DeepSeek-direct 预设 `models[].id =
+  "deepseek-v4-pro"`（bare）但其 `modelCatalog` 键为 `"deepseek/deepseek-v4-pro"`（scoped），
+  两者本就不匹配；说明 `models[].id` 与 catalog 键是各自独立的展示字段，API 模型名不走它。
+- **API 模型名来自路由键后缀**：`OpenClawDefaultModel.primary`（scoped `<provider-key>/<model>`，
+  经 `rebaseOpenClawModelRef` 重写为用户 key）的后缀 `<model>` 是 API 模型名；千帆 primary
+  `qianfan-tokenplan/deepseek-v4-pro` 后缀 `deepseek-v4-pro` = 百度端点期望的裸名。
+- **fork 契约止于配置文件结构**：`openclaw_config.rs` 写 `agents.defaults.model`/`models` +
+  `models.providers.<key>`（含 `OpenClawProviderConfig.models: Vec<OpenClawModelEntry>`）；
+  实际 API 请求由 OpenClaw 二进制（外部）发起，其路由行为与既有全部 scoped reseller 预设
+  （OpenRouter/TheRouter/PPIO 等）一致，本 fork 无法也无需在其内单独验证外部二进制行为。
+
+结论：S1 千帆 scoped-id 安全，既有约定支持；`qianfanTokenPlanPresets.test.ts` 锁定 scoped id +
+bare name + cost 是 fork 可控的契约边界。若未来 OpenClaw 二进制行为变更或新增真实 Web 冒烟覆盖
+该路径，再回归。
