@@ -920,6 +920,9 @@ fn resolve_path_default(tool: &str, deadline: CommandDeadline) -> Result<Option<
     let mut cmd = Command::new(shell);
     cmd.arg(flag)
         .arg(format!("command -v {tool}"))
+        // spawn 后 stdin 不再像 output() 那样默认置 null，须显式关闭：
+        // 继承来的 stdin 可能是终端/管道，交互式 rc 里的读操作会永久阻塞。
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     isolate_child_process_group(&mut cmd);
@@ -1036,7 +1039,21 @@ fn terminate_child_tree(child: &mut std::process::Child) -> bool {
 fn isolate_child_process_group(command: &mut std::process::Command) {
     use std::os::unix::process::CommandExt;
 
-    command.process_group(0);
+    // setsid 而非 process_group(0)：新会话自带新进程组（组长=自身，
+    // terminate_child_tree 的 kill(-pid) 整组击杀语义不变），并额外**脱离控制终端**。
+    // 只隔离进程组时，探测用的交互式 shell（zsh -lic）若还持有控制终端（如 dev 模式
+    // 从终端启动），其作业控制会因处于背景进程组被 SIGTTIN/SIGTTOU 停住，`wait()`
+    // 永远等不到退出；脱离终端后 shell 拿不到 /dev/tty，作业控制自动关闭。
+    // SAFETY: setsid 是 async-signal-safe；fork 出的子进程继承父进程组、必不是组长，
+    // 调用不会因 EPERM 失败。
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
 }
 
 fn read_bounded_pipe<R: std::io::Read>(
@@ -1732,6 +1749,59 @@ mod tests {
         let candidates = tool_executable_candidates("opencode", &dir);
 
         assert_eq!(candidates, vec![PathBuf::from("/usr/local/bin/opencode")]);
+    }
+
+    /// setsid 改造后的语义偶检：spawn（含 pre_exec setsid）能启动、输出能捕获。
+    /// `/bin/echo --version` 在 macOS/Linux 均即刻成功退出。等价于上游
+    /// `probe_version_command_captures_healthy_tool_output` 的回归点，但 fork
+    /// 的探测函数是 `scan_cli_version`（未走 spawn 超时路径），故直接偶检
+    /// `isolate_child_process_group` + `wait_child_output` 的健康路径。
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn isolated_child_process_group_captures_healthy_tool_output() {
+        use std::process::{Command, Stdio};
+
+        let mut cmd = Command::new("/bin/echo");
+        cmd.arg("--version")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        isolate_child_process_group(&mut cmd);
+        let child = cmd.spawn().expect("spawn /bin/echo");
+        let output = wait_child_output(
+            child,
+            CommandDeadline::new(std::time::Duration::from_secs(10)),
+        )
+        .expect("wait_child_output should succeed for /bin/echo");
+        assert!(output.status.success());
+    }
+
+    /// 超时击杀路径：挂死的子进程到点被整组击杀、wait 返回超时错误而非永等。
+    /// 同时锚定 setsid 改造后的语义——child 是新会话/新进程组组长，
+    /// terminate_child_tree 的 kill(-pid) 仍能命中（回归红线：改回 process_group
+    /// 或去掉隔离都会让本测试的击杀路径失效）。
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn isolated_hung_child_is_killed_on_deadline() {
+        use std::process::{Command, Stdio};
+
+        let mut cmd = Command::new("/bin/sh");
+        cmd.args(["-c", "sleep 30"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        isolate_child_process_group(&mut cmd);
+        let child = cmd.spawn().expect("spawn sleep");
+        let started = std::time::Instant::now();
+        let result = wait_child_output(
+            child,
+            CommandDeadline::new(std::time::Duration::from_millis(200)),
+        );
+        assert!(result.is_err(), "expected timeout error, got {result:?}");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "kill should return promptly instead of waiting out the sleep"
+        );
     }
 
     #[cfg(target_os = "windows")]
