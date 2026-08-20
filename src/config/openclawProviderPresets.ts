@@ -307,13 +307,15 @@ export const openclawProviderPresets: OpenClawProviderPreset[] = [
           id: "deepseek-v4-pro",
           name: "DeepSeek V4 Pro",
           contextWindow: 1000000,
-          cost: { input: 0.435, output: 0.87, cacheRead: 0.003625 },
+          // 与 Rust seed（bad9c151 起录高峰档）保持一致，避免
+          // ModelsDevPricing.web-server 的 FE-preset↔Rust-seed parity 失败。
+          cost: { input: 1.32, output: 3.96, cacheRead: 0.044 },
         },
         {
           id: "deepseek-v4-flash",
           name: "DeepSeek V4 Flash",
           contextWindow: 1000000,
-          cost: { input: 0.14, output: 0.28 },
+          cost: { input: 0.44, output: 1.32, cacheRead: 0.014 },
         },
       ],
     },

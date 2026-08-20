@@ -44,15 +44,15 @@ const S6A_SEED_SENTINELS: Readonly<Record<string, PricingTuple>> = {
     cacheCreation: 2.5,
   },
   "deepseek-chat": {
-    input: 0.14,
-    output: 0.28,
-    cacheRead: 0.0028,
+    input: 0.44,
+    output: 1.32,
+    cacheRead: 0.014,
     cacheCreation: 0,
   },
   "deepseek-reasoner": {
-    input: 0.14,
-    output: 0.28,
-    cacheRead: 0.0028,
+    input: 0.44,
+    output: 1.32,
+    cacheRead: 0.014,
     cacheCreation: 0,
   },
   "minimax-m3": {

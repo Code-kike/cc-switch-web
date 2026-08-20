@@ -2221,8 +2221,8 @@ mod tests {
             .get_request_detail("grokbuild-total-backfill")?
             .expect("backfill row should remain queryable");
         assert_eq!(detail.input_cost_usd, "0.000900");
-        assert_eq!(detail.cache_read_cost_usd, "0.000125");
-        assert_eq!(detail.total_cost_usd, "0.001625");
+        assert_eq!(detail.cache_read_cost_usd, "0.000075");
+        assert_eq!(detail.total_cost_usd, "0.001575");
         Ok(())
     }
 
@@ -3272,7 +3272,7 @@ mod tests {
             Some((
                 "2".to_string(),
                 "6".to_string(),
-                "0.50".to_string(),
+                "0.30".to_string(),
                 "0".to_string(),
             )),
             "Grok Build / xAI 默认模型必须命中内置定价，避免成本静默记 0"

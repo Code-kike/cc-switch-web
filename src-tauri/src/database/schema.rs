@@ -1912,6 +1912,20 @@ impl Database {
             ("gpt-4.1", "GPT-4.1", "2", "8", "0.50", "0"),
             ("gpt-4.1-mini", "GPT-4.1 Mini", "0.40", "1.60", "0.10", "0"),
             ("gpt-4.1-nano", "GPT-4.1 Nano", "0.10", "0.40", "0.025", "0"),
+            // Gemini 3.7 系列
+            // 录的是介绍价（官方公告 + ai.google.dev 价表 + models.dev 三源一致）。
+            // ⚠️ 介绍价 2026-12-31 到期，2027-01-01 起恢复 1.50/7.50/0.15（= 3.6 Flash 现价）。
+            // 到期后需走 seed + repair 双写改回；届时 models.dev 会先更新，
+            // /jason-update-model 审计的 A 段会自动报出这一行作为提醒——
+            // 因此这一行刻意不进 audit-ignore.json，勿加豁免（会屏蔽掉该提醒）。
+            (
+                "gemini-3.7-flash",
+                "Gemini 3.7 Flash",
+                "0.75",
+                "3.75",
+                "0.075",
+                "0",
+            ),
             // Gemini 3.6 系列
             (
                 "gemini-3.6-flash",
@@ -2099,38 +2113,59 @@ impl Database {
                 "0",
             ),
             ("deepseek-v3", "DeepSeek V3", "0.28", "1.11", "0.028", "0"),
+            // ── DeepSeek V4 系列：2026-08-16 16:00 UTC 起改为峰谷双档计价 ──
+            // 官方价页（api-docs.deepseek.com/quick_start/pricing，中英一致）直接挂 USD，
+            // 不再需要 CNY 折算。高峰时段 = 北京时间 9:00-12:00 与 14:00-18:00
+            // （= UTC 01:00-04:00、06:00-10:00），共 7h/天；其余 17h 为空闲档。
+            //
+            // 🔴 本表每模型仅一行、无时段维度，**统一录高峰档**（Jason 2026-08-18 拍板）：
+            //   ① 官方措辞是「空闲价为高峰价的一半」，高峰档才是基准挂牌价；
+            //   ② 高峰时段正是中文用户的工作时间，是 AI 编程主力时段。
+            //   代价=夜间/凌晨用量高估一倍。勿按「阶梯取低档」惯例改成空闲档。
+            //
+            // input=缓存未命中价，cache_read=缓存命中价；DeepSeek 不单收 cache write → 0。
             // deepseek-chat / deepseek-reasoner 自 2026-07 起为 V4 Flash 的 legacy 别名（同价）
             (
                 "deepseek-chat",
                 "DeepSeek Chat",
-                "0.14",
-                "0.28",
-                "0.0028",
+                "0.44",
+                "1.32",
+                "0.014",
                 "0",
             ),
             (
                 "deepseek-reasoner",
                 "DeepSeek Reasoner",
-                "0.14",
-                "0.28",
-                "0.0028",
+                "0.44",
+                "1.32",
+                "0.014",
                 "0",
             ),
-            // DeepSeek V4 系列（官方 CNY 按 1 USD ≈ 7.14 折算）
             (
                 "deepseek-v4-flash",
                 "DeepSeek V4 Flash",
-                "0.14",
-                "0.28",
-                "0.0028",
+                "0.44",
+                "1.32",
+                "0.014",
+                "0",
+            ),
+            // 部分上游（如阿里百炼）回传 4 位 MMDD 日期变体。查价的
+            // strip_model_date_suffix 只剥 ISO / 8 位 YYYYMMDD / 6 位 YYMMDD，
+            // 剥不到裸 id，前缀兜底也只匹配更长的行 —— 不补别名会静默按 0 计费
+            (
+                "deepseek-v4-flash-0731",
+                "DeepSeek V4 Flash",
+                "0.44",
+                "1.32",
+                "0.014",
                 "0",
             ),
             (
                 "deepseek-v4-pro",
                 "DeepSeek V4 Pro",
-                "0.435",
-                "0.87",
-                "0.003625",
+                "1.32",
+                "3.96",
+                "0.044",
                 "0",
             ),
             // Kimi (月之暗面)
@@ -2394,9 +2429,13 @@ impl Database {
             ("qwq-32b", "QwQ 32B", "0.20", "0.60", "0", "0"),
             ("qwen3-32b", "Qwen3 32B", "0.16", "0.64", "0", "0"),
             // Grok 系列 (xAI)
-            ("grok-4.5", "Grok 4.5", "2", "6", "0.50", "0"),
-            // Grok CLI 官方 OAuth 态 modelUsage 上报的内部别名。
-            // cache read 的实测单价为 0.30，而非 API 挂牌价 0.50。
+            // 4.5/4.6 均为分档计价：prompt ≥200K 时单价翻倍（4/12，cached 亦翻倍）。
+            // 本表无档位列，统一取基础档（<200K），与其它分档厂商口径一致
+            ("grok-4.6", "Grok 4.6", "2", "6", "0.50", "0"),
+            ("grok-4.5", "Grok 4.5", "2", "6", "0.30", "0"),
+            // Grok CLI 官方 OAuth 态 modelUsage 上报的内部别名。定价由
+            // costUsdTicks（1 tick = 1e-10 USD）双轮实测反推：input/output 与
+            // grok-4.5 同为 2/6，cache read 同为 0.30
             ("grok-4.5-build", "Grok 4.5 Build", "2", "6", "0.30", "0"),
             ("grok-4.3", "Grok 4.3", "1.25", "2.50", "0.20", "0"),
             (
@@ -2534,6 +2573,12 @@ impl Database {
 
     fn repair_current_model_pricing(conn: &Connection) -> Result<(), AppError> {
         let pricing_fixes = [
+            // 2026-08-13 models.dev 审计核价：grok-4.5 的 cached input 官方挂牌为 0.30
+            // （docs.x.ai 现行价表），与 grok-4.5-build 的实测计费一致；早先按 0.50
+            // 录入的行在此校正。注意 0.50 是 grok-4.6 的 cached 价，勿两者互串
+            (
+                "grok-4.5", "Grok 4.5", "2", "6", "0.30", "0", "2", "6", "0.50", "0",
+            ),
             // 2026-07-30 OpenAI GPT-5.6 降价：luna -80%、terra -20%（sol 不变）。
             // 每档两条守卫：主守卫匹配 ≥v3.19（已跑过 07-12 cache_write 修正），
             // 0 态守卫匹配 <v3.19 直升用户（cache_write 仍为旧 seed 的 0）
@@ -2793,6 +2838,74 @@ impl Database {
                 "0.325",
                 "1.95",
                 "0",
+                "0",
+            ),
+            // 2026-08-16 16:00 UTC DeepSeek V4 全系改峰谷双档计价（本表统一录高峰档，
+            // 理由见 seed_model_pricing 里 DeepSeek V4 段的注释）。涨幅很大：
+            // flash 0.14/0.28/0.0028 → 0.44/1.32/0.014；pro 0.435/0.87/0.003625 → 1.32/3.96/0.044。
+            //
+            // 🔴 这五条必须留在数组末尾：上面 2026-07-31 的 chat/reasoner 条目与
+            // 2026-07 的 v4-flash(cache_read 0.028→0.0028) / v4-pro(1.68/3.36→0.435/0.87)
+            // 条目会先把各种历史形态收敛到同一个旧值，这里才能单守卫命中。
+            // 若把本组挪到它们之前，老库会停在中间价位不再前进。
+            (
+                "deepseek-chat",
+                "DeepSeek Chat",
+                "0.44",
+                "1.32",
+                "0.014",
+                "0",
+                "0.14",
+                "0.28",
+                "0.0028",
+                "0",
+            ),
+            (
+                "deepseek-reasoner",
+                "DeepSeek Reasoner",
+                "0.44",
+                "1.32",
+                "0.014",
+                "0",
+                "0.14",
+                "0.28",
+                "0.0028",
+                "0",
+            ),
+            (
+                "deepseek-v4-flash",
+                "DeepSeek V4 Flash",
+                "0.44",
+                "1.32",
+                "0.014",
+                "0",
+                "0.14",
+                "0.28",
+                "0.0028",
+                "0",
+            ),
+            (
+                "deepseek-v4-flash-0731",
+                "DeepSeek V4 Flash",
+                "0.44",
+                "1.32",
+                "0.014",
+                "0",
+                "0.14",
+                "0.28",
+                "0.0028",
+                "0",
+            ),
+            (
+                "deepseek-v4-pro",
+                "DeepSeek V4 Pro",
+                "1.32",
+                "3.96",
+                "0.044",
+                "0",
+                "0.435",
+                "0.87",
+                "0.003625",
                 "0",
             ),
         ];
