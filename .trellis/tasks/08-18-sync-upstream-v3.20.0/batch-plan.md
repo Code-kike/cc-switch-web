@@ -138,3 +138,55 @@ fallbacks/catalog），不触及 `models[].id`；`modelsDevPricing.ts:359 lastIn
 结论：S1 千帆 scoped-id 安全，既有约定支持；`qianfanTokenPlanPresets.test.ts` 锁定 scoped id +
 bare name + cost 是 fork 可控的契约边界。若未来 OpenClaw 二进制行为变更或新增真实 Web 冒烟覆盖
 该路径，再回归。
+
+## S3 结果（2026-08-20，25cb05fb）
+
+4 ported / 1 partial（`46f19a15` 的 `transform_codex_chat.rs` hunk 跳过）。5 个提交全部处理，无整提交跳过。
+
+### 提交映射与处置
+
+- `bad9c151`（DeepSeek V4 peak-tier + Gemini 3.7 Flash）→ 已移植。seed 表 5 行 DeepSeek V4 改高峰档（flash/chat/reasoner/v4-flash-0731 = 0.44/1.32/0.014；pro = 1.32/3.96/0.044），新增 `gemini-3.7-flash` = 0.75/3.75/0.075（介绍价，2026-12-31 到期后 1.50/7.50/0.15，刻意不进 audit-ignore）。`pricing_fixes` 末尾追加 5 条 repair（old-value guard 0.14/0.28/0.0028 与 0.435/0.87/0.003625），保留 fork 既有 kimi-for-coding/ling-2.5-1t/kimi-k2.5/kat-coder/qwen3.5-plus/qwen3.6-plus repair 在前。`tests.rs` 的 `model_pricing_seed_repairs_known_outdated_builtin_prices` 断言改 1.32/3.96/0.044（两跳链 1.68/3.36/0.14 → 0.435/0.87 → 1.32/3.96）。fork 专属 `schema_model_pricing_is_seeded_on_init` 的 for-loop 断言同步改高峰档（上游该测试无此 for-loop）。
+- `5602324b`（DeepSeek catalog mirror angle-bracket restore）→ 已移植。`codex_deepseek_catalog_template.json` 8 处角括号文本恢复（`<this good thing>`、`<this obviously bad thing>`、`<X>, not <Y>`、`rather than <`、spaced-path markdown link `<My Project/My Report.md:3>` 各 4 处 = 2 模型 × 4 处），与上游 post-`5602324b` 逐字节一致。`codexProviderPresets.ts` 的 preset 注释 hunk 对 fork 为 **no-op**（fork HEAD 的 `deepseek-v4-pro` 已无"官方预计 2026-08"警告注释，早前同步已简化）；cherry-pick 冲突在不相关的 provider 区（lionccapi vs crazyrouter/DMXAPI），按 fork 既有 provider 列表保留 HEAD 解决。
+- `7dc0a725`（Grok 4.5 cached rate + Grok 4.6 + DeepSeek alias）→ 已移植。`grok-4.5` seed cached 0.50→0.30（+ repair old-value guard 0.50），新增 `grok-4.6` seed 2/6/0.50，`grok-4.5-build` 注释更新。`deepseek-v4-flash-0731` alias seed 由 `bad9c151` 已落高峰档 0.44/1.32/0.014（`7dc0a725` 原录旧价 0.14/0.28/0.0028，被 `bad9c151` 超越；cherry-pick 产生重复行，删除 `7dc0a725` 旧价副本，保留 `bad9c151` 高峰档）。`usage_stats.rs` grok-4.5 backfill 测试期望改 0.30 基（cache_read 0.000125→0.000075，total 0.001625→0.001575），保留 fork 的 `get_request_detail` 结构（上游用直查 SQL）；`find_model_pricing_row` 的 `xai/grok-4.5` 断言改 0.30。
+- `3d126f45`（multi-year trend tooltip/dot alignment）→ 已移植，无冲突。新增 `buildUsageTrendChartData`/`formatUsageTrendTickLabel` 导出函数 + `UsageTrendChartPoint` 接口，XAxis `dataKey="xKey"` + `tickFormatter` + `allowDuplicatedCategory={false}`，tooltip 从 point payload 读 `tooltipLabel`。**保留 fork 的 `initialDimension={{ width: 960, height: 350 }}`** prop（上游无此 prop）。新增 `tests/components/UsageTrendChart.test.ts`（4 测试：跨年 xKey 唯一、跨年 tick 含年、单年短 MM/DD、tick 索引稀疏后按 xKey 解析）。
+- `46f19a15`（DeepSeek cache-hit tokens）→ **部分移植**。`proxy/usage/parser.rs` 的 `openai_cache_read_tokens` 末位兜底 `.or_else(|| usage.get("prompt_cache_hit_tokens"))` 已落地 + 3 个回归测试（response/stream/cache-hit、标准字段优先、stream DeepSeek）。`transform_codex_chat.rs` hunk **跳过**：fork HEAD 无该文件（Codex Chat 路由栈是既有延期项，S2 `3f75bbdf`/S4 `9db9c56f` 已证实并记录）；恢复该叶文件缺整套 ~5.7k LOC 依赖基础，越过 S3 边界。`parser.rs` 兜底独立生效（usage 页/proxy_request_logs 计费路径），不依赖 Codex Chat 路由栈。
+
+### ⚠ grilling #7 FE-preset↔Rust-seed 一致性核对（关键关卡）
+
+- **DeepSeek-direct OpenClaw preset cost 同步改高峰档**：`deepseek-v4-pro` preset `cost: {0.435, 0.87, 0.003625}` → `{1.32, 3.96, 0.044}`；`deepseek-v4-flash` preset `cost: {0.14, 0.28}` → `{0.44, 1.32, 0.014}`。**上游 `bad9c151` 未改 preset cost**（上游无 `ModelsDevPricing.web-server` parity 测试，preset 与 seed 可发散）；fork 的 parity 测试会因裸 id `deepseek-v4-pro`/`deepseek-v4-flash` 匹配 seed 而失败，故按"seed 是裸 id SSOT"裁定改 preset 跟随 seed。
+- **`S6A_SEED_SENTINELS` 更新**：`deepseek-chat`/`deepseek-reasoner` 由 0.14/0.28/0.0028 改 0.44/1.32/0.014（跟随 `bad9c151` seed）。
+- **Qianfan scoped id 不退化**：`qianfan-tokenplan/deepseek-v4-pro`（百度转售价 0.0025/0.01）保持 scoped，不与裸 seed `deepseek-v4-pro` 碰撞，parity 测试正确跳过。S1 的 scoped-id 设计未被 S3 seed 更新回退。
+- **无 cost=$0 回归**：DeepSeek V4（0.44/1.32/0.014、1.32/3.96/0.044）、Gemini 3.7 Flash（0.75/3.75/0.075）、Grok 4.5（0.30）/4.6（0.50）均非零。`find_model_pricing_row` 有损清洗未引入零价（`deepseek-v4-flash-0731` alias 已补 seed，不再静默按 0 计费）。
+- **`ModelsDevPricing.web-server` parity 测试 3/3 通过**（grilling #7 关卡绿）。
+- **`openclawPresetPricing.test.ts`**（focused，非零 tuple 检查）通过；`qianfanTokenPlanPresets.test.ts` 不受影响（scoped id + 转售价不变）。
+
+### 冲突解决与 carry-forward
+
+- **`repair_current_model_pricing` 只匹配旧内置 tuple**：新增 5 条 DeepSeek peak-tier repair 的 old-value guard 是 0.14/0.28/0.0028 与 0.435/0.87/0.003625（v3.19.2 基线值），用户 override 与历史非零 cost 不被改写。grok-4.5 repair old-value guard 是 0.50（旧 cached 价）。carry-forward 未退化。
+- **models.dev 本地文件只存 override/tombstone**：S3 不触及 models.dev 同步逻辑，无退化。
+- **无 zh-TW locale 恢复**：S3 不触及 locale（en/ja/zh 2507 keys 严格 parity）。
+- **无新 Tauri command/Web route**：S3 是 seed/repair/parser/前端组件改动，`check:web-routes` 不变（282 commands / missing 0 / methodMismatch 0 / parityFallback 0）。
+- **Codex Chat 路由栈延期项**：`46f19a15` 的 `transform_codex_chat.rs` hunk 与 S2 `3f75bbdf`、S4 `9db9c56f` 同属该延期项；若未来恢复该路由栈，需统一移植 `transform_codex_chat.rs`/`codex_chat_common.rs`/`streaming_codex_chat.rs` 整套基线 + `chat_usage_to_responses_usage` 的 DeepSeek cache-hit 兜底，并重跑 dropped-tool-call 流回归。
+- **DB 迁移连续性**：S3 无 schema 迁移号变化（`SCHEMA_VERSION` 仍 16），仅 seed/repair 数据更新，从 v3.19.2 基线严格连续。
+
+### 门禁证据
+
+- `(cd src-tauri && cargo fmt --all -- --check)`：通过。
+- `pnpm format:check`（Prettier）：通过。
+- `pnpm exec cargo check --manifest-path src-tauri/Cargo.toml`（web lib）：通过。
+- `cargo check --manifest-path src-tauri/Cargo.toml --all-targets --locked`（desktop）：通过，0 error/0 warning。
+- `pnpm check:web-routes`：282 commands / missing 0 / methodMismatch 0 / parityFallback 0（不变，无新命令）。
+- `pnpm check:locales`：2507 keys，en/ja/zh 严格 parity（不变）。
+- `pnpm typecheck`：通过。
+- `pnpm test:unit`：**977 passed**（164 files），含 `UsageTrendChart` 4、`openclawPresetPricing` 1。
+- Rust focused：`database::` **90 passed**（含 `model_pricing_seed_repairs_known_outdated_builtin_prices`、`schema_model_pricing_is_seeded_on_init`）；`services::usage_stats::` **20 passed**（含 `test_backfill_deducts_cache_read_for_grokbuild_total_rows` 0.30 基、`test_model_pricing_matching`）；`proxy::usage::parser::` **24 passed**（含 3 个新 DeepSeek cache-hit 测试）。
+- Rust lib 全量：**2010 passed / 0 failed / 5 ignored**。
+- Web Rust `cargo test --no-default-features --features web-server --example server`：**1975 passed / 0 failed / 5 ignored**（含 web_api::、dual_runtime_parity::、web_proxy_lifecycle::）。
+- `pnpm test:integration`：**49/54 passed**。5 个失败 = PRD 已知非阻塞 flake：ProviderList Claude official-seed empty-state/import-current **1**；SkillsPage skills.sh automatic-fallback/repo-install/pagination **3**；AuthCenterPanel OAuth 5s 超时 **1**（pre-existing，base 分支亦失败，非 S3 引入）。**`ModelsDevPricing.web-server` parity 3/3 通过**（grilling #7 关卡绿）。
+
+### 残余风险与 carry-forward
+
+- Codex Chat 路由栈仍是既有延期项（`46f19a15` transform_codex_chat.rs + S2 `3f75bbdf` + S4 `9db9c56f`）；未来恢复需统一移植整套基线。
+- DeepSeek V4 高峰档 seed 是单 tier 录入（无时段维度），夜间/凌晨用量高估一倍（上游 `bad9c151` 拍板口径，fork 沿用）。
+- Gemini 3.7 Flash 介绍价 2026-12-31 到期后需走 seed + repair 双写改回 1.50/7.50/0.15（届时 models.dev 先更新，审计 A 段会自动报出该行；刻意不进 audit-ignore）。
+- 下一批：S4 codex/provider 功能（12 提交）。
