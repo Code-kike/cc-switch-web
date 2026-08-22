@@ -151,6 +151,7 @@ describe("OpenCodeFormFields", () => {
     expect(screen.getByLabelText("Output")).toHaveValue(131072);
   });
 
+
   it("updates model token limits as structured numbers", () => {
     const onModelsChange = vi.fn();
     renderOpenCodeForm({ onModelsChange });
