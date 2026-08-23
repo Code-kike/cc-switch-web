@@ -1051,7 +1051,7 @@ impl ProxyService {
             AppType::Codex => self.read_codex_live()?,
             AppType::Gemini => self.read_gemini_live()?,
             AppType::GrokBuild => self.read_grok_live()?,
-            AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => {
+            AppType::OpenCode | AppType::OpenClaw | AppType::Hermes | AppType::Pi => {
                 // These apps don't support proxy features
                 return Err("该应用不支持代理功能".to_string());
             }
@@ -1323,7 +1323,7 @@ impl ProxyService {
                     }
                 }
             }
-            AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => {
+            AppType::OpenCode | AppType::OpenClaw | AppType::Hermes | AppType::Pi => {
                 // These apps don't support proxy features, skip silently
             }
         }
@@ -1544,7 +1544,7 @@ impl ProxyService {
             AppType::Codex => ("codex", self.read_codex_live()?),
             AppType::Gemini => ("gemini", self.read_gemini_live()?),
             AppType::GrokBuild => ("grokbuild", self.read_grok_live()?),
-            AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => {
+            AppType::OpenCode | AppType::OpenClaw | AppType::Hermes | AppType::Pi => {
                 // These apps don't support proxy features
                 return Err("该应用不支持代理功能".to_string());
             }
@@ -1815,7 +1815,7 @@ impl ProxyService {
                 self.write_grok_live(&live_config)?;
                 log::info!("Grok Build Live 配置已接管，代理地址: {proxy_grok_base_url}");
             }
-            AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => {
+            AppType::OpenCode | AppType::OpenClaw | AppType::Hermes | AppType::Pi => {
                 // These apps don't support proxy features
                 return Err("该应用不支持代理功能".to_string());
             }
@@ -1904,7 +1904,7 @@ impl ProxyService {
                     }
                 }
             }
-            AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => {
+            AppType::OpenCode | AppType::OpenClaw | AppType::Hermes | AppType::Pi => {
                 // These apps don't support proxy features, skip silently
             }
         }
@@ -1952,7 +1952,7 @@ impl ProxyService {
                     log::info!("Grok Build Live 配置已恢复");
                 }
             }
-            AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => {
+            AppType::OpenCode | AppType::OpenClaw | AppType::Hermes | AppType::Pi => {
                 // These apps don't support proxy features, skip silently
             }
         }
@@ -2062,7 +2062,7 @@ impl ProxyService {
             AppType::Codex => self.write_codex_live(config),
             AppType::Gemini => self.write_gemini_live(config),
             AppType::GrokBuild => self.write_grok_live(config),
-            AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => {
+            AppType::OpenCode | AppType::OpenClaw | AppType::Hermes | AppType::Pi => {
                 // These apps don't support proxy features
                 Err("该应用不支持代理功能".to_string())
             }
@@ -2087,7 +2087,7 @@ impl ProxyService {
                 Ok(config) => Self::is_grok_live_taken_over(&config),
                 Err(_) => false,
             },
-            AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => {
+            AppType::OpenCode | AppType::OpenClaw | AppType::Hermes | AppType::Pi => {
                 // These apps don't support proxy takeover
                 false
             }
@@ -2131,7 +2131,7 @@ impl ProxyService {
             AppType::Codex => self.cleanup_codex_takeover_placeholders_in_live(),
             AppType::Gemini => self.cleanup_gemini_takeover_placeholders_in_live(),
             AppType::GrokBuild => self.cleanup_grok_takeover_placeholders_in_live(),
-            AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => {
+            AppType::OpenCode | AppType::OpenClaw | AppType::Hermes | AppType::Pi => {
                 // These apps don't support proxy features
                 Ok(())
             }
@@ -2257,7 +2257,7 @@ impl ProxyService {
                         });
                 Ok(Self::is_grok_live_taken_over(&config) && base_url_matches)
             }
-            AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => Ok(false),
+            AppType::OpenCode | AppType::OpenClaw | AppType::Hermes | AppType::Pi => Ok(false),
         }
     }
 
@@ -2498,7 +2498,7 @@ impl ProxyService {
             AppType::Codex => Self::codex_live_has_proxy_placeholder(config),
             AppType::Gemini => Self::is_gemini_live_taken_over(config),
             AppType::GrokBuild => Self::is_grok_live_taken_over(config),
-            AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => false,
+            AppType::OpenCode | AppType::OpenClaw | AppType::Hermes | AppType::Pi => false,
         }
     }
 
@@ -2587,7 +2587,7 @@ impl ProxyService {
                 serde_json::to_string(&env_backup)
                     .map_err(|e| format!("序列化 Gemini 配置失败: {e}"))?
             }
-            AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => {
+            AppType::OpenCode | AppType::OpenClaw | AppType::Hermes | AppType::Pi => {
                 return Err(format!("未知的应用类型: {app_type}"));
             }
         };

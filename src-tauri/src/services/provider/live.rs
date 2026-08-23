@@ -523,7 +523,11 @@ fn settings_contain_common_config(app_type: &AppType, settings: &Value, snippet:
             }
             _ => false,
         },
-        AppType::GrokBuild | AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => false,
+        AppType::GrokBuild
+        | AppType::OpenCode
+        | AppType::OpenClaw
+        | AppType::Hermes
+        | AppType::Pi => false,
     }
 }
 
@@ -593,9 +597,11 @@ pub(crate) fn remove_common_config_from_settings(
             }
             Ok(result)
         }
-        AppType::GrokBuild | AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => {
-            Ok(settings.clone())
-        }
+        AppType::GrokBuild
+        | AppType::OpenCode
+        | AppType::OpenClaw
+        | AppType::Hermes
+        | AppType::Pi => Ok(settings.clone()),
     }
 }
 
@@ -650,9 +656,11 @@ fn apply_common_config_to_settings(
             }
             Ok(result)
         }
-        AppType::GrokBuild | AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => {
-            Ok(settings.clone())
-        }
+        AppType::GrokBuild
+        | AppType::OpenCode
+        | AppType::OpenClaw
+        | AppType::Hermes
+        | AppType::Pi => Ok(settings.clone()),
     }
 }
 
@@ -1258,6 +1266,11 @@ pub(crate) fn write_live_snapshot(app_type: &AppType, provider: &Provider) -> Re
             crate::hermes_config::set_provider(&provider.id, provider.settings_config.clone())?;
             log::debug!("Hermes provider '{}' written to live config", provider.id);
         }
+        AppType::Pi => {
+            return Err(AppError::InvalidInput(
+                "Pi providers use the Pi provider service".to_string(),
+            ));
+        }
     }
     Ok(())
 }
@@ -1504,6 +1517,9 @@ pub fn read_live_settings(app_type: AppType) -> Result<Value, AppError> {
             let config = crate::hermes_config::yaml_to_json(&yaml_config)?;
             Ok(config)
         }
+        AppType::Pi => Err(AppError::InvalidInput(
+            "Pi providers are read from Pi's native models file".to_string(),
+        )),
     }
 }
 
@@ -1588,8 +1604,8 @@ pub fn import_default_config(state: &AppState, app_type: AppType) -> Result<bool
                 "config": config_obj
             })
         }
-        // OpenCode, OpenClaw and Hermes use additive mode and are handled by early return above
-        AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => {
+        // OpenCode, OpenClaw, Hermes and Pi use additive mode and are handled by early return above
+        AppType::OpenCode | AppType::OpenClaw | AppType::Hermes | AppType::Pi => {
             unreachable!("additive mode apps are handled by early return")
         }
     };

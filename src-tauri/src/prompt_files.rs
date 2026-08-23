@@ -18,6 +18,7 @@ pub fn prompt_file_path(app: &AppType) -> Result<PathBuf, AppError> {
         AppType::OpenCode => get_opencode_dir(),
         AppType::OpenClaw => get_openclaw_dir(),
         AppType::Hermes => crate::hermes_config::get_hermes_dir(),
+        AppType::Pi => crate::pi_config::get_pi_agent_dir()?,
     };
 
     let filename = match app {
@@ -26,6 +27,7 @@ pub fn prompt_file_path(app: &AppType) -> Result<PathBuf, AppError> {
         AppType::Gemini => "GEMINI.md",
         AppType::GrokBuild | AppType::OpenCode | AppType::OpenClaw => "AGENTS.md",
         AppType::Hermes => "SOUL.md",
+        AppType::Pi => "AGENTS.md",
     };
 
     Ok(base_dir.join(filename))
@@ -36,12 +38,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn hermes_prompt_file_uses_soul_md() {
-        let path = prompt_file_path(&AppType::Hermes).expect("Hermes prompt path");
+    fn pi_prompt_file_uses_agents_md() {
+        let path = prompt_file_path(&AppType::Pi).expect("Pi prompt path");
 
         assert_eq!(
             path.file_name().and_then(|name| name.to_str()),
-            Some("SOUL.md")
+            Some("AGENTS.md")
         );
     }
 }

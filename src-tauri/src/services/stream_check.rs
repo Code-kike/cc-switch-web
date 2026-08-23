@@ -162,6 +162,7 @@ impl StreamCheckService {
         match app_type {
             AppType::OpenClaw => Self::extract_openclaw_base_url(provider),
             AppType::Hermes => Self::extract_hermes_base_url(provider),
+            AppType::Pi => crate::pi_config::provider_base_url(&provider.settings_config),
             AppType::OpenCode => {
                 let npm = Self::extract_opencode_npm(provider);
                 Self::resolve_opencode_base_url(provider, npm.as_deref())
@@ -190,7 +191,7 @@ impl StreamCheckService {
         // 或 `npm` 字段显式指定。它们不走 get_adapter 路径，而是直接分发。
         if matches!(
             app_type,
-            AppType::OpenCode | AppType::OpenClaw | AppType::Hermes
+            AppType::OpenCode | AppType::OpenClaw | AppType::Hermes | AppType::Pi
         ) {
             return Self::check_once_without_adapter(app_type, provider, config, start).await;
         }
@@ -255,9 +256,9 @@ impl StreamCheckService {
                 )
                 .await
             }
-            AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => {
+            AppType::OpenCode | AppType::OpenClaw | AppType::Hermes | AppType::Pi => {
                 // Already handled via early dispatch above
-                unreachable!("OpenCode/OpenClaw/Hermes 已通过 check_once_without_adapter 处理")
+                unreachable!("OpenCode/OpenClaw/Hermes/Pi 已通过 check_once_without_adapter 处理")
             }
         };
 
@@ -672,7 +673,7 @@ impl StreamCheckService {
         let test_prompt = &config.test_prompt;
 
         let result = match app_type {
-            AppType::OpenClaw => {
+            AppType::OpenClaw | AppType::Pi => {
                 Self::check_additive_app_stream(
                     &client,
                     provider,
@@ -702,7 +703,7 @@ impl StreamCheckService {
                 )
                 .await
             }
-            _ => unreachable!("check_once_without_adapter 只处理 OpenCode/OpenClaw/Hermes"),
+            _ => unreachable!("check_once_without_adapter 只处理 OpenCode/OpenClaw/Hermes/Pi"),
         };
 
         let response_time = start.elapsed().as_millis() as u64;
@@ -1368,8 +1369,8 @@ impl StreamCheckService {
                 // Try to extract first model from the models object
                 Self::extract_opencode_model(provider).unwrap_or_else(|| "gpt-4o".to_string())
             }
-            AppType::OpenClaw | AppType::Hermes => {
-                // OpenClaw/Hermes use models array in settings_config
+            AppType::OpenClaw | AppType::Hermes | AppType::Pi => {
+                // OpenClaw/Hermes/Pi use models array in settings_config
                 // Try to extract first model from the models array
                 Self::extract_openclaw_model(provider).unwrap_or_else(|| "gpt-4o".to_string())
             }

@@ -34,6 +34,7 @@ mod model_capabilities;
 mod openclaw_config;
 mod opencode_config;
 mod panic_hook;
+mod pi_config;
 mod prompt;
 mod prompt_files;
 mod provider;
@@ -952,6 +953,16 @@ pub fn run() {
             commands::enable_prompt,
             commands::import_prompt_from_file,
             commands::get_current_prompt_file_content,
+            // Pi native coding agent (84e75ad2)
+            commands::get_pi_current_state,
+            commands::update_pi_provider_usage_script,
+            commands::get_pi_session_discovery,
+            commands::get_pi_prompt_file,
+            commands::replace_pi_prompt_file,
+            commands::delete_pi_prompt_file,
+            commands::list_pi_prompt_templates,
+            commands::upsert_pi_prompt_template,
+            commands::delete_pi_prompt_template,
             // Profile management (项目配置方案)
             commands::list_profiles,
             commands::create_profile,

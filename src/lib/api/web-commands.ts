@@ -167,6 +167,14 @@ const cmds = defineCommands({
     path: "/api/system/delete_model_pricing",
   },
   delete_prompt: { method: "DELETE", path: "/api/prompts/delete-prompt" },
+  delete_pi_prompt_file: {
+    method: "DELETE",
+    path: "/api/pi/delete-pi-prompt-file",
+  },
+  delete_pi_prompt_template: {
+    method: "DELETE",
+    path: "/api/pi/delete-pi-prompt-template",
+  },
   delete_profile: { method: "DELETE", path: "/api/profiles/delete-profile" },
   delete_provider: { method: "DELETE", path: "/api/providers/delete-provider" },
   delete_session: { method: "DELETE", path: "/api/sessions/delete-session" },
@@ -412,6 +420,18 @@ const cmds = defineCommands({
     method: "POST",
     path: "/api/system/get_pricing_model_source",
   },
+  get_pi_current_state: {
+    method: "GET",
+    path: "/api/pi/get-pi-current-state",
+  },
+  get_pi_prompt_file: {
+    method: "GET",
+    path: "/api/pi/get-pi-prompt-file",
+  },
+  get_pi_session_discovery: {
+    method: "GET",
+    path: "/api/pi/get-pi-session-discovery",
+  },
   get_prompts: { method: "GET", path: "/api/prompts/get-prompts" },
   get_provider_health: {
     method: "GET",
@@ -569,6 +589,10 @@ const cmds = defineCommands({
     path: "/api/system/list_daily_memory_files",
   },
   list_db_backups: { method: "GET", path: "/api/backups/list-db-backups" },
+  list_pi_prompt_templates: {
+    method: "GET",
+    path: "/api/pi/list-pi-prompt-templates",
+  },
   list_profiles: { method: "GET", path: "/api/profiles/list-profiles" },
   list_sessions: { method: "GET", path: "/api/sessions/list-sessions" },
   log_frontend_error: {
@@ -678,6 +702,10 @@ const cmds = defineCommands({
     path: "/api/skills/remove-skill-repo",
   },
   rename_db_backup: { method: "POST", path: "/api/backups/rename-db-backup" },
+  replace_pi_prompt_file: {
+    method: "POST",
+    path: "/api/pi/replace-pi-prompt-file",
+  },
   reset_circuit_breaker: {
     method: "POST",
     path: "/api/system/reset_circuit_breaker",
@@ -893,6 +921,10 @@ const cmds = defineCommands({
     method: "POST",
     path: "/api/system/update_model_pricing_batch",
   },
+  update_pi_provider_usage_script: {
+    method: "POST",
+    path: "/api/pi/update-pi-provider-usage-script",
+  },
   update_provider: { method: "PUT", path: "/api/providers/update-provider" },
   update_profile: { method: "PUT", path: "/api/profiles/update-profile" },
   update_providers_sort_order: {
@@ -921,6 +953,10 @@ const cmds = defineCommands({
   upsert_mcp_server_in_config: {
     method: "POST",
     path: "/api/config/upsert-mcp-server-in-config",
+  },
+  upsert_pi_prompt_template: {
+    method: "POST",
+    path: "/api/pi/upsert-pi-prompt-template",
   },
   upsert_prompt: { method: "POST", path: "/api/prompts/upsert-prompt" },
   upsert_universal_provider: {

@@ -20,9 +20,9 @@ pub(crate) const TEMPLATE_TYPE_OFFICIAL_SUBSCRIPTION: &str = "official_subscript
 const COPILOT_UNIT_PREMIUM: &str = "requests";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct UsageCredentials {
-    api_key: String,
-    base_url: String,
+pub(super) struct UsageCredentials {
+    pub(super) api_key: String,
+    pub(super) base_url: String,
     access_token: Option<String>,
     user_id: Option<String>,
 }
@@ -190,7 +190,10 @@ fn setting_base_url(settings: &Value, path: &[&str]) -> Option<String> {
     non_empty_base_url(Some(current))
 }
 
-fn extract_provider_usage_credentials(provider: &Provider, app_type: &AppType) -> UsageCredentials {
+pub(super) fn extract_provider_usage_credentials(
+    provider: &Provider,
+    app_type: &AppType,
+) -> UsageCredentials {
     let settings = &provider.settings_config;
 
     let (api_key, base_url) = match app_type {
@@ -306,6 +309,16 @@ fn extract_provider_usage_credentials(provider: &Provider, app_type: &AppType) -
 
             (api_key, base_url)
         }
+        AppType::Pi => (
+            // Pi custom providers use the native models.json field names:
+            // `apiKey` for credentials and `baseUrl` (or a model-level
+            // `baseUrl` fallback) for the endpoint, resolved via the
+            // shared `pi_config::provider_base_url` helper.
+            setting_string(settings, &["apiKey"]),
+            crate::pi_config::provider_base_url(settings)
+                .ok()
+                .and_then(|url| normalize_base_url(&url)),
+        ),
     };
 
     UsageCredentials {

@@ -28,6 +28,12 @@ pub mod omo;
 #[path = "../src/services/prompt.rs"]
 pub mod prompt;
 
+#[path = "../src/services/pi_prompt_files.rs"]
+pub mod pi_prompt_files;
+
+#[path = "../src/services/pi_state.rs"]
+pub(crate) mod pi_state;
+
 #[path = "../src/services/profile.rs"]
 pub mod profile;
 

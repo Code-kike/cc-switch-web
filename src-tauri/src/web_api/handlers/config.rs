@@ -273,6 +273,9 @@ async fn get_config_dir(Query(query): Query<AppQuery>) -> ApiResult<String> {
         crate::app_config::AppType::OpenCode => crate::opencode_config::get_opencode_dir(),
         crate::app_config::AppType::OpenClaw => crate::openclaw_config::get_openclaw_dir(),
         crate::app_config::AppType::Hermes => crate::hermes_config::get_hermes_dir(),
+        crate::app_config::AppType::Pi => {
+            crate::pi_config::get_pi_agent_dir().map_err(ApiError::from_anyhow)?
+        }
     };
     Ok(json_ok(dir.to_string_lossy().to_string()))
 }
@@ -607,6 +610,18 @@ async fn get_config_status(
                 path: crate::hermes_config::get_hermes_dir()
                     .to_string_lossy()
                     .to_string(),
+            }
+        }
+        crate::app_config::AppType::Pi => {
+            let config_path =
+                crate::pi_config::get_pi_models_path().map_err(ApiError::from_anyhow)?;
+            let path = crate::pi_config::get_pi_agent_dir()
+                .map_err(ApiError::from_anyhow)?
+                .to_string_lossy()
+                .to_string();
+            crate::config::ConfigStatus {
+                exists: config_path.exists(),
+                path,
             }
         }
     };

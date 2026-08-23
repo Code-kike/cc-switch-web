@@ -5,6 +5,7 @@
 mod endpoints;
 mod gemini_auth;
 mod live;
+mod pi;
 mod usage;
 
 use indexmap::IndexMap;
@@ -2136,6 +2137,66 @@ impl ProviderService {
             .live_config_managed = Some(managed);
     }
 
+    fn normalize_usage_script_credential_overrides(app_type: &AppType, provider: &mut Provider) {
+        // Reuse the fork's existing per-app credential resolver
+        // (`extract_provider_usage_credentials`) instead of a parallel path:
+        // it already handles every AppType arm identically to the frontend's
+        // `getProviderCredentials`. `normalize` needs the *provider-native*
+        // credentials (not the override-applied `resolve_usage_credentials`
+        // free fn) so a script override equal to the provider's own value can
+        // be dropped as a no-op duplicate.
+        let current_credentials = usage::extract_provider_usage_credentials(provider, app_type);
+
+        let Some(usage_script) = provider
+            .meta
+            .as_mut()
+            .and_then(|meta| meta.usage_script.as_mut())
+        else {
+            return;
+        };
+
+        if usage_script.template_type.as_deref() == Some("token_plan") {
+            return;
+        }
+
+        if usage_script.api_key.as_deref().is_some_and(|api_key| {
+            Self::should_clear_usage_api_key_override(api_key, &current_credentials.api_key)
+        }) {
+            usage_script.api_key = None;
+        }
+
+        if usage_script.base_url.as_deref().is_some_and(|base_url| {
+            Self::should_clear_usage_base_url_override(base_url, &current_credentials.base_url)
+        }) {
+            usage_script.base_url = None;
+        }
+    }
+
+    fn should_clear_usage_api_key_override(script_api_key: &str, provider_api_key: &str) -> bool {
+        let candidate = script_api_key.trim();
+        if candidate.is_empty() {
+            return true;
+        }
+        let provider_key = provider_api_key.trim();
+        !provider_key.is_empty() && provider_key == candidate
+    }
+
+    fn should_clear_usage_base_url_override(
+        script_base_url: &str,
+        provider_base_url: &str,
+    ) -> bool {
+        let candidate = Self::normalize_usage_base_url_for_compare(script_base_url);
+        if candidate.is_empty() {
+            return true;
+        }
+        let provider = Self::normalize_usage_base_url_for_compare(provider_base_url);
+        !provider.is_empty() && provider == candidate
+    }
+
+    fn normalize_usage_base_url_for_compare(base_url: &str) -> String {
+        base_url.trim().trim_end_matches('/').to_string()
+    }
+
     /// One-shot cleanup of legacy `_cc_source` / `provider_key` markers
     /// persisted on Hermes provider records.
     ///
@@ -2186,6 +2247,9 @@ impl ProviderService {
         state: &AppState,
         app_type: AppType,
     ) -> Result<IndexMap<String, Provider>, AppError> {
+        if app_type == AppType::Pi {
+            return pi::list(state);
+        }
         let mut providers = state.db.get_all_providers(app_type.as_str())?;
         if matches!(app_type, AppType::Hermes) {
             Self::reconcile_hermes_runtime_markers(&mut providers);
@@ -2255,6 +2319,9 @@ impl ProviderService {
         provider: Provider,
         add_to_live: bool,
     ) -> Result<bool, AppError> {
+        if app_type == AppType::Pi {
+            return pi::add(state, provider, add_to_live);
+        }
         let mut provider = provider;
         // Normalize Claude model keys
         Self::normalize_provider_if_claude(&app_type, &mut provider);
@@ -2315,6 +2382,9 @@ impl ProviderService {
         original_id: Option<&str>,
         provider: Provider,
     ) -> Result<bool, AppError> {
+        if app_type == AppType::Pi {
+            return pi::update(state, original_id, provider);
+        }
         let mut provider = provider;
         let original_id = original_id.unwrap_or(provider.id.as_str()).to_string();
         let provider_id_changed = original_id != provider.id;
@@ -2538,6 +2608,9 @@ impl ProviderService {
     /// 同时检查本地 settings 和数据库的当前供应商，防止删除任一端正在使用的供应商。
     /// 对于累加模式应用（OpenCode, OpenClaw），可以随时删除任意供应商，同时从 live 配置中移除。
     pub fn delete(state: &AppState, app_type: AppType, id: &str) -> Result<(), AppError> {
+        if app_type == AppType::Pi {
+            return pi::delete(state, id);
+        }
         // Additive mode apps - no current provider concept
         if app_type.is_additive_mode() {
             // Single DB read shared across all additive-mode sub-paths below.
@@ -2609,6 +2682,9 @@ impl ProviderService {
         app_type: AppType,
         id: &str,
     ) -> Result<(), AppError> {
+        if app_type == AppType::Pi {
+            return pi::remove(state, id);
+        }
         match app_type {
             AppType::OpenCode => {
                 let provider_category = state
@@ -2673,6 +2749,9 @@ impl ProviderService {
     ///    d. Write target provider config to live files
     ///    e. Sync MCP configuration
     pub fn switch(state: &AppState, app_type: AppType, id: &str) -> Result<SwitchResult, AppError> {
+        if app_type == AppType::Pi {
+            return pi::enable(state, id);
+        }
         // Check if provider exists
         let providers = state.db.get_all_providers(app_type.as_str())?;
         let _provider = providers
@@ -3185,6 +3264,7 @@ impl ProviderService {
             AppType::OpenCode => Self::extract_opencode_common_config(&provider.settings_config),
             AppType::OpenClaw => Self::extract_openclaw_common_config(&provider.settings_config),
             AppType::Hermes => Ok(String::new()), // Hermes doesn't use common config snippets
+            AppType::Pi => Ok(String::new()),
         }
     }
 
@@ -3201,6 +3281,7 @@ impl ProviderService {
             AppType::OpenCode => Self::extract_opencode_common_config(settings_config),
             AppType::OpenClaw => Self::extract_openclaw_common_config(settings_config),
             AppType::Hermes => Ok(String::new()), // Hermes doesn't use common config snippets
+            AppType::Pi => Ok(String::new()),
         }
     }
 
@@ -4038,6 +4119,14 @@ impl ProviderService {
         .await
     }
 
+    pub(crate) fn update_pi_usage_script(
+        state: &AppState,
+        id: &str,
+        script: crate::provider::UsageScript,
+    ) -> Result<bool, AppError> {
+        pi::update_usage_script(state, id, script)
+    }
+
     pub(crate) fn write_gemini_live(provider: &Provider) -> Result<(), AppError> {
         write_gemini_live(provider)
     }
@@ -4152,6 +4241,9 @@ impl ProviderService {
                         "Hermes configuration must be a JSON object",
                     ));
                 }
+            }
+            AppType::Pi => {
+                crate::pi_config::validate_provider_node(&provider.id, &provider.settings_config)?;
             }
         }
 
@@ -4352,8 +4444,8 @@ impl ProviderService {
 
                 Ok((api_key, base_url))
             }
-            AppType::OpenClaw | AppType::Hermes => {
-                // OpenClaw/Hermes use apiKey and baseUrl directly on the object
+            AppType::OpenClaw | AppType::Hermes | AppType::Pi => {
+                // OpenClaw/Hermes/Pi use apiKey and baseUrl directly on the object
                 let api_key = provider
                     .settings_config
                     .get("apiKey")

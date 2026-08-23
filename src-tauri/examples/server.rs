@@ -178,6 +178,8 @@ mod model_capabilities;
 mod openclaw_config;
 #[path = "../src/opencode_config.rs"]
 mod opencode_config;
+#[path = "../src/pi_config/mod.rs"]
+mod pi_config;
 #[path = "../src/prompt.rs"]
 mod prompt;
 #[path = "../src/prompt_files.rs"]
