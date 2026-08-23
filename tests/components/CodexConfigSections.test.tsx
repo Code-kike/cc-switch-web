@@ -22,15 +22,45 @@ const baseProps = {
 };
 
 describe("CodexConfigSection", () => {
-  it("keeps the TOML editor but hides the unsupported 1M context controls", () => {
+  it("shows the 1M context window toggle and compact-limit input", () => {
     render(<CodexConfigSection {...baseProps} />);
 
+    // TOML editor remains visible
     expect(screen.getByTestId("json-editor")).toHaveValue(baseProps.value);
-    expect(
-      screen.queryByText("codexConfig.contextWindow1M"),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByText(/codexConfig\.autoCompactLimit/),
-    ).not.toBeInTheDocument();
+
+    // 1M context window toggle is restored (v3.20.0 6e424fd3)
+    const toggle = screen.getByRole("checkbox", {
+      name: "codexConfig.contextWindow1M",
+    });
+    expect(toggle).toBeChecked();
+
+    // Compact-limit input mirrors the persisted 900000 and is enabled while
+    // the 1M toggle is checked.
+    const compactInput = screen.getByRole("textbox", {
+      name: /codexConfig\.autoCompactLimit/,
+    });
+    expect(compactInput).toHaveValue("900000");
+    expect(compactInput).not.toBeDisabled();
+  });
+
+  it("hides neither toggle when context window is absent (unchecked state)", () => {
+    render(
+      <CodexConfigSection
+        {...baseProps}
+        value={['model = "gpt-5.4"', 'model_provider = "any"'].join("\n")}
+      />,
+    );
+
+    const toggle = screen.getByRole("checkbox", {
+      name: "codexConfig.contextWindow1M",
+    });
+    expect(toggle).not.toBeChecked();
+
+    const compactInput = screen.getByRole("textbox", {
+      name: /codexConfig\.autoCompactLimit/,
+    });
+    // Fallback default when the field is absent
+    expect(compactInput).toHaveValue("900000");
+    expect(compactInput).toBeDisabled();
   });
 });
