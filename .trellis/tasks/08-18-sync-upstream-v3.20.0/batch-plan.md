@@ -678,3 +678,68 @@ fork `ci.yml` 仅 Linux（无 Windows CI）；Windows 构建只在 `release.yml`
   `windows_path_lookup_command` 等）已在 `locate_default_tool` 路径生效，等价覆盖。
 - **Codex Chat reasoning 栈延期项不变**：S6 未触及该栈。
 - 下一批：S7 CI 适配（2 提交，排除 2 桌面专属）。
+
+## S7 结果（2026-08-23，CI 适配）
+
+### 提交映射与处置
+
+- `c98cc3a9` skip-checks → 已实现（未提交，待与本批文档一起 commit）。适配到 fork
+  `.github/workflows/ci.yml` 的 **3-job 结构**（fork：frontend/backend/web-server；
+  上游：frontend/backend/WSL2）：
+  - 新增 `changes` job（dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3，
+    SHA-pinned），inline 路径过滤器。frontend 组：`src/**`/`tests/**`/`package.json`/
+    `pnpm-lock.yaml`/`pnpm-workspace.yaml`/`tsconfig.json`/`tsconfig.node.json`/
+    `vite.config.ts`/`vitest.config.ts`/`tailwind.config.cjs`/`postcss.config.cjs`/
+    `components.json`/`.github/workflows/**`。backend 组：`src-tauri/**`/
+    `rust-toolchain.toml`/`.github/workflows/**`。
+  - `frontend`/`backend` job 各 `needs: changes` + `if: github.event_name !=
+    'pull_request' || needs.changes.outputs.<group> == 'true'`（push to main 无条件跑保 cache）。
+  - `web-server` job（fork 独有，验证前后端集成）gate 在 `frontend || backend`（任一侧
+    变更即跑，docs-only 跳过）。
+  - **路径校正**：fork `index.html` 在 `src/index.html`（vite root=`src`），被 `src/**`
+    覆盖；无根级裸 `index.html` glob（上游有，因上游 vite root 是项目根）。fork 的
+    `src/i18n/locales/` 被 `src/**` 覆盖。
+- `36ed280d` i18n labeler glob → **整提交跳过（proven inapplicable，用户裁定 option A）**。
+  fork `.github/` 下无 `labeler.yml`（配置）也无 `workflows/labeler.yml`（工作流）；
+  `ls .github/` 仅 `ci.yml`/`claude.yml`/`release.yml`/`stale.yml`/`dependabot.yml`/
+  `FUNDING.yml`/`ISSUE_TEMPLATE/`/`pull_request_template.md`。上游 glob 修复
+  （`src/locales/**`→`src/i18n/locales/**`）无目标文件。`c98cc3a9` 的 `changes` job
+  inline 了自己的过滤器（含 `src/**` 覆盖 `src/i18n/locales/**`），不依赖 labeler.yml，
+  已等价覆盖 i18n 路径识别。引入整套 labeler CI 表面是独立新决策，不应藏在"sync glob
+  修复"里夹带；若未来想要 PR 自动打标签，应作为独立 CI 特性任务评估。
+- 排除 `ceef0a52`（WSL2 backend tests，桌面专属）、`bef46cd5`（grokBuild exclusion 文档）。
+
+### 契约裁定记录
+
+task-contract guardian 指出 design.md/implement.md 原口径是"路径校正后落地"（隐含 fork
+有 labeler），实际 fork 无 labeler 表面。主 Agent 拟单方面降级为跳过属越界，交用户裁定。
+用户选 option A（跳过 + carry-forward 登记），理由：grilling #9 本意是"适配有通用价值的
+CI 改进"，`c98cc3a9`（skip-checks 省 CI 分钟）是通用价值；`36ed280d` 的通用价值依附于
+"已有 labeler"——fork 没有，引入整套 labeler CI 是独立新决策。`c98cc3a9` inline 过滤器
+已等价实现"i18n 路径正确识别"这个实质目的。design.md + implement.md 已更新记录此裁定。
+
+### S7 门禁证据
+
+- `c98cc3a9` 是纯 YAML 改动（`.github/workflows/ci.yml`），不触及 Rust/TS 代码。
+- YAML 合法性：`python3 -c yaml.safe_load` 通过，jobs = ['changes', 'frontend',
+  'backend', 'web-server']。
+- `cargo fmt --check`、web `cargo check`：全绿（S7 未触及 Rust）。
+- `pnpm format:check`、`pnpm typecheck`：全绿。
+- `pnpm check:web-routes`：**282 commands / missing 0 / methodMismatch 0 /
+  parityFallback 0**。
+- `pnpm check:locales`：en/ja/zh 各 **2510 keys**，严格 parity。
+- `pnpm test:unit`：**171 files / 1002 tests passed**（与 S6 末尾一致，无回归）。
+- Rust parity（`web_api::` + `dual_runtime_parity::` + `web_proxy_lifecycle::`）：
+  **37 passed / 0 failed**（web_api:: 27、dual_runtime_parity:: 3、web_proxy_lifecycle:: 7）。
+- `pnpm test:integration`：**50/54 passed**。仅 4 个 PRD 已知 fixture flakes：
+  ProviderList Claude official-seed empty-state **1** 个；SkillsPage default-repo/fixture
+  discovery **3** 个。无新增产品失败。
+
+### 残余风险
+
+- `c98cc3a9` 的 `changes` job 路径过滤器在 docs-only PR（仅改 `.github/workflows/**`
+  外的 md 文件）时会跳过所有 job——这是上游预期行为（docs-only PR 无需 CI），fork
+  沿用。若未来 fork 有 docs 相关的 lint 需求，需独立评估。
+- `36ed280d` 跳过：fork 仍无 PR 自动打标签能力。若未来需要，应作为独立 CI 特性任务
+  评估引入整套 labeler（配置 + 工作流），而非借 sync 夹带。
+- 下一批：S8 版本 + changelog + 全量门禁 + 真实 Web 服务冒烟。

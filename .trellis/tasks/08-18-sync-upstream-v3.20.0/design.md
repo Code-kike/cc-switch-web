@@ -46,9 +46,18 @@ selective port（cherry-pick + Web 适配），**不直接 merge**。原因：�
 
 ### CI 适配（S7）
 - `c98cc3a9` skip-checks：适配到 fork `.github/workflows/ci.yml`，按 fork 实际
-  frontend/backend 分区。
-- `36ed280d` i18n labeler glob：**按 fork 实际 locales 路径校正**（fork locales
-  在 `src/i18n/locales/`，非上游路径），不能照搬上游 glob。
+  frontend/backend 分区（fork 3 jobs：frontend/backend/web-server，上游 3 jobs：
+  frontend/backend/WSL2）。新增 `changes` job（dorny/paths-filter，SHA-pinned）
+  inline 路径过滤器，gate 三个 job；push to main 无条件跑保 cache。路径过滤器按
+  fork 校正：fork `index.html` 在 `src/index.html`（vite root=`src`），被 `src/**`
+  覆盖，无根级裸 glob。
+- `36ed280d` i18n labeler glob：**整提交跳过（proven inapplicable，用户裁定
+  option A）**：fork `.github/` 下无 `labeler.yml`（配置）也无 `workflows/labeler.yml`
+  （工作流），上游 glob 修复（`src/locales/**`→`src/i18n/locales/**`）无目标文件。
+  `c98cc3a9` 的 `changes` job inline 了自己的过滤器（含 `src/**` 覆盖
+  `src/i18n/locales/**`），不依赖 labeler.yml，已等价覆盖 i18n 路径识别。引入整套
+  labeler CI 表面是独立新决策，不应藏在"sync glob 修复"里夹带；若未来想要 PR
+  自动打标签，应作为独立 CI 特性任务评估。
 
 ## 批次依赖与顺序
 

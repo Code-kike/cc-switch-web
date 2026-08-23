@@ -115,10 +115,10 @@ cargo test --manifest-path src-tauri/Cargo.toml web_proxy_lifecycle::
 - [x] 门禁全绿 → commit（4 提交各自全量门禁 + 批末 test:integration + Rust parity）
 
 ### S7 — CI 适配（2 提交，排除 2 桌面专属）
-- [ ] `c98cc3a9` skip-checks → fork `.github/workflows/ci.yml`（按 fork frontend/backend 分区）
-- [ ] `36ed280d` i18n labeler glob → **按 fork 实际 locales 路径校正**（`src/i18n/locales/`）
-- [ ] 排除 `ceef0a52`（WSL2 backend tests）、`bef46cd5`（grokBuild exclusion 文档）
-- [ ] 门禁全绿 → commit
+- [x] `c98cc3a9` skip-checks → fork `.github/workflows/ci.yml`（按 fork frontend/backend/web-server 3-job 分区；新增 `changes` job inline 路径过滤器，fork `index.html` 在 `src/` 被覆盖）
+- [~] `36ed280d` i18n labeler glob → **整提交跳过（proven inapplicable，用户裁定 option A）**：fork 无 `.github/labeler.yml`（配置）也无 `workflows/labeler.yml`（工作流），上游 glob 修复无目标文件；`c98cc3a9` inline 过滤器已含 `src/**` 覆盖 `src/i18n/locales/**`，等价覆盖 i18n 路径。引入整套 labeler CI 是独立新决策，不夹带进 sync。
+- [x] 排除 `ceef0a52`（WSL2 backend tests）、`bef46cd5`（grokBuild exclusion 文档）
+- [x] 门禁全绿 → commit
 
 ### S8 — 版本 + changelog + 全量门禁
 - [ ] `18ca2da0`/`0b5da510` 版本号 → `3.20.0`（package.json + Cargo.toml）
