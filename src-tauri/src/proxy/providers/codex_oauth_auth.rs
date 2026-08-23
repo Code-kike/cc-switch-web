@@ -22,7 +22,10 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
 use tokio::sync::{Mutex, RwLock};
 
 use super::copilot_auth::{GitHubAccount, GitHubDeviceCodeResponse};
@@ -258,6 +261,8 @@ pub struct CodexOAuthManager {
     /// 进行中的 Device Code 流程：device_auth_id -> {user_code, expires_at_ms}
     /// 过期条目会在 start_device_flow 时被清理，防止放弃的登录流程导致无界增长
     pending_device_codes: Arc<RwLock<HashMap<String, PendingDeviceCode>>>,
+    /// 清除全部认证时递增，使已经在网络请求中的登录流程无法重新登记。
+    login_epoch: AtomicU64,
     http_client: Client,
     storage_path: PathBuf,
 }
@@ -272,6 +277,7 @@ impl CodexOAuthManager {
             access_tokens: Arc::new(RwLock::new(HashMap::new())),
             refresh_locks: Arc::new(RwLock::new(HashMap::new())),
             pending_device_codes: Arc::new(RwLock::new(HashMap::new())),
+            login_epoch: AtomicU64::new(0),
             http_client: Client::new(),
             storage_path,
         };
@@ -293,6 +299,7 @@ impl CodexOAuthManager {
     /// - verification_uri = https://auth.openai.com/codex/device
     pub async fn start_device_flow(&self) -> Result<GitHubDeviceCodeResponse, CodexOAuthError> {
         log::info!("[CodexOAuth] 启动 Device Code 流程");
+        let login_epoch = self.login_epoch.load(Ordering::Acquire);
 
         let response = self
             .http_client
@@ -322,18 +329,13 @@ impl CodexOAuthManager {
 
         // 记录 device_auth_id -> 用户码映射；同时清理所有已过期的条目，
         // 避免用户放弃登录流程导致 HashMap 无界增长
-        {
-            let mut pending = self.pending_device_codes.write().await;
-            let now_ms = chrono::Utc::now().timestamp_millis();
-            pending.retain(|_, entry| entry.expires_at_ms > now_ms);
-            pending.insert(
-                device.device_auth_id.clone(),
-                PendingDeviceCode {
-                    user_code: device.user_code.clone(),
-                    expires_at_ms,
-                },
-            );
-        }
+        self.register_pending_device_code(
+            device.device_auth_id.clone(),
+            device.user_code.clone(),
+            expires_at_ms,
+            login_epoch,
+        )
+        .await?;
 
         log::info!(
             "[CodexOAuth] 获取 Device Code 成功，user_code: {}",
@@ -347,6 +349,30 @@ impl CodexOAuthManager {
             expires_in,
             interval,
         })
+    }
+
+    async fn register_pending_device_code(
+        &self,
+        device_auth_id: String,
+        user_code: String,
+        expires_at_ms: i64,
+        login_epoch: u64,
+    ) -> Result<(), CodexOAuthError> {
+        let mut pending = self.pending_device_codes.write().await;
+        if self.login_epoch.load(Ordering::Acquire) != login_epoch {
+            return Err(CodexOAuthError::ExpiredToken);
+        }
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        pending.retain(|_, entry| entry.expires_at_ms > now_ms);
+        pending.insert(
+            device_auth_id,
+            PendingDeviceCode {
+                user_code,
+                expires_at_ms,
+            },
+        );
+        Ok(())
     }
 
     /// 轮询 Device Code 状态
@@ -688,6 +714,7 @@ impl CodexOAuthManager {
         }
         {
             let mut pending = self.pending_device_codes.write().await;
+            self.login_epoch.fetch_add(1, Ordering::AcqRel);
             pending.clear();
         }
 
@@ -1104,6 +1131,26 @@ mod tests {
         let manager = CodexOAuthManager::new(temp.path().to_path_buf());
         assert!(!manager.is_authenticated().await);
         assert!(manager.list_accounts().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn device_start_rejects_flow_cleared_during_network_request() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = CodexOAuthManager::new(temp.path().to_path_buf());
+        let login_epoch = manager.login_epoch.load(Ordering::Acquire);
+
+        manager.clear_auth().await.unwrap();
+        let result = manager
+            .register_pending_device_code(
+                "stale-device-auth-id".to_string(),
+                "ABCD-EFGH".to_string(),
+                chrono::Utc::now().timestamp_millis() + 60_000,
+                login_epoch,
+            )
+            .await;
+
+        assert!(matches!(result, Err(CodexOAuthError::ExpiredToken)));
+        assert!(manager.pending_device_codes.read().await.is_empty());
     }
 
     #[tokio::test]
