@@ -4,7 +4,6 @@ import { parse as parseToml } from "smol-toml";
 import { describe, expect, it, vi } from "vitest";
 import {
   GrokBuildProviderForm,
-  grokApiBackendFromApiFormat,
 } from "@/components/providers/forms/GrokBuildProviderForm";
 
 vi.mock("@/components/JsonEditor", () => ({
@@ -126,10 +125,7 @@ describe("GrokBuildProviderForm", () => {
     });
   });
 
-  it("maps preset API formats into Grok api_backend", async () => {
-    expect(grokApiBackendFromApiFormat("openai_chat")).toBe("chat_completions");
-    expect(grokApiBackendFromApiFormat("openai_responses")).toBe("responses");
-
+  it("always writes the default api_backend regardless of preset format", async () => {
     const user = userEvent.setup();
     const onSubmit = vi.fn();
     render(
@@ -148,6 +144,8 @@ describe("GrokBuildProviderForm", () => {
     const submitted = onSubmit.mock.calls[0][0];
     const settings = JSON.parse(submitted.settingsConfig);
     const config = parseToml(settings.config) as any;
+    // f748f3ac: the Grok client always stays on Responses; apiFormat is
+    // persisted separately via meta.apiFormat, not via api_backend.
     expect(submitted.meta.apiFormat).toBe("openai_responses");
     const selected = config.model[config.models.default];
     expect(selected.api_backend).toBe("responses");
