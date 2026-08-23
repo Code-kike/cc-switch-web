@@ -215,17 +215,10 @@ fn resolve_launch_cwd(cwd: Option<String>) -> Result<Option<PathBuf>, String> {
     // Strip Windows extended-length prefix that canonicalize produces,
     // as it can break batch scripts and other shell commands.
     // Special-case \\?\UNC\server\share -> \\server\share for network/WSL paths.
+    // Delegates to the shared helper used by the tool-version probe path so the
+    // `\\?\` handling cannot drift between the two call sites.
     #[cfg(target_os = "windows")]
-    let resolved = {
-        let s = resolved.to_string_lossy();
-        if let Some(unc) = s.strip_prefix(r"\\?\UNC\") {
-            PathBuf::from(format!(r"\\{unc}"))
-        } else if let Some(stripped) = s.strip_prefix(r"\\?\") {
-            PathBuf::from(stripped)
-        } else {
-            resolved
-        }
-    };
+    let resolved = crate::services::tool_version::windows_shell_compatible_path(&resolved);
 
     Ok(Some(resolved))
 }
