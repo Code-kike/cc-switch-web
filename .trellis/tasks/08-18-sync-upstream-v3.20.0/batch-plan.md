@@ -408,3 +408,139 @@ managed-codex 事务依赖 `a2e22f33`（`feat-managed-oauth-accounts` 子任务�
   若用户手工在 `settings_config.modelCatalog.models[].reasoningLevels` 写入，catalog 生成会
   消费（有 `codex_config.rs` 测试覆盖）。前端 UI 随延期栈恢复时统一落地。
 - 下一批：S5 UI/refactor（14 提交）。
+
+## S5 结果（2026-08-23，UI/refactor）
+
+### 提交映射与处置（14 提交：11 移植 / 3 整提交跳过）
+
+按上游实际拓扑顺序处理（非 dispatch 人工顺序）——关键纠正：dispatch 把
+`580a4d7b` 列为第 1 项，但它在拓扑上是 `7e152d75`/`076c2744` 的下游且依赖
+其创建的 `shared/ModelDropdown.tsx`。正确顺序为 `7e152d75` → `076c2744` →
+`580a4d7b`。`git merge-base --is-ancestor` 证实 `580a4d7b` 不是 `7e152d75`/
+`076c2744` 的祖先（时间戳 580a4d7b=08-12 晚于 7e152d75/076c2744=08-11）。
+
+- `7e152d75` → `bcb5ae53`：已移植 + 前置创建。fork 从未落地
+  `shared/ModelDropdown.tsx`——v3.19.2 同步时 `2deee109`（创建该组件的提交）
+  被跳过，因其仅触及 fork 不存在的 `ClaudeDesktopProviderForm.tsx`，而
+  `OpenCodeFormFields.tsx` 内联了等价 `ModelDropdown` 函数（用旧 DropdownMenu
+  无 fuzzy）。本提交连带创建 `shared/ModelDropdown.tsx`（上游 076c2744+7e152d75
+  最终态：Command+Popover fuzzy search + vendor keywords + aria-label），替换
+  `ModelInputWithFetch` 与 `ClaudeFormFields` Copilot block 的内联 DropdownMenu
+  （CopilotModel → FetchedModel 映射），新增 3 个 locale keys
+  （searchModelPlaceholder/Empty/AriaLabel，en/ja/zh）。
+- `076c2744` → `7386a797`：已移植，clean cherry-pick（shared ModelDropdown 已存在）。
+  HermesFormFields/OpenClawFormFields 内联 DropdownMenu 分组拣选器统一到
+  `<ModelDropdown>`；OmoFormFields ModelCombobox 与 ProfileSwitcher 加 Command
+  label（accessibility）；新增 `tests/components/ModelDropdown.test.tsx`
+  覆盖 labelled search input + vendor 过滤。
+- `580a4d7b` → `86520729`：已移植并适配。Hermes 表单采用上游 Pi-style 行布局
+  （header row Model ID/Display name/spacer + ChevronRight 展开式 + context_length
+  可折叠 detail panel + rateLimitDelay 直显，移除 role badge 与 Collapsible 高级区），
+  但保留 fork S4c 的 `ImeSafeInput`（model id/name/baseUrl 三处）、`generateUUID`
+  稳定 modelKeysRef、`expandedModelKeys: Set<string>`（按键不按 index）。合并上游
+  结构测试（Pi-style rows / request interval）与 fork IME 组合回归（4 测试全绿）。
+- `ec842156` → `79424b99`：已移植，clean cherry-pick。OpenCode Extra SDK Options 由
+  Collapsible 改为常驻可见区（FormLabel + hint + add button，移除 extraOptionsOpen
+  state 与 auto-open effect）；Models section 加 border-l family divider。新增 2 个
+  结构测试（always-visible addable section + model divider）。
+- `c0050623` → `da6136cf`：已移植并适配。Radix `CheckboxPrimitive` → 原生
+  `<input type="checkbox">`，保留 `onCheckedChange(boolean)` + `checked(CheckedState)`
+  契约；indeterminate 经 `useLayoutEffect` 设原生 `.indeterminate` 属性 +
+  `aria-checked="mixed"`。全量核查消费方（~14 处）：无 `checked="indeterminate"`
+  传递、无 `data-[state=checked]` peer CSS 依赖（仅 switch.tsx 用 Radix data-state，
+  未受影响）、无 peer: 兄弟选择器。typecheck + 7 个消费方测试文件（19+22+25 测试）全绿。
+- `5b77da2b` → `53c52afb`：已移植，clean cherry-pick。OpenClaw User-Agent 行加
+  border-l family divider。
+- `95b95da6` → `e0f07dbc`：已移植并适配。OpenClaw 表单采用 Pi-style family 模型
+  编辑器（header row + ChevronRight 展开式 + 原生 OpenClaw detail panel：reasoning
+  switch / input-types checkboxes / contextWindow / maxTokens / cost grid），保留
+  fork `ImeSafeInput`；ProviderActions/ProviderCard/useProviderActions 加默认模型
+  选择流；合并上游结构测试（family rows / native detail panel）与 fork IME 回归
+  （4 测试全绿）。expandedModels 改为 `Set<string>` 按键。
+- `8673e9d8` → `4c7a0b44`：已移植并适配（手动，cherry-pick 冲突因 locale 结构偏移
+  与缺失键过大）。Claude 高级选项 Collapsible 加 bordered card 样式（rounded-lg
+  border border-border-default p-4）+ full-width justified-start trigger +
+  leading-relaxed hint；模型映射 divider 改 border-border-default；
+  providerForm.apiFormat/apiFormatHint 重命名为 upstream-format 文案（en/ja/zh）。
+  **跳过 ClaudeDesktopProviderForm.tsx hunk**（proven inapplicable，fork 无该文件）；
+  **未引入**相邻 `customUserAgent*/localProxy*` 键——它们属 `6fd4e6f4`
+  （local proxy request overrides）未移植特性，8673e9d8 只改 apiFormat 行，这些键
+  在其父提交已存在但 fork 基线全缺；隐式移植会越界 S5。
+- `bc7f5f41` → `351ae9b0`：已移植，clean cherry-pick。JsonEditor 默认 rows 12→3，
+  各表单 editor override（Codex 6/8、Common 14、Gemini 6/8、GrokBuild 12、
+  ProviderForm OMO preview + provider/common JSON 3×14）统一降至 3。10 处全部应用。
+- `7de63227` → `ce5da1b7`：已移植，clean cherry-pick。GrokBuild form 加
+  `glass rounded-xl p-6 border border-white/10` 容器（fork 既有模式，ProviderForm/
+  PromptFormPanel/EndpointSpeedTest/McpFormModal 已用）。
+- `967daa1a` → `e58491bc`：已移植，clean cherry-pick。Rust `local_hash_for_update_check`
+  先验 SSOT 目录存在再信任缓存哈希——换机恢复备份后数据库仍存 content_hash 但 Skill
+  文件未随库迁移，缓存哈希会误报「无更新」掩盖缺失。目录缺失返回 None → 进入更新
+  列表 → `update_skill` 重建（已容忍缺失目录）。4 个回归测试覆盖 missing-dir /
+  cache-hit / cache-empty backfill / invalid-directory，全绿。
+
+### 整提交跳过（proven inapplicable，3 提交）
+
+- `7e5007d5` fix(claude-desktop): clarify model configuration modes —— 仅改
+  fork 不存在的 `ClaudeDesktopProviderForm.tsx`（675 行 + en locale）。
+- `619a592c` fix(claude-desktop): align provider form frame —— 同上，仅改
+  `ClaudeDesktopProviderForm.tsx` 1 行。
+- `390102a2` fix(codex): fill DeepSeek contextWindow in OpenCode Go catalog ——
+  fork 无 "OpenCode Go" 预设（grep 全树 0 匹配，38 个 preset name 中无此项），
+  且 fork 的 DeepSeek 官方预设已含 `deepseek-v4-pro`/`deepseek-v4-flash` 的
+  `contextWindow: 1048576`（3 个 DeepSeek 模型目录条目均有 contextWindow，无缺失）。
+  上游修复的 bug 在 fork 不存在。
+
+### 关键决策记录
+
+1. **拓扑顺序纠正**：dispatch 列出 `580a4d7b` 为 S5 第 1 项，但 `git merge-base
+   --is-ancestor` 证明 `580a4d7b` 是 `7e152d75`/`076c2744` 的**下游**（依赖其创建
+   的 shared ModelDropdown）。按 dispatch 顺序处理会导致 `580a4d7b` 的 Hermes 表单
+   `import { ModelDropdown } from "./shared"` 在 typecheck 报错。改为拓扑顺序
+   `7e152d75` → `076c2744` → `580a4d7b` 后全部 clean。
+2. **shared/ModelDropdown.tsx 前置创建**：fork 从未携带该组件（`2deee109` 在 v3.19.2
+   同步被跳过，因仅触 ClaudeDesktopForm）。`7e152d75`/`076c2744`/`580a4d7b` 均依赖它。
+   作为 `bcb5ae53`（7e152d75）的前置一并创建（上游最终态 99 行），非新特性移植，
+   而是上游既有组件的迟到落地。
+3. **ImeSafeInput 保留**：fork S4c（`d9d4a660`→`0277a8e1`）为 model id/name/baseUrl
+   三处加了 ImeSafeInput 防 IME 标记文本被父重渲染覆盖。S5 的 `580a4d7b`/`95b95da6`
+   重构这些表单时，上游用 `<Input onChange>`，fork 改用 `<ImeSafeInput onValueChange>`
+   保留 S4c 回归。合并测试文件保留双方测试用例。
+4. **8673e9d8 未引入 customUserAgent/localProxy 键**：cherry-pick 冲突暴露上游
+   `8673e9d8` 的父提交已含 `customUserAgent*/localProxy*` 键（来自 `6fd4e6f4` 未移植
+   特性），而 fork 基线全缺。仅采用 `8673e9d8` 实际改的 `apiFormat`/`apiFormatHint`
+   2 行，不把相邻未移植特性的键隐式带入（越 S5 边界）。
+
+### S5 门禁证据
+
+- 每提交后全量 `pnpm test:unit`：**171 files / 1002 tests passed**（两次确认性
+  rerun 一致）。c0050623 checkbox 重写触及 ~14 消费方，全量 unit 无回归。
+- `pnpm format:check`、`pnpm typecheck`、`pnpm check:web-routes`
+  （missing/methodMismatch/parityFallback 均 0）、`pnpm check:locales`
+  （en/ja/zh parity，keys 增至 2510）全绿，每提交后确认。
+- `cargo fmt --check`、desktop `cargo check --all-targets --locked`、Web example
+  `cargo check --locked --no-default-features --features web-server --example server`
+  全绿（Web 仅 67 个既有 standalone shim dead-code warnings）。
+- Rust focused：`services::skill::` **44 passed**（含 967daa1a 新增 4 个
+  `local_hash_for_update_check` 回归）。
+- Web Rust parity：`web_api::` **27 passed**、`dual_runtime_parity::` **3 passed**、
+  `web_proxy_lifecycle::` **7 passed**。
+- `pnpm test:integration`（批末统一跑，3 次 rerun）：
+  - 稳定失败 = PRD 已知 4 个 fixture flake：ProviderList Claude official-seed/
+    import-current empty-state **1** 个；SkillsPage default-repo/fixture discovery
+    **3** 个（automatic skills.sh fallback empty-state、repo skill install/update、
+    skills.sh pagination install）。
+  - PromptPanel "creates/edits/enables a Gemini prompt" **合并套件 flake**：3 次
+    full rerun 中 2 次失败（500 服务器启动竞争）、1 次通过；**单独隔离 rerun
+    3/3 通过**。S5 未触 PromptPanel 组件或 prompt 服务（git log 证实），属同类
+    并发 Web 服务器启动 flake，与 PRD 已知 4 项同性质，不阻塞。
+  - 最终稳定态：49-50/54 passed，仅剩 4 个 PRD 白名单 flake。
+
+### 残余风险与延期项
+
+- `reasoningLevels` 前端 catalog 编辑器 UI 仍是延期项（继承 S4c，与 Codex Chat
+  reasoning 栈同捆）；`967daa1a` 的 Skill SSOT 目录检查不涉及该栈。
+- `customUserAgent*/localProxy*` 键（`6fd4e6f4` local proxy request overrides）
+  仍是未移植特性——S5 刻意不带入，若未来移植需单独任务。
+- Codex Chat/Anthropic reasoning 转换栈仍是既有延期项（`transform_codex_chat.rs`/
+  `streaming_codex_chat.rs` 全缺），S5 未触及。
+- 下一批：S6 Windows 全量适配（4 提交）。

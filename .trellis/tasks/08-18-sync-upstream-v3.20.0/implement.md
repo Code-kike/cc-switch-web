@@ -90,10 +90,22 @@ cargo test --manifest-path src-tauri/Cargo.toml web_proxy_lifecycle::
 - [x] 门禁全绿 → commit
 
 ### S5 — UI/refactor（14 提交）
-- [ ] `7e5007d5` `580a4d7b` `ec842156` `c0050623` `5b77da2b` `619a592c` `95b95da6`
-      `076c2744` `7e152d75` `8673e9d8` `bc7f5f41` `7de63227` `967daa1a` `390102a2`
-- [ ] UI 适配到 fork 组件树，保留 fork 既有样式约定
-- [ ] 门禁全绿 → commit
+- [~] `7e5007d5` fix(claude-desktop): clarify model configuration modes → **整提交跳过（proven inapplicable）**：仅改 fork 不存在的 `ClaudeDesktopProviderForm.tsx`（`ls` 证实 fork 无该文件）。fork 的 AppId 集合无 claude-desktop。
+- [x] `580a4d7b` refactor(hermes): align provider form hierarchy → `86520729`。采用上游 Pi-style 行布局（header row + ChevronRight 展开式 + context_length 可折叠 + rateLimitDelay 直显），保留 fork S4c 的 `ImeSafeInput`（model id/name/baseUrl）与 `expandedModelKeys` Set；合并上游结构测试与 fork IME 回归。
+- [x] `ec842156` refactor(opencode): clarify provider form hierarchy → `79424b99`。Extra SDK Options 由 Collapsible 改为常驻可见区（FormLabel + hint + add），Models section 加 border-l family divider；新增 2 个结构测试。
+- [x] `c0050623` fix(ui): unify checkbox styles → `da6136cf`。Radix CheckboxPrimitive → 原生 `<input type=checkbox>`，保留 `onCheckedChange(boolean)` + `checked(CheckedState)` 契约；indeterminate 经 useLayoutEffect 设原生属性 + aria-checked="mixed"。全量消费方（~14 处）typecheck/test 通过，无 peer/data-[state] CSS 依赖。
+- [x] `5b77da2b` style(openclaw): clarify User-Agent section hierarchy → `53c52afb`。User-Agent 行加 border-l family divider。
+- [~] `619a592c` fix(claude-desktop): align provider form frame → **整提交跳过（proven inapplicable）**：同 `7e5007d5`，仅改 fork 不存在的 `ClaudeDesktopProviderForm.tsx`。
+- [x] `95b95da6` refactor(openclaw): align provider model editor → `e0f07dbc`。Pi-style family 模型编辑器（header row + ChevronRight 展开式 + 原生 OpenClaw detail panel：reasoning/input-types/contextWindow/maxTokens/cost grid），保留 fork `ImeSafeInput`；ProviderActions/ProviderCard/useProviderActions 加默认模型选择流；合并结构测试与 IME 回归。
+- [x] `076c2744` fix(provider): finish model dropdown consolidation → `7386a797`。HermesFormFields/OpenClawFormFields 内联 DropdownMenu 分组拣选器统一到 shared `<ModelDropdown>`；OmoFormFields ModelCombobox 与 ProfileSwitcher 加 Command label；新增 ModelDropdown.test.tsx。
+- [x] `7e152d75` feat(provider): add fuzzy search to model mapping dropdown → `bcb5ae53`。**含前置**：fork 从未落地 `shared/ModelDropdown.tsx`（v3.19.2 同步跳过 `2deee109` 因其仅触 ClaudeDesktopForm），本提交连带创建该共享组件（上游最终态：Command+Popover fuzzy search + vendor keywords），并替换 ModelInputWithFetch/ClaudeFormFields Copilot block 的内联 DropdownMenu；新增 3 locale keys（en/ja/zh）。
+- [x] `8673e9d8` fix(claude): align advanced options with Codex → `4c7a0b44`。Claude 高级选项 Collapsible 加 bordered card 样式 + full-width trigger + leading-relaxed hint；模型映射 divider 改 border-border-default；providerForm.apiFormat/apiFormatHint 重命名为 upstream-format 文案（en/ja/zh）。**跳过 ClaudeDesktopProviderForm hunk**（proven inapplicable）；未引入相邻 `customUserAgent*/localProxy*` 键（属 `6fd4e6f4` 未移植特性，越界）。
+- [x] `bc7f5f41` fix(ui): reduce provider editor empty space → `351ae9b0`。JsonEditor 默认 rows 12→3，各表单 editor override（Codex 6/8、Common 14、Gemini 6/8、GrokBuild 12、ProviderForm 3×14）统一降至 3。
+- [x] `7de63227` fix(grokbuild): add glass form container → `ce5da1b7`。GrokBuild form 加 glass rounded-xl p-6 border border-white/10 容器（fork 既有模式）。
+- [x] `967daa1a` fix(skills): report missing SSOT dir as update in check_updates → `e58491bc`。Rust `local_hash_for_update_check` 先验 SSOT 目录存在再信任缓存哈希，避免换机恢复备份后缺失目录被缓存掩盖；新增 4 个回归测试。
+- [~] `390102a2` fix(codex): fill DeepSeek contextWindow in OpenCode Go catalog → **整提交跳过（proven inapplicable）**：fork 无 "OpenCode Go" 预设（grep 全树 0 匹配），且 fork 的 DeepSeek 官方预设已含 `deepseek-v4-pro`/`deepseek-v4-flash` 的 `contextWindow: 1048576`（3 个 DeepSeek 模型目录条目均有 contextWindow，无缺失）。
+- [x] UI 适配到 fork 组件树，保留 fork 既有样式约定
+- [x] 门禁全绿 → commit（每提交全量 test:unit + format/typecheck/locales/web-routes/cargo fmt；批末 test:integration + Rust parity）
 
 ### S6 — Windows 全量适配（4 提交）
 - [ ] `d4fefefc` startup FOUC（前端渲染入口）
