@@ -197,6 +197,14 @@ export interface CodexCatalogModel {
   supportsParallelToolCalls?: boolean;
   inputModalities?: string[];
   baseInstructions?: string;
+  // Per-model reasoning effort levels exposed in the generated Codex catalog
+  // (e.g. ["none", "low", "medium", "high", "xhigh", "max"]). When omitted the
+  // backend keeps the template's conservative none/high default.
+  reasoningLevels?: string[];
+  // Per-model default reasoning effort. Only meaningful together with
+  // reasoningLevels; when omitted the backend keeps the template default if it
+  // is still in the list, otherwise the highest declared level.
+  defaultReasoningLevel?: string;
 }
 
 // Claude 认证字段类型
