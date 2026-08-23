@@ -544,3 +544,137 @@ managed-codex 事务依赖 `a2e22f33`（`feat-managed-oauth-accounts` 子任务�
 - Codex Chat/Anthropic reasoning 转换栈仍是既有延期项（`transform_codex_chat.rs`/
   `streaming_codex_chat.rs` 全缺），S5 未触及。
 - 下一批：S6 Windows 全量适配（4 提交）。
+
+## S6 结果（2026-08-23，Windows 全量适配）
+
+4 ported / 0 skipped。4 提交全部落地，grilling #8（全量移植 + Web 适配）口径。
+
+### 提交映射与处置
+
+- `3c592d93`（WiX Handlebars escape）→ `03dd54e3`：clean 1 行修复。`per-user-main.wxs`
+  第 149 行 `Software\{{manufacturer}}\{{product_name}}` 单反斜杠被 Handlebars 当 mustache
+  escape 吞掉，MSI 写出字面 `Software{{manufacturer}}{{product_name}}` 键。改为 `\\` 双反斜杠，
+  与文件其余 6 处注册表键（76/79/115/130/192/211）一致。无 Web 适配（WiX 桌面安装器专属）。
+- `c39c9032`（WSL atomic replace fallback）→ `8457fd13`：WSL UNC 路径拒绝
+  `ReplaceFileW` 返回 `ERROR_NOT_SUPPORTED` (50)，原代码只对 `NotFound` 降级到
+  `fs::rename`，其他错误 break 出循环 → 写入失败。加 `replace_not_supported` 分支，
+  ERROR_NOT_SUPPORTED 也走 `fs::rename`（Windows 上用不同 replace-existing API）。
+  **carry-forward 安全边界保留**：fork 既有 2s JS deadline、16 MiB heap/256 KiB stack、
+  backup/replace 锁边界、canonical-schema allow-list 全部未触及；fallback 只对单个
+  ERROR_NOT_SUPPORTED 放宽 NotFound-vs-other 分支，不放宽其他写入路径校验。
+  `Win32_Foundation` 无需新增 Cargo feature：windows-sys 0.61.2 经 feature unification
+  （tokio/winreg/arboard 等 30+ 传递依赖显式启用）已可用，与上游一致（上游也未加）。
+- `d4fefefc`（startup FOUC）→ `58474eee`：3 部分移植 + Web 适配。
+  1. `src/index.html` 加 inline anti-FOUC script（同步、首帧前执行），读 localStorage
+     `cc-switch-theme`（fork ThemeProvider 的精确 storageKey）+ system fallback，
+     `documentElement.classList.toggle("dark",...)`。Web + 桌面均适用。
+  2. `tauri.conf.json` 桌面 CSP `script-src` 加 `'sha256-ls27Lc1OytcVawXPVMplz6LyKz2i9KYAVBw3u79qyB4='`
+     （openssl dgst 实算匹配 inline script 字节），保留既有 `'self'`。
+  3. `lib.rs` Windows 延迟 `window.show()` 到主页面 `PageLoadEvent::Finished`（`on_page_load`
+     + `AtomicBool` 防重入 + `silent_startup` 门控），避免 WebView2 原生层先涂白/黑底。
+     非 Windows 保留即时 show。闭包按 `#[cfg(windows)]`/`#[cfg(not(windows))]` 分支，
+     AtomicBool 仅在 Windows 捕获/move。
+  **Web CSP 适配**：`security_headers.rs` 的 `script-src 'self' 'unsafe-inline'` 已允许
+  inline script，无需改动；Vite 保留非 module inline script（`root: "src"` 构建）。
+- `de9af49a`（Windows CLI registry PATH + standalone installer dirs）→ `7678bbfe`：
+  **目标文件适配**——fork 在 commit `64a34eb3` 把 CLI 检测从 `commands/misc.rs` 迁到
+  `services/tool_version.rs`，上游 `misc.rs` 目标在 fork 不存在；全部适配到
+  `tool_version.rs`。新增辅助函数：
+  - `effective_path_string()`/`effective_path_os()`：合并进程 PATH + HKCU\Environment +
+    HKLM Session Manager\Environment 的 `Path` 值（`REG_EXPAND_SZ` 经 `expand_env_chars`
+    展开），修复 in-app self-update 后用户 PATH 丢失（#6061）导致 CLI 检测为空。
+  - `expand_env_chars()`：`%VAR%` 展开，未定义变量原样保留。
+  - `merge_path_segments_win()`：`;` 分隔、大小写不敏感去重、进程段优先。
+  - `prepend_search_dir_to_path()`（Unix）：OsString 保留非 UTF8 字节，避免单个非
+    Unicode 段丢弃所有 interpreter 目录。
+  - `windows_shell_compatible_path()`：从 `misc.rs::resolve_launch_cwd` 内联 `\\?\`
+    stripping 抽取为 `pub(crate)` 共享函数，同时用于 `run_windows_tool_command`
+    （canonicalized `.cmd`/`.bat` 路径含 `\\?\` 前缀会被 `cmd /C call` 拒绝）。
+  - `is_windows_app_execution_alias_dir()`：过滤 `Microsoft\WindowsApps` reparse point。
+  - `windows_path_lookup_command()`：`where.exe` 用 `$PATH:pattern` 形式（不搜当前目录）+
+    显式 System32 副本（防项目本地 `where.exe` 劫持）。
+  `build_tool_search_paths`(Windows) 加 standalone installer dirs（codex
+  `%LOCALAPPDATA%\Programs\OpenAI\Codex\bin`、claude `%LOCALAPPDATA%\Programs\claude`），
+  置于 npm 目录前；PATH append 由 `var_os("PATH")` 改 `effective_path_os()`。
+  `resolve_path_default`(Windows) 改用 `windows_path_lookup_command` + 跳过 App Execution
+  Alias；`scan_cli_version`/`locate_default_tool` PATH 改 `effective_path_*`。
+  `misc.rs::resolve_launch_cwd` 改用共享 `windows_shell_compatible_path`（DRY）。
+  **7 个回归测试移植**（均 `#[cfg(target_os="windows")]`，Linux 跳过）：merge dedupe、
+  prepend non-UTF8、expand_env unknown vars、standalone dirs、where current-dir isolation、
+  shell-compat prefix strip、canonicalized .cmd execution。
+
+### 架构裁定：双入口与活代码（architecture-review 触发）
+
+`get_tool_versions`（`tool_version.rs:36`）在 Windows early-return `Vec::new()`（fork
+web-first 创建决定 `64a34eb3`，Web server 跑 Linux 无 Windows CLI 检测意义）。但
+`de9af49a` 新增辅助函数**不是死代码**——第二条入口 `run_detected_tool_command_with_timeout`
+（`:1443`，**未**被 early-return 门控）经 `locate_default_tool` → `resolve_path_default` +
+`build_tool_search_paths` 在 Windows 桌面二进制上**真实可达**，并挂为 Web 路由
+`GET /api/config/get-opencode-models`（`model_fetch.rs:84` → `config.rs:209`）。故
+registry-PATH 合并、standalone installer dirs、`windows_path_lookup_command`、App Execution
+Alias 过滤在 Windows 桌面二进制的 OpenCode 模型发现路径上**生效**。early-return 处注释
+已收窄为"仅 `get_tool_versions` 命令在 Windows 返回空；`run_detected_tool_command_with_timeout`
+路径仍执行 `locate_default_tool`，新增辅助函数在该路径生效"，避免维护者误删/误改有效代码。
+
+### 冲突解决与 carry-forward
+
+- **目标文件迁移适配**：`de9af49a` 上游目标 `commands/misc.rs` 在 fork 仅含
+  `resolve_launch_cwd` + 终端启动辅助（CLI 检测已迁出）。所有检测辅助函数落到
+  `services/tool_version.rs`（fork 实际位置），`misc.rs::resolve_launch_cwd` 仅共享
+  `windows_shell_compatible_path`。未在 misc.rs 重复定义检测函数。
+- **安全边界未退化**：2s JS deadline、16 MiB heap/256 KiB stack、128 MiB body cap、
+  32 MiB catalog cap、canonical-schema allow-list、backup/replace 锁边界全部保留。
+  `c39c9032` 的 WSL fallback 只对 ERROR_NOT_SUPPORTED 放宽，不引入新 shell 注入面。
+- **`winreg = 0.52` 已是依赖**：`de9af49a` 的 registry 读取复用 fork 既有 `winreg`
+  依赖（`env_manager.rs`/`env_checker.rs` 已用同款 registry 读法），无新依赖。
+- **`Win32_Foundation` feature unification**：`ERROR_NOT_SUPPORTED`（`windows_sys::Win32::
+  Foundation`）经 30+ 传递依赖（tokio/winreg/arboard/tempfile/mio/socket2 等）显式启用
+  `Win32_Foundation`，cargo feature unification 使其可用，无需改 Cargo.toml（与上游一致）。
+- **Web CSP 不退化**：`security_headers.rs` 的 `script-src 'self' 'unsafe-inline'` 不变
+  （已允许 inline anti-FOUC script）；桌面 CSP 加 SHA-256 hash 不影响 Web。
+- **无新 Tauri command/Web route**：S6 是既有命令的 Rust 改动 + 前端/安装器文件，
+  `check:web-routes` 不变（282 commands / missing 0 / methodMismatch 0 / parityFallback 0）。
+- **locale**：S6 不触及 locale（en/ja/zh 2510 keys 严格 parity，不变）。
+
+### Windows 交叉编译验证局限
+
+fork `ci.yml` 仅 Linux（无 Windows CI）；Windows 构建只在 `release.yml`（`windows-2022`）。
+本地无 `x86_64-w64-mingw32-gcc`（aws-lc-sys 需 C 编译器），无法本地 `cargo check
+--target x86_64-pc-windows-gnu`。Windows `#[cfg]` 代码块在 Linux cargo check 被跳过，
+仅能验证非 Windows 分支 + 结构语法。Windows 测试（7 个）按 `#[cfg(target_os="windows")]`
+在 Linux 跳过。残余风险：Windows 桌面二进制（release.yml 构建）的 Windows 代码块首次
+编译验证在 CI 侧完成；若失败需按 release.yml 日志修复。
+
+### 门禁证据
+
+- `(cd src-tauri && cargo fmt --all -- --check)`：通过（rustfmt 自动修复 2 处后绿）。
+- `pnpm format:check`（Prettier）：通过。
+- `cargo check`（desktop lib）：通过，0 error/0 warning。
+- `cargo check --no-default-features --features web-server --example server`（Web）：
+  通过，0 error（70 个既有 standalone shim dead-code warnings，与 baseline 一致）。
+- `pnpm check:web-routes`：282 commands / missing 0 / methodMismatch 0 / parityFallback 0
+  （不变，无新命令）。
+- `pnpm check:locales`：2510 keys，en/ja/zh 严格 parity（不变）。
+- `pnpm typecheck`：通过。
+- `pnpm test:unit`：**1002 passed**（171 files），全绿（每提交后 + 批末两次确认）。
+- Rust lib `cargo test --lib`：**2019 passed / 0 failed / 5 ignored**（含 tool_version::
+  非 Windows 测试；Windows `#[cfg]` 测试跳过）。初次 rerun 有 1 个瞬时 flake，二次 rerun
+  稳定 2019/0。
+- Web Rust parity：`dual_runtime_parity::` **3 passed**、`web_proxy_lifecycle::`
+  **7 passed**（`web_api::` 27 passed baseline 不变）。
+- `pnpm test:integration`：**49/53 passed**。4 个失败 = PRD 已知非阻塞 fixture flake：
+  ProviderList Claude official-seed empty-state/import-current **1**；SkillsPage
+  skills.sh automatic-fallback/repo-install/pagination **3**。无新增产品失败（与 S5
+  baseline 一致）。注意：S5 报告的 AuthCenterPanel OAuth 5s 超时本次未复现（环境相关，
+  非阻塞）。
+
+### 残余风险与 carry-forward
+
+- **Windows 交叉编译验证局限**（见上）：Windows `#[cfg]` 代码块首次 CI 验证在 release.yml。
+- **`de9af49a` 的 `get_single_tool_version_impl` PATH-first probe 未移植**：上游在
+  Windows `get_single_tool_version_impl` 加 `probe_path_default_version` 优先探 PATH
+  默认项。fork 的 `get_single_tool_version_impl` 在 Windows 上不可达（early-return），
+  且 fork 无 `ShellProbe` 类型，该 hunk 不适用。辅助函数（`effective_path_*`/
+  `windows_path_lookup_command` 等）已在 `locate_default_tool` 路径生效，等价覆盖。
+- **Codex Chat reasoning 栈延期项不变**：S6 未触及该栈。
+- 下一批：S7 CI 适配（2 提交，排除 2 桌面专属）。

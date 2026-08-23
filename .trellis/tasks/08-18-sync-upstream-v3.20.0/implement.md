@@ -108,11 +108,11 @@ cargo test --manifest-path src-tauri/Cargo.toml web_proxy_lifecycle::
 - [x] 门禁全绿 → commit（每提交全量 test:unit + format/typecheck/locales/web-routes/cargo fmt；批末 test:integration + Rust parity）
 
 ### S6 — Windows 全量适配（4 提交）
-- [ ] `d4fefefc` startup FOUC（前端渲染入口）
-- [ ] `de9af49a` Windows CLI registry detect → `path-adapter.ts`/`settings.ts`/`web-commands.ts`
-- [ ] `3c592d93` WiX Handlebars backslash escape → `src-tauri/wix/per-user-main.wxs`
-- [ ] `c39c9032` WSL atomic replace fallback（保留 fork 2s deadline + heap/stack 上限）
-- [ ] 门禁全绿 → commit
+- [x] `d4fefefc` startup FOUC（前端渲染入口）→ `58474eee`
+- [x] `de9af49a` Windows CLI registry detect → 适配到 `services/tool_version.rs`（fork 迁出 misc.rs）+ `commands/misc.rs::resolve_launch_cwd` 共享 `windows_shell_compatible_path` → `7678bbfe`
+- [x] `3c592d93` WiX Handlebars backslash escape → `src-tauri/wix/per-user-main.wxs` → `03dd54e3`
+- [x] `c39c9032` WSL atomic replace fallback（保留 fork 2s deadline + heap/stack 上限）→ `8457fd13`
+- [x] 门禁全绿 → commit（4 提交各自全量门禁 + 批末 test:integration + Rust parity）
 
 ### S7 — CI 适配（2 提交，排除 2 桌面专属）
 - [ ] `c98cc3a9` skip-checks → fork `.github/workflows/ci.yml`（按 fork frontend/backend 分区）
