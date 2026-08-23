@@ -272,3 +272,131 @@ managed-codex 事务依赖 `a2e22f33`（`feat-managed-oauth-accounts` 子任务�
 - S4c 待评估：`897ca892` Rust tray.rs、`f62c854a`（cancel stale device login，
   reverted — 需完整 test-helpers 移植）、`b109dcd3`、`f748f3ac`、`d9d4a660`、
   `6a7da87c`、`40cac1a6`（依赖延期 Codex Chat reasoning 栈）、`d01eab97`、`6e424fd3`。
+
+## S4c 结果（2026-08-21）
+
+7 ported / 2 skipped（proven inapplicable，延期 Codex Chat reasoning 栈）。9 个提交全部处理。
+
+### 提交映射与处置
+
+- `6e424fd3`（restore 1M context toggle）→ `feffa171`：已移植。fork 的 `21c5b3b6` 把 1M
+  toggle **整块删除**（106 行，非注释），故 `6e424fd3`（上游取消注释）不能 plain cherry-pick。
+  toggle JSX、`toggleStates` useMemo、`handleContextWindowToggle`/`handleCompactLimitChange`
+  回调、cleanup useEffect 重新加入，与上游 `6e424fd3` 结果态逐字节一致（剔除 Goal mode，fork
+  S4a `d1c550ba` 已删；JsonEditor rows 6/8 保留 fork 约定）。3 个 providerConfigUtils helper
+  与 i18n 键（contextWindow1M/autoCompactLimit/autoCompactLimitHint）已在 fork HEAD 保留。
+  `CodexConfigSections.test.tsx` 从断言 hidden 翻转为断言 visible+checked+enabled。
+
+  **task-contract 守护复核**：守护一度怀疑"fork HEAD 1M toggle 已激活"——复核 `git show
+  HEAD:...CodexConfigSections.tsx` grep `contextWindow1M`/`extractCodexTopLevelInt` 等 6 符号
+  计数=0，确认 fork HEAD 完全无该块；守护读到的是改动后工作树。最初诊断正确。
+
+- `897ca892`（OAuth usage configurable，Rust tray.rs 半）→ `f462a4ce`：已移植。fork 无
+  `CODEX_OFFICIAL_PROVIDER_ID` 常量（仅 `GROKBUILD_OFFICIAL_PROVIDER_ID`），但字面量
+  `"codex-official"` seed id 与 `managed_account_id_for("codex_oauth")` helper 均已存在。
+  在 `providers_seed.rs` 新增 `CODEX_OFFICIAL_PROVIDER_ID` 常量并从 `database/mod.rs`
+  re-export（单源真），`provider_uses_official_subscription` 加入 managed-codex guard
+  （非 codex-official + official category + 有 codex_oauth managed_account_id → 返回 false，
+  不进 tray app-wide 订阅缓存）。1 个上游测试 `managed_codex_quota_stays_out_of_the_app_
+  wide_tray_cache` 移植。
+
+- `f62c854a`（cancel stale device login）→ `4e060fa5`：已移植。fork 此前 reverted 该提交，
+  原因"需完整 test-helpers 移植"——重新评估：上游改动是单文件自包含 Rust
+  （`codex_oauth_auth.rs`），无外部 test-helper 依赖；manager struct、pending_device_codes、
+  start_device_flow、clear_auth、ExpiredToken 变体均已存在且结构匹配。新增 `login_epoch:
+  AtomicU64`，`clear_auth` 时 `fetch_add(1)`，`start_device_flow` 在网络请求前捕获 epoch，
+  `register_pending_device_code` helper 在重新登记时校验 epoch 不变（否则返回 ExpiredToken）。
+  产品代码 + 1 上游测试直接移植，无 test-helpers 基础设施需求。
+
+- `b109dcd3`（Grok Build stop Codex copy）→ `11cd4ba3`：已移植 + 适配。fork 的
+  `CodexFormFields.tsx` 是 294 行精简组件（无 codexDefaultModel 字段、无 advancedSectionHint/
+  maxOutputTokensHint/reasoningEffortHint/defaultModelHint——那 4 个在上游 1.2k 行组件里）。
+  仅 model-name placeholder 适用：按 appId 分流（grokbuild → `grokBuild.defaultModelPlaceholder`
+  "例如: grok-4.5"，codex → `codexConfig.modelNamePlaceholder` "例如: gpt-5.4"）。新增
+  `grokBuild.defaultModelPlaceholder` 三 locale 键（en/ja/zh）。另 4 个 Codex 专属 hint 在
+  fork 精简组件无消费者，按 code-reuse 指引不补 orphan 键。modelNameHint 对 Grok Build 同样
+  成立（其 config 即 config.toml）。GrokBuildProviderForm 确传 `appId="grokbuild"`，分支生效。
+
+- `f748f3ac`（grokbuild form align with Codex）→ `e97e01e4`：已移植 + 适配。fork 的
+  `CodexFormFields` 精简（无 `apiFormat`/`onApiFormatChange`/`anthropicAuthField`/
+  CodexChatReasoning/localProxy props——延期栈），故上游 `f748f3ac` 的完整 Codex 风格高级区
+  不适用；仅 apiBackend 移除适用。删除 `grokApiBackendFromApiFormat` helper + `apiBackend`
+  state + `grokbuild-api-backend` FormItem；所有 config builder 调用恒用
+  `GROK_BUILD_DEFAULT_API_BACKEND`（"responses"）；apiFormat state 保留本地、经 meta 持久化。
+  3-col 网格降为 2-col（profile + contextWindow）。**task-contract 守护复核**：守护指出测试仍
+  import `grokApiBackendFromApiFormat` 且断言它——更新测试为 "always writes the default
+  api_backend regardless of preset format"，保留组件级断言 `selected.api_backend=="responses"`
+  （验证新 always-default 语义，非删测试）。
+
+- `d9d4a660`（prevent macOS IME corruption）→ `0277a8e1`：已移植 + 补采用缺口。S4a 移植
+  `ime-safe-input.tsx`（102 行完整版含 normalize prop）+ OpenCodeFormFields 3 子组件采用；
+  d9d4a660 剩余采用缺口补上：HermesFormFields（baseUrl + model id + model name → ImeSafeInput，
+  number 输入留 Input）、OpenClawFormFields（同）、OpenCodeFormFields 的 model-name 行输入
+  （line 945 仍 `<Input>`，S4a 只转了 3 子组件——这是 OpenCode IME 测试失败的根因）、
+  ProviderForm 的 opencode-key/openclaw-key/hermes-key（`normalize={normalizeProviderKey}`，
+  从 3 个内联 onChange 抽取）。新建 HermesFormFields.test.tsx + OpenClawFormFields.test.tsx
+  （IME composition 回归），OpenCodeFormFields.test.tsx 增上游 IME 测试。ImeSafeInput.test.tsx
+  S4a 已覆盖 normalize prop。
+
+- `40cac1a6`（per-model reasoning levels）→ `69534266`：**拆分移植（catalog 数据层 only）**。
+  `codex_config.rs` 新增 `CODEX_REASONING_LEVEL_DESCRIPTIONS` 常量 + `codex_canonical_efforts`/
+  `codex_supported_reasoning_levels`/`apply_codex_reasoning_level_override` + spec 字段
+  `reasoning_levels`/`default_reasoning_level` + `codex_catalog_model_specs` 解析（camelCase/
+  snake_case 双格式）+ `codex_vendor_catalog_model_entry` vendor_default 捕获 + override 应用。
+  `types.ts` `CodexCatalogModel` 加 `reasoningLevels`/`defaultReasoningLevel`。2 个上游测试移植。
+  **task-contract 守护复核**：守护指出 fork `codex_config.rs:1965` 测试已断言
+  `supported_reasoning_levels==[low,high,max]`（模板透传），数据层有消费者、非死代码——
+  纠正了"整提交 proven-inapplicable"的误判，改为单独移植数据层。转换层（transform_codex_chat.rs/
+  transform_codex_anthropic.rs）+ 前端 catalog 模型编辑器 UI 依赖延期栈，跳过。
+
+- `d01eab97`（OpenCode Zen reasoning effort）→ **整提交跳过（proven inapplicable）**。触及
+  `transform_codex_chat.rs` zen 映射 + `CodexChatReasoningConfig.effort_levels` + `codex.rs`
+  resolve 末端 + `infer_aggregator_platform_config` opencode.ai 条目 + 前端
+  `codexChatReasoning`/`effortValueMode`/`reasoningLevels`/`mapCodexCatalogModelForForm`——
+  全部在延期 Codex Chat reasoning 栈内（fork 全缺，已 grep 确认）。恢复需先落地整套
+  ~1.1k LOC 推断表 + 类型 + `codex.rs` 基础，越过 S4 边界。与 S2 `3f75bbdf`/S3 `46f19a15`/
+  S4 `9db9c56f`/`6a7da87c` 同属延期项，若未来恢复该路由栈统一移植。
+
+- `6a7da87c`（grokbuild input token details）→ **整提交跳过（proven inapplicable）**。
+  `git show --stat` + `--name-only` 双重确认仅命中 `streaming_codex_chat.rs` +
+  `transform_codex_chat.rs` 两延期文件，无任何 grokbuild/session_usage 文件
+  （尽管提交标题含 "grokbuild"）。`chat_usage_to_responses_usage` 在 fork 全树无定义。
+  fork 的 `services/session_usage_grokbuild.rs`（S5 `cd161f44` 已落地）是另一条 Grok native
+  `updates.jsonl` turn-level 计费路径，与此提交修复的 Chat→Responses 转换层 usage 字段是独立路径。
+  委派清单归为"必移植"是基于提交标题而非实际文件清单的误判。
+
+### 冲突解决与 carry-forward
+
+- **延期 Codex Chat reasoning 栈边界一致**：`d01eab97`/`6a7da87c` 整提交跳过 + `40cac1a6`
+  转换层/前端 UI 跳过，与 S2 `3f75bbdf`/S3 `46f19a15`/S4 `9db9c56f` 同口径；若未来恢复该路由栈
+  需统一移植 `transform_codex_chat.rs`/`codex_chat_common.rs`/`streaming_codex_chat.rs`/
+  `transform_codex_anthropic.rs`/`codex.rs` 基础 + `CodexChatReasoningConfig` + `chat_usage_to_
+  responses_usage` 的 cache-hit 兜底，并重跑 dropped-tool-call 流 + per-model effort 回归。
+- **fork 精简 CodexFormFields 边界保留**：`b109dcd3`/`f748f3ac` 的适配均保留 fork 精简组件结构，
+  不引入延期栈符号（CodexChatReasoning/setCodexChatReasoning/setPromptCacheRouting/
+  buildLocalProxyRequestOverrides/overridesResult/codexCatalogModels）。
+- **无认证 Web 姿态、canonical-schema allow-list、2s/heap/stack 边界、catalog 32 MiB cap**
+  未触及、未退化。S4c 无新 Tauri command/Web route（`check:web-routes` 不变）。
+- **locale**：未恢复 zh-TW（fork en/ja/zh only）。S4c 仅 `b109dcd3` 加 1 个 grokBuild 键 × 3 locale。
+
+### 门禁证据
+
+- `(cd src-tauri && cargo fmt --all -- --check)`：通过。
+- `pnpm format:check`（Prettier）：通过。
+- `pnpm exec cargo check --manifest-path src-tauri/Cargo.toml`：通过。
+- `pnpm check:web-routes`：282 commands / missing 0 / methodMismatch 0 / parityFallback 0（不变，无新命令）。
+- `pnpm check:locales`：2507 keys，en/ja/zh 严格 parity。
+- `pnpm typecheck`：通过。
+- `pnpm test:unit`：**992 passed**（169 files），含 CodexConfigSections 2、tray::tests 25
+  （managed_codex guard 1）、codex_oauth_auth::tests 14（device_start_rejects 1）、
+  GrokBuildProviderForm 7、HermesFormFields 2、OpenClawFormFields 2、OpenCodeFormFields 10
+  （IME 1）、ImeSafeInput 6、codex_config::tests 45（reasoning-levels 2）。
+- Rust focused（批末统一跑）：见各 commit 消息。
+
+### 残余风险与 carry-forward
+
+- `d01eab97`/`6a7da87c` + `40cac1a6` 转换层/前端 UI 仍是既有延期项（Codex Chat reasoning 栈）。
+- `40cac1a6` 数据层已落但前端 catalog 模型编辑器 UI 缺失——`reasoningLevels` 目前无 UI 生产者；
+  若用户手工在 `settings_config.modelCatalog.models[].reasoningLevels` 写入，catalog 生成会
+  消费（有 `codex_config.rs` 测试覆盖）。前端 UI 随延期栈恢复时统一落地。
+- 下一批：S5 UI/refactor（14 提交）。

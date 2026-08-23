@@ -56,7 +56,7 @@ cargo test --manifest-path src-tauri/Cargo.toml web_proxy_lifecycle::
 
 ### S4 — codex/provider 功能（12 提交）
 - [x] `d1c550ba` drop Goal mode toggle（-270 行）→ S4a `5a5874a5`
-- [ ] `6e424fd3` restore 1M context toggle
+- [x] `6e424fd3` restore 1M context toggle → S4c `feffa171`
 - [~] `0455a92c` multiple follow-login providers（829 行）→ **拆分**：
       前端独立增量（providerCapabilities 3 符号 + ProviderCard identity/useManagedAuth +
       useProviderActions supportsOfficialProxyTakeover + providerConfigUtils +
@@ -64,17 +64,30 @@ cargo test --manifest-path src-tauri/Cargo.toml web_proxy_lifecycle::
       + `ProviderForm.codexManagedAccount.test.tsx`（8 用例）移交 `feat-managed-oauth-accounts`
       子任务（依赖 `a2e22f33` 的 `preflight_managed_codex_live` 等辅助函数，fork 全缺）。
 - [~] `897ca892` OAuth usage queries configurable → 前端（CodexOauthQuotaFooter/subscription.ts/
-      ProviderCard codexAccount identity）已落 S4b `84d54e7d`；Rust tray.rs 待 S4c。
+      ProviderCard codexAccount identity）已落 S4b `84d54e7d`；Rust tray.rs 已落 S4c `f462a4ce`。
 - [x] `a98829ba` IME-safe provider fields → S4a `5a5874a5`
-- [ ] `f62c854a` cancel stale device login（reverted — 需完整 test-helpers 移植，待 S4c）
-- [ ] `d01eab97` OpenCode Zen reasoning effort
-- [ ] `b109dcd3` Grok Build Codex copy
-- [ ] `40cac1a6` per-model reasoning levels（637 行）⚠ 依赖延期 Codex Chat reasoning 栈
-- [ ] `f748f3ac` grokbuild form align
-- [ ] `d9d4a660` macOS IME corruption
-- [ ] `6a7da87c` grokbuild input token details
-- [ ] 新命令注册到 `web-commands.ts`，过 `check:web-routes`
-- [ ] 门禁全绿 → commit
+- [x] `f62c854a` cancel stale device login → S4c `4e060fa5`
+- [~] `d01eab97` OpenCode Zen reasoning effort → **整提交跳过（proven inapplicable）**：触及延期 Codex Chat
+      reasoning 栈（`transform_codex_chat.rs` zen 映射 + `CodexChatReasoningConfig.effort_levels` +
+      `infer_aggregator_platform_config` opencode.ai 条目），fork 全缺（无 `CodexChatReasoningConfig`/
+      `effort_value_mode`/`effort_levels`/`map_reasoning_effort`/`apply_reasoning_options`/
+      `infer_aggregator_platform_config`），前端 `codexChatReasoning`/`effortValueMode`/`reasoningLevels`/
+      `mapCodexCatalogModelForForm` 亦全缺。恢复需先落地整套 ~1.1k LOC 推断表 + 类型 + `codex.rs` 基础，
+      越过 S4 边界；与 S2 `3f75bbdf`/S3 `46f19a15`/S4 `9db9c56f`/`6a7da87c` 同属延期项。
+- [x] `b109dcd3` Grok Build Codex copy → S4c `11cd4ba3`
+- [~] `40cac1a6` per-model reasoning levels（637 行）→ **拆分**：catalog 生成数据层（`codex_config.rs`
+      `apply_codex_reasoning_level_override` + spec 字段 + `types.ts` `reasoningLevels`/`defaultReasoningLevel`）
+      已落 S4c `69534266`；转换层（`transform_codex_chat.rs`/`transform_codex_anthropic.rs`）+ 前端 catalog
+      模型编辑器 UI 依赖延期 Codex Chat reasoning 栈，跳过。
+- [x] `f748f3ac` grokbuild form align → S4c `e97e01e4`
+- [x] `d9d4a660` macOS IME corruption → S4c `0277a8e1`（HermesFormFields/OpenClawFormFields/OpenCodeFormFields
+      model-name + ProviderForm 3 个 provider-key 采用 ImeSafeInput，补 IME 回归测试）
+- [~] `6a7da87c` grokbuild input token details → **整提交跳过（proven inapplicable）**：仅命中
+      `streaming_codex_chat.rs` + `transform_codex_chat.rs` 两延期文件（`git show --stat` 双重确认无
+      grokbuild/session_usage 文件），`chat_usage_to_responses_usage` 在 fork 全树无定义。委派清单
+      归为“必移植”是基于提交标题而非实际文件清单的误判。
+- [x] 新命令注册到 `web-commands.ts`，过 `check:web-routes`（S4c 无新命令）
+- [x] 门禁全绿 → commit
 
 ### S5 — UI/refactor（14 提交）
 - [ ] `7e5007d5` `580a4d7b` `ec842156` `c0050623` `5b77da2b` `619a592c` `95b95da6`
