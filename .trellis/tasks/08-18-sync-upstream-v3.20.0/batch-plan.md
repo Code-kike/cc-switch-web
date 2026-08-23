@@ -800,3 +800,52 @@ route 响应全部符合 smoke 契约。
 - **父集成 review 待做**：各子任务归档后，父做跨子任务集成 review（Web API parity、
   安全边界、与主体无冲突回归）+ 统一 changelog（补入子任务结果）后合 main。
 - **部署**：本任务止于 PR 合入 `main`；systemd 部署为合并后独立确认步骤（grilling #11）。
+
+## 父主体 Phase 2.2 trellis-check 复核结果（2026-08-23）
+
+父主体 S1–S8（`47e977ae^..857779a7`，37 提交）经独立 trellis-check 复核，结论 **PASS**。
+
+### 门禁复跑（sub-agent inline 确认 + 主会话补齐）
+
+- sub-agent 已确认至 `test:integration`：50/54，恰好 4 个 PRD 已知 fixture flake
+  （ProviderList Claude official-seed empty-state/import-current 1、SkillsPage
+  default-repo/fixture discovery 3），无新增产品失败。
+- 主会话补齐 sub-agent 截断处：
+  - `pnpm build:web`：**exit 0**（`✓ built in 23.02s`，dist-web 产出）。
+  - `pnpm smoke:web-server`：**exit 0**（desktop-only 路由正确返回 501、upload-required 返回 400）。
+- 先前 S8 提交已落地的全量门禁基线（format/typecheck/web-routes 283/0/0/0/locales 2510
+  parity/test:unit 171 files 1002 tests/Rust parity 37/test:integration 50/54）未退化。
+
+### Carry-forward 红线（5 项全绿）
+
+1. **无 zh-TW 回潮**：`git show 857779a7 -- src/i18n/locales/` 仅 en/ja/zh；`grep -r "zh-TW" src/i18n/` 为空。
+2. **无 Codex Chat 路由栈回潮**：`ls src-tauri/src/proxy/providers/` 无
+   `streaming_codex_chat.rs`/`transform_codex_chat.rs`/`transform_codex_anthropic.rs`/
+   `codex_chat_common.rs`；mod.rs 无对应 `mod` 声明。
+3. **无桌面 updater/release 路径回潮**：`git diff 47e977ae^..857779a7 -- src-tauri/src/commands/`
+   未新增 updater/release_assets/r2_mirror。
+4. **`.pi/`/`.pi-subagents/` 未提交**：`git diff --name-only` 无 `.pi/`/`.pi-subagents/` 路径。
+5. **安全上限保留**：2s JS deadline（`usage_script.rs:9`）、16 MiB heap（`usage_script.rs:10`）、
+   256 KiB stack（`usage_script.rs:11`）、128 MiB body cap（`hyper_client.rs:128`）、
+   32 MiB catalog cap（`codex_config.rs:1287`）均在位。
+
+### Spec 合规抽检（quality-guidelines.md 高风险 Scenario）
+
+- **Built-In Model Pricing Lookup**（S3）：`openclawPresetPricing.test.ts` 1/1 +
+  `qianfanTokenPlanPresets.test.ts` 5/5 = 6/6 绿；Rust `model_pricing::` 10/10 绿；
+  无 cost=$0。
+- **Codex Provider OAuth Preservation**（S2 `d2b070c9`）：Rust `services::proxy::tests`
+  20 个 takeover/managed-account 测试全绿，含
+  `codex_takeover_preserves_oauth_auth_json_even_when_provider_category_is_official`
+  与 `codex_takeover_cleanup_removes_config_placeholder_without_touching_oauth_auth`
+  两条核心回归。
+- **Web Command Route Coverage**（S4/S6）：283 commands / 0 missing / 0 mismatch / 0 fallback。
+- **GitHub Actions Runtime Compatibility**（S7）：fork `ci.yml` 3-job 结构 + `changes` job
+  inline 路径过滤器覆盖 `src/**`（含 fork `src/index.html` 与 `src/i18n/locales/**`）。
+
+### 结论
+
+**PASS — 父主体可锁定为 v3.20.0 修复基线，子任务可独立启动。**
+父任务保持 `in_progress`（子任务编排 + 集成 review + 合 main 未完）。下一步进入第一个
+子任务 `feat-pi-native-agent` 规划（Phase 1.1：prd.md 已有 stub，复杂任务需补 design.md +
+implement.md）。
