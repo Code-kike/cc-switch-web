@@ -10,6 +10,7 @@ import {
 import { FormLabel } from "@/components/ui/form";
 import { generateUUID } from "@/utils/uuid";
 import { Input } from "@/components/ui/input";
+import { ImeSafeInput } from "@/components/ui/ime-safe-input";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -304,10 +305,10 @@ export function HermesFormFields({
         <FormLabel htmlFor="hermes-baseurl">
           {t("hermes.form.baseUrl", { defaultValue: "API 端点" })}
         </FormLabel>
-        <Input
+        <ImeSafeInput
           id="hermes-baseurl"
           value={baseUrl}
-          onChange={(e) => onBaseUrlChange(e.target.value)}
+          onValueChange={onBaseUrlChange}
           onBlur={() => setBaseUrlTouched(true)}
           placeholder="https://api.example.com/v1"
           aria-invalid={showBaseUrlError}
@@ -410,10 +411,10 @@ export function HermesFormFields({
                       {t("hermes.form.modelId", { defaultValue: "模型 ID" })}
                     </label>
                     <div className="flex gap-1">
-                      <Input
+                      <ImeSafeInput
                         value={model.id}
-                        onChange={(e) =>
-                          handleModelChange(index, "id", e.target.value)
+                        onValueChange={(value) =>
+                          handleModelChange(index, "id", value)
                         }
                         placeholder={t("hermes.form.modelIdPlaceholder", {
                           defaultValue: "anthropic/claude-opus-5",
@@ -466,10 +467,10 @@ export function HermesFormFields({
                         defaultValue: "显示名称",
                       })}
                     </label>
-                    <Input
+                    <ImeSafeInput
                       value={model.name ?? ""}
-                      onChange={(e) =>
-                        handleModelChange(index, "name", e.target.value)
+                      onValueChange={(value) =>
+                        handleModelChange(index, "name", value)
                       }
                       placeholder={t("hermes.form.modelNamePlaceholder", {
                         defaultValue: "Claude Opus 5",

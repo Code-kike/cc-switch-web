@@ -6,7 +6,7 @@ import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Form, FormField, FormItem, FormMessage } from "@/components/ui/form";
-import { Input } from "@/components/ui/input";
+import { ImeSafeInput } from "@/components/ui/ime-safe-input";
 import {
   providerFormSchema,
   type ProviderFormData,
@@ -128,6 +128,9 @@ export function ProviderForm(props: ProviderFormProps) {
 
   return <ProviderFormFull {...props} />;
 }
+
+const normalizeProviderKey = (value: string) =>
+  value.toLowerCase().replace(/[^a-z0-9-]/g, "");
 
 function ProviderFormFull({
   appId,
@@ -1611,14 +1614,11 @@ function ProviderFormFull({
                     {t("opencode.providerKey")}
                     <span className="text-destructive ml-1">*</span>
                   </Label>
-                  <Input
+                  <ImeSafeInput
                     id="opencode-key"
                     value={opencodeForm.opencodeProviderKey}
-                    onChange={(e) =>
-                      opencodeForm.setOpencodeProviderKey(
-                        e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""),
-                      )
-                    }
+                    onValueChange={opencodeForm.setOpencodeProviderKey}
+                    normalize={normalizeProviderKey}
                     placeholder={t("opencode.providerKeyPlaceholder")}
                     disabled={
                       isProviderKeyLocked || isProviderKeyLockStateLoading
@@ -1677,14 +1677,11 @@ function ProviderFormFull({
                     {t("openclaw.providerKey")}
                     <span className="text-destructive ml-1">*</span>
                   </Label>
-                  <Input
+                  <ImeSafeInput
                     id="openclaw-key"
                     value={openclawForm.openclawProviderKey}
-                    onChange={(e) =>
-                      openclawForm.setOpenclawProviderKey(
-                        e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""),
-                      )
-                    }
+                    onValueChange={openclawForm.setOpenclawProviderKey}
+                    normalize={normalizeProviderKey}
                     placeholder={t("openclaw.providerKeyPlaceholder")}
                     disabled={
                       isProviderKeyLocked || isProviderKeyLockStateLoading
@@ -1745,14 +1742,11 @@ function ProviderFormFull({
                     })}
                     <span className="text-destructive ml-1">*</span>
                   </Label>
-                  <Input
+                  <ImeSafeInput
                     id="hermes-key"
                     value={hermesForm.hermesProviderKey}
-                    onChange={(e) =>
-                      hermesForm.setHermesProviderKey(
-                        e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""),
-                      )
-                    }
+                    onValueChange={hermesForm.setHermesProviderKey}
+                    normalize={normalizeProviderKey}
                     placeholder={t("hermes.form.providerKeyPlaceholder", {
                       defaultValue: "my-provider",
                     })}

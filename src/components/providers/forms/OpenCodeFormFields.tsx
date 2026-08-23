@@ -942,9 +942,9 @@ export function OpenCodeFormFields({
                       />
                     )}
                   </div>
-                  <Input
+                  <ImeSafeInput
                     value={model.name}
-                    onChange={(e) => handleModelNameChange(key, e.target.value)}
+                    onValueChange={(value) => handleModelNameChange(key, value)}
                     placeholder={t("opencode.modelName", {
                       defaultValue: "Display Name",
                     })}
