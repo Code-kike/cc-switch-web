@@ -32,32 +32,32 @@ pnpm smoke:web-server
 ## 执行批次（ordered checklist）
 
 ### P1 — Rust 后端核心
-- [ ] `pi_config/mod.rs`（纯新增）：本地 models.json/settings.json 读写 + revision + MODELS_FILE_LOCK + `MAX_PI_FILE_BYTES=1MiB` + test_support
-- [ ] `services/pi_state.rs`（纯新增）：PiCurrentState 只读服务
-- [ ] `services/pi_prompt_files.rs`（纯新增）：AGENTS.md/SYSTEM.md/prompts 模板读写 + PiAgentsFileGuard
-- [ ] `services/provider/pi.rs`（纯新增）：list/add/update/delete/remove/enable + strip_unsupported_pi_metadata
-- [ ] `commands/pi.rs`（纯新增）：get_pi_current_state/update_pi_provider_usage_script/get_pi_session_discovery
-- [ ] `commands/prompt.rs`（修改）：加 6 个 pi prompt 命令（get/replace/delete_pi_prompt_file + list/upsert/delete_pi_prompt_template）
-- [ ] `session_manager/providers/pi.rs`（纯新增）：scan_sessions/load_messages/session_roots/session_discovery（本地文件，无进程）
-- [ ] `session_manager/providers/mod.rs`：加 `pub mod pi`
-- [ ] `session_manager/mod.rs`：scan_sessions 加 `pi::scan_sessions` handle + load_messages/delete_session/session_roots dispatch 加 "pi"
-- [ ] `session_manager/terminal/mod.rs`：`shell_escape` 由 `fn` 改 `pub(crate)`（1 行可见性）
-- [ ] `app_config.rs`：AppType enum 加 `Pi` + as_str/all/from_str/is_additive_mode；**丢弃 ClaudeDesktop arm**
-- [ ] `services/provider/mod.rs`：dispatch 加 `AppType::Pi` arm（list/add/update/delete/remove/enable/credentials/validate）；**丢弃 ClaudeDesktop arm**
-- [ ] `services/mod.rs`：加 `pub mod pi_prompt_files` + `pub(crate) mod pi_state`
-- [ ] `services/prompt.rs`：dispatch 加 `AppType::Pi` → pi_prompt_files；**丢弃 ClaudeDesktop arm**
-- [ ] `prompt_files.rs`：`prompt_file_path(AppType::Pi)` → AGENTS.md；**丢弃 ClaudeDesktop arm**
-- [ ] `services/skill.rs`：pi skills 集成（+1141 行，最大单文件）；**丢弃 ClaudeDesktop arm**（4 处）
-- [ ] `services/mcp.rs`/`database/dao/mcp.rs`：pi mcp gate（Pi 无 native MCP → false）；**丢弃 ClaudeDesktop arm**
-- [ ] `services/provider/live.rs`：pi live config 路径；**丢弃 ClaudeDesktop arm**
-- [ ] `services/stream_check.rs`/`settings.rs`/`proxy/providers/mod.rs`：pi arm（`Pi => return None` 等）；**丢弃 ClaudeDesktop arm**
-- [ ] `services/model_fetch.rs`：加 request_headers + api_format header 构建 + MAX_REQUEST_HEADERS=64 + secret scrub（无 ClaudeDesktop 依赖）
-- [ ] `commands/mod.rs`：加 `mod pi` + `pub(crate) use pi::*`
-- [ ] `lib.rs`：注册 9 个 pi 命令 + `mod pi_config` + startup import_pi_providers_from_live
-- [ ] `provider.rs`：resolve_credentials 加 `AppType::Pi` native baseUrl/apiKey
-- [ ] `error.rs`/`config.rs`/`deeplink/{parser,provider,tests}.rs`：pi 相关适配（如 deeplink provider 识别 pi）
-- [ ] Web handlers：`web_api/handlers/` 加 pi 路由（9 命令）+ `web-commands.ts` 注册
-- [ ] 门禁全绿 → commit
+- [x] `pi_config/mod.rs`（纯新增）：本地 models.json/settings.json 读写 + revision + MODELS_FILE_LOCK + `MAX_PI_FILE_BYTES=1MiB` + test_support
+- [x] `services/pi_state.rs`（纯新增）：PiCurrentState 只读服务
+- [x] `services/pi_prompt_files.rs`（纯新增）：AGENTS.md/SYSTEM.md/prompts 模板读写 + PiAgentsFileGuard
+- [x] `services/provider/pi.rs`（纯新增）：list/add/update/delete/remove/enable + strip_unsupported_pi_metadata
+- [x] `commands/pi.rs`（纯新增）：get_pi_current_state/update_pi_provider_usage_script/get_pi_session_discovery
+- [x] `commands/prompt.rs`（修改）：加 6 个 pi prompt 命令（get/replace/delete_pi_prompt_file + list/upsert/delete_pi_prompt_template）
+- [x] `session_manager/providers/pi.rs`（纯新增）：scan_sessions/load_messages/session_roots/session_discovery（本地文件，无进程）
+- [x] `session_manager/providers/mod.rs`：加 `pub mod pi`
+- [x] `session_manager/mod.rs`：scan_sessions 加 `pi::scan_sessions` handle + load_messages/delete_session/session_roots dispatch 加 "pi"
+- [x] `session_manager/terminal/mod.rs`：`shell_escape` 由 `fn` 改 `pub(crate)`（1 行可见性）
+- [x] `app_config.rs`：AppType enum 加 `Pi` + as_str/all/from_str/is_additive_mode；**丢弃 ClaudeDesktop arm**
+- [x] `services/provider/mod.rs`：dispatch 加 `AppType::Pi` arm（list/add/update/delete/remove/enable/credentials/validate）；**丢弃 ClaudeDesktop arm**
+- [x] `services/mod.rs`：加 `pub mod pi_prompt_files` + `pub(crate) mod pi_state`
+- [x] `services/prompt.rs`：dispatch 加 `AppType::Pi` → pi_prompt_files；**丢弃 ClaudeDesktop arm**
+- [x] `prompt_files.rs`：`prompt_file_path(AppType::Pi)` → AGENTS.md；**丢弃 ClaudeDesktop arm**
+- [x] `services/skill.rs`：pi skills 集成（+1141 行，最大单文件）；**丢弃 ClaudeDesktop arm**（4 处）
+- [x] `services/mcp.rs`/`database/dao/mcp.rs`：pi mcp gate（Pi 无 native MCP → false）；**丢弃 ClaudeDesktop arm**
+- [x] `services/provider/live.rs`：pi live config 路径；**丢弃 ClaudeDesktop arm**
+- [x] `services/stream_check.rs`/`settings.rs`/`proxy/providers/mod.rs`：pi arm（`Pi => return None` 等）；**丢弃 ClaudeDesktop arm**
+- [x] `services/model_fetch.rs`：加 request_headers + api_format header 构建 + MAX_REQUEST_HEADERS=64 + secret scrub（无 ClaudeDesktop 依赖）
+- [x] `commands/mod.rs`：加 `mod pi` + `pub(crate) use pi::*`
+- [x] `lib.rs`：注册 9 个 pi 命令 + `mod pi_config` + startup import_pi_providers_from_live
+- [x] `provider.rs`：resolve_credentials 加 `AppType::Pi` native baseUrl/apiKey
+- [x] `error.rs`/`config.rs`/`deeplink/{parser,provider,tests}.rs`：pi 相关适配（如 deeplink provider 识别 pi）
+- [x] Web handlers：`web_api/handlers/` 加 pi 路由（9 命令）+ `web-commands.ts` 注册
+- [x] 门禁全绿 → commit
 
 ### P2 — 前端 provider UI
 - [ ] `lib/api/types.ts`：AppId union 加 `"pi"`
@@ -112,6 +112,40 @@ pnpm smoke:web-server
 - [ ] `docs/pi-native-contract-zh.md`（纯新增，60 行）：移植行为契约
 - [ ] 全量门禁最终跑一遍（含 build:web + smoke:web-server）
 - [ ] commit
+
+
+
+## P1 结果（2026-08-24，18340719）
+
+P1 Rust 后端核心完成。36 文件改动（+3779/−46），7 新增文件。
+
+### 实施要点
+- 6 个纯新增 Rust 文件（pi_config/mod.rs、services/{pi_state,pi_prompt_files,provider/pi}.rs、commands/pi.rs、session_manager/providers/pi.rs）+ web_api/handlers/pi.rs（9 Axum routes）。
+- app_config.rs：AppType::Pi 枚举 + 10 处 match arm（MCP/Skills/CommonConfigSnippets/mcp_for/prompts/migration）；SkillApps 加 pi:bool 字段；McpRoot 加 pi:McpConfig 空槽位。
+- settings.rs：pi_config_dir 字段 + get_pi_override_dir + resolve_override_path 改 pub(crate)。
+- error.rs：Conflict variant（pi_config revision 冲突）。
+- terminal/mod.rs：shell_escape 改 pub(crate)（pi session_manager 复用）。
+- provider/mod.rs：mod pi + update_pi_usage_script + normalize_usage_script_credential_overrides helper（复用 fork 既有 extract_provider_usage_credentials）+ ProviderService 6 方法 Pi 早返回。
+- 40 处 AppType::Pi 非穷尽 match（14 文件）按上游 84e75ad2 落地，全丢弃 ClaudeDesktop arm。
+- 9 个 pi 命令完整注册：commands/prompt.rs 补 6 prompt 命令 + lib.rs generate_handler! + web-commands.ts + Axum handlers。
+- Web build 适配：examples/server.rs 加 #[path] mod pi_config;，examples/web_services.rs 加 pi_prompt_files + pi_state。
+
+### 门禁（全绿）
+- cargo fmt / format:check / typecheck ✓
+- check:web-routes 292 commands / 0 missing/mismatch/dangling ✓
+- check:locales en/ja/zh 各 2506 parity ✓
+- desktop cargo check + web cargo check ✓（0 errors）
+- test:unit 171 files / 1002 tests ✓
+- cargo test --lib 2060 passed / 0 failed / 5 ignored ✓
+- Rust parity 37 passed ✓（web_api::/dual_runtime_parity::/web_proxy_lifecycle::）
+- pi focused 28 passed ✓（pi::/pi_config::/pi_prompt_files::）
+- build:web exit 0（23.13s）+ smoke:web-server exit 0 ✓
+
+### Carry-forward
+- ClaudeDesktop 零回潮（仅既有 usage logger/stats 兼容残留 + profile.rs 注释）。
+- zh-TW 零回潮（fork 无 zh-TW.json）。
+- .pi/ .pi-subagents/ untracked 未提交。
+- 安全上限：pi_config MAX_PI_FILE_BYTES=1MiB 保留；2s JS deadline/body limit 未触碰。
 
 ## 验证命令汇总
 
