@@ -32,7 +32,7 @@ mod schema;
 mod tests;
 
 // DAO 类型导出供外部使用
-pub(crate) use dao::providers_seed::GROKBUILD_OFFICIAL_PROVIDER_ID;
+pub(crate) use dao::providers_seed::{CODEX_OFFICIAL_PROVIDER_ID, GROKBUILD_OFFICIAL_PROVIDER_ID};
 pub(crate) use dao::proxy::{
     validate_cost_multiplier, validate_pricing_source, PRICING_SOURCE_REQUEST,
     PRICING_SOURCE_RESPONSE,
