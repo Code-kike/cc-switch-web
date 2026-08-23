@@ -391,6 +391,14 @@ managed-codex 事务依赖 `a2e22f33`（`feat-managed-oauth-accounts` 子任务�
   （managed_codex guard 1）、codex_oauth_auth::tests 14（device_start_rejects 1）、
   GrokBuildProviderForm 7、HermesFormFields 2、OpenClawFormFields 2、OpenCodeFormFields 10
   （IME 1）、ImeSafeInput 6、codex_config::tests 45（reasoning-levels 2）。
+- `pnpm test:integration`：**49/54 passed**。5 个失败 = PRD 已知非阻塞 flake：ProviderList
+  Claude official-seed empty-state/import-current **1**；SkillsPage skills.sh
+  automatic-fallback/repo-install/pagination **3**；AuthCenterPanel OAuth 5s 超时 **1**
+  （pre-existing，base 分支亦失败，非 S4c 引入）。无新增产品失败。
+- Web Rust `cargo test --manifest-path src-tauri/Cargo.toml --no-default-features
+  --features web-server --example server`：**1978 passed / 0 failed / 5 ignored**。其中
+  `web_api::` **27 passed**（含 handlers/auth/common/s3 等）、
+  `dual_runtime_parity::` **3 passed**、`web_proxy_lifecycle::` **7 passed**。
 - Rust focused（批末统一跑）：见各 commit 消息。
 
 ### 残余风险与 carry-forward
