@@ -79,6 +79,8 @@ pub use store::AppState;
 use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
+#[cfg(target_os = "windows")]
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 #[cfg(target_os = "macos")]
 use tauri::image::Image;
@@ -239,6 +241,11 @@ pub fn run() {
         }));
     }
 
+    // Windows: 主窗口在首屏 web 内容加载完成前保持隐藏，避免 WebView2 原生层
+    // 先涂白/黑底造成 FOUC。on_page_load 在首帧 Finished 后显示窗口。
+    #[cfg(target_os = "windows")]
+    let startup_page_handled = AtomicBool::new(false);
+
     let builder = builder
         // 注册 deep-link 插件（处理 macOS AppleEvent 和其他平台的深链接）
         .plugin(tauri_plugin_deep_link::init())
@@ -267,6 +274,25 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::new().build())
+        .on_page_load(move |webview, payload| {
+            #[cfg(target_os = "windows")]
+            {
+                use tauri::webview::PageLoadEvent;
+                if webview.label() == "main"
+                    && payload.event() == PageLoadEvent::Finished
+                    && payload.url().scheme() != "about"
+                    && !startup_page_handled.swap(true, Ordering::Relaxed)
+                    && !crate::settings::get_settings().silent_startup
+                {
+                    let _ = webview.window().show();
+                    log::info!("主页面加载完成，主窗口已显示");
+                }
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                let _ = (webview, payload);
+            }
+        })
         .setup(|app| {
             let _ = rustls::crypto::ring::default_provider().install_default();
 
@@ -819,7 +845,13 @@ pub fn run() {
                     log::info!("静默启动模式：主窗口已隐藏");
                 } else {
                     // 正常启动模式：显示窗口
+                    // Windows: 窗口显示延迟到主页面加载完成（见 on_page_load），
+                    // 避免 WebView2 原生层在 web 内容绘制前先涂白/黑底。
+                    #[cfg(not(target_os = "windows"))]
                     let _ = window.show();
+                    #[cfg(target_os = "windows")]
+                    log::info!("正常启动模式：等待主页面加载完成后显示主窗口");
+                    #[cfg(not(target_os = "windows"))]
                     log::info!("正常启动模式：主窗口已显示");
 
                     // Linux: 解决首次启动 UI 无响应问题（Tauri #10746 + wry #637）。
