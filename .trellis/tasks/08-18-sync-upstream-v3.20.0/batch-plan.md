@@ -190,3 +190,85 @@ bare name + cost 是 fork 可控的契约边界。若未来 OpenClaw 二进制�
 - DeepSeek V4 高峰档 seed 是单 tier 录入（无时段维度），夜间/凌晨用量高估一倍（上游 `bad9c151` 拍板口径，fork 沿用）。
 - Gemini 3.7 Flash 介绍价 2026-12-31 到期后需走 seed + repair 双写改回 1.50/7.50/0.15（届时 models.dev 先更新，审计 A 段会自动报出该行；刻意不进 audit-ignore）。
 - 下一批：S4 codex/provider 功能（12 提交）。
+
+## S4a 结果（2026-08-18，`5a5874a5`，codex/provider 功能第 1 检查点）
+
+### 提交映射与处置
+
+- `d1c550ba` → `5a5874a5`：已移植 Goal mode toggle 清理。删除 JSX/state/handlers
+  （`enableGoalMode`/`setEnableGoalMode`/Goal toggle UI），providerConfigUtils 移除
+  TOML_GOALS 常量与 hasGoalMode/extractGoalMode helpers，en/ja/zh `enableGoalMode`
+  键删除，CommonConfigModalBehavior test 移除 Goal 用例，toml-edge-cases 删除
+  CRLF Goal 块。删除冗余 `providerConfigUtils.codex.test.ts`（被主 test 文件覆盖）。
+- `a98829ba` → `5a5874a5`：已移植 IME-safe provider fields。新增 `ime-safe-input.tsx`
+  （ImeSafeInput + composition-commit onBlur），OpenCodeFormFields 采用
+  ImeSafeInput+composition-commit onBlur，保留 Input import。
+- `897ca892` → `5a5874a5`（仅 frontend-independent 部分）：CodexOauthQuotaFooter、
+  subscription.ts、ProviderCard codexAccount identity 显示。Rust tray.rs 待 S4c。
+
+### 范围拆分说明（task-contract guardian 标注）
+
+`5a5874a5` 把 S4 的单一提交检查点拆为 S4a（d1c550ba + a98829ba + 897ca892-frontend）+
+S4b（0455a92c frontend + 897ca892-frontend 剩余）。拆分原因：0455a92c 的 Rust
+managed-codex 事务依赖 `a2e22f33`（`feat-managed-oauth-accounts` 子任务）引入的辅助函数
+（`preflight_managed_codex_live`/`managed_codex_oauth_account_id` 等），fork 全缺，
+无法在 S4 主体独立移植；前端独立增量可先落。反复的 checkout+apply-3+keep-theirs
+合并配方在 ProviderForm.tsx 上失败 5+ 次后，监控指令冻结该配方，改为按文件隔离适配。
+检查点提交是防中断丢工作的刻意决定（会话内已发生 3 次未提交工作被破坏）。
+
+### 门禁
+
+- typecheck 0 错、format、cargo check、cargo fmt、web-routes（0/0/0）、
+  locales（2506 parity）、test:unit 969/969、Web Rust 1975/0 全绿。
+- 残余：897ca892 Rust tray.rs、f62c854a/b109dcd3/f748f3ac/d9d4a660/40cac1a6
+  待 S4c 评估。
+
+## S4b 结果（2026-08-18，`84d54e7d`，0455a92c 前端独立增量）
+
+### 提交映射与范围拆分
+
+- `0455a92c` multiple follow-login providers（829 行）→ **拆分**：
+  - **前端独立增量**（已落 `84d54e7d`）：providerCapabilities.ts 新增
+    `CODEX_OFFICIAL_PROVIDER_ID`/`CodexOfficialIdentity`/`resolveCodexOfficialIdentity`/
+    `supportsOfficialProxyTakeover`/`hasExplicitNonOpenAiCodexModelProvider`；
+    ProviderCard.tsx 集成 useManagedAuth（`enabled` 门控：仅当
+    `codexOfficialIdentity === "managed_account"` 时查询，避免 N 卡片 N 次 API 调用）、
+    identity 显示区块（h3 title/truncate、isBoundCodexOfficial 门控）、
+    CodexOauthQuotaFooter autoQueryInterval + `!isBoundCodexOfficial || usageEnabled`
+    渲染门控、onConfigureUsage `isCodexOauth && !isBoundCodexOfficial`；useProviderActions.ts
+    用 `supportsOfficialProxyTakeover` 取代 blanket `category === "official"` takeover 拦截
+    （native Codex official + managed 卡片现在允许在代理接管时切换）；useManagedAuth.ts
+    新增 `enabled` option（默认 true）；providerConfigUtils/presetEntries/mutations/
+    AddProviderDialog/EditProviderDialog fork AppId 适配（claude-desktop/pi 移除）。
+  - **Rust managed-codex 事务** + `ProviderForm.codexManagedAccount.test.tsx`（8 用例）
+    → 移交 `feat-managed-oauth-accounts` 子任务。证据链：`0455a92c` 的 mod.rs hunk
+    引用 `preflight_managed_codex_live`/`managed_codex_oauth_account_id`/
+    `managed_codex_add_transaction_error`/`write_preflighted_or_current_live`，
+    这些函数在 `413c09e0..v3.20.0` 仅由 `a2e22f33` 引入（`git log -S` 证实），
+    fork 全缺。测试断言 CodexFormFields managed-account 选择 UI（fork 的 CodexFormFields
+    是 294 行精简版，完整 1394 行版含 CodexOAuthSection 渲染块随子任务落地）。
+    测试文件 fork 适配版暂存在父任务历史 commit `7265596a`（已被 `84d54e7d` 取代），
+    子任务用 `git show 7265596a:tests/components/ProviderForm.codexManagedAccount.test.tsx` 取回。
+- `897ca892` frontend 剩余（CodexOauthQuotaFooter/subscription.ts/ProviderCard codexAccount
+  identity）→ 已落 `84d54e7d`。
+
+### 门禁（全绿）
+
+- `pnpm typecheck`：0 错。
+- `pnpm format:check`、`cargo fmt --all -- --check`：通过。
+- `pnpm exec cargo check --manifest-path src-tauri/Cargo.toml`：通过。
+- `pnpm check:web-routes`：missing 0 / methodMismatch 0 / parityFallback 0。
+- `pnpm check:locales`：en/ja/zh parity。
+- `pnpm test:unit`：**985 passed / 985**（167 files）。16 个失败已清零：删除 2 个断言
+  fork 无的 AuthSettingsPanel 用例（AddProviderDialog/EditProviderDialog "clears the
+  nested auth panel"），源码修复 8 个（ProviderCard.codexAccount identity/quota 门控 4、
+  useProviderActions supportsOfficialProxyTakeover 2、AddProviderDialog/EditProviderDialog
+  无 UI 的 auth-panel 用例移除后对齐），移交 8 个（ProviderForm.codexManagedAccount → 子任务）。
+
+### 残余与下一批
+
+- 0455a92c Rust managed-codex + ProviderForm.codexManagedAccount.test.tsx → 子任务
+  `feat-managed-oauth-accounts`（prd 已更新移交记录与取回路径）。
+- S4c 待评估：`897ca892` Rust tray.rs、`f62c854a`（cancel stale device login，
+  reverted — 需完整 test-helpers 移植）、`b109dcd3`、`f748f3ac`、`d9d4a660`、
+  `6a7da87c`、`40cac1a6`（依赖延期 Codex Chat reasoning 栈）、`d01eab97`、`6e424fd3`。

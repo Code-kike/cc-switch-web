@@ -55,15 +55,21 @@ cargo test --manifest-path src-tauri/Cargo.toml web_proxy_lifecycle::
 - [ ] 门禁全绿 → commit
 
 ### S4 — codex/provider 功能（12 提交）
-- [ ] `d1c550ba` drop Goal mode toggle（-270 行）
+- [x] `d1c550ba` drop Goal mode toggle（-270 行）→ S4a `5a5874a5`
 - [ ] `6e424fd3` restore 1M context toggle
-- [ ] `0455a92c` multiple follow-login providers（829 行）
-- [ ] `897ca892` OAuth usage queries configurable
-- [ ] `a98829ba` IME-safe provider fields
-- [ ] `f62c854a` cancel stale device login
+- [~] `0455a92c` multiple follow-login providers（829 行）→ **拆分**：
+      前端独立增量（providerCapabilities 3 符号 + ProviderCard identity/useManagedAuth +
+      useProviderActions supportsOfficialProxyTakeover + providerConfigUtils +
+      useManagedAuth enabled + presetEntries）已落 S4b `84d54e7d`；**Rust managed-codex 事务**
+      + `ProviderForm.codexManagedAccount.test.tsx`（8 用例）移交 `feat-managed-oauth-accounts`
+      子任务（依赖 `a2e22f33` 的 `preflight_managed_codex_live` 等辅助函数，fork 全缺）。
+- [~] `897ca892` OAuth usage queries configurable → 前端（CodexOauthQuotaFooter/subscription.ts/
+      ProviderCard codexAccount identity）已落 S4b `84d54e7d`；Rust tray.rs 待 S4c。
+- [x] `a98829ba` IME-safe provider fields → S4a `5a5874a5`
+- [ ] `f62c854a` cancel stale device login（reverted — 需完整 test-helpers 移植，待 S4c）
 - [ ] `d01eab97` OpenCode Zen reasoning effort
 - [ ] `b109dcd3` Grok Build Codex copy
-- [ ] `40cac1a6` per-model reasoning levels（637 行）
+- [ ] `40cac1a6` per-model reasoning levels（637 行）⚠ 依赖延期 Codex Chat reasoning 栈
 - [ ] `f748f3ac` grokbuild form align
 - [ ] `d9d4a660` macOS IME corruption
 - [ ] `6a7da87c` grokbuild input token details
