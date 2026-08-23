@@ -855,7 +855,8 @@
     "contextWindowInvalid": "上下文窗口必须是正整数",
     "profile": "客户端模型档位",
     "rawConfig": "config.toml",
-    "invalidToml": "config.toml 格式错误：{{error}}"
+    "invalidToml": "config.toml 格式错误：{{error}}",
+    "defaultModelPlaceholder": "例如: grok-4.5"
   },
   "sessionManager": {
     "title": "会话管理",

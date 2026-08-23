@@ -855,7 +855,8 @@
     "contextWindowInvalid": "Context window must be a positive integer",
     "profile": "Client model profile",
     "rawConfig": "config.toml",
-    "invalidToml": "Invalid config.toml: {{error}}"
+    "invalidToml": "Invalid config.toml: {{error}}",
+    "defaultModelPlaceholder": "e.g. grok-4.5"
   },
   "sessionManager": {
     "title": "Session Manager",

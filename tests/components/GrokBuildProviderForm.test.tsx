@@ -173,6 +173,26 @@ describe("GrokBuildProviderForm", () => {
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
+  // b109dcd3: Grok Build 复用 CodexFormFields，但模型占位符不应再提示 Codex 的 GPT 模型。
+  it("shows a Grok-specific model placeholder, not the Codex GPT one", async () => {
+    const user = userEvent.setup();
+    const { container } = render(
+      <GrokBuildProviderForm
+        submitLabel="Save"
+        onSubmit={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: /APIKEY\.FUN/ }));
+
+    const modelInput =
+      container.querySelector<HTMLInputElement>("#codexModelName");
+    expect(modelInput).not.toBeNull();
+    expect(modelInput?.placeholder).toBe("例如: grok-4.5");
+    expect(modelInput?.placeholder).not.toBe("例如: gpt-5.4");
+  });
+
   it("loads edit-mode values and does not resubmit stale custom endpoints", async () => {
     const user = userEvent.setup();
     const onSubmit = vi.fn();

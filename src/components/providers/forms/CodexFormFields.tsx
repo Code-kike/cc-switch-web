@@ -87,6 +87,10 @@ export function CodexFormFields({
 }: CodexFormFieldsProps) {
   const { t } = useTranslation();
 
+  // Grok Build 复用本表单，但模型默认值与 Codex 不同——占位符按 appId 分流，
+  // 对应词条在 grokBuild.defaultModelPlaceholder 下。
+  const isGrokBuild = appId === "grokbuild";
+
   const [fetchedModels, setFetchedModels] = useState<FetchedModel[]>([]);
   const [isFetchingModels, setIsFetchingModels] = useState(false);
 
@@ -256,9 +260,15 @@ export function CodexFormFields({
             id="codexModelName"
             value={modelName}
             onChange={(v) => onModelNameChange!(v)}
-            placeholder={t("codexConfig.modelNamePlaceholder", {
-              defaultValue: "例如: gpt-5.4",
-            })}
+            placeholder={
+              isGrokBuild
+                ? t("grokBuild.defaultModelPlaceholder", {
+                    defaultValue: "例如: grok-4.5",
+                  })
+                : t("codexConfig.modelNamePlaceholder", {
+                    defaultValue: "例如: gpt-5.4",
+                  })
+            }
             fetchedModels={fetchedModels}
             isLoading={isFetchingModels}
           />

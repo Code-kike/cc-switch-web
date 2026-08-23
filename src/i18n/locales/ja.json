@@ -855,7 +855,8 @@
     "contextWindowInvalid": "コンテキストウィンドウは正の整数で指定してください",
     "profile": "クライアントモデルプロファイル",
     "rawConfig": "config.toml",
-    "invalidToml": "config.toml の形式が不正です: {{error}}"
+    "invalidToml": "config.toml の形式が不正です: {{error}}",
+    "defaultModelPlaceholder": "例: grok-4.5"
   },
   "sessionManager": {
     "title": "セッション管理",
