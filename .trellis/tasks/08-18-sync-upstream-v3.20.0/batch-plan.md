@@ -743,3 +743,60 @@ CI 改进"，`c98cc3a9`（skip-checks 省 CI 分钟）是通用价值；`36ed280
 - `36ed280d` 跳过：fork 仍无 PR 自动打标签能力。若未来需要，应作为独立 CI 特性任务
   评估引入整套 labeler（配置 + 工作流），而非借 sync 夹带。
 - 下一批：S8 版本 + changelog + 全量门禁 + 真实 Web 服务冒烟。
+
+## S8 结果（2026-08-23，版本 + changelog + 全量门禁 + Web 冒烟）
+
+### 版本号
+
+`18ca2da0`/`0b5da510` 版本号目标 `3.20.0` 已在 S1 落地，S8 确认四个位置一致：
+`package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.lock`
+（`name = "cc-switch"` / `version = "3.20.0"`）。S8 无需再改版本号。
+
+### Changelog / Release notes
+
+`af31a87b` 改写为 fork 短条目，反映父主体实际移植范围（S1–S7 全量）：
+- `CHANGELOG.md` `## [3.20.0]` 段从仅覆盖 S1 重写为覆盖 S1–S7 全部 7 批，含 highlights
+  分批列表 + fork 专属偏差（zh-TW/README_DE 不恢复、claudeDesktopProviderPresets 排除、
+  Codex Chat 路由栈 carry-forward、`36ed280d` labeler 跳过理由）+ 指向 release notes 链接。
+- `docs/release-notes/v3.20.0-{en,zh,ja}.md` 三语重写：标题去掉 "(S1)"，覆盖 S1–S7 全量
+  highlights + fork 偏差 + carry-forward 延期项清单（`3f75bbdf`/`46f19a15` 转换层/
+  `d01eab97`/`6a7da87c`/`40cac1a6` 转换层）+ 子任务范围之外说明（3 个子任务独立落地）。
+  三语互链全部 resolve。
+- 3 个子任务结果尚未落地（仍 planning），不在本 changelog；父集成 review 合 main 前
+  补入各子任务结果（acceptance criteria #7：版本与 fork 自有发布说明反映实际移植范围，
+  不宣称未实现的上游能力）。
+
+### 全量门禁证据（S8 最终）
+
+- `cargo fmt --all -- --check`：通过。
+- `pnpm format:check`：通过（Prettier 仅覆盖 `src/**`，markdown 不在其范围）。
+- `pnpm typecheck`：通过（0 errors）。
+- `pnpm check:web-routes`：**283 commands / missing 0 / methodMismatch 0 /
+  parityFallback 0**（S8 改动仅文档，route 数不变）。
+- `pnpm check:locales`：en/ja/zh 各 **2510 keys**，严格 parity。
+- `pnpm exec cargo check`（web）：通过。
+- `pnpm test:unit`：**171 files / 1002 tests passed**。
+- Rust parity（`web_api::` + `dual_runtime_parity::` + `web_proxy_lifecycle::`）：
+  **37 passed / 0 failed**。
+- `pnpm test:integration`：**50/54 passed**。仅 4 个 PRD 已知 fixture flakes：
+  ProviderList Claude official-seed empty-state **1**；SkillsPage default-repo/fixture
+  discovery **3**。无新增产品失败。
+- **生产构建 `pnpm build:web`**（PRD 验收标准 #5）：**exit 0**（通过）。`dist-web/`
+  产出成功（`✓ built in 24.69s`，`dist-web/index.html` + 14 个 JS asset chunks）。
+  仅有 chunk-size 性能提示（recharts/codemirror/index 主包 > 500 kB），非失败。
+
+### 真实 Web 服务冒烟
+
+`pnpm smoke:web-server`：**exit 0**（通过）。真实 Web server 启动、provider live import、
+route 响应全部符合 smoke 契约。
+
+### 残余风险与后续
+
+- **Codex Chat 路由栈延期项不变**：S8 未触及该栈；`3f75bbdf`/`46f19a15`(transform)/
+  `d01eab97`/`6a7da87c`/`40cac1a6`(transform/UI) 仍为 carry-forward。
+- **3 个子任务未落地**：`feat-pi-native-agent`、`feat-codex-alpha-websearch`、
+  `feat-managed-oauth-accounts` 仍处 planning。父主体已建立 v3.20.0 修复基线（含 S2
+  `d2b070c9` 前置），子任务可独立启动。
+- **父集成 review 待做**：各子任务归档后，父做跨子任务集成 review（Web API parity、
+  安全边界、与主体无冲突回归）+ 统一 changelog（补入子任务结果）后合 main。
+- **部署**：本任务止于 PR 合入 `main`；systemd 部署为合并后独立确认步骤（grilling #11）。

@@ -121,11 +121,12 @@ cargo test --manifest-path src-tauri/Cargo.toml web_proxy_lifecycle::
 - [x] 门禁全绿 → commit
 
 ### S8 — 版本 + changelog + 全量门禁
-- [ ] `18ca2da0`/`0b5da510` 版本号 → `3.20.0`（package.json + Cargo.toml）
-- [ ] `af31a87b` changelog 改写为 fork 短条目，反映实际移植范围（含 3 个子任务结果）
-- [ ] 全量门禁最终跑一遍
-- [ ] 真实 Web 服务冒烟
-- [ ] commit
+- [x] `18ca2da0`/`0b5da510` 版本号 → `3.20.0`（package.json + Cargo.toml + tauri.conf.json + Cargo.lock，S1 已落地）
+- [x] `af31a87b` changelog 改写为 fork 短条目，反映实际移植范围（父主体 S1–S7；3 个子任务结果待各子任务归档后由父集成 review 补入合 main 前 changelog）
+- [x] 全量门禁最终跑一遍
+- [x] 生产构建 `pnpm build:web`（PRD 验收 #5，exit 0，dist-web 产出）
+- [x] 真实 Web 服务冒烟（smoke:web-server exit 0）
+- [x] commit
 
 ## 子任务编排（父职责，非父直接实现）
 
