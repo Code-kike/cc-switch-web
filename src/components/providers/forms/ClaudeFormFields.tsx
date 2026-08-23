@@ -17,14 +17,6 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import {
   ChevronDown,
   ChevronRight,
   Download,
@@ -32,7 +24,12 @@ import {
   Wand2,
 } from "lucide-react";
 import EndpointSpeedTest from "./EndpointSpeedTest";
-import { ApiKeySection, EndpointField, ModelInputWithFetch } from "./shared";
+import {
+  ApiKeySection,
+  EndpointField,
+  ModelDropdown,
+  ModelInputWithFetch,
+} from "./shared";
 import { CopilotAuthSection } from "./CopilotAuthSection";
 import { CodexOAuthSection } from "./CodexOAuthSection";
 import { XaiOAuthSection } from "./XaiOAuthSection";
@@ -455,14 +452,11 @@ export function ClaudeFormFields({
     }
 
     if (isCopilotPreset && copilotModels.length > 0) {
-      // 按 vendor 分组
-      const grouped: Record<string, CopilotModel[]> = {};
-      for (const model of copilotModels) {
-        const vendor = model.vendor || "Other";
-        if (!grouped[vendor]) grouped[vendor] = [];
-        grouped[vendor].push(model);
-      }
-      const vendors = Object.keys(grouped).sort();
+      // Reuse the searchable dropdown by mapping Copilot models to FetchedModel.
+      const copilotFetchedModels: FetchedModel[] = copilotModels.map((m) => ({
+        id: m.id,
+        ownedBy: m.vendor || null,
+      }));
 
       return (
         <div className="flex gap-1">
@@ -475,32 +469,10 @@ export function ClaudeFormFields({
             autoComplete="off"
             className="flex-1"
           />
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="outline" size="icon" className="shrink-0">
-                <ChevronDown className="h-4 w-4" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent
-              align="end"
-              className="max-h-64 overflow-y-auto z-[200]"
-            >
-              {vendors.map((vendor, vi) => (
-                <div key={vendor}>
-                  {vi > 0 && <DropdownMenuSeparator />}
-                  <DropdownMenuLabel>{vendor}</DropdownMenuLabel>
-                  {grouped[vendor].map((model) => (
-                    <DropdownMenuItem
-                      key={model.id}
-                      onSelect={() => onModelChange(field, model.id)}
-                    >
-                      {model.id}
-                    </DropdownMenuItem>
-                  ))}
-                </div>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
+          <ModelDropdown
+            models={copilotFetchedModels}
+            onSelect={(modelId) => onModelChange(field, modelId)}
+          />
         </div>
       );
     }
