@@ -31,6 +31,7 @@ interface AddProviderDialogProps {
     provider: Omit<Provider, "id"> & {
       providerKey?: string;
       suggestedDefaults?: OpenClawSuggestedDefaults;
+      ensureClaudeDesktopOfficialSeed?: boolean;
       ensureGrokBuildOfficialSeed?: boolean;
     },
   ) => Promise<void> | void;
@@ -131,7 +132,6 @@ export function AddProviderDialog({
         ...(values.presetCategory ? { category: values.presetCategory } : {}),
         ...(values.meta ? { meta: values.meta } : {}),
       };
-
       if (appId === "grokbuild" && values.presetId) {
         providerData.ensureGrokBuildOfficialSeed =
           values.presetCategory === "official" &&

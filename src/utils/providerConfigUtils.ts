@@ -646,6 +646,23 @@ const isCustomCodexModelProviderId = (providerName: string): boolean => {
   return Boolean(id) && !CODEX_RESERVED_MODEL_PROVIDER_IDS.has(id);
 };
 
+/**
+ * 判断 Codex 配置是否显式指向非 OpenAI 的 model provider。
+ * 供 providerCapabilities 识别第三方上游（与上游 0455a92c 同层：TOML 解析
+ * 归本文件，providerCapabilities 只做能力判定）。
+ */
+export const hasExplicitNonOpenAiCodexModelProvider = (
+  configText: string | undefined | null,
+): boolean => {
+  if (typeof configText !== "string") return false;
+  const providerName = getCodexModelProviderName(configText);
+  return Boolean(
+    providerName &&
+      providerName.trim().toLowerCase() !== "openai" &&
+      isCustomCodexModelProviderId(providerName),
+  );
+};
+
 const getCodexCustomProviderSectionName = (
   configText: string,
 ): string | undefined => {

@@ -53,6 +53,14 @@ vi.mock("@/lib/query/usage", () => ({
   useProviderStats: (...args: unknown[]) => useProviderStatsMock(...args),
 }));
 
+vi.mock("@/components/providers/forms/hooks/useManagedAuth", () => ({
+  useManagedAuth: () => ({
+    accounts: [],
+    authStatus: undefined,
+    isLoadingStatus: false,
+  }),
+}));
+
 function createProvider(overrides: Partial<Provider> = {}): Provider {
   return {
     id: overrides.id ?? "provider-1",

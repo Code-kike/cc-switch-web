@@ -96,6 +96,7 @@ import { buildPresetEntries } from "./helpers/presetEntries";
 import { resolveManagedAccountId } from "@/lib/authBinding";
 import { useOpenClawLiveProviderIds } from "@/hooks/useOpenClaw";
 import { useHermesLiveProviderIds } from "@/hooks/useHermes";
+import { resolveCodexOfficialIdentity } from "@/utils/providerCapabilities";
 
 export interface ProviderFormProps {
   appId: AppId;
@@ -143,6 +144,18 @@ function ProviderFormFull({
 }: ProviderFormProps) {
   const { t } = useTranslation();
   const isEditMode = Boolean(initialData);
+  const initialCodexOfficialIdentity =
+    appId === "codex" && initialData
+      ? resolveCodexOfficialIdentity(appId, {
+          id: providerId ?? "",
+          category: initialData.category,
+          meta: initialData.meta,
+          settingsConfig: initialData.settingsConfig ?? {},
+        })
+      : null;
+  const hasExistingCodexOfficialIdentity =
+    initialCodexOfficialIdentity !== null &&
+    initialCodexOfficialIdentity !== "api_key";
   const queryClient = useQueryClient();
   const { data: settingsData } = useSettingsQuery();
   const showCommonConfigNotice =
@@ -208,7 +221,9 @@ function ProviderFormFull({
     appId,
     selectedPresetId,
     isEditMode,
-    initialCategory: initialData?.category,
+    initialCategory:
+      initialData?.category ??
+      (hasExistingCodexOfficialIdentity ? "official" : undefined),
   });
   const isOmoCategory = appId === "opencode" && category === "omo";
   const isOmoSlimCategory = appId === "opencode" && category === "omo-slim";

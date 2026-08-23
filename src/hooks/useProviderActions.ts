@@ -18,6 +18,7 @@ import {
   useSwitchProviderMutation,
 } from "@/lib/query";
 import { extractErrorMessage } from "@/utils/errorUtils";
+import { supportsOfficialProxyTakeover } from "@/utils/providerCapabilities";
 import { openclawKeys } from "@/hooks/useOpenClaw";
 import { usageKeys } from "@/lib/query/usage";
 import { providerNeedsRouting } from "@/utils/providerCapabilities";
@@ -74,6 +75,7 @@ export function useProviderActions(
         providerKey?: string;
         suggestedDefaults?: OpenClawSuggestedDefaults;
         addToLive?: boolean;
+        ensureClaudeDesktopOfficialSeed?: boolean;
         ensureGrokBuildOfficialSeed?: boolean;
       },
     ) => {
@@ -224,8 +226,17 @@ export function useProviderActions(
         );
       }
 
-      // Block official providers when proxy takeover is active
-      if (isProxyTakeover && provider.category === "official") {
+      // Codex official account cards can reuse the active native ChatGPT login
+      // through local routing. Other apps' official providers remain blocked.
+      const officialSupportsTakeover = supportsOfficialProxyTakeover(
+        activeApp,
+        provider,
+      );
+      if (
+        isProxyTakeover &&
+        provider.category === "official" &&
+        !officialSupportsTakeover
+      ) {
         toast.error(
           t("notifications.officialBlockedByProxy", {
             defaultValue:

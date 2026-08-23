@@ -14,6 +14,7 @@ type PollingState = "idle" | "polling" | "success" | "error";
 export function useManagedAuth(
   authProvider: ManagedAuthProvider,
   githubDomain?: string,
+  options?: { enabled?: boolean },
 ) {
   const getAuthErrorMessage = (
     error: unknown,
@@ -40,6 +41,7 @@ export function useManagedAuth(
     queryKey,
     queryFn: () => authApi.authGetStatus(authProvider),
     staleTime: 30000,
+    enabled: options?.enabled ?? true,
     // A rejected xAI refresh token is persisted as `requires_reauth` by the
     // proxy hot path. Periodically refresh local status so an already-open Auth
     // Center stops showing the account as logged in without requiring a reload.

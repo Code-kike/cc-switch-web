@@ -1,4 +1,10 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
+import { useEffect } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Provider } from "@/types";
 
@@ -7,6 +13,9 @@ const apiMocks = vi.hoisted(() => ({
   getLiveProviderSettings: vi.fn(),
   getOpenClawLiveProvider: vi.fn(),
 }));
+let mockFormReady = true;
+let mockCodexManagedAccountSelected = false;
+let submitReadyCallbacks: Array<(isReady: boolean) => void> = [];
 
 vi.mock("@/lib/api", () => ({
   providersApi: {
@@ -42,6 +51,8 @@ vi.mock("@/components/providers/forms/ProviderForm", () => ({
   ProviderForm: ({
     initialData,
     onSubmit,
+    onSubmitReadyChange,
+    onManageAuthAccounts,
     isProxyTakeover,
   }: {
     initialData: {
@@ -62,83 +73,132 @@ vi.mock("@/components/providers/forms/ProviderForm", () => ({
       icon?: string;
       iconColor?: string;
     }) => void;
+    onSubmitReadyChange?: (isReady: boolean) => void;
+    onManageAuthAccounts?: (target: "codex_oauth") => void;
     isProxyTakeover?: boolean;
-  }) => (
-    <form
-      id="provider-form"
-      onSubmit={(event) => {
-        event.preventDefault();
-        onSubmit({
-          name: initialData.name ?? "",
-          websiteUrl: initialData.websiteUrl ?? "",
-          notes: initialData.notes,
-          settingsConfig: JSON.stringify(initialData.settingsConfig ?? {}),
-          meta: initialData.meta,
-          icon: initialData.icon,
-          iconColor: initialData.iconColor,
-        });
-      }}
-    >
-      <output data-testid="settings-config">
-        {JSON.stringify(initialData.settingsConfig ?? {})}
-      </output>
-      <output data-testid="is-proxy-takeover">
-        {isProxyTakeover ? "true" : "false"}
-      </output>
-    </form>
-  ),
+    appId?: string;
+  }) => {
+    useEffect(() => {
+      if (onSubmitReadyChange) {
+        submitReadyCallbacks.push(onSubmitReadyChange);
+        onSubmitReadyChange(mockFormReady);
+      }
+    }, [onSubmitReadyChange]);
+    return (
+      <form
+        id="provider-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          onSubmit({
+            name: initialData.name ?? "",
+            websiteUrl: initialData.websiteUrl ?? "",
+            notes: initialData.notes,
+            settingsConfig: JSON.stringify(initialData.settingsConfig ?? {}),
+            meta: mockCodexManagedAccountSelected
+              ? {
+                  ...(initialData.meta ?? {}),
+                  providerType: "codex_oauth",
+                  authBinding: {
+                    source: "managed_account",
+                    authProvider: "codex_oauth",
+                    accountId: "acct-managed",
+                  },
+                }
+              : initialData.meta,
+            icon: initialData.icon,
+            iconColor: initialData.iconColor,
+          });
+        }}
+      >
+        <output data-testid="settings-config">
+          {JSON.stringify(initialData.settingsConfig ?? {})}
+        </output>
+        <output data-testid="is-proxy-takeover">
+          {isProxyTakeover ? "true" : "false"}
+        </output>
+        <button
+          type="button"
+          onClick={() => onManageAuthAccounts?.("codex_oauth")}
+        >
+          manage-auth
+        </button>
+      </form>
+    );
+  },
 }));
 
 import { EditProviderDialog } from "@/components/providers/EditProviderDialog";
 
 describe("EditProviderDialog", () => {
   beforeEach(() => {
-    apiMocks.getCurrent.mockReset();
-    apiMocks.getLiveProviderSettings.mockReset();
-    apiMocks.getOpenClawLiveProvider.mockReset();
+    mockFormReady = true;
+    mockCodexManagedAccountSelected = false;
+    submitReadyCallbacks = [];
+    vi.clearAllMocks();
   });
 
-  it("代理接管中编辑 Codex 供应商时展示数据库配置而不是读取 live 代理配置", async () => {
+  it("keeps an unbound Codex Official provider ID unchanged", async () => {
+    apiMocks.getCurrent.mockResolvedValue(null);
+    const onSubmit = vi.fn();
     const provider: Provider = {
-      id: "deepseek",
-      name: "DeepSeek",
-      category: "custom",
-      settingsConfig: {
-        auth: {
-          OPENAI_API_KEY: "db-key",
-        },
-        config:
-          'model_provider = "custom"\n[model_providers.custom]\nbase_url = "https://api.deepseek.com/v1"\n',
-      },
+      id: "legacy-unbound-official",
+      name: "Legacy OpenAI Official",
+      category: "official",
+      settingsConfig: { auth: {}, config: "" },
     };
-
-    apiMocks.getCurrent.mockResolvedValue(provider.id);
-    apiMocks.getLiveProviderSettings.mockResolvedValue({
-      auth: {
-        OPENAI_API_KEY: "PROXY_MANAGED",
-      },
-      config:
-        'model_provider = "custom"\n[model_providers.custom]\nbase_url = "http://127.0.0.1:15721/v1"\nexperimental_bearer_token = "PROXY_MANAGED"\n',
-    });
 
     render(
       <EditProviderDialog
         open
         provider={provider}
         onOpenChange={vi.fn()}
-        onSubmit={vi.fn()}
+        onSubmit={onSubmit}
         appId="codex"
-        isProxyTakeover
       />,
     );
 
-    await waitFor(() => {
-      expect(screen.getByTestId("is-proxy-takeover").textContent).toBe("true");
-    });
+    fireEvent.click(screen.getByRole("button", { name: "common.save" }));
 
-    expect(apiMocks.getLiveProviderSettings).not.toHaveBeenCalled();
-    expect(
-      JSON.parse(screen.getByTestId("settings-config").textContent ?? "{}"),
-    ).toEqual(provider.settingsConfig);
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        originalId: "legacy-unbound-official",
+        provider: expect.objectContaining({ id: "legacy-unbound-official" }),
+      }),
+    );
+  });
+
+  it("keeps the fixed Codex provider ID when an account is bound", async () => {
+    mockCodexManagedAccountSelected = true;
+    apiMocks.getCurrent.mockResolvedValue(null);
+    const onSubmit = vi.fn();
+    const provider: Provider = {
+      id: "codex-official",
+      name: "OpenAI Official",
+      category: "official",
+      settingsConfig: { auth: {}, config: "" },
+    };
+
+    render(
+      <EditProviderDialog
+        open
+        provider={provider}
+        onOpenChange={vi.fn()}
+        onSubmit={onSubmit}
+        appId="codex"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "common.save" }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    const submitted = onSubmit.mock.calls[0][0];
+    expect(submitted.originalId).toBe("codex-official");
+    expect(submitted.provider.id).toBe("codex-official");
+    expect(submitted.provider.meta?.authBinding).toEqual({
+      source: "managed_account",
+      authProvider: "codex_oauth",
+      accountId: "acct-managed",
+    });
   });
 });

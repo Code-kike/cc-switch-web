@@ -328,6 +328,76 @@ describe("useProviderActions", () => {
     expect(switchProviderMutateAsync).toHaveBeenCalledWith(provider.id);
   });
 
+  it("allows the native Codex official provider during takeover", async () => {
+    switchProviderMutateAsync.mockResolvedValueOnce(undefined);
+    const { wrapper } = createWrapper();
+    const provider = createProvider({
+      id: "codex-official",
+      category: "official",
+    });
+
+    const { result } = renderHook(
+      () => useProviderActions("codex", true, true),
+      { wrapper },
+    );
+
+    await act(async () => {
+      await result.current.switchProvider(provider);
+    });
+
+    expect(switchProviderMutateAsync).toHaveBeenCalledWith("codex-official");
+    expect(toastErrorMock).not.toHaveBeenCalled();
+  });
+
+  it("continues blocking other official providers during takeover", async () => {
+    const { wrapper } = createWrapper();
+    const provider = createProvider({
+      id: "claude-official",
+      category: "official",
+    });
+
+    const { result } = renderHook(
+      () => useProviderActions("claude", true, true),
+      { wrapper },
+    );
+
+    await act(async () => {
+      await result.current.switchProvider(provider);
+    });
+
+    expect(switchProviderMutateAsync).not.toHaveBeenCalled();
+    expect(toastErrorMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("allows a managed Codex Official card during takeover", async () => {
+    switchProviderMutateAsync.mockResolvedValueOnce(undefined);
+    const { wrapper } = createWrapper();
+    const provider = createProvider({
+      id: "generated-uuid",
+      category: "official",
+      settingsConfig: { auth: {}, config: "" },
+      meta: {
+        providerType: "codex_oauth",
+        authBinding: {
+          source: "managed_account",
+          authProvider: "codex_oauth",
+          accountId: "acct-managed",
+        },
+      },
+    });
+    const { result } = renderHook(
+      () => useProviderActions("codex", true, true),
+      { wrapper },
+    );
+
+    await act(async () => {
+      await result.current.switchProvider(provider);
+    });
+
+    expect(switchProviderMutateAsync).toHaveBeenCalledWith("generated-uuid");
+    expect(toastErrorMock).not.toHaveBeenCalled();
+  });
+
   it("should sync plugin config when switching Claude provider with integration enabled", async () => {
     switchProviderMutateAsync.mockResolvedValueOnce(undefined);
     settingsApiGetMock.mockResolvedValueOnce({
