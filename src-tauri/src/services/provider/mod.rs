@@ -32,6 +32,10 @@ pub use live::{
     update_toml_common_config_snippet,
 };
 
+pub fn import_pi_providers_from_live(state: &AppState) -> Result<usize, AppError> {
+    pi::import_from_live(state)
+}
+
 // Internal re-exports (pub(crate))
 pub(crate) use live::{
     build_effective_settings_with_common_config, normalize_provider_common_config_for_storage,
