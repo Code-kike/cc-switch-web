@@ -48,13 +48,13 @@
 - pi_config 本地文件 IO 保留 fork 既有 atomic_write + 2s deadline + heap/stack 上限等价口径。
 
 ## 验收标准
-- [ ] pi provider 完成 Web API / browser UI / headless runtime 适配；9 个新命令注册 web-commands.ts 并过 check:web-routes（0 missing/mismatch/fallback）。
-- [ ] session usage statistics（40d747c0）在双运行时下正确计数；v16→v17 迁移连续不跳号。
-- [ ] ClaudeDesktop hunk 零回潮（grep `ClaudeDesktop`/`claude-desktop` 在 src-tauri/src/、src/ 为空，除既有 usage logger 兼容残留）；zh-TW hunk 零回潮。
-- [ ] 全量门禁通过：test:unit 全绿（非 flake 项）、test:integration（4 PRD flakes 外全绿）、Rust parity（web_api::/dual_runtime_parity::/web_proxy_lifecycle:: 全绿）、web-routes、locales（en/ja/zh parity）、build:web exit 0、smoke:web-server exit 0；与父主体无回归。
-- [ ] docs 处置：移植 `pi-native-contract-zh.md`；排除 3 个 UX/需求设计文档。
-- [ ] PromptPanel 非 pi 路径不被重构（fork 现有 claude/codex 等 prompt 列表 UI 保持原样，PromptLibrary 仅 PiPromptPanel 内部使用）。
-- [ ] 安全上限不退化：2s JS deadline、16 MiB heap、256 KiB stack、128 MiB body cap、32 MiB catalog cap 保留；pi_config `MAX_PI_FILE_BYTES=1MiB`。
+- [x] pi provider 完成 Web API / browser UI / headless runtime 适配；9 个新命令注册 web-commands.ts 并过 check:web-routes（0 missing/mismatch/fallback）。
+- [x] session usage statistics（40d747c0）在双运行时下正确计数；v16→v17 迁移连续不跳号。
+- [x] ClaudeDesktop hunk 零回潮（grep `ClaudeDesktop`/`claude-desktop` 在 src-tauri/src/、src/ 为空，除既有 usage logger 兼容残留）；zh-TW hunk 零回潮。
+- [x] 全量门禁通过：test:unit 全绿（非 flake 项）、test:integration（4 PRD flakes 外全绿；P4 全量另有 1 个 PromptPanel Gemini 时序 flake，隔离 3/3 通过）、Rust parity（web_api::/dual_runtime_parity::/web_proxy_lifecycle:: 全绿）、web-routes、locales（en/ja/zh parity）、build:web exit 0、smoke:web-server exit 0；与父主体无回归。
+- [x] docs 处置：移植 `pi-native-contract-zh.md`；排除 3 个 UX/需求设计文档。
+- [x] PromptPanel 非 pi 路径不被重构（fork 现有 claude/codex 等 prompt 列表 UI 保持原样，PromptLibrary 仅 PiPromptPanel 内部使用）。
+- [x] 安全上限不退化：2s JS deadline、16 MiB heap、256 KiB stack、128 MiB body cap、32 MiB catalog cap 保留；pi_config `MAX_PI_FILE_BYTES=1MiB`。
 
 ## 裁定记录（brainstorm 2026-08-23，用户授权采纳推荐方案）
 - **Q1 docs 范围**：仅移植 `pi-native-contract-zh.md`（行为契约 SSOT）；排除 `pi-frontend-uiux-guidelines-zh.md`/`pi-thinking-level-map-requirements-zh.md`/`pi-live-provider-sync-requirements-zh.md`（UX/需求设计，fork docs/ 不收）。
