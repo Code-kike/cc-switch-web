@@ -47,7 +47,7 @@ pnpm smoke:web-server
 - [x] `services/mod.rs`：加 `pub mod pi_prompt_files` + `pub(crate) mod pi_state`
 - [x] `services/prompt.rs`：dispatch 加 `AppType::Pi` → pi_prompt_files；**丢弃 ClaudeDesktop arm**
 - [x] `prompt_files.rs`：`prompt_file_path(AppType::Pi)` → AGENTS.md；**丢弃 ClaudeDesktop arm**
-- [x] `services/skill.rs`：pi skills 集成（+1141 行，最大单文件）；**丢弃 ClaudeDesktop arm**（4 处）
+- [~] `services/skill.rs`：pi skills 集成（+1141 行，最大单文件）；**丢弃 ClaudeDesktop arm**（4 处）→ **P1 仅落地 4 行**（pi skills 目录解析）；18 个生产 helper + 19 个测试**未移植**，移至 P3.5 独立批次（见下）
 - [x] `services/mcp.rs`/`database/dao/mcp.rs`：pi mcp gate（Pi 无 native MCP → false）；**丢弃 ClaudeDesktop arm**
 - [x] `services/provider/live.rs`：pi live config 路径；**丢弃 ClaudeDesktop arm**
 - [x] `services/stream_check.rs`/`settings.rs`/`proxy/providers/mod.rs`：pi arm（`Pi => return None` 等）；**丢弃 ClaudeDesktop arm**
@@ -81,20 +81,34 @@ pnpm smoke:web-server
 - [x] 门禁全绿 → commit
 
 ### P3 — 前端 prompts/skills/sessions UI
-- [ ] `components/prompts/PiPromptPanel.tsx`/`PiNativePromptResources.tsx`/`PromptLibrary.tsx`（纯新增）
-- [ ] `components/prompts/PromptPanel.tsx`：加 `appId === "pi"` → PiPromptPanel dispatch；**不移植非 pi 路径 PromptLibrary 重构**（保留 fork 现有 ManagementListSearch 列表）
-- [ ] `components/prompts/PromptFormPanel.tsx`：pi 用 AGENTS.md + 不 trim
-- [ ] `components/prompts/PromptListItem.tsx`：pi 适配
-- [ ] `lib/api/prompts.ts`：pi prompt API dispatch
-- [ ] `hooks/usePromptActions.ts`：pi prompt actions
-- [ ] `components/skills/UnifiedSkillsPanel.tsx`：pi skills（Pi 无 native MCP registry → gate）
-- [ ] `components/sessions/SessionManagerPage.tsx`：pi session 集成
-- [ ] `components/mcp/UnifiedMcpPanel.tsx`：pi mcp gate（Pi 无 MCP）
-- [ ] `components/proxy/{ProxyPanel,ProxyToggle,FailoverQueueManager,FailoverToggle}.tsx`：pi 不参与 proxy（gate/排除）
-- [ ] `components/UsageFooter.tsx`/`UsageScriptModal.tsx`/`usage/{ModelsDevAutoSyncPanel,ModelsDevPickerDialog,PricingConfigPanel,UsageHero}.tsx`：pi usage script 集成
-- [ ] `hooks/{useDirectorySettings,useDragSort,useSettingsForm,useSettings,useProxyStatus}.ts`：pi 适配
-- [ ] `lib/api/{deeplink,model-fetch,skills,index}.ts`/`lib/query/{failover,index,mutations}.ts`/`lib/modelsDevPricing.ts`：pi 集成
-- [ ] `utils/errorUtils.ts`/`types.ts`：pi error + type
+- [x] `components/prompts/PiPromptPanel.tsx`/`PiNativePromptResources.tsx`/`PromptLibrary.tsx`（纯新增）
+- [x] `components/prompts/PromptPanel.tsx`：加 `appId === "pi"` → PiPromptPanel dispatch；**不移植非 pi 路径 PromptLibrary 重构**（保留 fork 现有 ManagementListSearch 列表）
+- [x] `components/prompts/PromptFormPanel.tsx`：pi 用 AGENTS.md + 不 trim
+- [x] `components/prompts/PromptListItem.tsx`：pi 适配
+- [x] `lib/api/prompts.ts`：pi prompt API dispatch
+- [x] `hooks/usePromptActions.ts`：pi prompt actions
+- [x] `components/skills/UnifiedSkillsPanel.tsx`：pi skills（Pi 无 native MCP registry → gate）
+- [x] `components/sessions/SessionManagerPage.tsx`：pi session 集成
+- [x] `components/mcp/UnifiedMcpPanel.tsx`：pi mcp gate（Pi 无 MCP）
+- [x] `components/proxy/{ProxyPanel,ProxyToggle,FailoverQueueManager,FailoverToggle}.tsx`：pi 不参与 proxy（gate/排除）
+- [x] `components/UsageFooter.tsx`/`UsageScriptModal.tsx`/`usage/{ModelsDevAutoSyncPanel,ModelsDevPickerDialog,PricingConfigPanel,UsageHero}.tsx`：pi usage script 集成
+- [x] `hooks/{useDirectorySettings,useDragSort,useSettingsForm,useSettings,useProxyStatus}.ts`：pi 适配
+- [x] `lib/api/{deeplink,model-fetch,skills,index}.ts`/`lib/query/{failover,index,mutations}.ts`/`lib/modelsDevPricing.ts`：pi 集成
+- [x] `utils/errorUtils.ts`/`types.ts`：pi error + type
+- [x] 门禁全绿 → commit
+
+### P3.5 — services/skill.rs pi skills 安全路径（P1 遗漏补齐）
+> **来源**：P1 `18340719` 仅落地 pi skills 目录解析 4 行；上游 `84e75ad2` 对 `services/skill.rs` 为 +1141/−62。P3 移植前端 `preservedPiPath`/`piCleanupIncomplete` toast 分支时发现后端字段缺失，警告永不触发。**安全关键**：无 preserve 逻辑时卸载受管 pi skill 会删除同名用户外部目录；`migrate_storage` 无别名拒绝会在别名目标上移动 skill 导致源丢失。影响面覆盖全部 app（非 pi 专属）。
+
+- [ ] 路径别名/重叠校验：`paths_alias`/`paths_overlap`/`ensure_distinct_skill_roots`/`get_distinct_app_skills_dir`/`validate_skill_storage_destination`
+- [ ] pi 部署哈希与树枚举：`compute_pi_deployment_hash`/`collect_tree_entries`
+- [ ] 安装前检：`skill_exists_in_app`/`preflight_install_destination`/`persist_and_sync_new_skill`
+- [ ] pi 目标核验与刷新：`ensure_pi_skill_destination_matches`/`inspect_pi_skill_destination`/`remove_verified_pi_destination`/`refresh_pi_skill_destination`
+- [ ] 保留式卸载：`remove_from_app_preserving`/`resolve_uninstall_backup_source_excluding`/`create_uninstall_backup_excluding`（fork 仅有非 `_excluding` 变体）
+- [ ] `SkillUninstallResult` 加 `preserved_pi_path`/`pi_cleanup_incomplete` 字段 + `is_false` serde helper（P3 前端已按可选字段消费）
+- [ ] `migrate_storage` 别名拒绝 + 受管 pi symlink 重定向
+- [ ] 19 个上游回归测试全量移植（pi skill 状态跟随原生目录、外部同名目录保留、安装冲突拒绝、隐藏原生变更拒绝、别名根卸载、preflight 后创建的目标复检、SSOT 保留、缺失源不备份不删除、pi root 不可解析告警、别名根拒绝 sync/remove、migrate 别名拒绝/重定向）
+- [ ] 保留 fork 既有安全上限（50 MiB 单文件读、16 层遍历、跳过 symlink）不退化
 - [ ] 门禁全绿 → commit
 
 ### P4 — 40d747c0 session usage + docs + i18n 收口 + 全量门禁
@@ -180,6 +194,47 @@ P2 前端 provider UI 完成。59 文件改动（+6454/−127）。
 
 ### Carry-forward
 - ClaudeDesktop：`grep src/` 6 处全为 HEAD 既有残留（`ensureClaudeDesktopOfficialSeed` 3 处 + `notifications.proxyReasonClaudeDesktop` 3 locale），零新增。
+- zh-TW 零回潮；`.pi/`/`.pi-subagents/` 未 stage。
+
+
+## P3 结果（2026-08-24，cf465755）
+
+P3 前端 prompts/skills/sessions UI 完成。30 文件改动（+2945/−50）。
+
+### 实施要点
+- 3 个纯新增：`PiPromptPanel.tsx`（3 标签 pi prompt 面板，imperative handle 对齐 fork `PromptPanelHandle`）、`PiNativePromptResources.tsx`（`PiSystemPromptFiles` + `PiPromptTemplates`，revision 守卫的 SYSTEM.md/APPEND_SYSTEM.md 编辑器 + 斜杠命令模板 CRUD）、`PromptLibrary.tsx`（仅被 PiPromptPanel 消费）。
+- `PromptPanel.tsx`：**仅取 pi dispatch**，内部组件重命名为 `StandardPromptPanel` 后包装；非 pi 路径原样保留。
+- `PromptFormPanel.tsx`：pi 用 AGENTS.md + 不 trim。
+- `lib/api/prompts.ts`：6 个 pi prompt 命令 + 类型；`hooks/usePromptActions.ts` pi actions。
+- `SessionManagerPage.tsx`：pi session discovery（Available/RequiresProjectContext/Unavailable 三态）。
+- 两处 P3 范围内的运行时缺陷同批修复：`mutations.ts` 未从 `providerKey` 派生 pi provider id（导致 pi 新增写出不可达 UUID 节点）；`App.tsx` 缺 `onPrimaryActionChange` 接线（模板标签创建动作无头部按钮）。
+
+### Q3 裁定合规证据
+- `PromptPanel.tsx` 仍含 `ManagementListSearch`（行 8、328）与 `filteredPromptEntries`（行 286、365、372）。
+- 回归测试 `tests/components/PromptPanel.test.tsx` → `"keeps the standard search + list UI for %s"`（claude/codex/gemini/opencode 参数化）：mock `PromptLibrary` 并断言其在标准路径**从不渲染**、`role="search"` 存在且位于滚动视口外、过滤仍收窄内联列表、当前文件卡片存活。配套 `"dispatches the pi app to PiPromptPanel and forwards its handle"` 钉住 pi 侧。
+
+### 证实不适用（未移植，有据）
+- `components/proxy/{ProxyPanel,ProxyToggle,FailoverToggle,FailoverQueueManager}.tsx`：hunk 为 `AppId → ProxyAppId` 类型收紧 + `getAppLabel`，均建立在 P2 刻意未引入的 `PROXY_APP_IDS`/`isProxyAppId` 上。pi 可证明不可达：`App.tsx:1488-1492` 以 `activeApp !== "pi"` gate toggle；`ProxyTabContent.FAILOVER_APPS` 是硬编码 4-app 列表（由 `ProxyTabContent.apps.test.ts` 钉住）。
+- `hooks/useProxyStatus.ts`/`lib/query/failover.ts` `getAppLabel` 重构、`hooks/useDragSort.ts` `isProxyAppId` gate：同缺失构件；pi 非 takeover app，`useFailoverQueue("pi")` 从不挂载。
+- `lib/query/failover.ts` `useProviderHealth(…, enabled)`：fork 已有（`failover.ts:13`）。
+- `lib/api/deeplink.ts`：fork 用 `app?: AppId`（已含 `"pi"`），无可应用的内联 union 加宽。
+- `usage/{ModelsDevAutoSyncPanel,ModelsDevPickerDialog,PricingConfigPanel}` + `lib/modelsDevPricing.ts`：常量提取 + 注释，零 pi 内容。
+- 9 个死键 `pi.prompts.*`（`agentsLibrary`/`usePrompt`/`stopUsing` 等）：`git grep` 证实上游 `84e75ad2:src/` 亦未引用。
+
+### 发现的 P1 遗漏（转入 P3.5）
+- `preservedPiPath`/`piCleanupIncomplete` 卸载警告依赖 P1 未落地的 Rust 字段。P1 对 `services/skill.rs` 仅 +4 行（pi skills 目录），上游为 +1141/−62（18 生产 helper + 19 测试）。P3 已按可选字段 + toast 分支移植前端侧（3 个 mock 测试覆盖），后端补齐见 **P3.5**。
+
+### 门禁（全绿）
+- cargo fmt / format:check / typecheck ✓
+- check:web-routes 292 commands / 280 routes / 0 gaps ✓
+- check:locales 2636 keys en/ja/zh parity ✓（2574 → 2636）
+- desktop + web cargo check ✓
+- test:unit **173 files / 1044 tests** ✓（基线 171/1008，+2 文件 +36 测试）
+- Rust parity 37 passed ✓
+- 新增测试：PiPromptPanel 8、PiNativePromptResources 7（真实 msw 打 `/api/pi/*`，校验 save/delete 传 revision + SYSTEM.md 确认门）、PromptPanel 5（4 Q3 + 1 dispatch）、usePromptActions pi 4、UnifiedSkillsPanel pi 4、SessionManagerPage pi 4、useAddProviderMutation pi key 2、PromptFormPanel trim 1。
+
+### Carry-forward
+- ClaudeDesktop：`src/` 6 处全为 HEAD 既有，零新增；`src-tauri/src/` 仅既有 usage parser/logger/stats 兼容行 + profile.rs 注释。
 - zh-TW 零回潮；`.pi/`/`.pi-subagents/` 未 stage。
 
 ## 验证命令汇总
