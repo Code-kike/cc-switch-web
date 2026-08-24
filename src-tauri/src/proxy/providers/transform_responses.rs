@@ -1318,6 +1318,96 @@ fn contains_markdown_link_to_url(text: &str, raw_url: &str, rendered_url: &str) 
     )
 }
 
+/// 引用去重分析的输入上限（fork 侧加固，上游 `bdeaac75` 无对应实现；与 fork 既有的
+/// 50 MiB 单文件读取、16 层目录遍历、32 MiB catalog 上限同一姿态）。
+///
+/// `text_with_url_citations` 的输入是**模型输出**（不可信：prompt injection 可让模型
+/// 回显敌意 markdown）。下面的结构分析无无界递归、无指数回溯，但在若干输入维度上是
+/// 二次的：release 实测 `"[a]("`×32768（128 KiB）耗时 6.7~7.4 s，且随文本长度按 ×4/倍
+/// 增长（433 ms @32 KiB → 1.67 s @64 KiB → 6.69 s @128 KiB）—— 128 MiB 响应体上限之下
+/// 没有任何自然上界。打满全部上限后最坏约 57 ms（release 实测）。
+///
+/// 每个上限对应一个实测的二次形状，缺一即留下一个未受约束的维度：
+/// - `MAX_CITATION_DEDUP_TEXT_BYTES`：粗粒度兜底，同时约束 code fence 扫描与
+///   reference-definition 扫描（32 KiB 实测 3.6 ms）。
+/// - `MAX_CITATION_DEDUP_LINK_CANDIDATES`：每个 `](` 都会对未闭合目标扫到文本末尾
+///   （256 个 × 32 KiB 实测 29 ms；512 个 × 32 KiB 为 54 ms）。
+/// - `MAX_CITATION_DEDUP_AUTOLINK_CANDIDATES`：每个 `<` 都会 `find('>')` 扫到末尾
+///   （无此上限时 `"<"`×32768 实测 56 ms）。
+/// - `MAX_CITATION_DEDUP_BACKSLASH_RUN`：`is_markdown_escaped` 逆向回走连续反斜杠
+///   （无此上限时 `"[" + "\\"`×32767 实测 343 ms）。
+/// - `MAX_CITATION_DEDUP_CITATIONS`：每条 citation 各自做一次全文扫描，而 citation
+///   条数只受响应体上限约束（无此上限时 1000 条 × 128 KiB 实测 225 ms）。
+const MAX_CITATION_DEDUP_TEXT_BYTES: usize = 32 * 1024;
+const MAX_CITATION_DEDUP_LINK_CANDIDATES: usize = 256;
+const MAX_CITATION_DEDUP_AUTOLINK_CANDIDATES: usize = 2048;
+const MAX_CITATION_DEDUP_BACKSLASH_RUN: usize = 64;
+const MAX_CITATION_DEDUP_CITATIONS: usize = 256;
+
+/// 正文的 markdown 结构快照：把 citation 织入正文时用它避免嵌进 code span 或既有链接，
+/// 并用它判断某个 citation URL 是否已经以 markdown 链接出现过。
+struct CitationDedupAnalysis {
+    code: MarkdownCodeScan,
+    definitions: Vec<MarkdownReferenceDefinition>,
+    brackets: MarkdownBracketPairs,
+    reference_uses: Vec<MarkdownReferenceUse>,
+    link_syntax: Vec<bool>,
+}
+
+fn markdown_citation_dedup_analysis(text: &str) -> CitationDedupAnalysis {
+    let code = markdown_code_scan(text);
+    let definitions = markdown_reference_definitions(text, &code.mask);
+    let brackets = markdown_bracket_pairs(text, &code.mask);
+    let reference_uses = markdown_reference_uses(text, &code.mask, &definitions, &brackets);
+    let link_syntax =
+        markdown_link_syntax_mask(text, &code.mask, &definitions, &reference_uses, &brackets);
+    CitationDedupAnalysis {
+        code,
+        definitions,
+        brackets,
+        reference_uses,
+        link_syntax,
+    }
+}
+
+/// 上限预检：全部是 O(text) 只读预扫描，且长度上限先行短路，因此预检自身不会成为新开销。
+fn citation_dedup_analysis_is_affordable(text: &str, citations: usize) -> bool {
+    if text.len() > MAX_CITATION_DEDUP_TEXT_BYTES || citations > MAX_CITATION_DEDUP_CITATIONS {
+        return false;
+    }
+
+    let link_candidates = text
+        .match_indices("](")
+        .take(MAX_CITATION_DEDUP_LINK_CANDIDATES + 1)
+        .count();
+    if link_candidates > MAX_CITATION_DEDUP_LINK_CANDIDATES {
+        return false;
+    }
+
+    let autolink_candidates = text
+        .bytes()
+        .filter(|byte| *byte == b'<')
+        .take(MAX_CITATION_DEDUP_AUTOLINK_CANDIDATES + 1)
+        .count();
+    if autolink_candidates > MAX_CITATION_DEDUP_AUTOLINK_CANDIDATES {
+        return false;
+    }
+
+    let mut backslash_run = 0_usize;
+    for byte in text.bytes() {
+        if byte == b'\\' {
+            backslash_run += 1;
+            if backslash_run > MAX_CITATION_DEDUP_BACKSLASH_RUN {
+                return false;
+            }
+        } else {
+            backslash_run = 0;
+        }
+    }
+
+    true
+}
+
 pub(crate) fn text_with_url_citations(text: &str, annotations: &[Value]) -> String {
     struct Citation {
         start: Option<usize>,
@@ -1365,30 +1455,44 @@ pub(crate) fn text_with_url_citations(text: &str, annotations: &[Value]) -> Stri
         return text.to_string();
     }
 
-    let code = markdown_code_scan(text);
-    let definitions = markdown_reference_definitions(text, &code.mask);
-    let brackets = markdown_bracket_pairs(text, &code.mask);
-    let reference_uses = markdown_reference_uses(text, &code.mask, &definitions, &brackets);
-    let link_syntax =
-        markdown_link_syntax_mask(text, &code.mask, &definitions, &reference_uses, &brackets);
-    let mut linked_urls = citations
-        .iter()
-        .filter(|citation| {
-            contains_markdown_link_to_url_with_context(
-                text,
-                &citation.raw_url,
-                &citation.url,
-                &code.mask,
-                &definitions,
-                &reference_uses,
-                &brackets,
-            )
+    // fork 侧加固（上游无）：上限跳过的只是「这条 citation 的 URL 是否已经以 markdown
+    // 链接出现在正文里」这一去重分析，此处**故意 fail-open**：去重是排版优化，不是安全
+    // 控制。超限时正文原样保留、所有 citation 一律走 fallback 追加，代价最坏是正文已有
+    // 的链接在 "Sources:" 里重复一次（外观问题）；反过来 fail-closed 会丢 citation 或
+    // 让整条响应报错，后果更重。
+    // 这与 W1 Codex Alpha Search 的 fail-closed 不矛盾：那里降级会把搜索 payload 误投到
+    // 非搜索端点（路由决策，必须拒绝），这里降级只影响排版。请勿把此处“修正”为 fail-closed。
+    let analysis = citation_dedup_analysis_is_affordable(text, citations.len())
+        .then(|| markdown_citation_dedup_analysis(text));
+    let mut linked_urls = analysis
+        .as_ref()
+        .map(|analysis| {
+            citations
+                .iter()
+                .filter(|citation| {
+                    contains_markdown_link_to_url_with_context(
+                        text,
+                        &citation.raw_url,
+                        &citation.url,
+                        &analysis.code.mask,
+                        &analysis.definitions,
+                        &analysis.reference_uses,
+                        &analysis.brackets,
+                    )
+                })
+                .map(|citation| citation.url.clone())
+                .collect::<HashSet<_>>()
         })
-        .map(|citation| citation.url.clone())
-        .collect::<HashSet<_>>();
+        .unwrap_or_default();
     let mut ranged = Vec::new();
     let mut fallback = Vec::new();
     for citation in citations {
+        let Some(analysis) = analysis.as_ref() else {
+            // 上限已触发：没有 code/link 掩码就无法安全改写正文（会嵌进 code span 或既有
+            // 链接），因此全部退到 fallback 链接，正文一个字节都不动。
+            fallback.push(citation);
+            continue;
+        };
         let Some((start, end)) = citation.start.zip(citation.end) else {
             fallback.push(citation);
             continue;
@@ -1406,8 +1510,10 @@ pub(crate) fn text_with_url_citations(text: &str, annotations: &[Value]) -> Stri
             || text[start..end]
                 .chars()
                 .any(|character| character.is_whitespace() && character != ' ')
-            || code.mask[start..end].iter().any(|masked| *masked)
-            || (link_syntax[start..end].iter().any(|masked| *masked)
+            || analysis.code.mask[start..end].iter().any(|masked| *masked)
+            || (analysis.link_syntax[start..end]
+                .iter()
+                .any(|masked| *masked)
                 && !linked_urls.contains(&citation.url))
         {
             fallback.push(citation);
@@ -1454,7 +1560,10 @@ pub(crate) fn text_with_url_citations(text: &str, annotations: &[Value]) -> Stri
     }
     if !fallback_links.is_empty() {
         if !rendered.is_empty() {
-            if let Some((marker, length)) = code.unterminated_fence {
+            if let Some((marker, length)) = analysis
+                .as_ref()
+                .and_then(|analysis| analysis.code.unterminated_fence)
+            {
                 if !rendered.ends_with('\n') {
                     rendered.push('\n');
                 }
@@ -3168,6 +3277,197 @@ mod tests {
             text_with_url_citations("Answer.", annotations.as_array().unwrap()),
             "Answer.\n\nSources: [Example \\[Docs\\]](https://example.com/docs_%28latest%29)"
         );
+    }
+
+    // ============== 引用去重分析的输入上限（fork 侧加固，上游 bdeaac75 无） ==============
+
+    /// 病态形状共用断言：正文 = 一条真实的既有链接 + 触发某一个上限的病态填充。
+    ///
+    /// 上限触发后的可观测契约（fail-open）：
+    /// 1. 正文逐字节不变（没有 code/link 掩码就不改写正文）；
+    /// 2. 两条 citation 全部出现在 `Sources:` 里 —— 一条引用都不丢；
+    /// 3. 代价仅为正文里已存在的那条链接被重复列出一次（排版退化，非安全退化）。
+    ///
+    /// 用逐字相等而非 `contains` 断言：这样「跳过去重」与「正常去重」不可能同时通过 ——
+    /// 正常路径会把 0..3（"See"）就地织成内联链接，并把 Docs 那条去重掉。
+    fn assert_citation_dedup_skipped(body: &str) {
+        let annotations = json!([
+            {
+                "type": "url_citation",
+                "url": "https://example.com/docs",
+                "title": "Docs"
+            },
+            {
+                "type": "url_citation",
+                "start_index": 0,
+                "end_index": 3,
+                "url": "https://example.com/other",
+                "title": "Other"
+            }
+        ]);
+
+        assert_eq!(
+            text_with_url_citations(body, annotations.as_array().unwrap()),
+            format!(
+                "{body}\n\nSources: [Docs](https://example.com/docs), [Other](https://example.com/other)"
+            )
+        );
+    }
+
+    /// 每个 `](` 都会对未闭合目标扫到文本末尾 → 链接候选数维度必须受限。
+    #[test]
+    fn test_text_with_url_citations_skips_dedup_for_link_candidate_flood() {
+        let body = format!(
+            "See [Docs](https://example.com/docs) for details.\n{}",
+            "[a](".repeat(MAX_CITATION_DEDUP_LINK_CANDIDATES + 1)
+        );
+
+        // 只越过链接候选数上限，其余维度都在上限内 —— 保证钉住的是这一个维度。
+        assert!(body.len() <= MAX_CITATION_DEDUP_TEXT_BYTES);
+        assert!(body.match_indices("](").count() > MAX_CITATION_DEDUP_LINK_CANDIDATES);
+        assert_citation_dedup_skipped(&body);
+    }
+
+    /// 每个 `<` 都会 `find('>')` 扫到文本末尾 → autolink 候选数维度必须受限。
+    #[test]
+    fn test_text_with_url_citations_skips_dedup_for_autolink_flood() {
+        let body = format!(
+            "See [Docs](https://example.com/docs) for details.\n{}",
+            "<".repeat(MAX_CITATION_DEDUP_AUTOLINK_CANDIDATES + 1)
+        );
+
+        assert!(body.len() <= MAX_CITATION_DEDUP_TEXT_BYTES);
+        assert!(body.match_indices("](").count() <= MAX_CITATION_DEDUP_LINK_CANDIDATES);
+        assert_citation_dedup_skipped(&body);
+    }
+
+    /// `is_markdown_escaped` 每次都会逆向回走整段连续反斜杠 → 反斜杠连长必须受限。
+    #[test]
+    fn test_text_with_url_citations_skips_dedup_for_long_backslash_run() {
+        let body = format!(
+            "See [Docs](https://example.com/docs) for details.\n{}",
+            "\\".repeat(MAX_CITATION_DEDUP_BACKSLASH_RUN + 1)
+        );
+
+        assert!(body.len() <= MAX_CITATION_DEDUP_TEXT_BYTES);
+        assert_citation_dedup_skipped(&body);
+    }
+
+    /// 粗粒度兜底：正文长度自身没有自然上界（128 MiB 响应体上限之下都可能出现）。
+    #[test]
+    fn test_text_with_url_citations_skips_dedup_for_oversized_text() {
+        let body = format!(
+            "See [Docs](https://example.com/docs) for details.\n{}",
+            "lorem ipsum ".repeat(MAX_CITATION_DEDUP_TEXT_BYTES / 12 + 1)
+        );
+
+        // 病态维度只有长度：无额外 `](`、无 `<`、无反斜杠。
+        assert!(body.len() > MAX_CITATION_DEDUP_TEXT_BYTES);
+        assert!(body.match_indices("](").count() <= MAX_CITATION_DEDUP_LINK_CANDIDATES);
+        assert!(!body.contains('<') && !body.contains('\\'));
+        assert_citation_dedup_skipped(&body);
+    }
+
+    /// 每条 citation 各自做一次全文扫描，而条数只受响应体上限约束 → 条数维度必须受限。
+    #[test]
+    fn test_text_with_url_citations_skips_dedup_for_citation_flood() {
+        let body = "Rust and Cargo";
+        let citation_count = MAX_CITATION_DEDUP_CITATIONS + 1;
+        let annotations = (0..citation_count)
+            .map(|index| {
+                json!({
+                    "type": "url_citation",
+                    // 第一条带 range：正常路径会把它就地织成内联链接，跳过后只能进 Sources。
+                    "start_index": if index == 0 { json!(0) } else { Value::Null },
+                    "end_index": if index == 0 { json!(4) } else { Value::Null },
+                    "url": format!("https://example.com/docs/{index}"),
+                    "title": format!("Docs {index}")
+                })
+            })
+            .collect::<Vec<_>>();
+        let expected_sources = (0..citation_count)
+            .map(|index| format!("[Docs {index}](https://example.com/docs/{index})"))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        // 正文一个字节没动，全部 citation 一条不丢。
+        assert_eq!(
+            text_with_url_citations(body, &annotations),
+            format!("{body}\n\nSources: {expected_sources}")
+        );
+    }
+
+    /// 反斜杠上限约束的是「连续长度」而非「总数」：散落的转义（正常 markdown 常见）
+    /// 不得让去重整体退化。预检里的计数器若忘记归零，这个测试立刻失败。
+    #[test]
+    fn test_text_with_url_citations_still_dedups_scattered_backslash_runs() {
+        let run = "\\".repeat(MAX_CITATION_DEDUP_BACKSLASH_RUN);
+        let body = format!(
+            "See [Docs](https://example.com/docs) for details.\n{}",
+            format!("{run}x\n").repeat(32)
+        );
+        let annotations = json!([{
+            "type": "url_citation",
+            "url": "https://example.com/docs",
+            "title": "Docs"
+        }]);
+
+        // 去重生效 → 正文里已有的链接不会在 Sources 里被重复列出。
+        assert_eq!(
+            text_with_url_citations(&body, annotations.as_array().unwrap()),
+            body
+        );
+    }
+
+    /// 上限边界锚：一份各维度都压到上限一半的**真实**正文必须仍然被分析。
+    /// 若后续有人把某个常量改得过小，本测试立即失败（Sources 里多出重复链接）。
+    #[test]
+    fn test_text_with_url_citations_still_dedups_input_at_half_of_every_cap() {
+        let link_count = MAX_CITATION_DEDUP_LINK_CANDIDATES / 2;
+        let citation_count = MAX_CITATION_DEDUP_CITATIONS / 2;
+        assert!(
+            citation_count <= link_count,
+            "本测试用正文里既有的链接充当 citation 源，citation 数不能超过链接数；\
+             若上限比例变化，请同步扩大正文链接数"
+        );
+
+        let mut body = String::new();
+        for index in 0..link_count {
+            body.push_str(&format!(
+                "See [Docs {index}](https://example.com/docs/{index}) for details.\n"
+            ));
+        }
+        // autolink 维度：上限一半的 `<`，且故意不配 `>`（正是最坏形状）。
+        body.push('\n');
+        body.push_str(&"<".repeat(MAX_CITATION_DEDUP_AUTOLINK_CANDIDATES / 2));
+        // 转义维度：上限一半的连续反斜杠。
+        body.push('\n');
+        body.push_str(&"\\".repeat(MAX_CITATION_DEDUP_BACKSLASH_RUN / 2));
+        body.push('\n');
+        // 长度维度：补到上限一半（填充不含 `](` / `<` / 反斜杠，不污染其他维度）。
+        while body.len() < MAX_CITATION_DEDUP_TEXT_BYTES / 2 {
+            body.push_str("prose ");
+        }
+
+        assert!(body.len() >= MAX_CITATION_DEDUP_TEXT_BYTES / 2);
+        assert!(body.len() <= MAX_CITATION_DEDUP_TEXT_BYTES);
+        assert_eq!(
+            body.match_indices("](").count(),
+            MAX_CITATION_DEDUP_LINK_CANDIDATES / 2
+        );
+
+        let annotations = (0..citation_count)
+            .map(|index| {
+                json!({
+                    "type": "url_citation",
+                    "url": format!("https://example.com/docs/{index}"),
+                    "title": format!("Docs {index}")
+                })
+            })
+            .collect::<Vec<_>>();
+
+        // 每条 citation 的 URL 都已在正文里以 markdown 链接出现 → 去重后不追加任何内容。
+        assert_eq!(text_with_url_citations(&body, &annotations), body);
     }
 
     #[test]
