@@ -1115,6 +1115,17 @@ crate::services::s3_auto_sync::notify_db_changed(table);
     DB `enabled` onto the live file
   - `services/skill.rs` is not "done" when only the skills-dir match arm landed;
     preserving-uninstall / alias-rejection helpers are a separate safety path
+- Never slice a raw URL string by a length derived from `Url::parse(..).path()`.
+  The parsed path is dot-segment normalized, so the two disagree and the slice
+  either panics on a multi-byte boundary or silently produces a prefix unrelated
+  to the intended suffix. Use `strip_suffix` / `strip_prefix` on the raw string so
+  misaligned shapes fall into the caller's reject branch. This class arrives
+  verbatim from upstream: `rewrite_codex_alpha_search_full_url` shipped it in
+  `bdeaac75` with no test for the misaligned shape.
+- Tests must not set a boundary margin of ~1 ms against `Date.now()` in async
+  paths; the assertion then depends on machine load. Use a margin far larger than
+  any plausible scheduling delay (upstream settled on 60 s for
+  `MODELS_DEV_STARTUP_SYNC_INTERVAL_MS`).
 
 #### 7. Wrong vs Correct
 
@@ -3209,6 +3220,159 @@ atomic_write(&agents_md, content.as_bytes())?;
 if matches!(app, AppType::Pi) {
     return Ok(PiAgentsFileGuard::acquire()?.read()?.content);
 }
+```
+
+---
+
+### Scenario: Degradation Direction — Fail-Closed vs Fail-Open Guards
+
+#### 1. Scope / Trigger
+
+- Trigger: adding a guard, cap, preflight, or validation that can *decline* to do
+  its normal work (size cap, candidate cap, derivation that may be ambiguous,
+  unrepresentable upstream constraint).
+- Applies whenever you must choose what happens when the guard trips.
+
+#### 2. Signatures
+
+- Fail-closed example: `rewrite_codex_alpha_search_full_url(base_url, query) -> Result<String, ProxyError>`
+- Fail-open example: `citation_dedup_analysis_is_affordable(text, citations) -> bool`
+  gating `markdown_citation_dedup_analysis` inside `text_with_url_citations`
+
+#### 3. Contracts
+
+- Classify the guard by **what degradation costs**, not by "safety" as a slogan:
+  - The guard protects a **routing / delivery / authorization decision** →
+    **fail closed**. Degrading would send data somewhere it was not meant to go,
+    or grant access that was not proven. Reject and send nothing.
+  - The guard protects a **presentation / optimization** step →
+    **fail open**. Degrading only worsens output cosmetics, while failing closed
+    would drop user-visible data or error an otherwise valid response.
+- Both directions may coexist in one change set. Do not "unify" them.
+- The chosen direction must carry an in-code comment stating the classification
+  and explicitly warning against inverting it, because the opposite choice looks
+  locally reasonable to a future reader.
+- A fail-open guard must still preserve every piece of user-visible payload; it may
+  only lose the refinement it was gating.
+
+#### 4. Validation & Error Matrix
+
+- Ambiguous full URL for endpoint derivation -> reject with a message naming the
+  accepted shape; no request issued.
+- Over-cap untrusted text in citation dedup -> skip analysis, emit **all**
+  citations, leave the body byte-for-byte unchanged.
+- A fail-open guard that drops payload -> reject the design; that is fail-closed
+  wearing the wrong label.
+- A fail-closed guard that "best-effort guesses" instead of erroring -> reject.
+
+#### 5. Good/Base/Bad Cases
+
+- Good: opaque `/responses`-less full URL returns `ConfigError` and nothing is sent.
+- Good: 32 KiB+ hostile markdown skips dedup, all citations still appear under
+  `Sources:`.
+- Base: below every cap, the refinement runs normally.
+- Bad: deriving `/alpha/search` from a guessed prefix (misdelivers the payload).
+- Bad: erroring the whole response because citation dedup was too expensive.
+
+#### 6. Tests Required
+
+- Both directions need tests, and the fail-closed one must assert **no request was
+  issued** (mock upstream that would 404 the wrong path is a good detector).
+- Mutation-check the guard rather than trusting the assertion: negating the
+  condition must fail tests. For fail-closed, negation produced `404 vs 202`; for
+  fail-open, forcing the preflight `false` failed 10 streaming tests and forcing it
+  `true` failed all 5 skip tests.
+- Fail-open needs a reverse anchor: a realistic input comfortably below the caps
+  must still be analyzed, so the caps cannot later be tightened silently.
+
+#### 7. Wrong vs Correct
+
+##### Wrong
+
+```rust
+// "be lenient" on an ambiguous routing input
+let prefix = url.find("/responses").map(|i| &url[..i]).unwrap_or(url);
+let target = format!("{prefix}/alpha/search");
+```
+
+##### Correct
+
+```rust
+let prefix = url_without_query.strip_suffix(suffix).ok_or_else(|| {
+    ProxyError::ConfigError("… use a base URL or a full URL ending in /responses".into())
+})?;
+```
+
+---
+
+### Scenario: Deferred Upstream Stack — Private-Helper Exception
+
+#### 1. Scope / Trigger
+
+- Trigger: a batch needs one function from an upstream module this fork has
+  deliberately deferred (currently the Codex Chat routing stack:
+  `transform_codex_anthropic.rs`, `transform_codex_chat.rs`,
+  `streaming_codex_chat.rs`, `codex_chat_common.rs`).
+
+#### 2. Signatures
+
+- Boundary probe: `ls src-tauri/src/proxy/providers/` and a `mod` grep on
+  `providers/mod.rs`
+- Example exception: `fn anthropic_sse_to_message_value(body: &str) -> Result<Value, ProxyError>`
+  as a private fn inside `proxy/handlers.rs`
+
+#### 3. Contracts
+
+- The deferral boundary is mechanical: **no new file in the deferred directory and
+  no new `mod` declaration**. It is not "we do not call that stack" — that phrasing
+  expires the moment a batch introduces the missing consumer.
+- A single needed function may be ported as a **private** fn inside its only
+  consumer. It must not be `pub`/`pub(crate)`, and must not resurrect the module.
+- Port it at upstream's post-commit state, including sub-hunks the original
+  deferral ruling had waived, if those sub-hunks are load-bearing for the consumer.
+- Necessity must be **mutation-proven**, not asserted: revert the sub-hunk and show
+  a named test fails.
+- When a deferral rationale's premise expires, **amend the ruling in place with the
+  new evidence**; do not silently rewrite the original text. The invalidated premise
+  must stay auditable.
+
+#### 4. Validation & Error Matrix
+
+- New file appears in the deferred directory -> reject, boundary broken.
+- Helper exported beyond its consumer -> reject; it becomes a de-facto module API.
+- "We need it because upstream calls it" with no mutation evidence -> reject.
+- Original deferral text edited to look correct in hindsight -> reject; amend instead.
+
+#### 5. Good/Base/Bad Cases
+
+- Good: one private fn in `handlers.rs`; all four deferred files still absent;
+  necessity shown by a test that reports `usage.server_tool_use.web_search_requests`
+  as `Null` instead of `1` when the sub-hunk is reverted.
+- Base: the batch needs nothing from the deferred stack; boundary untouched.
+- Bad: adding `providers/transform_codex_anthropic.rs` "just for one function",
+  which drags in the ~5.7k LOC base and reopens rulings that skipped its
+  transform layer.
+
+#### 6. Tests Required
+
+- A test that exercises the consumer path through the ported helper.
+- Mutation evidence recorded in the batch report / commit message.
+- Boundary re-verified after the batch: directory listing plus `mod` grep.
+
+#### 7. Wrong vs Correct
+
+##### Wrong
+
+```rust
+// providers/mod.rs
+pub mod transform_codex_anthropic; // "only need one fn from it"
+```
+
+##### Correct
+
+```rust
+// proxy/handlers.rs — private, single consumer, no module resurrection
+fn anthropic_sse_to_message_value(body: &str) -> Result<Value, ProxyError> { /* … */ }
 ```
 
 ---

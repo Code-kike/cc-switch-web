@@ -315,6 +315,66 @@ create_anthropic_sse_stream_from_responses_with_web_search_options → _raw
 
 首轮 test:integration 出现 5 个失败，后两轮为 4 个；多出的一个仍在既有 flaky 的 `SkillsPage.web-server` 文件内，失败从未越出两个已知 flaky 文件，且二者均不触碰 proxy 代码。
 
+
+## Phase 2.2 trellis-check 结果（2026-08-24，ff067851）
+
+最终全范围 check 判定 **PASS，无阻塞项**。发现并修复 **2 个真实缺陷**。
+
+### 缺陷 (a) — `rewrite_codex_alpha_search_full_url` 在 dot-segment URL 上 panic / 静默误派生
+`suffix` 取自 `Url::parse(..).path()`（会归一化 dot segment），但切片作用在**原始**字符串上。二者错位：
+
+| 输入 | parsed path | upstream 行为 |
+|---|---|---|
+| `https://h/responses/éxxxxxx/..` | `/responses/` | cut = 31−10 = 21，byte[21] = `0xa9`（在 'é' 的 20..21 内）→ **panic** |
+| `https://h/responses/x/..` | `/responses/` | prefix = `https://h/resp` → **静默误派生** |
+
+主会话独立复核算术：以真实 suffix（`/responses`，trim 后长 10）计算 cut = 21，byte[21] = `0xa9` 确为 UTF-8 continuation byte，与子代理实测 panic 消息「index 21 is not a char boundary; inside 'é'」精确一致；ASCII 变体前缀 `https://h/resp` 亦复现。
+
+**静默误派生是更坏的一半**：本函数契约是「只在无歧义时派生，否则拒绝」，因为猜测会把搜索 payload 投到非搜索端点。改为 `strip_suffix`（天然对齐字符边界），错位形状落回既有 fail-closed 分支；所有当前可用形状（`/v1`、`/backend-api/codex`、`%2F` 前缀、尾随 `/`、query、fragment）行为不变。新增 `alpha_search_rejects_full_url_whose_raw_form_does_not_end_with_responses`。
+
+**该代码与上游 `bdeaac75` 字节一致 → 缺陷同样存在于上游**，值得回报上游。严重度低（operator 提供的 provider 配置，非远端输入；影响面为一次请求失败），但正落在本任务所断言的契约内，且修复只是把 fail-closed 收得更紧。
+
+### 缺陷 (b) — `modelsDevAutoSync.test.ts` 1 ms 边界 flake
+`lastSyncAt = Date.now() - INTERVAL + 1` 只留 1 ms 余量，与实现自身的 `Date.now()` 竞争 → 并行套件负载下失败（首轮 test:unit 1/1044 失败，隔离 3/3 通过）。非本任务引入（文件未触碰，源自 `0ddce4e6`）。**上游已修**（60 s 余量 + 注释）→ 移植上游原样行，**消除 fork 漂移而非新增**（已核对与 `v3.20.0:tests/lib/modelsDevAutoSync.test.ts` 第 86–88 行字节一致）。
+
+### 七条红线（逐条独立取证，非复读报告）
+1. **延期栈缺席** ✓ — 四文件均不在 `providers/`；`providers/mod.rs` 无对应 `mod`；`anthropic_sse_to_message_value` 为 `fn`（无 `pub`）于 `handlers.rs:1524`，仅 `handlers.rs` 内引用；`proxy/mod.rs` + shim 零 diff，example mirror 测试在 37 内通过。
+2. **无新命令** ✓ — 292/280/0 计数不变；`src/lib/api/web-commands.ts` 在 `258245f4~1..05e9e209` 区间 **0 diff**；改动仅 5 个 `proxy/*` + 3 docs。
+3. **安全上限不变** ✓ — 128 MiB / 2s / 16 MiB / 256 KiB / 32 MiB + 五个 `MAX_CITATION_DEDUP_*` 均在文档值。
+4. **W2.5 上限约束所有引用路径** ✓（三法取证）— grep：`streaming_responses.rs` 与 `handlers.rs` 中 `markdown_*`/`contains_markdown_link*` 计数均为 **0**；调用图（62 个生产 fn）：唯一进入 markdown 家族的非 markdown 函数是 `text_with_url_citations`，两个昂贵入口均在 `citation_dedup_analysis_is_affordable(...).then(...)` 门内；变异：强制预检 `false` → 10 个流式测试失败。
+5. **fail-closed / fail-open 双向完好且未互换** ✓ — Alpha Search 的 `?` 在构造 `url` 期间求值，拒绝时**未发出任何请求**；citation 超限时正文逐字节不变且全部 citation 仍在 `Sources:`。
+6. **SSRF 面不变** ✓ — 5 个文件生产代码零新增 `http(s)://` host 字面量（仅 `forwarder.rs:1792` 一处注释）；diff 中 200+ URL 全为测试 fixture。**一处口径修正**：`ip_guard` 挂在 `http_client::get_guarded()` 与 `web_api` handler 出站，proxy forwarder 热路径按 *Web Outbound SSRF (scope C)* 契约刻意不设 guard → 准确表述是「**无新出站路径**」，而非「出站现在过 ip_guard」。
+7. **不可信 markdown 有界** ✓ — 26 个 markdown fn 无自递归、调用图无环（DAG）；`transform_responses.rs` 中 `std::fs|std::net|std::process|tokio|reqwest` 计数 0。
+
+### 移植保真度（check 独立核对，非采信报告）
+- `streaming_responses.rs` 与上游 `bdeaac75` 差 **恰 28 行**（即 4 个既有漂移 hunk）。
+- `transform_responses.rs` 在 W2（`a49e7af5`）后与上游差 118 行 / 16 hunk，其中**生产代码分歧仅** `build_anthropic_usage_from_responses` 的文档/注释/换行漂移（78 行，与移植前基线一致），其余为 2 个 fork 独有测试。无未解释的生产分歧。
+- Q1 修正与代码一致 ✓，且 check 重新变异验证：回退合并 → 2 个 handlers 测试失败（`web_search_requests` = `Null`；fork 的 zero-clobber 测试）。还原后 28/28 通过。
+
+### 门禁（全绿）
+- cargo fmt / format:check / typecheck exit 0
+- **check:web-routes 292 / 280 / 0 gaps —— 计数不变** ✓
+- check:locales 2637 × en/ja/zh parity ✓
+- desktop cargo check exit 0 / **0 warnings**（强制重编译确认 W2 dead-code 已清零）；web-server example exit 0（69 既有 desktop-only 警告，零个在触碰文件内）
+- `cargo test --lib proxy::` **1129**（1128 + 1 新回归）✓
+- `cargo test --lib` **2233 passed / 0 failed / 5 ignored** ✓
+- test:unit **173 files / 1044 tests 全绿**（修 flake 前为 1 失败）✓
+- Rust parity **37** ✓
+- test:integration **50/54** —— 恰 4 个 PRD flake ✓
+- **build:web exit 0**；**smoke:web-server exit 0** ✓
+- clippy 仅 2 处既有（`services/omo.rs:958`、`prompt_files.rs:37`）
+
+### 非阻塞观察（记录备查）
+- `MAX_CITATION_DEDUP_TEXT_BYTES = 32 KiB` 意味着超过 32 KiB 的**合法**长回复会失去内联引用编织、退为 `Sources:` 列表 —— 相对上游在长输出上的真实（仅排版）分歧。按 W2.5 实测，256 候选 × 128 KiB ≈ 116 ms，若实践中出现可上调。暂不动作。
+- `handlers.rs:420` 的「压缩 Codex SSE 无法强制 max_uses」fail-closed 分支无测试；上游亦无，handler 级覆盖需完整 `ProxyState` 脚手架。
+
+## Phase 3.3 spec 更新（2026-08-24）
+
+`.trellis/spec/frontend/quality-guidelines.md`（32 → **34** Scenario）：
+- **Upstream Desktop Sync Into Web Fork** 增补两条移植红旗：(1) 禁止用 `Url::parse(..).path()` 派生的长度去切原始 URL 串（dot-segment 归一化导致错位 → panic 或静默误派生；用 `strip_suffix`/`strip_prefix`），并注明该类缺陷是从上游逐字带入且上游无对应测试；(2) 异步测试禁止对 `Date.now()` 设 ~1 ms 边界余量（上游对 `MODELS_DEV_STARTUP_SYNC_INTERVAL_MS` 采用 60 s）。
+- **新增 Scenario: Degradation Direction — Fail-Closed vs Fail-Open Guards**（7 段完整）：以「降级的代价是什么」为分类依据 —— 路由/投递/授权决策 → fail closed；表现层/优化 → fail open；两者可并存不得统一；必须带「勿反转」注释；fail-open 不得丢用户可见 payload；两方向都要测试且需变异验证。
+- **新增 Scenario: Deferred Upstream Stack — Private-Helper Exception**（7 段完整）：延期边界是机械判据（延期目录无新文件、无新 `mod`），而非「我们不调用那个栈」（后者会在引入消费方的那一刻失效）；单函数可作为**私有** fn 落在唯一消费方内；按上游 post-commit 态移植（含原裁定曾豁免但对消费方 load-bearing 的子 hunk）；必需性须变异验证；前提失效时**原地修正裁定并保留失效前提可审计**。
+
 ## 验证命令汇总
 
 见每批门禁块。关键额外检查：
