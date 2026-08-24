@@ -1,22 +1,78 @@
-# PRD（stub）— Codex Alpha Search + Claude hosted WebSearch
+# PRD — Codex Alpha Search + Claude hosted WebSearch
 
-> 父任务：`08-18-sync-upstream-v3.20.0`。本子任务独立进入 planning 后细化 design/implement。
+> 父任务：`08-18-sync-upstream-v3.20.0`。本子任务独立规划/实现/归档。
 
 ## 范围
-- `bdeaac75` fix(proxy): support Codex Alpha Search and Claude hosted WebSearch (#5681) —
-  9 文件 / +10,041 行（含 fixture）。
+
+- `bdeaac75` fix(proxy): support Codex Alpha Search and Claude hosted WebSearch (#5681) — 9 文件 / **+10,041 / −1,691**
+
+上游提交合并两条**互相独立**的联网搜索路径：
+
+**A. Codex Alpha Search 透传**（~330 行）
+把 `POST /alpha/search` 及本地别名注册为到所选 Codex provider 的语义透传，复用既有 provider 选择、模型映射、鉴权、retry/failover、日志。full-URL provider 仅从**无歧义的 `/responses` URL** 派生同级 `/alpha/search` 端点，否则 fail-closed。
+
+**B. Claude hosted WebSearch → OpenAI Responses 桥**（~9,400 行）
+把 Claude Code 的 hosted WebSearch 工具桥接到 Responses hosted `web_search` 工具与 Codex OAuth 后端：请求翻译（对不可表达约束 fail-closed）、成对 `server_tool_use` / `web_search_tool_result` 块、引用保留、`max_uses` 强制、多轮重放、`usage.server_tool_use.web_search_requests`。
+
+## 已确认事实（代码库调研）
+
+### 基线对齐（决定可移植性的关键）
+
+| 文件 | 上游 `bdeaac75^` | fork 现状 | 上游 `bdeaac75` | fork 漂移 |
+|---|---|---|---|---|
+| `providers/streaming_responses.rs` | 2197 | 2195 | 7066 | **28 行** |
+| `providers/transform_responses.rs` | 2402 | 2410 | 5308 | **78 行** |
+| `proxy/server.rs` | 405 | 390 | 628 | **61 行** |
+| `proxy/handlers.rs` | 3353 | 1760 | 3581 | 2287 行 |
+| `proxy/forwarder.rs` | 5076 | 4349 | 5183 | 2679 行 |
+| `providers/transform_codex_anthropic.rs` | 存在 | **不存在** | — | 全缺 |
+
+- 本提交主体（`streaming_responses.rs` +6179、`transform_responses.rs` +3199）所在文件与上游 pre-commit 基线**几乎一致**（28/78 行漂移）→ fork 完整持有 Responses streaming stack，主体可移植。
+- `handlers.rs`/`forwarder.rs` 漂移大是 fork Web-first 改造的既有结果（`ProxyRuntimeCtx`、双运行时 forwarder、128 MiB body cap），**不是缺失基线**；本提交对二者的改动量小（+297/−69、+107/−0），按 hunk 逐个对齐即可。
+
+### fork 既有前置（全部就位）
+- `handlers.rs:481` `endpoint_with_query(&uri, endpoint)` — Alpha Search handler 直接复用。
+- `forwarder.rs:1025` `is_full_url` provider meta 读取 + full-URL 分支（1239/1241）。
+- `transform_responses.rs:292` `pub fn anthropic_to_responses`、`streaming_responses.rs:293` `pub fn create_anthropic_sse_stream_from_responses` — 两个改造入口都在。
+- `server.rs` 已有 `/responses` 四别名路由表（310–313），Alpha Search 四别名同构追加。
+- `docs/guides/claude-codex-routing-guide-{en,ja,zh}.md` 第 96 行「Web search is unavailable」原句在三语中逐字存在 → 文档改写可直接落地。
+
+### fork 无既有 web-search 支持
+`grep -rn "web_search\|server_tool_use\|alpha/search" src-tauri/src/proxy/` 仅命中 `transform_codex_responses_xai_sanitize.rs:50` 的 xAI 工具名白名单 —— 无功能重叠、无碰撞。
+
+### 无新命令
+9 个文件均在 `src-tauri/src/proxy/` 与 `docs/`，**不触及** `commands/`、`web_api/`、`src/lib/api/web-commands.ts`、`src/`。→ 本子任务**不新增 Tauri 命令**，`check:web-routes` 计数应保持 292 commands / 280 routes 不变。PRD stub 原写「新命令注册 web-commands.ts」为误设，已按调研纠正。
+
+### 测试规模
+上游随本提交新增 **105 个测试**：`streaming_responses.rs` 66、`transform_responses.rs` 39、`forwarder.rs` 2、`handlers.rs` 1、`server.rs` 1（含 mock upstream Router 的 `alpha_search_routes_forward_to_canonical_upstream`）。
+
+### 新增安全面：不可信 Markdown 解析
+B 侧为保留引用，新增约 30 个 markdown 解析函数（code fence/容器前缀/bracket pair/reference definition/autolink 目标校验）处理**模型输出**这一不可信内容。`markdown_bracket_pairs` 等为迭代实现；`anthropic_web_search_to_responses` 对 `max_uses` 做正整数校验。移植时须核验无无界递归/回溯。
 
 ## 前置依赖
-- 父任务 S2/F 组 proxy 基线落地后启动（`d2b070c9` never clobber login 等已就位）。
+- 父主体 S2/F 组 proxy 基线已落地（`d2b070c9` never clobber login 等就位）。
+- 无跨子任务依赖；与 `feat-managed-oauth-accounts` 无文件重叠。
 
 ## 约束（carry-forward）
-- proxy raw/decompressed body 保留 fork 既有 128 MiB cap、2s deadline、heap/stack 上限
-  （上次 S2 `6b8f3643` 已建立的边界不退化）。
-- 双运行时：新命令注册 `web-commands.ts`，过 `check:web-routes`。
-- WebSearch fixture 不得引入 SSRF / 无认证泄露。
+- proxy raw/decompressed body 保留 fork 既有 **128 MiB cap**、2s JS deadline、16 MiB heap / 256 KiB stack；本提交对 `forwarder.rs` 仅做 URL 派生，不得触碰 body 处理上限。
+- 不引入 SSRF：WebSearch 桥只做工具语义翻译，出站仍走既有 forwarder + `ip_guard`；`allowed_domains`/`blocked_domains` 必须保持 fail-closed 语义。
+- 不可信 markdown 解析必须有界（无无界递归/指数回溯）。
+- `transform_codex_anthropic.rs` hunk 丢弃（Q1 裁定，见下）。
 - `.pi/`、`.pi-subagents/` 不得修改或提交。
+- zh-TW 不存在，无相关 hunk。
 
-## 验收（待细化）
-- [ ] Codex Alpha Search 与 Claude hosted WebSearch 在双运行时下正确路由。
-- [ ] proxy body cap/deadline 未退化。
-- [ ] 全量门禁通过；与父主体无回归。
+## 验收标准
+- [ ] **A** Codex Alpha Search：4 条本地别名路由（`/alpha/search`、`/v1/alpha/search`、`/v1/v1/alpha/search`、`/codex/v1/alpha/search`）透传到所选 Codex provider 的 canonical `/alpha/search`；full-URL provider 仅从 `/responses` 结尾 URL 派生，opaque full URL **fail-closed 拒绝**且不误发 payload。
+- [ ] **B** Claude hosted WebSearch：请求翻译（`allowed_domains` 保留；`blocked_domains` 非空 → 显式失败；non-direct caller / `response_inclusion` / 未验证版本 → fail-closed）；响应侧成对 `server_tool_use` + `web_search_tool_result` 块、引用保留、`max_uses` 强制（API-key 路由映射 `max_tool_calls`；Codex OAuth 路由改由桥端限流 + `max_uses_exceeded`）、多轮重放、`usage.server_tool_use.web_search_requests` 计数。
+- [ ] **无新命令**：`check:web-routes` 保持 292 commands / 280 routes / 0 missing/mismatch/dangling/fallback（计数不变即为正确）。
+- [ ] proxy 安全上限零退化：128 MiB body cap、2s deadline、16 MiB heap、256 KiB stack、32 MiB catalog cap。
+- [ ] 不可信 markdown 解析有界；无新增出站目标（SSRF 面不变）。
+- [ ] 105 个上游测试全量移植并全绿（不删测试，只按 fork API 适配 mock）。
+- [ ] 全量门禁：test:unit 全绿（非 flake 项）、test:integration（4 PRD flakes 外全绿）、Rust parity（`web_api::`/`dual_runtime_parity::`/`web_proxy_lifecycle::`）、web-routes、locales parity、build:web exit 0、smoke:web-server exit 0；与父主体及已归档 pi 子任务无回归。
+- [ ] docs：三语 `claude-codex-routing-guide` 第 96 行 web-search 段落按实际能力改写（不宣称未实现能力）。
+- [ ] `transform_codex_anthropic.rs` 延期记录在案（Q1）。
+
+## 裁定记录（brainstorm 2026-08-24，用户授权采纳推荐方案）
+
+- **Q1 `transform_codex_anthropic.rs` (+33/−16)**：**跳过，记为 carry-forward 延期**。该文件属 fork 明确延期的 Codex Chat routing stack（连同 `codex_chat_common.rs`/`streaming_codex_chat.rs`/`transform_codex_chat.rs` 均不存在），恢复需先移植约 5.7k LOC 基座 —— S4/S4c/S5 已反复裁定的边界。功能后果**可界定且不影响主路径**：该 hunk 把 Codex Chat → Anthropic 桥的 `message_delta` usage 合并从「只取 `output_tokens`」扩展为「合并整个 usage 对象」，仅影响该桥上的 usage 上报精度；fork 无该桥，Alpha Search 与 hosted WebSearch 主路径（Responses 原生 + Codex OAuth）不经过它。
+- **Q2 执行分批**：3 批 —— **W1** Alpha Search 透传（独立、~330 行）→ **W2** WebSearch 请求翻译 + markdown/引用原语（`transform_responses.rs`，39 测试）→ **W3** WebSearch 响应/流式桥 + 非流式 + usage + docs + 全量门禁（`streaming_responses.rs` 66 测试 + `handlers.rs`）。W2 提供 W3 流式层消费的转换原语，故必须先行；W1 与 B 侧无共享代码，可证明独立，先落以建立较简路径。
