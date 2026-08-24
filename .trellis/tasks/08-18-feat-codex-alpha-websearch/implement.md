@@ -2,9 +2,9 @@
 
 ## 前置确认
 
-- [ ] 分支 `sync/upstream-v3.20.0`；父主体 S1–S8 + 已归档 `feat-pi-native-agent` 均在 HEAD 之前。
-- [ ] `bdeaac75` 在 `product-upstream` remote 本地可达。
-- [ ] `.pi/`/`.pi-subagents/` 不在提交范围。
+- [x] 分支 `sync/upstream-v3.20.0`；父主体 S1–S8 + 已归档 `feat-pi-native-agent` 均在 HEAD 之前。
+- [x] `bdeaac75` 在 `product-upstream` remote 本地可达。
+- [x] `.pi/`/`.pi-subagents/` 不在提交范围。
 - [x] 基线快照（回归对照）：test:unit 173 files / 1044 tests；`cargo test --lib` **2106** passed / 5 ignored（规划时误记 2083，已独立复核 `258245f4~1` 实测 2106）；Rust parity 37；web-routes **292 commands / 280 routes / 0 gaps**；locales 2637 parity；test:integration 50/54（4 PRD flakes）。
 
 ## 移植方法
@@ -70,7 +70,7 @@ W3 追加：`pnpm test:integration`、`pnpm build:web`、`pnpm smoke:web-server`
 - [x] 门禁全绿 → commit
 
 ### W3 — WebSearch 响应/流式桥 + 非流式 + usage + docs + 全量门禁
-- [ ] `providers/streaming_responses.rs` +6179/−1310：
+- [x] `providers/streaming_responses.rs` +6179/−1310：
   - `create_anthropic_sse_stream_from_responses_with_web_search_options`（+ `_raw` 内核）
   - 成对块：`record_web_search_call`/`WebSearchCallDisposition`/`WebSearchRecordState`/`web_search_result_events`/`take_web_search_result_events`/`reserve_web_search_result_index`/`take_open_web_search_block_stop_events`/`append_unique_web_search_results`
   - 引用保留：`BufferedCitationAnnotation`/`BufferedCitationPart`/`BufferedCitationTextState`/`StreamedTextPart`/`StreamedTextState`/`missing_message_text_parts`/`text_block_events`
@@ -78,18 +78,18 @@ W3 追加：`pnpm test:integration`、`pnpm build:web`、`pnpm smoke:web-server`
   - item key 解析：`tool_item_key_from_added`/`tool_item_key_from_event`/`web_search_item_keys`/`reasoning_item_key`
   - max_uses 限流：`web_search_limit_stop_events`
   - 非流式转换：`responses_json_to_anthropic_sse`、`anthropic_ping_sse`
-- [ ] `proxy/handlers.rs` +297/−69：
+- [x] `proxy/handlers.rs` +297/−69：
   - `handle_claude_transform` 接线 `hosted_web_search_name` / `hosted_web_search_max_uses`（来自 W2 导出）
   - 流式路径改走 `create_anthropic_sse_stream_from_responses_with_web_search_options`（无 web-search 时保持既有无参路径）
   - `enforce_codex_web_search_limit_while_aggregating = aggregate_codex_oauth_responses_sse && hosted_web_search_max_uses.is_some()`
   - `responses_sse_stream_to_anthropic_message`（非流式聚合）
   - `should_use_claude_transform_streaming` hunk（fork 现 1333）
   - `log_usage` 记 `usage.server_tool_use.web_search_requests`（fork 现 1454）
-- [ ] 移植 66 + 1 个测试（streaming 66、handlers `non_streaming_codex_web_search_limit_stops_polling_upstream`）
-- [ ] `docs/guides/claude-codex-routing-guide-{en,ja,zh}.md`：改写第 96 行 web-search 段落为实际能力（Responses hosted `web_search` 翻译、`allowed_domains` 保留、API-key 路由 `max_tool_calls`、Codex OAuth 桥端限流 + `max_uses_exceeded`、非强制 Codex 带 `max_uses` fail-closed、`blocked_domains` 显式失败、本地 WebFetch 不受影响）。三语内容对齐，**不宣称未实现能力**。
-- [ ] **核验流式 citation 路径不绕过 W2.5 上限**：`BufferedCitationTextState`/`missing_message_text_parts` 等若自行调用 markdown 原语，必须走同一受保护入口或获得同一上限；否则 W3 会静默重开 W2.5 已关闭的二次复杂度面
-- [ ] W2 dead-code 警告清零核验
-- [ ] 全量门禁（含 test:integration + build:web + smoke:web-server）→ commit
+- [x] 移植 66 + 1 个测试（streaming 66、handlers `non_streaming_codex_web_search_limit_stops_polling_upstream`）
+- [x] `docs/guides/claude-codex-routing-guide-{en,ja,zh}.md`：改写第 96 行 web-search 段落为实际能力（Responses hosted `web_search` 翻译、`allowed_domains` 保留、API-key 路由 `max_tool_calls`、Codex OAuth 桥端限流 + `max_uses_exceeded`、非强制 Codex 带 `max_uses` fail-closed、`blocked_domains` 显式失败、本地 WebFetch 不受影响）。三语内容对齐，**不宣称未实现能力**。
+- [x] **核验流式 citation 路径不绕过 W2.5 上限**：`BufferedCitationTextState`/`missing_message_text_parts` 等若自行调用 markdown 原语，必须走同一受保护入口或获得同一上限；否则 W3 会静默重开 W2.5 已关闭的二次复杂度面
+- [x] W2 dead-code 警告清零核验
+- [x] 全量门禁（含 test:integration + build:web + smoke:web-server）→ commit
 
 
 ## W1 结果（2026-08-24，258245f4）
@@ -249,6 +249,71 @@ W2 hosted WebSearch 请求翻译 + markdown 引用原语完成。1 文件（+323
 - clippy 无新 lint
 - **dead-code 仍恰为 W2 的 2 个**（`anthropic_web_search_tool_name`/`anthropic_web_search_max_uses`），无 `#[allow(dead_code)]`
 - 安全上限逐条不变；无新出站目标；延期栈四文件仍缺席
+
+
+## W3 结果（2026-08-24，c917d5cf）
+
+W3 hosted WebSearch 响应/流式桥 + 非流式 + usage + docs 完成。5 文件（+6787/−1350）。**本任务最后一批。**
+
+### 落地方式
+| 文件 | 规模 | 方式 |
+|---|---|---|
+| `providers/streaming_responses.rs` | +6173/−1304，64 测试 | `git apply --3way`，2 处冲突均落在 fork 漂移区 |
+| `proxy/handlers.rs` | +611/−43，1 上游 + 11 fork 测试 | 手工按符号锚定 |
+| `docs/guides/*-{en,ja,zh}.md` | 各 +1/−1 | `--3way` 干净 |
+
+`streaming_responses.rs` **除 4 个既有 fork 漂移 hunk（28 行，逐字符核对与移植前一致）外与上游 `bdeaac75` 字节一致**；函数名集合与上游精确相同。两处 `--3way` 冲突为上游新代码撞上 fork 更简的 `build_anthropic_usage_from_responses` 注释（源自 fork `e506f98a`）→ 取上游代码后重新贴回 fork 注释/换行，**漂移被保全而非被回退**。
+
+`handlers.rs` 8 个上游 hunk全部按符号锚定（上游行号 → fork 行号）：`-27`→`-16`（use tree）、`-46`→`-36`、`-412`→`-294`（`tool_schema_hints` 绑定后）、`-419`→`-301`（`api_format == "openai_responses"` 选择器）、`-525`→`-388`、`-2017`→`-1404`、`-2668`→`-1567`（测试 use 列表）、`-3210`→`-1602`（与上游同一测试对之间）。
+
+`-525` 需手工适配：fork 无 `body_looks_like_sse`/`aggregate_fallback_error`/`upstream_body_parse_error`，故在上游新的 `(headers, direct_anthropic_response, upstream_response)` 重构内保留 fork 较简的 parse 块；区域 diff 确认该内层块之外与上游字节一致。
+
+**`log_usage` 无需改动**：上游 `@@ -2668` hunk 只是测试模块 import 列表，git hunk header 里的 `log_usage` 只是最近的前置函数名。`usage.server_tool_use.web_search_requests` 非流式来自 `transform_responses`（W2）、流式来自转换器的 `message_delta`，经既有 `TokenUsage::from_claude_response` 抵达 `log_usage`。
+
+### Q1 修正（详见 prd.md 裁定记录）
+上游 `responses_sse_stream_to_anthropic_message` 调 `transform_codex_anthropic::anthropic_sse_to_message_value`。只把**该 1 函数**按上游 post-`bdeaac75` 态（含 Q1 原欲延期的 `message_delta.usage` 整对象合并）移植为 `handlers.rs` **私有 `fn`**；`providers/` 未新增延期文件（四文件仍缺席，主会话复核）。**变异验证必需性**：回退成 `output_tokens`-only → 移植的 handlers 测试报 `usage.server_tool_use.web_search_requests` = `Null` 而非 `1`。Q1 的「后果可界定」前提在 W3 引入 fork 本地 Anthropic SSE 聚合后失效，已在 PRD 记修正。
+
+### Check A — W2.5 上限未被绕过 ✓
+流式引用代码**从不直接调用 markdown 原语**。路径：
+```
+create_anthropic_sse_stream_from_responses_with_web_search_options → _raw
+  → BufferedCitationTextState / StreamedTextState 收集 url_citation 注解
+  → render_part_pending(2) | render_message_part(3) | missing_message_text_parts(1)
+  → text_with_url_citations   [transform_responses.rs:1411 — W2.5 受保护入口]
+  → citation_dedup_analysis_is_affordable  [五个 W2.5 上限]
+```
+6 个流式调用点全部经受保护入口。主会话独立复核：`streaming_responses.rs` 中 `text_with_url_citations` 出现 7 次，直接调用 `markdown_*`/`contains_markdown_link` **计数为 0**。
+
+**变异证明该 guard 在活路径上**：强制 `citation_dedup_analysis_is_affordable` 返回 `false` → 10 个流式测试失败（buffered-citation 与 hosted-web-search 块测试）。已还原并 md5 核对。
+
+新增流式生产代码：无自递归、调用图无环（DAG）、零 `fs`/`net`/`process` 引用、测试外零 `http(s)://` 字面量。
+
+### Check B — dead-code 归零 ✓
+`cargo check --lib` **完全无警告**（主会话复核 warning 计数 = 0）。`anthropic_web_search_tool_name`/`anthropic_web_search_max_uses` 在 `handle_claude_transform` 有真实调用方。未加 `#[allow(dead_code)]`。web-server example 的 70 个警告全为既有 desktop-only dead code，零个涉及 W3 触碰文件。
+
+### 测试（+76）
+`cargo test --lib proxy::` 1052 → **1128**；`cargo test --lib` 2156 → **2232**。
+- **64** 个流式测试 —— 上游实际增量（其自身测试数 21 → 85；规划写的「66」略有偏差）。**零 mock 适配、零断言改动**，上游测试对 fork API 原样编译。
+- **1** 个 handlers 测试 `non_streaming_codex_web_search_limit_stops_polling_upstream`，与上游字节一致，含 poll 计数（3 chunk 中取 2 → 提前取消生效）与 `max_uses_exceeded` 断言。
+- **11** 个 fork 测试覆盖 fork 本地聚合器。其中 10 个改编自上游 `transform_codex_anthropic` 套件（3 个原经延期的 `anthropic_response_to_responses` 断言，改为直接断言聚合后消息）；1 个为新增：`message_delta` 里的 0 不得覆盖 `message_start` 的非零 usage —— 变异验证（去掉守卫后失败，`left: 0, right: 31`）。
+
+### docs（三语第 96 行）
+按上游改写落地，每条主张都能映射到已落地且有测试钉住的代码：`web_search` 翻译与 `allowed_domains`（W2）、`max_tool_calls` 映射（`transform_responses.rs:2042`，测试 3684）、Codex OAuth instruction cap（`:2029`）+ 桥端停流与 `max_uses_exceeded`（`streaming_responses.rs:2071`，5 个 limit 测试）、非强制 fail-closed（`:2020`）、`blocked_domains` fail-closed（W2）。**未描述任何 Codex-Chat-bridge 行为**，与 `transform_codex_anthropic.rs` 缺席一致。
+
+### 全量门禁（全绿，含 PRD 验收 build:web + smoke）
+- cargo fmt / format:check / typecheck ✓
+- **check:web-routes 292 commands / 280 routes / 0 gaps —— 计数不变** ✓
+- check:locales 2637 parity ✓
+- desktop cargo check exit 0 / **0 warnings** ✓；web-server example exit 0 ✓
+- `cargo test --lib proxy::` **1128 passed / 0 failed** ✓
+- `cargo test --lib` **2232 passed / 0 failed / 5 ignored** ✓
+- test:unit 173 files / 1044 tests ✓；Rust parity 37 ✓
+- test:integration **50/54** —— 恰为 4 个 PRD 已知 flake（ProviderList empty-state 1、SkillsPage repo/fixture 3）✓
+- **build:web exit 0** ✓；**smoke:web-server exit 0** ✓
+- clippy 仅 2 处既有警告
+- 安全上限逐条不变（128 MiB body / 2s / 16 MiB / 256 KiB / 32 MiB + W2.5 五个 citation 上限）；无新出站目标；延期栈四文件仍缺席
+
+首轮 test:integration 出现 5 个失败，后两轮为 4 个；多出的一个仍在既有 flaky 的 `SkillsPage.web-server` 文件内，失败从未越出两个已知 flaky 文件，且二者均不触碰 proxy 代码。
 
 ## 验证命令汇总
 
