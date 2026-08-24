@@ -47,7 +47,7 @@ pnpm smoke:web-server
 - [x] `services/mod.rs`：加 `pub mod pi_prompt_files` + `pub(crate) mod pi_state`
 - [x] `services/prompt.rs`：dispatch 加 `AppType::Pi` → pi_prompt_files；**丢弃 ClaudeDesktop arm**
 - [x] `prompt_files.rs`：`prompt_file_path(AppType::Pi)` → AGENTS.md；**丢弃 ClaudeDesktop arm**
-- [~] `services/skill.rs`：pi skills 集成（+1141 行，最大单文件）；**丢弃 ClaudeDesktop arm**（4 处）→ **P1 仅落地 4 行**（pi skills 目录解析）；18 个生产 helper + 19 个测试**未移植**，移至 P3.5 独立批次（见下）
+- [x] `services/skill.rs`：pi skills 集成（+1141 行，最大单文件）；**丢弃 ClaudeDesktop arm**（4 处）→ P1 落地 4 行（目录解析），余 18 helper + 19 测试由 **P3.5（cd8b950a）补齐**
 - [x] `services/mcp.rs`/`database/dao/mcp.rs`：pi mcp gate（Pi 无 native MCP → false）；**丢弃 ClaudeDesktop arm**
 - [x] `services/provider/live.rs`：pi live config 路径；**丢弃 ClaudeDesktop arm**
 - [x] `services/stream_check.rs`/`settings.rs`/`proxy/providers/mod.rs`：pi arm（`Pi => return None` 等）；**丢弃 ClaudeDesktop arm**
@@ -100,16 +100,16 @@ pnpm smoke:web-server
 ### P3.5 — services/skill.rs pi skills 安全路径（P1 遗漏补齐）
 > **来源**：P1 `18340719` 仅落地 pi skills 目录解析 4 行；上游 `84e75ad2` 对 `services/skill.rs` 为 +1141/−62。P3 移植前端 `preservedPiPath`/`piCleanupIncomplete` toast 分支时发现后端字段缺失，警告永不触发。**安全关键**：无 preserve 逻辑时卸载受管 pi skill 会删除同名用户外部目录；`migrate_storage` 无别名拒绝会在别名目标上移动 skill 导致源丢失。影响面覆盖全部 app（非 pi 专属）。
 
-- [ ] 路径别名/重叠校验：`paths_alias`/`paths_overlap`/`ensure_distinct_skill_roots`/`get_distinct_app_skills_dir`/`validate_skill_storage_destination`
-- [ ] pi 部署哈希与树枚举：`compute_pi_deployment_hash`/`collect_tree_entries`
-- [ ] 安装前检：`skill_exists_in_app`/`preflight_install_destination`/`persist_and_sync_new_skill`
-- [ ] pi 目标核验与刷新：`ensure_pi_skill_destination_matches`/`inspect_pi_skill_destination`/`remove_verified_pi_destination`/`refresh_pi_skill_destination`
-- [ ] 保留式卸载：`remove_from_app_preserving`/`resolve_uninstall_backup_source_excluding`/`create_uninstall_backup_excluding`（fork 仅有非 `_excluding` 变体）
-- [ ] `SkillUninstallResult` 加 `preserved_pi_path`/`pi_cleanup_incomplete` 字段 + `is_false` serde helper（P3 前端已按可选字段消费）
-- [ ] `migrate_storage` 别名拒绝 + 受管 pi symlink 重定向
-- [ ] 19 个上游回归测试全量移植（pi skill 状态跟随原生目录、外部同名目录保留、安装冲突拒绝、隐藏原生变更拒绝、别名根卸载、preflight 后创建的目标复检、SSOT 保留、缺失源不备份不删除、pi root 不可解析告警、别名根拒绝 sync/remove、migrate 别名拒绝/重定向）
-- [ ] 保留 fork 既有安全上限（50 MiB 单文件读、16 层遍历、跳过 symlink）不退化
-- [ ] 门禁全绿 → commit
+- [x] 路径别名/重叠校验：`paths_alias`/`paths_overlap`/`ensure_distinct_skill_roots`/`get_distinct_app_skills_dir`/`validate_skill_storage_destination`
+- [x] pi 部署哈希与树枚举：`compute_pi_deployment_hash`/`collect_tree_entries`
+- [x] 安装前检：`skill_exists_in_app`/`preflight_install_destination`/`persist_and_sync_new_skill`
+- [x] pi 目标核验与刷新：`ensure_pi_skill_destination_matches`/`inspect_pi_skill_destination`/`remove_verified_pi_destination`/`refresh_pi_skill_destination`
+- [x] 保留式卸载：`remove_from_app_preserving`/`resolve_uninstall_backup_source_excluding`/`create_uninstall_backup_excluding`（fork 仅有非 `_excluding` 变体）
+- [x] `SkillUninstallResult` 加 `preserved_pi_path`/`pi_cleanup_incomplete` 字段 + `is_false` serde helper（P3 前端已按可选字段消费）
+- [x] `migrate_storage` 别名拒绝 + 受管 pi symlink 重定向
+- [x] 19 个上游回归测试全量移植（pi skill 状态跟随原生目录、外部同名目录保留、安装冲突拒绝、隐藏原生变更拒绝、别名根卸载、preflight 后创建的目标复检、SSOT 保留、缺失源不备份不删除、pi root 不可解析告警、别名根拒绝 sync/remove、migrate 别名拒绝/重定向）
+- [x] 保留 fork 既有安全上限（50 MiB 单文件读、16 层遍历、跳过 symlink）不退化
+- [x] 门禁全绿 → commit
 
 ### P4 — 40d747c0 session usage + docs + i18n 收口 + 全量门禁
 - [ ] `services/session_usage_pi.rs`（纯新增，1496 行）：pi session JSONL importer + token/cost 解析 + dedup
@@ -235,6 +235,37 @@ P3 前端 prompts/skills/sessions UI 完成。30 文件改动（+2945/−50）�
 
 ### Carry-forward
 - ClaudeDesktop：`src/` 6 处全为 HEAD 既有，零新增；`src-tauri/src/` 仅既有 usage parser/logger/stats 兼容行 + profile.rs 注释。
+- zh-TW 零回潮；`.pi/`/`.pi-subagents/` 未 stage。
+
+
+## P3.5 结果（2026-08-24，cd8b950a）
+
+P3.5 services/skill.rs pi skills 安全路径补齐完成。1 文件改动（+1167/−62）。
+
+### 实施要点
+- 18 个生产 helper 全量移植：路径别名/重叠校验（`paths_alias`/`paths_overlap`/`ensure_distinct_skill_roots`/`get_distinct_app_skills_dir`/`validate_skill_storage_destination`）、pi 部署哈希与树枚举（`compute_pi_deployment_hash`/`collect_tree_entries`）、安装前检（`skill_exists_in_app`/`preflight_install_destination`/`persist_and_sync_new_skill`）、pi 目标核验与刷新（`ensure_pi_skill_destination_matches`/`inspect_pi_skill_destination`/`remove_verified_pi_destination`/`refresh_pi_skill_destination`）、保留式卸载（`remove_from_app_preserving`/`resolve_uninstall_backup_source_excluding`/`create_uninstall_backup_excluding`）。
+- `SkillUninstallResult` 加 `preserved_pi_path`/`pi_cleanup_incomplete` + `is_false` serde helper；字段名与 P3 前端 `src/lib/api/skills.ts`（`preservedPiPath?`/`piCleanupIncomplete?`）精确匹配 → P3 toast 警告分支现在会真正触发（P1 前 dead）。
+- `migrate_storage` 别名拒绝 + 受管 pi symlink 重定向；`uninstall`/`install`/`install_from_zip`/`update_skill`/`toggle_app`/`import_from_apps`/`get_all_installed`/`sync_to_app_dir` 等调用点重接。
+- 4 处 ClaudeDesktop arm 全丢弃。
+
+### 安全上限保留
+- `collect_tree_entries` 用 `entry.file_type()` 不跟随 symlink 递归（匹配 fork skip-symlink-recursion）。
+- `compute_pi_deployment_hash` 故意不跳隐藏文件（须检测 `.env` 式原生变更，`managed_pi_copy_rejects_hidden_native_changes` 钉住），仅作用于已校验的 pi 目标目录。
+- `inspect_pi_skill_destination` 故意 `read_link`+`canonicalize` 跟随 symlink 比对 target（窄范围，仅 pi 目标路径，带注释说明）。
+- fork 既有 `require_valid_directory` 遍历守卫保留。
+
+### 门禁（全绿）
+- cargo fmt / format:check / typecheck ✓
+- check:web-routes 292/280/0 gaps ✓
+- check:locales 2636 parity ✓
+- desktop + web cargo check ✓
+- `cargo test --lib skill` **70 passed / 0 failed** ✓（含 19 新 pi 回归）
+- `cargo test --lib`（全量）**2083 passed / 0 failed / 5 ignored** ✓（基线 2060 → +23）
+- Rust parity 37 passed ✓
+- test:unit **173 files / 1044 tests** ✓（无回归）
+
+### Carry-forward
+- ClaudeDesktop：skill.rs grep 0；diff 引入 0 处。
 - zh-TW 零回潮；`.pi/`/`.pi-subagents/` 未 stage。
 
 ## 验证命令汇总
