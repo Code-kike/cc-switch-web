@@ -39,6 +39,7 @@ const SQL_RESTORE_TABLES: &[&str] = &[
     "proxy_live_backup",
     "usage_daily_rollups",
     "session_log_sync",
+    "session_usage_dedup",
     "profiles",
 ];
 
@@ -68,6 +69,7 @@ const SQL_RESTORE_INDEXES: &[(&str, &str)] = &[
     // Older supported exports; migrations remove/replace these objects.
     ("idx_request_logs_dedup_lookup", "proxy_request_logs"),
     ("idx_failover_queue_order", "failover_queue"),
+    ("idx_session_usage_dedup_semantic", "session_usage_dedup"),
 ];
 
 type SchemaObject = (String, String);
@@ -100,6 +102,7 @@ const SYNC_SKIP_TABLES: &[&str] = &[
     "proxy_live_backup",
     "usage_daily_rollups",
     "session_log_sync",
+    "session_usage_dedup",
 ];
 
 /// Tables whose local data is preserved from the live database during WebDAV import.
@@ -110,6 +113,7 @@ const SYNC_PRESERVE_TABLES: &[&str] = &[
     "proxy_live_backup",
     "usage_daily_rollups",
     "session_log_sync",
+    "session_usage_dedup",
 ];
 
 /// A database backup entry for the UI

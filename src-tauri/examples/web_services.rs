@@ -67,6 +67,9 @@ pub mod session_usage_grokbuild;
 #[path = "../src/services/session_usage_opencode.rs"]
 pub mod session_usage_opencode;
 
+#[path = "../src/services/session_usage_pi.rs"]
+pub mod session_usage_pi;
+
 #[path = "../src/services/skill.rs"]
 pub mod skill;
 

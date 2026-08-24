@@ -153,7 +153,13 @@ export interface UsageRangeSelection {
   customEndDate?: number;
 }
 
-export type AppType = "claude" | "codex" | "gemini" | "grokbuild" | "opencode";
+export type AppType =
+  | "claude"
+  | "codex"
+  | "gemini"
+  | "grokbuild"
+  | "opencode"
+  | "pi";
 
 export type AppTypeFilter = "all" | AppType;
 
@@ -163,6 +169,7 @@ export const KNOWN_APP_TYPES: ReadonlyArray<AppType> = [
   "gemini",
   "grokbuild",
   "opencode",
+  "pi",
 ];
 
 export const CACHE_INCLUSIVE_APP_TYPES: ReadonlySet<string> = new Set([
