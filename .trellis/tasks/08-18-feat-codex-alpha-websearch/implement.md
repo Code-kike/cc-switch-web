@@ -41,16 +41,32 @@ W3 追加：`pnpm test:integration`、`pnpm build:web`、`pnpm smoke:web-server`
 - [x] 门禁全绿 → commit
 
 ### W2 — WebSearch 请求翻译 + markdown/引用原语（`transform_responses.rs` +3199/−293，39 测试）
-- [ ] 工具识别与校验：`is_anthropic_web_search_tool`、`anthropic_web_search_tool_name`、`anthropic_web_search_max_uses`（正整数校验）、`validate_anthropic_web_search_direct_mode`、`has_http_url_scheme`
-- [ ] 请求翻译：`anthropic_web_search_to_responses`（`allowed_domains` 保留 / `blocked_domains` 非空显式失败 / `response_inclusion`/non-direct/未验证版本 fail-closed）
-- [ ] 多轮重放：`responses_web_search_call_from_anthropic_blocks`、`collect_web_search_results_from_content`
-- [ ] 结果/错误原语（W3 消费）：`web_search_results_from_action`、`web_search_results_from_output_item`、`web_search_tool_result_error`、`web_search_max_uses_exceeded_error`
-- [ ] 响应聚合入口：`responses_to_anthropic_with_web_search_options`
-- [ ] `anthropic_to_responses` 接入上述路径（保留 fork 既有 78 行漂移适配）
-- [ ] ~30 个 markdown 解析函数：`markdown_code_scan`/`markdown_container_prefix`/`markdown_container_continuation_start`/`markdown_fence`/`markdown_bracket_pairs`/`markdown_list_marker_end`/`markdown_indentation_columns`/`markdown_link_label`/`markdown_link_destination`/`markdown_link_suffix_end`/`markdown_link_suffix_is_closed`/`markdown_inline_destination_end`/`is_valid_bare_markdown_destination`/`is_valid_markdown_autolink_destination`/`markdown_closing_bracket`/`normalize_markdown_reference_label`/`markdown_reference_definitions`/`markdown_reference_uses`/`markdown_link_syntax_mask`/`markdown_destination_matches_url`/`contains_markdown_link_to_url{,_with_context}`/`char_index_to_byte_offset`/`is_markdown_escaped` 等
-- [ ] **不可信输入红线**：全部迭代实现，无无界递归/指数回溯；只做只读扫描 + 掩码；无外部 IO。逐函数确认后在 commit message 记录。
-- [ ] 移植 39 个测试
-- [ ] 容忍本批 dead-code 警告（W3 才有调用方）；**不加** `#[allow(dead_code)]` 掩盖，W3 落地即消除
+- [x] 工具识别与校验：`is_anthropic_web_search_tool`、`anthropic_web_search_tool_name`、`anthropic_web_search_max_uses`（正整数校验）、`validate_anthropic_web_search_direct_mode`、`has_http_url_scheme`
+- [x] 请求翻译：`anthropic_web_search_to_responses`（`allowed_domains` 保留 / `blocked_domains` 非空显式失败 / `response_inclusion`/non-direct/未验证版本 fail-closed）
+- [x] 多轮重放：`responses_web_search_call_from_anthropic_blocks`、`collect_web_search_results_from_content`
+- [x] 结果/错误原语（W3 消费）：`web_search_results_from_action`、`web_search_results_from_output_item`、`web_search_tool_result_error`、`web_search_max_uses_exceeded_error`
+- [x] 响应聚合入口：`responses_to_anthropic_with_web_search_options`
+- [x] `anthropic_to_responses` 接入上述路径（保留 fork 既有 78 行漂移适配）
+- [x] ~30 个 markdown 解析函数：`markdown_code_scan`/`markdown_container_prefix`/`markdown_container_continuation_start`/`markdown_fence`/`markdown_bracket_pairs`/`markdown_list_marker_end`/`markdown_indentation_columns`/`markdown_link_label`/`markdown_link_destination`/`markdown_link_suffix_end`/`markdown_link_suffix_is_closed`/`markdown_inline_destination_end`/`is_valid_bare_markdown_destination`/`is_valid_markdown_autolink_destination`/`markdown_closing_bracket`/`normalize_markdown_reference_label`/`markdown_reference_definitions`/`markdown_reference_uses`/`markdown_link_syntax_mask`/`markdown_destination_matches_url`/`contains_markdown_link_to_url{,_with_context}`/`char_index_to_byte_offset`/`is_markdown_escaped` 等
+- [x] **不可信输入红线**：全部迭代实现，无无界递归/指数回溯；只做只读扫描 + 掩码；无外部 IO。逐函数确认后在 commit message 记录。
+- [x] 移植 39 个测试
+- [x] 容忍本批 dead-code 警告（W3 才有调用方）；**不加** `#[allow(dead_code)]` 掩盖，W3 落地即消除
+- [x] 门禁全绿 → commit
+
+### W2.5 — 引用去重分析的二次复杂度加固（fork 侧硬化，上游无）
+> **来源**：W2 移植后子代理主动上报，主会话结构性复核确认。4 个 markdown shape 为 O(n²)（非指数），最坏 `"[a]("`×n 在 128 KiB 文本上约 15 s CPU。
+> **根因（已逐条定位）**：
+> - `markdown_link_syntax_mask` 对每个 `](` 调 `markdown_inline_destination_end(&text[start..])`，后者在未闭合目标上 `char_indices()` 扫到文本末尾才返回 `None` → 每候选 O(n)。
+> - 同函数对每个 `<` 做 `text[opening+1..].find('>')`，无 `>` 时扫到末尾。
+> - `is_markdown_escaped` 的 `.rev().take_while(|b| **b == b'\\')` 在 `"\\"`×n 上每次回走 n。
+> - `markdown_reference_uses` 的 definition 成员扫描。
+> **已是活路径（非 W3 才接通）**：`handlers.rs:426` / `claude.rs:1043` / `streaming_responses.rs:67` → `responses_to_anthropic`(2477) → `_with_web_search_name`(2481) → `_with_web_search_options`(2488) → `output_text_with_url_citations`(1473) → `text_with_url_citations`(1321) → markdown 二次扫描。触发需上游响应带 `url_citation` 注解 + 病态 markdown（威胁模型：prompt injection 让模型回显敌意内容）。
+> **PRD 约束**：carry-forward 明列「不可信 markdown 解析必须有界」。O(n²) 非无界递归也非指数回溯，字面未违约，但 15 s CPU 不满足该约束意图 → 按 fork 既有更严口径加固。
+
+- [ ] 在唯一生产入口 `text_with_url_citations`（1321）加双重上限：候选数上限（`](` 与 `<` 出现次数）+ 文本长度上限作粗粒度兜底
+- [ ] 超限行为 = **跳过去重分析**（`linked_urls` 视为空 → 所有 citation 照常追加）。**此处 fail-open 是正确的**：去重只是「避免重复链接」的优化，不是安全控制；退化后果是病态输入下可能多一个重复链接（外观），而 fail-closed 会丢 citation 或整响应报错，更糟。与 Alpha Search 的 fail-closed 语义相反且互不矛盾 —— 后者的降级会误投递 payload。
+- [ ] 常量命名与 fork 既有上限风格一致（`MAX_*_BYTES` / `MAX_*`），带注释说明为 fork 侧硬化、上游无
+- [ ] 回归测试：病态输入（`"[a]("`×n、`"<"`×n、`"\\"`×n）在上限内快速完成且**所有 citation 仍在输出中**；正常输入去重行为不变（既有 `test_text_with_url_citations_does_not_repeat_existing_body_link` 等仍绿）
 - [ ] 门禁全绿 → commit
 
 ### W3 — WebSearch 响应/流式桥 + 非流式 + usage + docs + 全量门禁
@@ -71,6 +87,7 @@ W3 追加：`pnpm test:integration`、`pnpm build:web`、`pnpm smoke:web-server`
   - `log_usage` 记 `usage.server_tool_use.web_search_requests`（fork 现 1454）
 - [ ] 移植 66 + 1 个测试（streaming 66、handlers `non_streaming_codex_web_search_limit_stops_polling_upstream`）
 - [ ] `docs/guides/claude-codex-routing-guide-{en,ja,zh}.md`：改写第 96 行 web-search 段落为实际能力（Responses hosted `web_search` 翻译、`allowed_domains` 保留、API-key 路由 `max_tool_calls`、Codex OAuth 桥端限流 + `max_uses_exceeded`、非强制 Codex 带 `max_uses` fail-closed、`blocked_domains` 显式失败、本地 WebFetch 不受影响）。三语内容对齐，**不宣称未实现能力**。
+- [ ] **核验流式 citation 路径不绕过 W2.5 上限**：`BufferedCitationTextState`/`missing_message_text_parts` 等若自行调用 markdown 原语，必须走同一受保护入口或获得同一上限；否则 W3 会静默重开 W2.5 已关闭的二次复杂度面
 - [ ] W2 dead-code 警告清零核验
 - [ ] 全量门禁（含 test:integration + build:web + smoke:web-server）→ commit
 
@@ -122,13 +139,64 @@ W1 Codex Alpha Search 透传完成。3 文件（+395/−0）。
 ### 规划文档纠正
 `implement.md` 前置确认原记 `cargo test --lib` 基线 2083 —— 实测 `258245f4~1` 为 **2106**（主会话独立 checkout 复核确认）。差 23 个来自本分支更早提交（P3.5 +23），非本批回归。已在前置确认行内更正。
 
+
+## W2 结果（2026-08-24，a49e7af5）
+
+W2 hosted WebSearch 请求翻译 + markdown 引用原语完成。1 文件（+3230/−284）。
+
+### 落地方式与漂移保全
+- 全批经 `git apply --3way`（`bdeaac75^..bdeaac75` 的 `transform_responses.rs`）落地，**每个 hunk 都落在上游锚点，无手工放置**。
+- 未只信工具：`diff upstream_post.rs <ported>` 结果**恰为** 11 个既有 fork 漂移 hunk（内容与移植前 `diff bdeaac75^ fork` 字节一致）+ 1 个新增测试，其余逐字等于上游最终态。
+- 78 行漂移构成：`build_anthropic_usage_from_responses` 的本地化文档/注释、cache 记账测试注释、fork 独有 `test_anthropic_to_responses_canonicalizes_tool_arguments`、上游有而 fork 无的 `test_build_usage_clamps_input_when_cache_exceeds_input`（既有差异，本批未引入也未移除）。均不与 W2 hunk 重叠。
+
+### 移植内容
+工具识别/校验 5 个 fn；`anthropic_web_search_to_responses` + `anthropic_to_responses` 接线（hosted 工具列表、forced-tool 过滤、`max_tool_calls` vs Codex instruction cap、`include=web_search_call.action.sources`、`map_tool_choice_to_responses` hosted 选择器）；多轮重放（`responses_web_search_call_from_anthropic_blocks`/`collect_web_search_results_from_content`/`convert_messages_to_input` 配对）；结果/错误原语 5 个；`responses_to_anthropic_with_web_search_{name,options}`；~30 个 markdown 引用原语 + 7 个支撑类型。**无 fork 侧代码适配需求**。
+
+### fail-closed 矩阵（7 行全部有测试钉住）
+| 行 | 钉住测试 |
+|---|---|
+| `allowed_domains` 保留 | `test_anthropic_hosted_web_search_maps_newer_direct_version_to_codex_tool`（断言 `filters.allowed_domains`） |
+| `blocked_domains` 非空 → 失败 | `test_hosted_web_search_blocked_domains_fails_closed` |
+| non-direct caller | `test_non_direct_web_search_callers_fail_closed` + `test_dynamic_filtering_web_search_requires_explicit_direct_caller` |
+| `response_inclusion` | `test_web_search_response_inclusion_fails_closed` |
+| 未验证版本 | `test_unknown_web_search_version_is_recognized_but_fails_closed` |
+| `max_uses` 非正整数 | **`test_hosted_web_search_non_positive_max_uses_fails_closed` —— 新增；上游此行无测试** |
+| （附加）Codex OAuth `max_uses` 无 forced hosted tool | `test_codex_auto_hosted_web_search_max_uses_fails_closed` |
+
+新增测试解构 `ProxyError::InvalidRequest` 并断言逐字消息（`0/-1/1.5/"3"/[1]`，及显式 `null` 保持不限），不比对 `to_string()` —— fork 本地化了 Display 前缀（`无效的请求: `）。这是本批唯一命中的 fork API 差异。
+
+### markdown 有界性审计
+**无无界递归、无指数回溯 —— 红线未触**。子代理提取文件内调用图做环检测：DAG，无自递归与互递归；`markdown_bracket_pairs` 用显式 `Vec` 栈而非调用栈。文件内无 `fs`/`net`/`process`/`tokio` 引用（仅 serde_json + log），全部只读扫描 + 掩码/`Vec` 构造。
+
+主会话独立复核：26 个 markdown 家族 fn，自递归 NONE，调用图 cycles NONE（DAG），`std::fs|std::net|std::process|tokio::|reqwest` 计数 0。
+
+**但发现 4 个 O(n²) shape（非指数，×4/倍跨三次倍增稳定）→ 转入 W2.5 加固**，根因已逐条定位（见 W2.5 小节）。
+
+### 测试
+`transform_responses` 116 通过（fork 基线 76 + 上游 39 + 新增 1）。集合比对确认 39 个上游测试名全在，**零断言删改、零 mock 适配**（上游测试对 fork API 原样编译）。
+
+### 门禁（全绿）
+- cargo fmt / format:check / typecheck ✓
+- **check:web-routes 292 commands / 280 routes / 0 gaps —— 计数不变** ✓
+- check:locales 2637 parity ✓
+- desktop + web cargo check ✓
+- `cargo test --lib proxy::` **1045**（1005 + 40）✓
+- `cargo test --lib` **2149 passed / 5 ignored**（基线 2109 → +40）✓
+- test:unit 173 files / 1044 tests ✓；Rust parity 37 ✓
+- clippy 无新 lint（仅 2 个预期 dead-code 警告）
+- 上限逐条确认不变（128 MiB body / 2s deadline / 16 MiB heap / 256 KiB stack / 32 MiB catalog）；无新出站目标；无新命令；延期栈仍缺席
+
+### 预期 dead-code（W3 清零）
+仅 2 个，均为 handlers.rs 入口：`anthropic_web_search_tool_name`、`anthropic_web_search_max_uses`。未加 `#[allow(dead_code)]`。
+其余 4 个原语 + `responses_to_anthropic_with_web_search_options` 已有文件内调用方（经 `responses_to_anthropic` → `_with_web_search_name` → `_with_web_search_options`），故不告警。**W3 结束若此处非零警告，即有 hunk 漏移。**
+
 ## 验证命令汇总
 
 见每批门禁块。关键额外检查：
 - **无新命令**：`pnpm check:web-routes` 保持 292 commands / 280 routes / 0 missing/mismatch/dangling/fallback。计数变化 → 误把 proxy 路由当 Web API 命令注册。
 - **安全上限零退化**：`grep` 确认 128 MiB body cap（`hyper_client.rs:128` `MAX_RESPONSE_BODY_BYTES`）、2s JS deadline（`usage_script.rs:9`）、16 MiB heap（`usage_script.rs:10`）、256 KiB stack（`usage_script.rs:11`）、32 MiB catalog（`codex_config.rs:1287`）不变。
 - **SSRF 面不变**：新代码无新增出站目标；出站仍经 forwarder + `ip_guard`。
-- **不可信 markdown 有界**：无自递归、无指数回溯。
+- **不可信 markdown 有界**：无自递归、无指数回溯；**且经 W2.5 加固后二次复杂度受候选数/长度上限约束**（病态输入在上限内完成且 citation 不丢）。
 - **延期栈零回潮**：`ls src-tauri/src/proxy/providers/` 不出现 `transform_codex_anthropic.rs`/`transform_codex_chat.rs`/`streaming_codex_chat.rs`/`codex_chat_common.rs`。
 
 ## review gates
