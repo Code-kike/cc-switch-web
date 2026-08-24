@@ -74,5 +74,9 @@ B 侧为保留引用，新增约 30 个 markdown 解析函数（code fence/容�
 
 ## 裁定记录（brainstorm 2026-08-24，用户授权采纳推荐方案）
 
-- **Q1 `transform_codex_anthropic.rs` (+33/−16)**：**跳过，记为 carry-forward 延期**。该文件属 fork 明确延期的 Codex Chat routing stack（连同 `codex_chat_common.rs`/`streaming_codex_chat.rs`/`transform_codex_chat.rs` 均不存在），恢复需先移植约 5.7k LOC 基座 —— S4/S4c/S5 已反复裁定的边界。功能后果**可界定且不影响主路径**：该 hunk 把 Codex Chat → Anthropic 桥的 `message_delta` usage 合并从「只取 `output_tokens`」扩展为「合并整个 usage 对象」，仅影响该桥上的 usage 上报精度；fork 无该桥，Alpha Search 与 hosted WebSearch 主路径（Responses 原生 + Codex OAuth）不经过它。
+- **Q1 `transform_codex_anthropic.rs` (+33/−16)**：**整文件跳过（延期栈不恢复），但其中 1 个函数在 W3 被证明必需 → 已按下述修正落地**。
+  - 原裁定（2026-08-24 brainstorm）：跳过整个 hunk。理由是该文件属 fork 明确延期的 Codex Chat routing stack（连同 `codex_chat_common.rs`/`streaming_codex_chat.rs`/`transform_codex_chat.rs` 均不存在），恢复需先移植约 5.7k LOC 基座；功能后果限于 Codex Chat → Anthropic 桥的 usage 上报精度，而 fork 无该桥。
+  - **W3 修正（2026-08-24，`c917d5cf`）**：原裁定的「fork 无该桥所以无影响」前提**在 W3 引入 fork 本地 Anthropic SSE 聚合器后失效**。上游 `responses_sse_stream_to_anthropic_message`（非流式路径）调用 `transform_codex_anthropic::anthropic_sse_to_message_value`。子代理只把**该 1 个函数**按上游 post-`bdeaac75` 状态（即含 Q1 原本要延期的 `message_delta.usage` 整对象合并）移植为 `handlers.rs` 内的**私有 helper**，`providers/` **未新增任何延期文件**（四文件仍全部缺席，已复核）。
+  - **必需性经变异验证**：把该合并回退成「只取 `output_tokens`」后，移植的 handlers 测试失败 —— `usage.server_tool_use.web_search_requests` 变为 `Null` 而非 `1`。即该 hunk 对 hosted WebSearch 的 usage 计数是 load-bearing，不是装饰。
+  - 净结果：延期栈边界未破（无新文件、无新模块声明、helper 为 `fn` 私有），但 Q1 的「后果可界定」表述在 W3 之后不再准确，故此处修正记录。
 - **Q2 执行分批**：3 批 —— **W1** Alpha Search 透传（独立、~330 行）→ **W2** WebSearch 请求翻译 + markdown/引用原语（`transform_responses.rs`，39 测试）→ **W3** WebSearch 响应/流式桥 + 非流式 + usage + docs + 全量门禁（`streaming_responses.rs` 66 测试 + `handlers.rs`）。W2 提供 W3 流式层消费的转换原语，故必须先行；W1 与 B 侧无共享代码，可证明独立，先落以建立较简路径。
