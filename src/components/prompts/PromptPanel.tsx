@@ -9,6 +9,7 @@ import { ManagementListSearch } from "@/components/common/ManagementListSearch";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import PromptListItem from "./PromptListItem";
 import PromptFormPanel from "./PromptFormPanel";
+import PiPromptPanel, { type PromptPrimaryAction } from "./PiPromptPanel";
 import { ConfirmDialog } from "../ConfirmDialog";
 
 interface PromptPanelProps {
@@ -17,6 +18,7 @@ interface PromptPanelProps {
   appId: AppId;
   onInteractionBlockedChange?: (blocked: boolean) => void;
   onNavigationBlockedChange?: (blocked: boolean) => void;
+  onPrimaryActionChange?: (action: PromptPrimaryAction) => void;
 }
 
 export interface PromptPanelHandle {
@@ -25,9 +27,29 @@ export interface PromptPanelHandle {
   reload: () => Promise<void>;
 }
 
-const PromptPanel = React.forwardRef<PromptPanelHandle, PromptPanelProps>(
+export type { PromptPrimaryAction } from "./PiPromptPanel";
+
+/**
+ * Prompt panel for every app except Pi. Pi keeps a dedicated panel because its
+ * prompt surface has three tabs (global AGENTS.md, system files, templates)
+ * instead of a single list — see `PiPromptPanel`.
+ *
+ * This standard path is intentionally NOT refactored onto `PromptLibrary`:
+ * the seven pre-existing apps keep the search + inline list UI they shipped
+ * with.
+ */
+const StandardPromptPanel = React.forwardRef<
+  PromptPanelHandle,
+  PromptPanelProps
+>(
   (
-    { open, appId, onInteractionBlockedChange, onNavigationBlockedChange },
+    {
+      open,
+      appId,
+      onInteractionBlockedChange,
+      onNavigationBlockedChange,
+      onPrimaryActionChange,
+    },
     ref,
   ) => {
     const { t } = useTranslation();
@@ -74,6 +96,10 @@ const PromptPanel = React.forwardRef<PromptPanelHandle, PromptPanelProps>(
     useEffect(() => {
       onNavigationBlockedChange?.(navigationBlocked);
     }, [navigationBlocked, onNavigationBlockedChange]);
+
+    useEffect(() => {
+      onPrimaryActionChange?.("prompt");
+    }, [onPrimaryActionChange]);
 
     useEffect(
       () => () => {
@@ -389,6 +415,26 @@ const PromptPanel = React.forwardRef<PromptPanelHandle, PromptPanelProps>(
         )}
       </div>
     );
+  },
+);
+
+StandardPromptPanel.displayName = "StandardPromptPanel";
+
+const PromptPanel = React.forwardRef<PromptPanelHandle, PromptPanelProps>(
+  (props, ref) => {
+    if (props.appId === "pi") {
+      return (
+        <PiPromptPanel
+          ref={ref}
+          open={props.open}
+          onInteractionBlockedChange={props.onInteractionBlockedChange}
+          onNavigationBlockedChange={props.onNavigationBlockedChange}
+          onPrimaryActionChange={props.onPrimaryActionChange}
+        />
+      );
+    }
+
+    return <StandardPromptPanel ref={ref} {...props} />;
   },
 );
 

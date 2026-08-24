@@ -85,6 +85,7 @@ import UnifiedMcpPanel, {
 } from "@/components/mcp/UnifiedMcpPanel";
 import PromptPanel, {
   type PromptPanelHandle,
+  type PromptPrimaryAction,
 } from "@/components/prompts/PromptPanel";
 import {
   SkillsPage,
@@ -237,6 +238,8 @@ function App() {
   useLaggedRecovery();
 
   const promptPanelRef = useRef<PromptPanelHandle>(null);
+  const [promptPrimaryAction, setPromptPrimaryAction] =
+    useState<PromptPrimaryAction>("prompt");
   const mcpPanelRef = useRef<UnifiedMcpPanelHandle>(null);
   const skillsPageRef = useRef<SkillsPageHandle>(null);
   const unifiedSkillsPanelRef = useRef<UnifiedSkillsPanelHandle>(null);
@@ -1155,6 +1158,7 @@ function App() {
               appId={activeApp}
               onInteractionBlockedChange={setPromptManagementBusy}
               onNavigationBlockedChange={setPromptNavigationBusy}
+              onPrimaryActionChange={setPromptPrimaryAction}
             />
           );
         case "hermesMemory":
@@ -1541,18 +1545,20 @@ function App() {
                     {t("deeplink.pasteImport")}
                   </Button>
                 )}
-                {currentView === "prompts" && (
+                {currentView === "prompts" && promptPrimaryAction && (
                   <>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      disabled={promptManagementBusy}
-                      onClick={() => promptPanelRef.current?.openImport()}
-                      className="hover:bg-black/5 disabled:opacity-100 dark:hover:bg-white/5"
-                    >
-                      <Download className="w-4 h-4 mr-2" />
-                      {t("prompts.import")}
-                    </Button>
+                    {promptPrimaryAction === "prompt" && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        disabled={promptManagementBusy}
+                        onClick={() => promptPanelRef.current?.openImport()}
+                        className="hover:bg-black/5 disabled:opacity-100 dark:hover:bg-white/5"
+                      >
+                        <Download className="w-4 h-4 mr-2" />
+                        {t("prompts.import")}
+                      </Button>
+                    )}
                     <Button
                       variant="ghost"
                       size="sm"
@@ -1561,7 +1567,11 @@ function App() {
                       className="hover:bg-black/5 disabled:opacity-100 dark:hover:bg-white/5"
                     >
                       <Plus className="w-4 h-4 mr-2" />
-                      {t("prompts.add")}
+                      {t(
+                        promptPrimaryAction === "template"
+                          ? "pi.prompts.newTemplate"
+                          : "prompts.add",
+                      )}
                     </Button>
                   </>
                 )}

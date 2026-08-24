@@ -9,6 +9,7 @@ import {
 } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionManagerPage } from "@/components/sessions/SessionManagerPage";
+import { piApi } from "@/lib/api";
 import { sessionsApi } from "@/lib/api/sessions";
 import type { SessionMessage, SessionMeta } from "@/types";
 import { setSessionFixtures } from "../msw/state";
@@ -60,7 +61,7 @@ const launchTerminalSpy = vi
   .spyOn(sessionsApi, "launchTerminal")
   .mockResolvedValue(true);
 
-const renderPage = () => {
+const renderPage = (appId = "codex") => {
   const client = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
@@ -72,7 +73,7 @@ const renderPage = () => {
     client,
     ...render(
       <QueryClientProvider client={client}>
-        <SessionManagerPage appId="codex" />
+        <SessionManagerPage appId={appId} />
       </QueryClientProvider>,
     ),
   };
@@ -580,5 +581,103 @@ describe("SessionManagerPage", () => {
 
     expect(launchTerminalSpy).not.toHaveBeenCalled();
     expect(toastSuccessMock).toHaveBeenCalled();
+  });
+
+  describe("pi session discovery", () => {
+    const piSession: SessionMeta = {
+      providerId: "pi",
+      sessionId: "pi-session-1",
+      title: "Pi Session",
+      summary: "Pi summary",
+      projectDir: "/mock/pi",
+      createdAt: 3,
+      lastActiveAt: 30,
+      sourcePath: "/mock/pi/session-1.jsonl",
+      resumeCommand: "pi --resume pi-session-1",
+    };
+
+    beforeEach(() => {
+      setSessionFixtures([piSession], {
+        "pi:/mock/pi/session-1.jsonl": [
+          { role: "user", content: "pi hello", ts: 30 },
+        ],
+      });
+    });
+
+    it("warns that a relative sessionDir cannot be enumerated globally", async () => {
+      const discovery = vi
+        .spyOn(piApi, "getSessionDiscovery")
+        .mockResolvedValue({
+          status: "requires_project_context",
+          configuredPath: "./.pi/sessions",
+        });
+
+      renderPage("pi");
+
+      const banner = await screen.findByRole("status");
+      expect(banner).toHaveTextContent("sessionManager.piRelativeSessionDir");
+      expect(banner).toHaveTextContent("./.pi/sessions");
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      discovery.mockRestore();
+    });
+
+    it("reports an unavailable pi session root as an alert", async () => {
+      const discovery = vi
+        .spyOn(piApi, "getSessionDiscovery")
+        .mockResolvedValue({
+          status: "unavailable",
+          reason: "permission denied",
+        });
+
+      renderPage("pi");
+
+      const banner = await screen.findByRole("alert");
+      expect(banner).toHaveTextContent("sessionManager.piDiscoveryUnavailable");
+      discovery.mockRestore();
+    });
+
+    it("stays silent when pi session discovery is available", async () => {
+      const discovery = vi
+        .spyOn(piApi, "getSessionDiscovery")
+        .mockResolvedValue({ status: "available" });
+
+      renderPage("pi");
+
+      await waitFor(() =>
+        expect(
+          screen.getByRole("heading", { name: "Pi Session" }),
+        ).toBeInTheDocument(),
+      );
+      expect(screen.queryByRole("status")).not.toBeInTheDocument();
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      discovery.mockRestore();
+    });
+
+    it("never probes pi discovery for another app", async () => {
+      const discovery = vi
+        .spyOn(piApi, "getSessionDiscovery")
+        .mockResolvedValue({ status: "available" });
+
+      setSessionFixtures(
+        [
+          {
+            ...piSession,
+            providerId: "codex",
+            title: "Codex Only",
+            sourcePath: "/mock/codex/session-1.jsonl",
+          },
+        ],
+        {},
+      );
+      renderPage("codex");
+
+      await waitFor(() =>
+        expect(
+          screen.getByRole("heading", { name: "Codex Only" }),
+        ).toBeInTheDocument(),
+      );
+      expect(discovery).not.toHaveBeenCalled();
+      discovery.mockRestore();
+    });
   });
 });

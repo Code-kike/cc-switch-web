@@ -7,6 +7,7 @@ import { isWebMode } from "@/lib/api/adapter";
 import { syncCurrentProvidersLiveSafe } from "@/utils/postChangeSync";
 import { extractErrorMessage } from "@/utils/errorUtils";
 import { useSettingsQuery, useSaveSettingsMutation } from "@/lib/query";
+import { invalidatePiDirectoryCaches } from "@/lib/query/pi";
 import type { Settings } from "@/types";
 import { useSettingsForm, type SettingsFormState } from "./useSettingsForm";
 import {
@@ -123,6 +124,7 @@ export function useSettings(): UseSettingsResult {
       opencode: sanitizeDir(data?.opencodeConfigDir),
       openclaw: sanitizeDir(data?.openclawConfigDir),
       hermes: sanitizeDir(data?.hermesConfigDir),
+      pi: sanitizeDir(data?.piConfigDir),
     });
     setRequiresRestart(false);
   }, [
@@ -204,6 +206,7 @@ export function useSettings(): UseSettingsResult {
         const sanitizedOpenclawDir = sanitizeDir(
           mergedSettings.openclawConfigDir,
         );
+        const sanitizedPiDir = sanitizeDir(mergedSettings.piConfigDir);
         const {
           webdavSync: _ignoredWebdavSync,
           s3Sync: _ignoredS3Sync,
@@ -218,6 +221,7 @@ export function useSettings(): UseSettingsResult {
           grokConfigDir: sanitizedGrokDir,
           opencodeConfigDir: sanitizedOpencodeDir,
           openclawConfigDir: sanitizedOpenclawDir,
+          piConfigDir: sanitizedPiDir,
           language: mergedSettings.language,
         };
 
@@ -345,6 +349,7 @@ export function useSettings(): UseSettingsResult {
         const sanitizedOpenclawDir = sanitizeDir(
           mergedSettings.openclawConfigDir,
         );
+        const sanitizedPiDir = sanitizeDir(mergedSettings.piConfigDir);
         const previousAppDir = initialAppConfigDir;
         const previousClaudeDir = sanitizeDir(data?.claudeConfigDir);
         const previousCodexDir = sanitizeDir(data?.codexConfigDir);
@@ -352,6 +357,7 @@ export function useSettings(): UseSettingsResult {
         const previousGrokDir = sanitizeDir(data?.grokConfigDir);
         const previousOpencodeDir = sanitizeDir(data?.opencodeConfigDir);
         const previousOpenclawDir = sanitizeDir(data?.openclawConfigDir);
+        const previousPiDir = sanitizeDir(data?.piConfigDir);
         const {
           webdavSync: _ignoredWebdavSync,
           s3Sync: _ignoredS3Sync,
@@ -366,6 +372,7 @@ export function useSettings(): UseSettingsResult {
           grokConfigDir: sanitizedGrokDir,
           opencodeConfigDir: sanitizedOpencodeDir,
           openclawConfigDir: sanitizedOpenclawDir,
+          piConfigDir: sanitizedPiDir,
           language: mergedSettings.language,
         };
 
@@ -458,6 +465,7 @@ export function useSettings(): UseSettingsResult {
         const grokDirChanged = sanitizedGrokDir !== previousGrokDir;
         const opencodeDirChanged = sanitizedOpencodeDir !== previousOpencodeDir;
         const openclawDirChanged = sanitizedOpenclawDir !== previousOpenclawDir;
+        const piDirChanged = sanitizedPiDir !== previousPiDir;
         if (
           !pluginSynced &&
           (claudeDirChanged ||
@@ -474,6 +482,11 @@ export function useSettings(): UseSettingsResult {
               syncResult.error,
             );
           }
+        }
+        // Pi 不参与 syncCurrentProvidersLive（additive，membership 由 models.json
+        // 决定）；改目录后只需让 pi 相关缓存失效，重新从新目录读取真实状态。
+        if (piDirChanged) {
+          await invalidatePiDirectoryCaches(queryClient);
         }
 
         const appDirChanged = sanitizedAppDir !== (previousAppDir ?? undefined);

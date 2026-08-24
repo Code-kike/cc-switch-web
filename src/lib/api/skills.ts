@@ -15,7 +15,8 @@ export type AppType =
   | "grokbuild"
   | "opencode"
   | "openclaw"
-  | "hermes";
+  | "hermes"
+  | "pi";
 
 /** Skill 应用启用状态 */
 export interface SkillApps {
@@ -47,6 +48,10 @@ export interface InstalledSkill {
 
 export interface SkillUninstallResult {
   backupPath?: string;
+  /** Pi 副本无法确认为 CC Switch 部署时保留的路径 */
+  preservedPiPath?: string;
+  /** Pi 目录清理未能完成（需人工复查） */
+  piCleanupIncomplete?: boolean;
 }
 
 export interface SkillBackupEntry {

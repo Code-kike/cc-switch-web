@@ -31,11 +31,13 @@ const checkUpdatesMock = vi.fn();
 const updateSkillMock = vi.fn();
 const refetchSkillBackupsMock = vi.fn();
 const openZipFileDialogMock = vi.fn();
-const { toastErrorMock, toastInfoMock, toastSuccessMock } = vi.hoisted(() => ({
-  toastErrorMock: vi.fn(),
-  toastInfoMock: vi.fn(),
-  toastSuccessMock: vi.fn(),
-}));
+const { toastErrorMock, toastInfoMock, toastSuccessMock, toastWarningMock } =
+  vi.hoisted(() => ({
+    toastErrorMock: vi.fn(),
+    toastInfoMock: vi.fn(),
+    toastSuccessMock: vi.fn(),
+    toastWarningMock: vi.fn(),
+  }));
 let installedSkillsMock: InstalledSkill[] = [];
 let skillBackupsMock: SkillBackupEntry[] = [];
 let skillUpdatesMock: SkillUpdateInfo[] = [];
@@ -63,6 +65,7 @@ vi.mock("sonner", () => ({
     success: toastSuccessMock,
     error: toastErrorMock,
     info: toastInfoMock,
+    warning: toastWarningMock,
   },
 }));
 
@@ -194,6 +197,7 @@ describe("UnifiedSkillsPanel", () => {
     toastErrorMock.mockReset();
     toastInfoMock.mockReset();
     toastSuccessMock.mockReset();
+    toastWarningMock.mockReset();
     uninstallSkillMock.mockReset();
     importSkillsMock.mockReset();
     installFromZipMock.mockReset();
@@ -417,6 +421,81 @@ describe("UnifiedSkillsPanel", () => {
     await waitFor(() => {
       expect(uninstallSkillMock).toHaveBeenCalledWith("owner/repo:skill-id");
     });
+  });
+
+  it("only offers the Pi Skills toggle while the Pi page is active", () => {
+    installedSkillsMock = [makeInstalledSkill({ apps: { pi: true } })];
+
+    const { unmount } = renderPanel();
+    expect(
+      screen.queryByRole("button", { name: "Pi" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Claude" })).toBeInTheDocument();
+    unmount();
+
+    render(<UnifiedSkillsPanel onOpenDiscovery={() => {}} currentApp="pi" />);
+    expect(
+      screen.getAllByRole("button", { name: "Pi" }).length,
+    ).toBeGreaterThan(0);
+  });
+
+  it("warns instead of confirming success when a Pi copy is preserved", async () => {
+    installedSkillsMock = [makeInstalledSkill({ id: "owner/repo:skill-id" })];
+    uninstallSkillMock.mockResolvedValueOnce({
+      backupPath: "/backups/skill.zip",
+      preservedPiPath: "/home/dev/.pi/agent/skills/alpha-skill",
+    });
+    renderPanel();
+
+    const user = userEvent.setup();
+    await user.click(screen.getByTitle("skills.uninstall"));
+    await user.click(screen.getByRole("button", { name: "common.confirm" }));
+
+    await waitFor(() => expect(toastWarningMock).toHaveBeenCalledTimes(1));
+    expect(toastWarningMock).toHaveBeenCalledWith(
+      "skills.uninstallSuccess",
+      expect.objectContaining({ description: "skills.uninstallPiPreserved" }),
+    );
+    expect(toastSuccessMock).not.toHaveBeenCalled();
+  });
+
+  it("warns when Pi cleanup could not be completed", async () => {
+    installedSkillsMock = [makeInstalledSkill({ id: "owner/repo:skill-id" })];
+    uninstallSkillMock.mockResolvedValueOnce({
+      piCleanupIncomplete: true,
+    });
+    renderPanel();
+
+    const user = userEvent.setup();
+    await user.click(screen.getByTitle("skills.uninstall"));
+    await user.click(screen.getByRole("button", { name: "common.confirm" }));
+
+    await waitFor(() => expect(toastWarningMock).toHaveBeenCalledTimes(1));
+    expect(toastWarningMock).toHaveBeenCalledWith(
+      "skills.uninstallSuccess",
+      expect.objectContaining({
+        description: "skills.uninstallPiCleanupIncomplete",
+      }),
+    );
+  });
+
+  it("keeps reporting a plain success when Pi cleanup completed", async () => {
+    installedSkillsMock = [makeInstalledSkill({ id: "owner/repo:skill-id" })];
+    uninstallSkillMock.mockResolvedValueOnce({
+      backupPath: "/backups/skill.zip",
+    });
+    renderPanel();
+
+    const user = userEvent.setup();
+    await user.click(screen.getByTitle("skills.uninstall"));
+    await user.click(screen.getByRole("button", { name: "common.confirm" }));
+
+    await waitFor(() => expect(toastSuccessMock).toHaveBeenCalledTimes(1));
+    expect(toastSuccessMock).toHaveBeenCalledWith(
+      "skills.uninstallSuccess",
+      expect.objectContaining({ description: "skills.backup.location" }),
+    );
+    expect(toastWarningMock).not.toHaveBeenCalled();
   });
 
   it.each([

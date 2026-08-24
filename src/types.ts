@@ -159,6 +159,8 @@ export interface ProviderMeta {
   promptCacheKey?: string;
   // Codex OAuth FAST mode: injects service_tier="priority" on ChatGPT Codex requests
   codexFastMode?: boolean;
+  // 是否已投影到某个累加模式应用的 live 配置（后端 provider.rs 写入）
+  liveConfigManaged?: boolean;
   // 供应商类型（用于识别 Copilot 等特殊供应商）
   providerType?: string;
   // GitHub Copilot 关联账号 ID（旧字段，保留兼容读取）

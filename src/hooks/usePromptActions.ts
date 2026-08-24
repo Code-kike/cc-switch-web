@@ -24,6 +24,7 @@ export function usePromptActions(appId: AppId) {
     null,
   );
   const [currentFileAppId, setCurrentFileAppId] = useState<AppId | null>(null);
+  const [togglingId, setTogglingId] = useState<string | null>(null);
   const reloadGenerationRef = useRef(0);
   const currentAppIdRef = useRef(appId);
   const promptsAppIdRef = useRef<AppId | null>(null);
@@ -127,7 +128,13 @@ export function usePromptActions(appId: AppId) {
         }
         const refreshed =
           currentAppIdRef.current === appId ? await reload() : false;
-        toast.success(t("prompts.saveSuccess"), { closeButton: true });
+        toast.success(t("prompts.saveSuccess"), {
+          closeButton: true,
+          description:
+            appId === "pi" && prompt.enabled
+              ? t("pi.prompts.reloadNotice")
+              : undefined,
+        });
         return refreshed;
       } catch (error) {
         showPromptError("prompts.saveFailed", error);
@@ -184,6 +191,48 @@ export function usePromptActions(appId: AppId) {
 
   const toggleEnabled = useCallback(
     async (id: string, enabled: boolean) => {
+      // Pi 写入的是 ~/.pi/agent/AGENTS.md（跨进程文件），乐观更新会与真实文件
+      // 状态脱节；改为串行化写入 + 强制 reload，并提示需要 /reload 才生效。
+      if (appId === "pi") {
+        setTogglingId(id);
+        try {
+          if (enabled) {
+            await promptsApi.enablePrompt(appId, id);
+          } else {
+            const prompt = visiblePrompts[id];
+            if (!prompt) {
+              throw new Error(`Prompt ${id} does not exist`);
+            }
+            await promptsApi.upsertPrompt(appId, id, {
+              ...prompt,
+              enabled: false,
+            });
+          }
+          const refreshed =
+            currentAppIdRef.current === appId ? await reload() : false;
+          toast.success(
+            t(
+              enabled
+                ? "pi.prompts.usePromptSuccess"
+                : "pi.prompts.stopUsingSuccess",
+            ),
+            {
+              closeButton: true,
+              description: t("pi.prompts.reloadNotice"),
+            },
+          );
+          return refreshed;
+        } catch (error) {
+          showPromptError(
+            enabled ? "prompts.enableFailed" : "prompts.disableFailed",
+            error,
+          );
+          throw error;
+        } finally {
+          setTogglingId(null);
+        }
+      }
+
       // Optimistic update
       const previousPrompts = visiblePrompts;
       const mutationGeneration = reloadGenerationRef.current;
@@ -263,6 +312,7 @@ export function usePromptActions(appId: AppId) {
     prompts: visiblePrompts,
     loading,
     currentFileContent: visibleCurrentFileContent,
+    togglingId,
     reload,
     savePrompt,
     deletePrompt,

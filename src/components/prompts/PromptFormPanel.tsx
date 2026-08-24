@@ -70,7 +70,8 @@ const PromptFormPanel: React.FC<PromptFormPanelProps> = ({
         id,
         name: name.trim(),
         description: description.trim() || undefined,
-        content: content.trim(),
+        // Pi 写入 AGENTS.md 时保留原始缩进/空行，不做 trim
+        content: appId === "pi" ? content : content.trim(),
         enabled: initialData?.enabled || false,
         createdAt: initialData?.createdAt || timestamp,
         updatedAt: timestamp,

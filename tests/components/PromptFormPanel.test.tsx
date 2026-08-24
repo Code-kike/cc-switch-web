@@ -105,4 +105,38 @@ describe("PromptFormPanel", () => {
     expect(onClose).not.toHaveBeenCalled();
     expect(screen.getByLabelText("prompts.name")).toBeEnabled();
   });
+
+  it("preserves Pi AGENTS.md whitespace but trims it for other apps", async () => {
+    const piSave = vi.fn().mockResolvedValue(true);
+    const { unmount } = render(
+      <PromptFormPanel appId="pi" onSave={piSave} onClose={vi.fn()} />,
+    );
+
+    fireEvent.change(screen.getByLabelText("prompts.name"), {
+      target: { value: "Pi Prompt" },
+    });
+    fireEvent.change(screen.getByLabelText("markdown-editor"), {
+      target: { value: "\n  # indented body  \n\n" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "common.save" }));
+
+    await waitFor(() => expect(piSave).toHaveBeenCalledTimes(1));
+    expect(piSave.mock.calls[0][1].content).toBe("\n  # indented body  \n\n");
+    unmount();
+
+    const claudeSave = vi.fn().mockResolvedValue(true);
+    render(
+      <PromptFormPanel appId="claude" onSave={claudeSave} onClose={vi.fn()} />,
+    );
+    fireEvent.change(screen.getByLabelText("prompts.name"), {
+      target: { value: "Claude Prompt" },
+    });
+    fireEvent.change(screen.getByLabelText("markdown-editor"), {
+      target: { value: "\n  # indented body  \n\n" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "common.save" }));
+
+    await waitFor(() => expect(claudeSave).toHaveBeenCalledTimes(1));
+    expect(claudeSave.mock.calls[0][1].content).toBe("# indented body");
+  });
 });

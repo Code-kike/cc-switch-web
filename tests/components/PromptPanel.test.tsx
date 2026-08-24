@@ -34,6 +34,9 @@ const mocks = vi.hoisted(() => ({
   deletePrompt: vi.fn(),
   toggleEnabled: vi.fn(),
   importFromFile: vi.fn(),
+  piOpenAdd: vi.fn(),
+  piOpenImport: vi.fn(),
+  piReload: vi.fn(),
 }));
 
 vi.mock("react-i18next", () => ({
@@ -102,6 +105,36 @@ vi.mock("@/components/prompts/PromptFormPanel", () => ({
     </div>
   ),
 }));
+
+vi.mock("@/components/prompts/PromptLibrary", () => ({
+  PromptLibrary: () => <div data-testid="prompt-library" />,
+}));
+
+vi.mock("@/components/prompts/PiPromptPanel", async () => {
+  const { forwardRef, useImperativeHandle } = await import("react");
+  return {
+    default: forwardRef(function PiPromptPanel(
+      props: { onPrimaryActionChange?: (action: unknown) => void },
+      ref,
+    ) {
+      useImperativeHandle(ref, () => ({
+        openAdd: mocks.piOpenAdd,
+        openImport: mocks.piOpenImport,
+        reload: mocks.piReload,
+      }));
+      return (
+        <div data-testid="pi-prompt-panel">
+          <button
+            type="button"
+            onClick={() => props.onPrimaryActionChange?.("template")}
+          >
+            pi-primary-action
+          </button>
+        </div>
+      );
+    }),
+  };
+});
 
 vi.mock("@/components/ConfirmDialog", () => ({
   ConfirmDialog: ({
@@ -180,6 +213,93 @@ describe("PromptPanel", () => {
     mocks.toggleEnabled.mockResolvedValue(true);
     mocks.importFromFile.mockReset();
     mocks.importFromFile.mockResolvedValue("imported-prompt");
+    mocks.piOpenAdd.mockReset();
+    mocks.piOpenImport.mockReset();
+    mocks.piOpenImport.mockResolvedValue(undefined);
+    mocks.piReload.mockReset();
+    mocks.piReload.mockResolvedValue(undefined);
+  });
+
+  // Q3 ruling: porting Pi must not refactor the standard prompt path onto
+  // PromptLibrary. The seven pre-existing apps keep their own search + list UI.
+  it.each(["claude", "codex", "gemini", "opencode"] as AppId[])(
+    "keeps the standard search + list UI for %s",
+    async (appId) => {
+      const { container } = renderPanel(appId);
+      await waitForPanelReady();
+
+      expect(screen.queryByTestId("pi-prompt-panel")).not.toBeInTheDocument();
+      // StandardPromptPanel must not be rewired onto PromptLibrary.
+      expect(screen.queryByTestId("prompt-library")).not.toBeInTheDocument();
+      // ManagementListSearch stays mounted outside the scroll viewport…
+      const search = container.querySelector('[role="search"]');
+      expect(search).not.toBeNull();
+      expect(
+        container.querySelector("[data-radix-scroll-area-viewport]"),
+      ).not.toContainElement(search as HTMLElement);
+      // …and filteredPromptEntries still drives the inline list.
+      searchFor("aurora");
+      expect(screen.getByText("Aurora Prompt")).toBeInTheDocument();
+      expect(screen.queryByText("Harbor Prompt")).not.toBeInTheDocument();
+      // The standard path also keeps the current-file preview card.
+      expect(
+        screen.getByText("prompts.currentFile", { exact: false }),
+      ).toBeInTheDocument();
+    },
+  );
+
+  it("dispatches the pi app to PiPromptPanel and forwards its handle", async () => {
+    const ref = createRef<PromptPanelHandle>();
+    const onPrimaryActionChange = vi.fn();
+
+    render(
+      <PromptPanel
+        ref={ref}
+        open
+        onOpenChange={vi.fn()}
+        appId="pi"
+        onPrimaryActionChange={onPrimaryActionChange}
+      />,
+    );
+
+    expect(screen.getByTestId("pi-prompt-panel")).toBeInTheDocument();
+    // The standard list UI must not render for pi.
+    expect(
+      screen.queryByRole("textbox", { name: "prompts.searchAriaLabel" }),
+    ).not.toBeInTheDocument();
+    // usePromptActions is owned by PiPromptPanel, so the standard reload path
+    // never runs for pi.
+    expect(mocks.reload).not.toHaveBeenCalled();
+
+    act(() => ref.current?.openAdd());
+    expect(mocks.piOpenAdd).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await ref.current?.openImport();
+    });
+    expect(mocks.piOpenImport).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await ref.current?.reload();
+    });
+    expect(mocks.piReload).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "pi-primary-action" }));
+    expect(onPrimaryActionChange).toHaveBeenLastCalledWith("template");
+  });
+
+  it("reports the prompt primary action for the standard path", async () => {
+    const onPrimaryActionChange = vi.fn();
+    render(
+      <PromptPanel
+        open
+        onOpenChange={vi.fn()}
+        appId="claude"
+        onPrimaryActionChange={onPrimaryActionChange}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(onPrimaryActionChange).toHaveBeenLastCalledWith("prompt"),
+    );
   });
 
   it("exposes openImport and renders current file content", async () => {

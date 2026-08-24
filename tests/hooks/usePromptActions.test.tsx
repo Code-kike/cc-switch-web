@@ -592,3 +592,138 @@ describe("usePromptActions reload concurrency", () => {
     });
   });
 });
+
+describe("usePromptActions pi toggle", () => {
+  beforeEach(() => {
+    mocks.getPrompts.mockReset();
+    mocks.getCurrentFileContent.mockReset();
+    mocks.getCurrentFileContent.mockResolvedValue(null);
+    mocks.enablePrompt.mockReset();
+    mocks.upsertPrompt.mockReset();
+    mocks.toastSuccess.mockReset();
+    mocks.toastError.mockReset();
+  });
+
+  it("serializes the AGENTS.md write and reports the reload notice", async () => {
+    const initialPrompts = makePrompts("agents", "Agents Prompt");
+    const enabled = {
+      agents: { ...initialPrompts.agents, enabled: true },
+    };
+    mocks.getPrompts
+      .mockResolvedValueOnce(initialPrompts)
+      .mockResolvedValueOnce(enabled);
+    const gate = createDeferred<void>();
+    mocks.enablePrompt.mockReturnValue(gate.promise);
+
+    const { result } = renderPromptActions("pi");
+    await act(async () => {
+      expect(await result.current.reload()).toBe(true);
+    });
+
+    let toggle!: Promise<boolean>;
+    act(() => {
+      toggle = result.current.toggleEnabled("agents", true);
+    });
+    // Pi has no optimistic update: the list stays on the real file state and
+    // the write is surfaced through togglingId.
+    await waitFor(() => expect(result.current.togglingId).toBe("agents"));
+    expect(result.current.prompts.agents.enabled).toBe(false);
+
+    await act(async () => {
+      gate.resolve();
+      expect(await toggle).toBe(true);
+    });
+
+    expect(mocks.enablePrompt).toHaveBeenCalledWith("pi", "agents");
+    expect(result.current.togglingId).toBeNull();
+    expect(result.current.prompts.agents.enabled).toBe(true);
+    expect(mocks.toastSuccess).toHaveBeenCalledWith(
+      "pi.prompts.usePromptSuccess",
+      { closeButton: true, description: "pi.prompts.reloadNotice" },
+    );
+  });
+
+  it("stops using AGENTS.md through an upsert and clears togglingId on failure", async () => {
+    const initialPrompts = {
+      agents: {
+        ...makePrompts("agents", "Agents Prompt").agents,
+        enabled: true,
+      },
+    };
+    mocks.getPrompts.mockResolvedValue(initialPrompts);
+    mocks.upsertPrompt.mockRejectedValueOnce(new Error("models.json changed"));
+
+    const { result } = renderPromptActions("pi");
+    await act(async () => {
+      expect(await result.current.reload()).toBe(true);
+    });
+
+    await act(async () => {
+      await expect(
+        result.current.toggleEnabled("agents", false),
+      ).rejects.toThrow("models.json changed");
+    });
+
+    expect(mocks.upsertPrompt).toHaveBeenCalledWith("pi", "agents", {
+      ...initialPrompts.agents,
+      enabled: false,
+    });
+    expect(result.current.togglingId).toBeNull();
+    expect(mocks.toastError).toHaveBeenCalledWith("prompts.disableFailed", {
+      description: "models.json changed",
+    });
+  });
+
+  it("appends the reload notice only when a pi save activates AGENTS.md", async () => {
+    mocks.getPrompts.mockResolvedValue({});
+    const { result } = renderPromptActions("pi");
+    const active: Prompt = {
+      id: "agents",
+      name: "Agents Prompt",
+      content: "# body",
+      enabled: true,
+    };
+
+    await act(async () => {
+      await result.current.savePrompt("agents", active);
+    });
+    expect(mocks.toastSuccess).toHaveBeenLastCalledWith("prompts.saveSuccess", {
+      closeButton: true,
+      description: "pi.prompts.reloadNotice",
+    });
+
+    await act(async () => {
+      await result.current.savePrompt("agents", { ...active, enabled: false });
+    });
+    expect(mocks.toastSuccess).toHaveBeenLastCalledWith("prompts.saveSuccess", {
+      closeButton: true,
+      description: undefined,
+    });
+  });
+
+  it("keeps the optimistic toggle for non-pi apps", async () => {
+    const initialPrompts = makePrompts("toggle", "Toggle Prompt");
+    mocks.getPrompts.mockResolvedValue(initialPrompts);
+    const gate = createDeferred<void>();
+    mocks.enablePrompt.mockReturnValue(gate.promise);
+
+    const { result } = renderPromptActions("claude");
+    await act(async () => {
+      expect(await result.current.reload()).toBe(true);
+    });
+
+    let toggle!: Promise<boolean>;
+    act(() => {
+      toggle = result.current.toggleEnabled("toggle", true);
+    });
+    await waitFor(() =>
+      expect(result.current.prompts.toggle.enabled).toBe(true),
+    );
+    expect(result.current.togglingId).toBeNull();
+
+    await act(async () => {
+      gate.resolve();
+      await toggle;
+    });
+  });
+});

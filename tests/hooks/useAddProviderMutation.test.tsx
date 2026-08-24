@@ -164,4 +164,49 @@ describe("useAddProviderMutation", () => {
     expect(firstProvider.id).toBe("unbound-official-1");
     expect(secondProvider.id).toBe("unbound-official-2");
   });
+
+  it("uses the provider key as the Pi provider id", async () => {
+    const { wrapper } = createWrapper();
+    const { result } = renderHook(() => useAddProviderMutation("pi"), {
+      wrapper,
+    });
+
+    const provider = await act(async () =>
+      result.current.mutateAsync({
+        name: "Pi Native",
+        providerKey: "my-pi-key",
+        settingsConfig: { apiKey: "sk-test", models: [] },
+      } as never),
+    );
+
+    // Pi's models.json is keyed by the provider key, so a UUID would create an
+    // unreachable node.
+    expect(uuidMocks.generateUUID).not.toHaveBeenCalled();
+    expect(provider.id).toBe("my-pi-key");
+    expect(apiMocks.add).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "my-pi-key" }),
+      "pi",
+      undefined,
+    );
+    expect(
+      (apiMocks.add.mock.calls[0][0] as Record<string, unknown>).providerKey,
+    ).toBeUndefined();
+  });
+
+  it("rejects a Pi provider without a provider key", async () => {
+    const { wrapper } = createWrapper();
+    const { result } = renderHook(() => useAddProviderMutation("pi"), {
+      wrapper,
+    });
+
+    await expect(
+      act(async () =>
+        result.current.mutateAsync({
+          name: "Pi Native",
+          settingsConfig: { apiKey: "sk-test", models: [] },
+        } as never),
+      ),
+    ).rejects.toThrow(/Provider key is required for pi/);
+    expect(apiMocks.add).not.toHaveBeenCalled();
+  });
 });

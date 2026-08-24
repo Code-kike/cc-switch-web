@@ -51,6 +51,11 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 
+// Pi's Skills toggle is only offered while the user is on the Pi page: Pi reads
+// ~/.pi/agent/skills directly, so exposing it from other app pages would let a
+// stray click deploy into Pi's directory.
+const IMPORT_SKILLS_APP_IDS = SKILLS_APP_IDS.filter((app) => app !== "pi");
+
 interface UnifiedSkillsPanelProps {
   onOpenDiscovery: () => void;
   currentApp: AppId;
@@ -128,6 +133,8 @@ const UnifiedSkillsPanel = React.forwardRef<
   } = useCheckSkillUpdates();
   const updateSkillMutation = useUpdateSkill();
   const [isUpdatingAll, setIsUpdatingAll] = useState(false);
+  const visibleSkillAppIds =
+    currentApp === "pi" ? SKILLS_APP_IDS : IMPORT_SKILLS_APP_IDS;
 
   const mutationPending =
     deleteBackupMutation.isPending ||
@@ -376,12 +383,33 @@ const UnifiedSkillsPanel = React.forwardRef<
         try {
           const result = await uninstallMutation.mutateAsync(skill.id);
           setConfirmDialog(null);
-          toast.success(t("skills.uninstallSuccess", { name: skill.name }), {
-            description: result.backupPath
-              ? t("skills.backup.location", { path: result.backupPath })
-              : undefined,
+          // Pi 副本无法确认为 CC Switch 部署时保留原文件，需降级为 warning
+          // 提醒用户人工复查，而不是造成“已完全清理”的假象。
+          const piCleanupIncomplete =
+            result.piCleanupIncomplete || Boolean(result.preservedPiPath);
+          const toastOptions = {
+            description: result.preservedPiPath
+              ? t("skills.uninstallPiPreserved", {
+                  path: result.preservedPiPath,
+                })
+              : result.piCleanupIncomplete
+                ? t("skills.uninstallPiCleanupIncomplete")
+                : result.backupPath
+                  ? t("skills.backup.location", { path: result.backupPath })
+                  : undefined,
             closeButton: true,
-          });
+          };
+          if (piCleanupIncomplete) {
+            toast.warning(
+              t("skills.uninstallSuccess", { name: skill.name }),
+              toastOptions,
+            );
+          } else {
+            toast.success(
+              t("skills.uninstallSuccess", { name: skill.name }),
+              toastOptions,
+            );
+          }
         } catch (error) {
           showSkillActionError(error, "skills.uninstallFailed");
         } finally {
@@ -656,7 +684,7 @@ const UnifiedSkillsPanel = React.forwardRef<
           <AppCountBar
             totalLabel={t("skills.installed", { count: skills?.length || 0 })}
             counts={enabledCounts}
-            appIds={SKILLS_APP_IDS}
+            appIds={visibleSkillAppIds}
             totalCount={skills?.length ?? 0}
             onToggleAll={handleToggleAll}
             pendingApp={pendingApp}
@@ -736,6 +764,7 @@ const UnifiedSkillsPanel = React.forwardRef<
                       updateSkillMutation.variables === skill.id
                     }
                     actionsDisabled={interactionBlocked}
+                    appIds={visibleSkillAppIds}
                     onToggleApp={handleToggleApp}
                     onUninstall={() => handleUninstall(skill)}
                     onUpdate={() => handleUpdateSkill(skill)}
@@ -789,6 +818,7 @@ UnifiedSkillsPanel.displayName = "UnifiedSkillsPanel";
 
 interface InstalledSkillListItemProps {
   skill: InstalledSkill;
+  appIds: AppId[];
   hasUpdate?: boolean;
   isUpdating?: boolean;
   actionsDisabled?: boolean;
@@ -800,6 +830,7 @@ interface InstalledSkillListItemProps {
 
 const InstalledSkillListItem: React.FC<InstalledSkillListItemProps> = ({
   skill,
+  appIds,
   hasUpdate,
   isUpdating,
   actionsDisabled,
@@ -867,7 +898,7 @@ const InstalledSkillListItem: React.FC<InstalledSkillListItemProps> = ({
       <AppToggleGroup
         apps={{ ...skill.apps, grokbuild: skill.apps.grokbuild ?? false }}
         onToggle={(app, enabled) => onToggleApp(skill.id, app, enabled)}
-        appIds={SKILLS_APP_IDS}
+        appIds={appIds}
         disabled={actionsDisabled}
       />
 
@@ -1168,7 +1199,7 @@ const ImportSkillsDialog: React.FC<ImportSkillsDialogProps> = ({
                           },
                         }));
                       }}
-                      appIds={SKILLS_APP_IDS}
+                      appIds={IMPORT_SKILLS_APP_IDS}
                     />
                   </div>
                   <div
