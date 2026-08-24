@@ -63,11 +63,11 @@ W3 追加：`pnpm test:integration`、`pnpm build:web`、`pnpm smoke:web-server`
 > **已是活路径（非 W3 才接通）**：`handlers.rs:426` / `claude.rs:1043` / `streaming_responses.rs:67` → `responses_to_anthropic`(2477) → `_with_web_search_name`(2481) → `_with_web_search_options`(2488) → `output_text_with_url_citations`(1473) → `text_with_url_citations`(1321) → markdown 二次扫描。触发需上游响应带 `url_citation` 注解 + 病态 markdown（威胁模型：prompt injection 让模型回显敌意内容）。
 > **PRD 约束**：carry-forward 明列「不可信 markdown 解析必须有界」。O(n²) 非无界递归也非指数回溯，字面未违约，但 15 s CPU 不满足该约束意图 → 按 fork 既有更严口径加固。
 
-- [ ] 在唯一生产入口 `text_with_url_citations`（1321）加双重上限：候选数上限（`](` 与 `<` 出现次数）+ 文本长度上限作粗粒度兜底
-- [ ] 超限行为 = **跳过去重分析**（`linked_urls` 视为空 → 所有 citation 照常追加）。**此处 fail-open 是正确的**：去重只是「避免重复链接」的优化，不是安全控制；退化后果是病态输入下可能多一个重复链接（外观），而 fail-closed 会丢 citation 或整响应报错，更糟。与 Alpha Search 的 fail-closed 语义相反且互不矛盾 —— 后者的降级会误投递 payload。
-- [ ] 常量命名与 fork 既有上限风格一致（`MAX_*_BYTES` / `MAX_*`），带注释说明为 fork 侧硬化、上游无
-- [ ] 回归测试：病态输入（`"[a]("`×n、`"<"`×n、`"\\"`×n）在上限内快速完成且**所有 citation 仍在输出中**；正常输入去重行为不变（既有 `test_text_with_url_citations_does_not_repeat_existing_body_link` 等仍绿）
-- [ ] 门禁全绿 → commit
+- [x] 在唯一生产入口 `text_with_url_citations`（1321）加双重上限：候选数上限（`](` 与 `<` 出现次数）+ 文本长度上限作粗粒度兜底
+- [x] 超限行为 = **跳过去重分析**（`linked_urls` 视为空 → 所有 citation 照常追加）。**此处 fail-open 是正确的**：去重只是「避免重复链接」的优化，不是安全控制；退化后果是病态输入下可能多一个重复链接（外观），而 fail-closed 会丢 citation 或整响应报错，更糟。与 Alpha Search 的 fail-closed 语义相反且互不矛盾 —— 后者的降级会误投递 payload。
+- [x] 常量命名与 fork 既有上限风格一致（`MAX_*_BYTES` / `MAX_*`），带注释说明为 fork 侧硬化、上游无
+- [x] 回归测试：病态输入（`"[a]("`×n、`"<"`×n、`"\\"`×n）在上限内快速完成且**所有 citation 仍在输出中**；正常输入去重行为不变（既有 `test_text_with_url_citations_does_not_repeat_existing_body_link` 等仍绿）
+- [x] 门禁全绿 → commit
 
 ### W3 — WebSearch 响应/流式桥 + 非流式 + usage + docs + 全量门禁
 - [ ] `providers/streaming_responses.rs` +6179/−1310：
@@ -189,6 +189,66 @@ W2 hosted WebSearch 请求翻译 + markdown 引用原语完成。1 文件（+323
 ### 预期 dead-code（W3 清零）
 仅 2 个，均为 handlers.rs 入口：`anthropic_web_search_tool_name`、`anthropic_web_search_max_uses`。未加 `#[allow(dead_code)]`。
 其余 4 个原语 + `responses_to_anthropic_with_web_search_options` 已有文件内调用方（经 `responses_to_anthropic` → `_with_web_search_name` → `_with_web_search_options`），故不告警。**W3 结束若此处非零警告，即有 hunk 漏移。**
+
+
+## W2.5 结果（2026-08-24，860b0523）
+
+引用去重分析二次复杂度加固完成（fork 侧硬化，上游 `bdeaac75` 无对应实现）。1 文件（+323/−23）。
+
+### 五个上限（每个对应一个实测的二次维度，缺一即留下未受约束的维度）
+| 常量 | 值 | 根因 |
+|---|---|---|
+| `MAX_CITATION_DEDUP_TEXT_BYTES` | 32 KiB | 粗粒度兜底；同时约束 code fence / reference-definition 扫描 |
+| `MAX_CITATION_DEDUP_LINK_CANDIDATES` | 256 | 每个 `](` 经 `markdown_inline_destination_end` 在未闭合目标上扫到文本末尾 |
+| `MAX_CITATION_DEDUP_AUTOLINK_CANDIDATES` | 2048 | 每个 `<` 做 `text[opening+1..].find('>')`，无 `>` 时扫到末尾 |
+| `MAX_CITATION_DEDUP_BACKSLASH_RUN` | 64 | `is_markdown_escaped` 的 `.rev().take_while(...)` 每次回走整段连续反斜杠 |
+| `MAX_CITATION_DEDUP_CITATIONS` | 256 | 每条 citation 各做一次全文扫描，条数只受 128 MiB 响应体上限约束 |
+
+预检 `citation_dedup_analysis_is_affordable(text, citations)` 全为 O(text) 只读预扫描，长度上限先行短路 → 预检自身不构成新开销（caps-maxed 实测 56.1 ms → 56.9 ms，差值即预检成本）。
+
+### 跳过路径与 fail-open 论证
+`analysis: Option<CitationDedupAnalysis>` 为 `None` 时：(a) `linked_urls` 空集；(b) citation 循环首个 guard 把每条推入 `fallback`，`ranged` 空 → 正文逐字节原样；(c) fallback 链接按原序追加到 `Sources:`。
+
+**此处 fail-open 正确**：去重只是排版优化，不是安全控制。降级代价 = 正文已有链接在 `Sources:` 重复一次（外观）；fail-closed 会丢 citation 或整响应报错，更重。与 W1 Alpha Search 的 fail-closed **不矛盾** —— 后者降级会把搜索 payload 误投到非搜索端点（路由决策）。生产代码已带「请勿改成 fail-closed」注释。
+
+### 套件外计时证据（release，同 n 对比）
+| 形状 | n | 字节 | before（无上限） | after |
+|---|---|---|---|---|
+| `"[a]("`×n | 8192 | 32 KiB | 433 ms | 117 µs |
+| `"[a]("`×n | 16384 | 64 KiB | 1.667 s | 17 µs |
+| `"[a]("`×n | 32768 | 128 KiB | **6.690 s** | 116 µs |
+| `"<"`×n | 32768 | 32 KiB | 56.97 ms | 45 µs |
+| `"[" + "\"`×n | 32767 | 32 KiB | 342.9 ms | 60 µs |
+| 1000 条 citation | 1000 | 128 KiB | 129 ms | 1.8 ms |
+| 全上限打满（合法最坏） | 256 | 32 KiB | 56.1 ms | **56.9 ms** |
+
+×4/倍增长跨三次倍增稳定确认。计时 harness 已移除（`grep Instant::now` 为 0）。据重测校准生产注释两处数字：128 KiB 由「7.4 s」改为「6.7~7.4 s」并补增长曲线；全上限最坏由「约 50 ms」改为「约 57 ms」（原值低估）。
+
+### 测试（+7，transform_responses 116 → 123）
+跳过路径（每个只越过一个维度，其余维度断言仍在上限内）：
+`..._skips_dedup_for_link_candidate_flood`（`[a](`×257）、`..._skips_dedup_for_autolink_flood`（`<`×2049）、`..._skips_dedup_for_long_backslash_run`（`\`×65）、`..._skips_dedup_for_oversized_text`（>32 KiB）、`..._skips_dedup_for_citation_flood`（257 条）。
+
+反向锚（防止上限被悄悄改小）：
+`..._still_dedups_scattered_backslash_runs`（钉住「连续长度而非总数」，预检计数器必须归零）、`..._still_dedups_input_at_half_of_every_cap`（各维度压到上限一半的真实正文必须仍被分析）。
+
+全部断言 `text_with_url_citations` 可观测输出、逐字相等而非 `contains`、**无墙钟计时断言**（避免 CI flake）。共用 helper 的第二条 citation 带 range 0..3，正常路径会就地织成内联链接 → 「跳过」与「正常去重」不可能同时通过。
+
+**变异验证**：预检强制 `true` → 5 个 skip 测试全 FAILED；强制 `false` → 2 个反向锚 + 7 个既有 `text_with_url_citations` 测试 FAILED。文件已从备份逐字节还原（md5 一致）。
+
+既有 14 个 `text_with_url_citations` 测试零改动并全绿（diff 的 23 行删除全部落在生产代码内，测试模块只有新增；`git show` 中 `^-.*fn test_` 计数为 0）。
+
+### 门禁（全绿）
+- cargo fmt ✓（接手时工作区生产改动本身有 2 处不符 rustfmt，已修正）
+- format:check / typecheck ✓
+- **check:web-routes 292 commands / 280 routes / 0 gaps —— 计数不变** ✓
+- check:locales 2637 parity ✓
+- desktop + web cargo check exit 0 ✓
+- `cargo test --lib proxy::` **1052**（1045 → +7）✓
+- `cargo test --lib` **2156 passed / 5 ignored**（2149 → +7）✓
+- test:unit 173 files / 1044 tests ✓；Rust parity 37 ✓
+- clippy 无新 lint
+- **dead-code 仍恰为 W2 的 2 个**（`anthropic_web_search_tool_name`/`anthropic_web_search_max_uses`），无 `#[allow(dead_code)]`
+- 安全上限逐条不变；无新出站目标；延期栈四文件仍缺席
 
 ## 验证命令汇总
 
