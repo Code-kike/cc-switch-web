@@ -997,3 +997,30 @@ Ported and verified Product upstream v3.19.2 plus the catalog ownership fix with
 ### Next Steps
 
 - None - task complete
+
+
+## Session 29: Port pi native coding agent + session usage into Web-first fork
+
+**Date**: 2026-08-24
+**Task**: Port pi native coding agent + session usage into Web-first fork
+**Branch**: `sync/upstream-v3.20.0`
+
+### Summary
+
+Completed child task feat-pi-native-agent: ported Product upstream 84e75ad2 (pi native coding agent, 156 files) + 40d747c0 (pi session usage, 17 files) via 5-batch selective port. P1 Rust backend (pi_config/pi_state/pi_prompt_files/provider-pi/commands-pi/session_manager-pi + 9 commands with Web parity). P2 frontend provider UI (PiProviderForm 2038 lines + presets/catalog/thinking + AppId union + model_fetch request_headers/api_format). P3 frontend prompts/skills/sessions (PiPromptPanel + PiNativePromptResources + PromptLibrary, Q3 ruling kept non-pi PromptPanel path untouched with parameterized regression test). P3.5 corrected a P1 over-claim: services/skill.rs was ticked done but only 4 lines landed vs upstream +1141; ported 18 safety helpers (path alias/overlap validation, preserving uninstall, migrate alias rejection) + 19 regression tests, closing a bug where uninstalling a managed pi skill would delete a user's same-named external directory. P4 session_usage_pi importer + SCHEMA_VERSION 16->17 session_usage_dedup + docs/pi-native-contract-zh.md + i18n. Phase 2.2 check found three more P1 module-without-dispatcher gaps (session_manager never dispatched pi, PromptService lacked a Pi early-return so restore could rewrite AGENTS.md from DB flags, bootstrap skipped import_pi_providers_from_live) fixed in bdc273ff. Also found the fork's SQL restore authorizer is stricter than upstream: the new semantic index had to join SQL_RESTORE_INDEXES or WebDAV/SQL import is denied. Spec updated with an additive-provider wiring checklist, v17 restore contracts, and a new Pi Native AGENTS.md Prompt Activation scenario. Final gate: test:unit 173 files/1044 tests green, Rust parity 37, focused Rust 125, web-routes 292/0 gaps, locales 2637 parity, test:integration 50/54 (4 PRD flakes), build:web + smoke:web-server exit 0.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `18340719` | (see git log) |
+| `a7fac324` | (see git log) |
+| `cf465755` | (see git log) |
+| `cd8b950a` | (see git log) |
+| `43a72a5f` | (see git log) |
+| `bdc273ff` | (see git log) |
+| `ab02396c` | (see git log) |
+
+### Status
+
+[OK] **Completed**
