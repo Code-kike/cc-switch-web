@@ -2701,11 +2701,20 @@ fn rewrite_codex_alpha_search_full_url(
         ));
     };
 
-    let prefix_len = url_without_query
-        .len()
-        .checked_sub(suffix.len())
-        .ok_or_else(|| ProxyError::ConfigError("Invalid Codex full URL".to_string()))?;
-    let mut rewritten = format!("{}/alpha/search", &url_without_query[..prefix_len]);
+    // fork 侧加固（上游 bdeaac75 用 `&url_without_query[..len - suffix.len()]`）：
+    // `suffix` 来自**解析后**的 path，而切片作用在**原始**字符串上。两者在 dot-segment
+    // 归一化后会错位（`https://h/responses/x/..` 的 parsed path 是 `/responses/`），此时
+    // 按长度切片要么产出与 `/responses` 无关的垃圾前缀（静默误派生），要么直接 panic
+    // （`https://h/responses/éxxxxxx/..` 的 21 落在 'é' 的 20..22 内部）。
+    // 改为要求原始串**字面**以该后缀结尾：`strip_suffix` 天然对齐字符边界，且错位形状
+    // 落回既有的 fail-closed 分支 —— 与本函数「只在无歧义时派生」的契约同向收紧，
+    // 对所有当前可用形状（含 `%2F` 前缀、尾随 `/`、query/fragment）行为不变。
+    let prefix = url_without_query.strip_suffix(suffix).ok_or_else(|| {
+        ProxyError::ConfigError(
+            "Codex Alpha Search cannot derive /alpha/search from an opaque full URL; use a base URL or a full URL ending in /responses".to_string(),
+        )
+    })?;
+    let mut rewritten = format!("{prefix}/alpha/search");
 
     let request_query = request_query.filter(|query| !query.is_empty());
     let base_query = base_query.filter(|query| !query.is_empty());
@@ -3961,6 +3970,31 @@ mod tests {
             ProxyError::ConfigError(message)
                 if message.contains("cannot derive /alpha/search")
         ));
+    }
+
+    #[test]
+    fn alpha_search_rejects_full_url_whose_raw_form_does_not_end_with_responses() {
+        // 解析后的 path 会做 dot-segment 归一化，原始串不会。上游按「原始串长度 −
+        // 解析后后缀长度」切片，这两种形状下会静默产出垃圾前缀 / 在多字节字符内 panic。
+        // fork 侧要求原始串字面以后缀结尾，错位形状一律 fail-closed。
+        for base in [
+            // parsed path = "/responses/" → 归一化后命中后缀，但原始串以 "/.." 结尾
+            "https://relay.example/responses/x/..",
+            // 同上，且长度差落在 'é' 的字节中间（上游此处 panic）
+            "https://relay.example/responses/éxxxxxx/..",
+        ] {
+            let error = rewrite_codex_alpha_search_full_url(base, Some("client_version=0.144.6"))
+                .expect_err("misaligned full URL must fail closed");
+
+            assert!(
+                matches!(
+                    error,
+                    ProxyError::ConfigError(ref message)
+                        if message.contains("cannot derive /alpha/search")
+                ),
+                "unexpected error for {base}: {error:?}"
+            );
+        }
     }
 
     #[test]
