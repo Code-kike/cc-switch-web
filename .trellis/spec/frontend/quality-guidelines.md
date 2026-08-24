@@ -1072,6 +1072,7 @@ crate::services::s3_auto_sync::notify_db_changed(table);
 - Keep Web adapter imports such as `src/lib/api/model-fetch.ts` using the local Web adapter when they are required for browser/server mode.
 - Bump version metadata only after the relevant upstream behavior for the release has been ported and verified.
 - Desktop-only surfaces, such as Claude Desktop UI parity, may be explicitly deferred if the Web fork does not expose them yet; record the deferral in the task PRD/research instead of deleting Web behavior to match upstream.
+- Additive native-file providers (OpenCode, OpenClaw, Hermes, Pi) are not done when the new module file exists. The dispatcher, bootstrap live-import, and prompt native-file early-return must land in the same batch as the module, or the UI is empty / writes the wrong file.
 
 #### 4. Validation & Error Matrix
 
@@ -1106,6 +1107,14 @@ crate::services::s3_auto_sync::notify_db_changed(table);
   a named intentional upstream/port behavior (e.g. fixture stems must carry a
   trailing 36-char UUID once the importer defers non-UUID rollout names); a fix
   that cannot be traced is a masked product regression.
+- Additive-provider wiring checklist (run before ticking a batch that adds a
+  native-file app such as Pi):
+  - `session_manager/mod.rs` scan / load / delete / roots dispatch the new id
+  - `bootstrap.rs` calls `import_*_from_live` next to OpenCode/OpenClaw/Hermes
+  - prompt service early-returns to the native-file guard instead of projecting
+    DB `enabled` onto the live file
+  - `services/skill.rs` is not "done" when only the skills-dir match arm landed;
+    preserving-uninstall / alias-rejection helpers are a separate safety path
 
 #### 7. Wrong vs Correct
 
@@ -2157,8 +2166,9 @@ await workspaceApi.writeFile(loadedFilename, content);
 
 #### 2. Signatures
 
-- `database::SCHEMA_VERSION: i32 = 15`
+- `database::SCHEMA_VERSION: i32 = 17`
 - `Database::migrate_v14_to_v15(conn) -> Result<(), AppError>`
+- `Database::migrate_v16_to_v17(conn) -> Result<(), AppError>` creates `session_usage_dedup`
 - `import_sql_string_inner(&self, sql_raw: &str, preserve_tables: &[&str]) -> Result<String, AppError>`
 - Restore helpers:
   - `install_sql_restore_authorizer`
@@ -2187,6 +2197,13 @@ await workspaceApi.writeFile(loadedFilename, content);
 - The v14 -> v15 rebuild adds the `grokbuild` proxy row plus Grok MCP/Skills
   flags while preserving existing values including `failover_strategy`,
   `live_takeover_active`, retry/circuit settings, pricing fields, and timeouts.
+- The v16 -> v17 migration creates `session_usage_dedup` (data_source,
+  request_id, semantic_id, has_entry_id) plus `idx_session_usage_dedup_semantic`.
+  Continuity is 16 then 17; do not skip. The table belongs on `SQL_RESTORE_TABLES`,
+  `SYNC_SKIP_TABLES`, and `SYNC_PRESERVE_TABLES`. This fork's authorizer is
+  stricter than Product upstream: also register `idx_session_usage_dedup_semantic`
+  on `SQL_RESTORE_INDEXES`, or SQL import/WebDAV restore is denied even when the
+  table name is allowed.
 - SQLite may emit `CREATE TABLE "proxy_config"` after a rename/rebuild. Current
   exports from upgraded databases must accept this quoted canonical form.
 - Sync restore may reapply only `SYNC_PRESERVE_TABLES` from the local snapshot.
@@ -2235,6 +2252,7 @@ await workspaceApi.writeFile(loadedFilename, content);
   - `sql_import_accepts_schema_v2_legacy_objects_and_normalizes_them`
 - Migration regression:
   - `migrate_v14_to_v15_adds_grokbuild_proxy_row_and_enablement_flags`
+  - `migrate_v16_to_v17_creates_session_usage_dedup_ledger`
   - assert preservation of random failover, live takeover, retry count, MCP
     enablement, and Skills enablement, not only the new Grok defaults.
 - Atomicity and sync tests:
@@ -3113,6 +3131,84 @@ let doc_path = SkillService::choose_doc_path(
     skill.readme_url.as_deref(),
     &skill.directory,
 );
+```
+
+---
+
+### Scenario: Pi Native AGENTS.md Prompt Activation
+
+#### 1. Scope / Trigger
+
+- Trigger: Pi prompt list/enable/disable/import/restore, or any path that would
+  write `~/.pi/agent/AGENTS.md` from the prompts table.
+- Applies to `PromptService` Pi early-returns, `PiAgentsFileGuard`, and the
+  six `*_pi_prompt_*` commands.
+
+#### 2. Signatures
+
+- `PiAgentsFileGuard::acquire() -> Result<PiAgentsFileGuard, AppError>`
+- `PiAgentsFileGuard::read() -> Result<PiPromptFileSnapshot, AppError>`
+- `get_pi_prompt_file` / `replace_pi_prompt_file` / `delete_pi_prompt_file`
+- `list_pi_prompt_templates` / `upsert_pi_prompt_template` / `delete_pi_prompt_template`
+- `pi_config::MAX_PI_FILE_BYTES = 1 MiB`
+
+#### 3. Contracts
+
+- Pi prompt activation is derived from native `AGENTS.md` content, not from the
+  prompts-table `enabled` column. Persisted Pi rows stay `enabled=false`.
+- Restore / enable / disable / import must not project DB flags onto the native
+  file. `sync_to_live` for Pi is a no-op.
+- All read-modify-write of `AGENTS.md` goes through `PiAgentsFileGuard`
+  (revision compare + 1 MiB cap + atomic write).
+- SYSTEM.md / APPEND_SYSTEM.md / `prompts/*.md` templates use
+  `PiPromptFileService` / `PiPromptTemplateService`, not the generic prompt file.
+- Frontend `PromptPanel` dispatches `appId === "pi"` to `PiPromptPanel`.
+  Non-pi apps keep `ManagementListSearch` + `filteredPromptEntries`; `PromptLibrary`
+  is only consumed by `PiPromptPanel`.
+
+#### 4. Validation & Error Matrix
+
+- Generic `PromptService::enable` on Pi without the native-file guard -> reject;
+  it would rewrite AGENTS.md from DB `enabled` flags.
+- File larger than 1 MiB -> reject.
+- Revision mismatch (external writer) -> `AppError::Conflict`.
+- Restore that copies DB content onto AGENTS.md -> reject; restore must leave
+  the native file as the source of truth.
+
+#### 5. Good/Base/Bad Cases
+
+- Good: enable/disable Pi prompt updates membership via `PiAgentsFileGuard` and
+  leaves other providers' prompt files untouched.
+- Base: empty AGENTS.md is a valid native file; list still returns templates.
+- Bad: `PromptService` falls through to the Claude/Codex projection path for Pi.
+
+#### 6. Tests Required
+
+- PromptService Pi early-return tests (get/upsert/enable/delete/import/current-file).
+- `PiAgentsFileGuard` revision-conflict and 1 MiB cap tests in `pi_prompt_files`.
+- Frontend: PromptPanel Q3 test that `PromptLibrary` never renders for
+  claude/codex/gemini/opencode and that `role="search"` stays outside the scroll viewport.
+
+#### 7. Wrong vs Correct
+
+##### Wrong
+
+```rust
+let content = state.db.get_prompts("pi")?
+    .into_iter()
+    .filter(|p| p.enabled)
+    .map(|p| p.content)
+    .collect::<Vec<_>>()
+    .join("\n");
+atomic_write(&agents_md, content.as_bytes())?;
+```
+
+##### Correct
+
+```rust
+if matches!(app, AppType::Pi) {
+    return Ok(PiAgentsFileGuard::acquire()?.read()?.content);
+}
 ```
 
 ---

@@ -297,6 +297,40 @@ P4 session usage + v16→v17 去重账本 + docs + i18n 收口完成。15 文件
 - ClaudeDesktop：本批 diff 0 处。
 - zh-TW 零回潮；`.pi/`/`.pi-subagents/` 未 stage。
 
+
+## Phase 2.2 trellis-check 结果（2026-08-24，bdc273ff）
+
+最后一轮全范围 check 判定 **PASS（含 in-session 修复）**。发现 P1 三处上游 `84e75ad2` 接线路径只落了模块、没接 dispatcher：
+
+1. **session_manager 从未派发 Pi**：`providers/pi.rs` 存在，但 `session_manager/mod.rs` 未 import `pi`、未加 scan/load/delete/roots arm → Session Manager UI 空列表，load/delete 报 `Unsupported provider: pi`。
+2. **Pi prompts 走通用投射路径**：`PromptService` 无 `AppType::Pi` 早返回 → enable/disable/import/restore 会按 DB `enabled` 标志重写 `~/.pi/agent/AGENTS.md`。上游从原生文件派生激活态（`PiAgentsFileGuard`，revision 锁 + 1 MiB 上限）。
+3. **启动未调 `pi::import_from_live`**：`list()` 读时已同步原生，但 bootstrap 首次运行/空 prompt 导入跳过 Pi，与 OpenCode/OpenClaw/Hermes 不一致。
+
+修复落 `bdc273ff`（4 文件，+402/−23，含 session_manager 回归测试 + 5 个上游 prompt 测试）。
+
+### check 门禁证据
+- cargo fmt / format:check / typecheck ✓
+- check:web-routes 292 commands / 280 routes / 0 missing/mismatch/dangling/fallback ✓
+- check:locales en/ja/zh 2637 parity ✓
+- desktop + web cargo check ✓（修复后 Pi unused-code 警告消失）
+- test:unit **173 files / 1044 tests** 全绿 ✓
+- focused Rust（prompt::/session_manager::/pi_prompt_files::/pi_config::/session_usage_pi::）**125 passed** ✓
+- Rust parity 37 ✓
+- test:integration **50/54**，恰为 4 个 PRD flake（ProviderList 1 + SkillsPage 3），本轮无额外 PromptPanel flake ✓
+- build:web exit 0（28.43s）✓；smoke:web-server exit 0（日志含 `v16 → v17` 与 `sessions-list` 200）✓
+
+### 安全契约复核
+- `update_pi_provider_usage_script` 为 POST + `Json<T>`（非 GET/query）。
+- 带内容的 prompt 文件/模板 mutation 走 POST + JSON body；仅标识符的 delete 保持 GET/DELETE query（非机密）。
+- Q1 docs / Q3 PromptPanel / Q5 proxy `Pi => None` / Q6 i18n / usage AppType 只加 pi —— 全部成立。
+
+## Phase 3.3 spec 更新（2026-08-24）
+
+`.trellis/spec/frontend/quality-guidelines.md`（+97/−1）：
+- **Upstream Desktop Sync Into Web Fork**：加 additive native-file provider 契约行 + 「additive-provider wiring checklist」（session_manager dispatch / bootstrap import_*_from_live / prompt 原生文件早返回 / skill.rs 不等于只加目录 arm）。此类漏接与 P3.5 的 skill.rs 缺口同属一类。
+- **Constrained Canonical SQL Restore**：`SCHEMA_VERSION` 15 → 17；加 `migrate_v16_to_v17` 签名、`session_usage_dedup` 三张表清单归属，并明确 **fork authorizer 比上游严**，`idx_session_usage_dedup_semantic` 必须登记 `SQL_RESTORE_INDEXES`，否则表名放行也会被拒；测试清单加迁移回归。
+- **新增 Scenario: Pi Native AGENTS.md Prompt Activation**（7 段完整）：激活态由原生 AGENTS.md 内容派生、持久行恒 `enabled=false`、restore 不投射、RMW 必经 `PiAgentsFileGuard`、SYSTEM.md/模板走 `PiPromptFileService`、前端 Q3 dispatch 约束 + 所需测试。
+
 ## 验证命令汇总
 
 见每批门禁块。关键额外检查：
