@@ -2,7 +2,13 @@ import { useCallback } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
-import { providersApi, settingsApi, openclawApi, type AppId } from "@/lib/api";
+import {
+  providersApi,
+  settingsApi,
+  openclawApi,
+  piApi,
+  type AppId,
+} from "@/lib/api";
 import type {
   Provider,
   UsageScript,
@@ -316,7 +322,11 @@ export function useProviderActions(
           },
         };
 
-        await providersApi.update(updatedProvider, activeApp);
+        if (activeApp === "pi") {
+          await piApi.updateProviderUsageScript(provider.id, script);
+        } else {
+          await providersApi.update(updatedProvider, activeApp);
+        }
         await queryClient.invalidateQueries({
           queryKey: ["providers", activeApp],
         });

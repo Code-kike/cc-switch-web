@@ -30,6 +30,7 @@ describe("AppVisibilitySettings", () => {
             opencode: true,
             openclaw: true,
             hermes: true,
+            pi: true,
           },
         }}
         onChange={onChange}
@@ -67,6 +68,7 @@ describe("AppVisibilitySettings", () => {
             opencode: false,
             openclaw: false,
             hermes: false,
+            pi: false,
           },
         }}
         onChange={onChange}

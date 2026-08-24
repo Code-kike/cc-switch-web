@@ -32,6 +32,7 @@ const VALID_APPS: AppId[] = [
   "opencode",
   "openclaw",
   "hermes",
+  "pi",
 ];
 
 export const getInitialApp = (): AppId => {
@@ -107,6 +108,7 @@ const APP_VIEWS: Record<AppId, View[]> = {
     "sessions",
   ],
   hermes: ["skills", "skillsDiscovery", "hermesMemory", "mcp"],
+  pi: ["skills", "skillsDiscovery", "prompts", "sessions"],
 };
 
 export const isViewAllowedForApp = (view: View, app: AppId): boolean =>

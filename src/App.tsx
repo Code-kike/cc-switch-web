@@ -38,6 +38,7 @@ import { universalProviderKeys } from "@/lib/query/universal";
 import {
   providersApi,
   settingsApi,
+  piApi,
   type AppId,
   type ProviderSwitchEvent,
 } from "@/lib/api";
@@ -54,7 +55,10 @@ import { useProxyStatus } from "@/hooks/useProxyStatus";
 import { useUsageCacheBridge } from "@/hooks/useUsageCacheBridge";
 import { useLaggedRecovery } from "@/hooks/useLaggedRecovery";
 import { useLastValidValue } from "@/hooks/useLastValidValue";
-import { extractErrorMessage } from "@/utils/errorUtils";
+import {
+  extractErrorMessage,
+  translatePiProviderMutationError,
+} from "@/utils/errorUtils";
 import { isTextEditableTarget } from "@/utils/domUtils";
 import { cn } from "@/lib/utils";
 import {
@@ -104,6 +108,11 @@ import {
   useDisableCurrentOmo,
   useDisableCurrentOmoSlim,
 } from "@/lib/query/omo";
+import {
+  invalidatePiProviderCaches,
+  piKeys,
+  usePiCurrentState,
+} from "@/lib/query/pi";
 import WorkspaceFilesPanel from "@/components/workspace/WorkspaceFilesPanel";
 import EnvPanel from "@/components/openclaw/EnvPanel";
 import ToolsPanel from "@/components/openclaw/ToolsPanel";
@@ -180,6 +189,7 @@ function App() {
     opencode: true,
     openclaw: true,
     hermes: true,
+    pi: true,
   };
 
   const getFirstVisibleApp = (): AppId => {
@@ -190,6 +200,7 @@ function App() {
     if (visibleApps.opencode) return "opencode";
     if (visibleApps.openclaw) return "openclaw";
     if (visibleApps.hermes) return "hermes";
+    if (visibleApps.pi) return "pi";
     return "claude"; // fallback
   };
 
@@ -273,6 +284,7 @@ function App() {
   const { data, isLoading, refetch } = useProvidersQuery(activeApp, {
     isProxyRunning,
   });
+  const { data: piCurrentState } = usePiCurrentState(activeApp === "pi");
   const providers = useMemo(() => data?.providers ?? {}, [data]);
   const currentProviderId = data?.currentProviderId ?? "";
   const isOpenClawView =
@@ -293,9 +305,12 @@ function App() {
     activeApp === "opencode" ||
     activeApp === "openclaw" ||
     activeApp === "gemini" ||
-    activeApp === "hermes";
+    activeApp === "hermes" ||
+    activeApp === "pi";
   const hasUniversalProviderSupport =
     activeApp === "claude" || activeApp === "codex" || activeApp === "gemini";
+  // Pi has no native MCP registry, so it never exposes the MCP panel.
+  const hasMcpSupport = activeApp !== "pi";
 
   const {
     addProvider,
@@ -309,6 +324,40 @@ function App() {
     isProxyRunning,
     isProxyRunning && isCurrentAppTakeoverActive,
   );
+
+  // Pi is additive: "enable" writes the provider node into models.json instead
+  // of swapping a single live config, so it does not reuse switchProvider's
+  // proxy/routing preflight or its "switched" notification.
+  const handleEnablePiProvider = async (provider: Provider) => {
+    try {
+      await providersApi.switch(provider.id, "pi");
+      await invalidatePiProviderCaches(queryClient);
+      await providersApi.updateTrayMenu().catch((error) => {
+        console.error(
+          "Failed to update tray menu after enabling Pi provider",
+          error,
+        );
+      });
+      toast.success(
+        t("pi.provider.enabled", {
+          defaultValue: "已在 Pi 中启用",
+        }),
+        { closeButton: true },
+      );
+    } catch (error) {
+      const detail = extractErrorMessage(error);
+      toast.error(
+        t("pi.provider.enableFailed", {
+          defaultValue: "无法在 Pi 中启用此供应商",
+        }),
+        {
+          description:
+            translatePiProviderMutationError(detail, t) || detail || undefined,
+          closeButton: true,
+        },
+      );
+    }
+  };
 
   const disableOmoMutation = useDisableCurrentOmo();
   const handleDisableOmo = () => {
@@ -355,6 +404,12 @@ function App() {
             if (event.appType === activeApp) {
               await refetch();
             }
+            // Pi membership is derived from models.json, not from the provider
+            // list payload, so its own cache must be refreshed independently
+            // (e.g. a tray/other-window switch while another app is active).
+            if (event.appType === "pi") {
+              await invalidatePiProviderCaches(queryClient);
+            }
           },
         );
         if (!active) {
@@ -372,7 +427,7 @@ function App() {
       active = false;
       unsubscribe?.();
     };
-  }, [activeApp, refetch]);
+  }, [activeApp, queryClient, refetch]);
 
   // Profile application can originate from this window, another Web client,
   // or the desktop tray. Refresh every derived cache changed by the snapshot;
@@ -811,7 +866,26 @@ function App() {
     if (action === "remove") {
       // Remove from live config only (for additive mode apps)
       // Does NOT delete from database - provider remains in the list
-      await providersApi.removeFromLiveConfig(provider.id, activeApp);
+      try {
+        await providersApi.removeFromLiveConfig(provider.id, activeApp);
+      } catch (error) {
+        const detail = extractErrorMessage(error);
+        const description =
+          activeApp === "pi"
+            ? translatePiProviderMutationError(detail, t) || detail
+            : detail;
+        if (activeApp === "pi") {
+          // A rejected write may still mean our cached view is stale.
+          void invalidatePiProviderCaches(queryClient).catch(() => undefined);
+        }
+        toast.error(t("notifications.removeFromConfigFailed"), {
+          description: description || t("common.unknown"),
+          closeButton: true,
+        });
+        // Keep the confirm dialog open so the user can retry after fixing the
+        // underlying config conflict.
+        return;
+      }
       // Invalidate queries to refresh live/config/current state
       if (activeApp === "opencode") {
         await queryClient.invalidateQueries({
@@ -826,11 +900,17 @@ function App() {
         });
       } else if (activeApp === "hermes") {
         await invalidateHermesProviderCaches(queryClient, provider.id);
+      } else if (activeApp === "pi") {
+        await invalidatePiProviderCaches(queryClient);
       }
       toast.success(
-        t("notifications.removeFromConfigSuccess", {
-          defaultValue: "已从配置移除",
-        }),
+        activeApp === "pi"
+          ? t("pi.provider.removed", {
+              defaultValue: "已从 Pi 移除",
+            })
+          : t("notifications.removeFromConfigSuccess", {
+              defaultValue: "已从配置移除",
+            }),
         { closeButton: true },
       );
     } else {
@@ -862,7 +942,8 @@ function App() {
     if (
       activeApp === "opencode" ||
       activeApp === "openclaw" ||
-      activeApp === "hermes"
+      activeApp === "hermes" ||
+      activeApp === "pi"
     ) {
       let liveProviderIds: string[] = [];
       try {
@@ -877,10 +958,17 @@ function App() {
                   queryKey: openclawKeys.liveProviderIds,
                   queryFn: () => providersApi.getOpenClawLiveProviderIds(),
                 })
-              : await queryClient.ensureQueryData({
-                  queryKey: hermesKeys.liveProviderIds,
-                  queryFn: () => providersApi.getHermesLiveProviderIds(),
-                });
+              : activeApp === "hermes"
+                ? await queryClient.ensureQueryData({
+                    queryKey: hermesKeys.liveProviderIds,
+                    queryFn: () => providersApi.getHermesLiveProviderIds(),
+                  })
+                : (
+                    await queryClient.ensureQueryData({
+                      queryKey: piKeys.currentState,
+                      queryFn: () => piApi.getCurrentState(),
+                    })
+                  ).enabledProviderIds;
       } catch (error) {
         console.error(
           "[App] Failed to load live provider IDs for duplication",
@@ -934,6 +1022,27 @@ function App() {
 
     await addProvider(duplicatedProvider);
   };
+
+  const confirmActionMessage = useMemo(() => {
+    if (!confirmAction) return "";
+
+    const message =
+      confirmAction.action === "remove"
+        ? t("confirm.removeProviderMessage", {
+            name: confirmAction.provider.name,
+          })
+        : t("confirm.deleteProviderMessage", {
+            name: confirmAction.provider.name,
+          });
+    // Pi keeps its own global default; warn before we pull it out from under it.
+    const isPiGlobalDefault =
+      activeApp === "pi" &&
+      piCurrentState?.defaultProviderId === confirmAction.provider.id;
+
+    return isPiGlobalDefault
+      ? `${message}\n\n${t("confirm.piDefaultProviderWarning")}`
+      : message;
+  }, [activeApp, confirmAction, piCurrentState?.defaultProviderId, t]);
 
   const handleOpenTerminal = async (provider: Provider) => {
     try {
@@ -1120,7 +1229,11 @@ function App() {
                         isProxyRunning && isCurrentAppTakeoverActive
                       }
                       activeProviderId={activeProviderId}
-                      onSwitch={switchProvider}
+                      onSwitch={
+                        activeApp === "pi"
+                          ? handleEnablePiProvider
+                          : switchProvider
+                      }
                       onEdit={(provider) => {
                         setEditingProvider(provider);
                       }}
@@ -1130,7 +1243,8 @@ function App() {
                       onRemoveFromConfig={
                         activeApp === "opencode" ||
                         activeApp === "openclaw" ||
-                        activeApp === "hermes"
+                        activeApp === "hermes" ||
+                        activeApp === "pi"
                           ? (provider) =>
                               setConfirmAction({ provider, action: "remove" })
                           : undefined
@@ -1374,7 +1488,8 @@ function App() {
             {currentView === "providers" &&
               activeApp !== "opencode" &&
               activeApp !== "openclaw" &&
-              activeApp !== "hermes" && (
+              activeApp !== "hermes" &&
+              activeApp !== "pi" && (
                 <div
                   className="flex shrink-0 items-center gap-1.5"
                   style={{ WebkitAppRegion: "no-drag" } as any}
@@ -1735,15 +1850,17 @@ function App() {
                               >
                                 <History className="flex-shrink-0 w-4 h-4" />
                               </Button>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => setCurrentView("mcp")}
-                                className="text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/5 w-8 px-2"
-                                title={t("mcp.title")}
-                              >
-                                <McpIcon size={16} />
-                              </Button>
+                              {hasMcpSupport && (
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => setCurrentView("mcp")}
+                                  className="text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/5 w-8 px-2"
+                                  title={t("mcp.title")}
+                                >
+                                  <McpIcon size={16} />
+                                </Button>
+                              )}
                             </>
                           )}
                         </motion.div>
@@ -1823,17 +1940,7 @@ function App() {
             ? t("confirm.removeProvider")
             : t("confirm.deleteProvider")
         }
-        message={
-          confirmAction
-            ? confirmAction.action === "remove"
-              ? t("confirm.removeProviderMessage", {
-                  name: confirmAction.provider.name,
-                })
-              : t("confirm.deleteProviderMessage", {
-                  name: confirmAction.provider.name,
-                })
-            : ""
-        }
+        message={confirmActionMessage}
         onConfirm={() => void handleConfirmAction()}
         onCancel={() => setConfirmAction(null)}
       />

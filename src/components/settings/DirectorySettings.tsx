@@ -20,6 +20,7 @@ interface DirectorySettingsProps {
   opencodeDir?: string;
   openclawDir?: string;
   hermesDir?: string;
+  piDir?: string;
   onDirectoryChange: (app: AppId, value?: string) => void;
   onBrowseDirectory: (app: AppId) => Promise<void>;
   onResetDirectory: (app: AppId) => Promise<void>;
@@ -38,6 +39,7 @@ export function DirectorySettings({
   opencodeDir,
   openclawDir,
   hermesDir,
+  piDir,
   onDirectoryChange,
   onBrowseDirectory,
   onResetDirectory,
@@ -188,6 +190,19 @@ export function DirectorySettings({
           onChange={(val) => onDirectoryChange("hermes", val)}
           onBrowse={() => onBrowseDirectory("hermes")}
           onReset={() => onResetDirectory("hermes")}
+          webMode={webMode}
+          browseTitle={browseTitle}
+        />
+
+        <DirectoryInput
+          label={t("settings.piConfigDir")}
+          description={undefined}
+          value={piDir}
+          resolvedValue={resolvedDirs.pi}
+          placeholder={t("settings.browsePlaceholderPi")}
+          onChange={(val) => onDirectoryChange("pi", val)}
+          onBrowse={() => onBrowseDirectory("pi")}
+          onReset={() => onResetDirectory("pi")}
           webMode={webMode}
           browseTitle={browseTitle}
         />

@@ -51,6 +51,7 @@ import { ClaudeFormFields } from "./ClaudeFormFields";
 import { GrokBuildProviderForm } from "./GrokBuildProviderForm";
 import { CodexFormFields } from "./CodexFormFields";
 import { GeminiFormFields } from "./GeminiFormFields";
+import { PiProviderForm } from "./PiProviderForm";
 import { OmoFormFields } from "./OmoFormFields";
 import { parseOmoOtherFieldsObject } from "@/types/omo";
 import {
@@ -107,6 +108,7 @@ export interface ProviderFormProps {
   onUniversalPresetSelect?: (preset: UniversalProviderPreset) => void;
   onManageUniversalProviders?: () => void;
   onSubmittingChange?: (isSubmitting: boolean) => void;
+  onSubmitReadyChange?: (isReady: boolean) => void;
   initialData?: {
     name?: string;
     websiteUrl?: string;
@@ -122,6 +124,9 @@ export interface ProviderFormProps {
 }
 
 export function ProviderForm(props: ProviderFormProps) {
+  if (props.appId === "pi") {
+    return <PiProviderForm {...props} />;
+  }
   if (props.appId === "grokbuild") {
     return <GrokBuildProviderForm {...props} />;
   }

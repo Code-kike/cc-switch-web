@@ -4,6 +4,7 @@
 import "./web-commands";
 
 export type { AppId } from "./types";
+export { piApi } from "./pi";
 export { providersApi, universalProvidersApi } from "./providers";
 export { settingsApi } from "./settings";
 export { profilesApi } from "./profiles";

@@ -7,6 +7,7 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::json;
+use std::collections::BTreeMap;
 
 use super::super::ApiState;
 use super::common::{json_ok, validate_outbound_url, ApiError, ApiResult};
@@ -93,6 +94,9 @@ struct FetchModelsForConfigQuery {
     api_key: String,
     is_full_url: Option<bool>,
     models_url: Option<String>,
+    custom_user_agent: Option<String>,
+    api_format: Option<String>,
+    request_headers: Option<BTreeMap<String, String>>,
 }
 
 #[derive(Deserialize)]
@@ -489,11 +493,19 @@ async fn fetch_models_for_config(
     if let Some(models_url) = query.models_url.as_deref() {
         validate_outbound_url(models_url).await?;
     }
+    let user_agent = query
+        .custom_user_agent
+        .as_deref()
+        .map(HeaderValue::from_str)
+        .and_then(|result| result.ok());
     let models = crate::services::model_fetch::fetch_models(
         &query.base_url,
         &query.api_key,
         query.is_full_url.unwrap_or(false),
         query.models_url.as_deref(),
+        user_agent,
+        query.api_format.as_deref(),
+        query.request_headers.as_ref(),
     )
     .await
     .map_err(ApiError::bad_request)?;

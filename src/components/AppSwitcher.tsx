@@ -25,6 +25,7 @@ const ALL_APPS: AppId[] = [
   "opencode",
   "openclaw",
   "hermes",
+  "pi",
 ];
 const STORAGE_KEY = "cc-switch-last-app";
 
@@ -36,6 +37,7 @@ const APP_ICON_NAME: Record<AppId, string> = {
   opencode: "opencode",
   openclaw: "openclaw",
   hermes: "hermes",
+  pi: "pi",
 };
 
 const APP_DISPLAY_NAME: Record<AppId, string> = {
@@ -46,6 +48,7 @@ const APP_DISPLAY_NAME: Record<AppId, string> = {
   opencode: "OpenCode",
   openclaw: "OpenClaw",
   hermes: "Hermes",
+  pi: "Pi",
 };
 
 function AppGlyph({ app }: { app: AppId }) {

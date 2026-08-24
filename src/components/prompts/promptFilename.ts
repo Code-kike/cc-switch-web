@@ -8,6 +8,7 @@ const PROMPT_FILENAME_MAP: Record<AppId, string> = {
   opencode: "AGENTS.md",
   openclaw: "AGENTS.md",
   hermes: "SOUL.md",
+  pi: "AGENTS.md",
 };
 
 export function getPromptFilename(appId: AppId): string {

@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Plus } from "lucide-react";
 import { toast } from "sonner";
@@ -44,11 +44,12 @@ export function AddProviderDialog({
   onSubmit,
 }: AddProviderDialogProps) {
   const { t } = useTranslation();
-  // OpenCode and OpenClaw don't support universal providers
+  // OpenCode, OpenClaw, Hermes and Pi don't support universal providers
   const showUniversalTab =
     appId !== "opencode" &&
     appId !== "openclaw" &&
     appId !== "hermes" &&
+    appId !== "pi" &&
     appId !== "grokbuild";
   const [activeTab, setActiveTab] = useState<"app-specific" | "universal">(
     "app-specific",
@@ -57,6 +58,13 @@ export function AddProviderDialog({
   const [selectedUniversalPreset, setSelectedUniversalPreset] =
     useState<UniversalProviderPreset | null>(null);
   const [isFormSubmitting, setIsFormSubmitting] = useState(false);
+  // Pi cannot submit until a preset (or "custom") is chosen: its native
+  // models.json node has no meaningful default shape. Other apps are ready
+  // as soon as the form mounts.
+  const [isFormReady, setIsFormReady] = useState(appId !== "pi");
+  useEffect(() => {
+    setIsFormReady(appId !== "pi");
+  }, [appId, open]);
 
   const handleUniversalProviderSave = useCallback(
     async (provider: UniversalProvider) => {
@@ -138,9 +146,13 @@ export function AddProviderDialog({
           values.presetId === GROKBUILD_OFFICIAL_PROVIDER_ID;
       }
 
-      // OpenCode/OpenClaw: pass providerKey for ID generation
+      // Apps whose native catalog has a stable provider key use it as the
+      // managed provider identity.
       if (
-        (appId === "opencode" || appId === "openclaw" || appId === "hermes") &&
+        (appId === "opencode" ||
+          appId === "openclaw" ||
+          appId === "hermes" ||
+          appId === "pi") &&
         values.providerKey
       ) {
         providerData.providerKey = values.providerKey;
@@ -291,7 +303,7 @@ export function AddProviderDialog({
         <Button
           type="submit"
           form="provider-form"
-          disabled={isFormSubmitting}
+          disabled={isFormSubmitting || !isFormReady}
           className="bg-primary text-primary-foreground hover:bg-primary/90"
         >
           <Plus className="h-4 w-4 mr-2" />
@@ -345,6 +357,7 @@ export function AddProviderDialog({
               onSubmit={handleSubmit}
               onCancel={() => onOpenChange(false)}
               onSubmittingChange={setIsFormSubmitting}
+              onSubmitReadyChange={setIsFormReady}
               showButtons={false}
             />
           </TabsContent>
@@ -354,13 +367,14 @@ export function AddProviderDialog({
           </TabsContent>
         </Tabs>
       ) : (
-        // OpenCode/OpenClaw: directly show form without tabs
+        // OpenCode/OpenClaw/Hermes/Pi: directly show form without tabs
         <ProviderForm
           appId={appId}
           submitLabel={t("common.add")}
           onSubmit={handleSubmit}
           onCancel={() => onOpenChange(false)}
           onSubmittingChange={setIsFormSubmitting}
+          onSubmitReadyChange={setIsFormReady}
           showButtons={false}
         />
       )}

@@ -7,6 +7,11 @@ export interface FetchedModel {
   ownedBy: string | null;
 }
 
+export interface ModelFetchOptions {
+  apiFormat?: string;
+  requestHeaders?: Record<string, string>;
+}
+
 /**
  * 从供应商获取可用模型列表
  *
@@ -18,12 +23,17 @@ export async function fetchModelsForConfig(
   apiKey: string,
   isFullUrl?: boolean,
   modelsUrl?: string,
+  customUserAgent?: string,
+  options?: ModelFetchOptions,
 ): Promise<FetchedModel[]> {
   return invoke("fetch_models_for_config", {
     baseUrl,
     apiKey,
     isFullUrl,
     modelsUrl,
+    customUserAgent,
+    apiFormat: options?.apiFormat,
+    requestHeaders: options?.requestHeaders,
   });
 }
 

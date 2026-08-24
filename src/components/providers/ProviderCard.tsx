@@ -38,6 +38,7 @@ import { useUsageQuery } from "@/lib/query/queries";
 import { useProviderLimits, useProviderStats } from "@/lib/query/usage";
 import { extractErrorMessage } from "@/utils/errorUtils";
 import { resolveProviderIcon } from "@/utils/providerIcon";
+import { ProviderStatusBadge } from "@/components/providers/ProviderStatusBadge";
 import { useManagedAuth } from "@/components/providers/forms/hooks/useManagedAuth";
 
 interface DragHandleProps {
@@ -75,6 +76,8 @@ interface ProviderCardProps {
   activeProviderId?: string; // 代理当前实际使用的供应商 ID（用于故障转移模式下标注绿色边框）
   // OpenClaw: default model
   isDefaultModel?: boolean;
+  // Pi: native provider state unreadable → freeze membership/delete actions
+  isStateChangeProtected?: boolean;
   onSetAsDefault?: (modelId?: string) => void;
 }
 
@@ -128,14 +131,32 @@ const extractApiUrl = (provider: Provider, fallbackText: string) => {
   const config = provider.settingsConfig;
 
   if (config && typeof config === "object") {
+    const object = config as Record<string, any>;
     const envBase =
-      (config as Record<string, any>)?.env?.ANTHROPIC_BASE_URL ||
-      (config as Record<string, any>)?.env?.GOOGLE_GEMINI_BASE_URL;
+      object?.env?.ANTHROPIC_BASE_URL || object?.env?.GOOGLE_GEMINI_BASE_URL;
     if (typeof envBase === "string" && envBase.trim()) {
       return envBase;
     }
 
-    const baseUrl = (config as Record<string, any>)?.config;
+    // Native additive configs (Pi / OpenClaw / OpenCode) carry the endpoint on
+    // the provider node or on its first model entry.
+    const directBaseUrl =
+      object.baseUrl ||
+      object.base_url ||
+      object.options?.baseURL ||
+      (Array.isArray(object.models)
+        ? object.models.find(
+            (model: unknown) =>
+              model &&
+              typeof model === "object" &&
+              typeof (model as Record<string, unknown>).baseUrl === "string",
+          )?.baseUrl
+        : undefined);
+    if (typeof directBaseUrl === "string" && directBaseUrl.trim()) {
+      return directBaseUrl;
+    }
+
+    const baseUrl = object.config;
 
     if (typeof baseUrl === "string" && baseUrl.includes("base_url")) {
       const extractedBaseUrl = extractCodexBaseUrl(baseUrl);
@@ -217,6 +238,7 @@ export function ProviderCard({
   activeProviderId,
   // OpenClaw: default model
   isDefaultModel,
+  isStateChangeProtected,
   onSetAsDefault,
 }: ProviderCardProps) {
   const { t } = useTranslation();
@@ -249,9 +271,12 @@ export function ProviderCard({
   // OMO and OMO Slim share the same card behavior
   const isAnyOmo = isOmo || isOmoSlim;
   const handleDisableAnyOmo = isOmoSlim ? onDisableOmoSlim : onDisableOmo;
-  const isAdditiveMode = appId === "opencode" && !isAnyOmo;
+  const isAdditiveMode = (appId === "opencode" && !isAnyOmo) || appId === "pi";
   const supportsLiveConfigStatus =
-    (appId === "opencode" || appId === "openclaw" || appId === "hermes") &&
+    (appId === "opencode" ||
+      appId === "openclaw" ||
+      appId === "hermes" ||
+      appId === "pi") &&
     !isAnyOmo;
   const healthEnabled = isProxyRunning && isInFailoverQueue;
   const configuredDailyLimit = parseUsdNumber(provider.meta?.limitDailyUsd);
@@ -368,9 +393,12 @@ export function ProviderCard({
       : null;
 
   // 获取用量数据以判断是否有多套餐
-  // 累加模式应用（OpenCode/OpenClaw/Hermes）：使用 isInConfig 代替 isCurrent
+  // 累加模式应用（OpenCode/OpenClaw/Hermes/Pi）：使用 isInConfig 代替 isCurrent
   const shouldAutoQuery =
-    appId === "opencode" || appId === "openclaw" || appId === "hermes"
+    appId === "opencode" ||
+    appId === "openclaw" ||
+    appId === "hermes" ||
+    appId === "pi"
       ? isInConfig
       : isCurrent;
   const autoQueryInterval = shouldAutoQuery
@@ -402,14 +430,14 @@ export function ProviderCard({
   // 判断是否是"当前使用中"的供应商
   // - OMO/OMO Slim 供应商：使用 isCurrent
   // - OpenClaw：使用默认模型归属的 provider 作为当前项（蓝色边框）
-  // - OpenCode（非 OMO）：不存在"当前"概念，返回 false
+  // - OpenCode（非 OMO）/ Pi：不存在"当前"概念，返回 false
   // - 故障转移模式：代理实际使用的供应商（activeProviderId）
   // - 普通模式：isCurrent
   const isActiveProvider = isAnyOmo
     ? isCurrent
     : appId === "openclaw"
       ? Boolean(isDefaultModel)
-      : appId === "opencode"
+      : appId === "opencode" || appId === "pi"
         ? false
         : isAutoFailoverEnabled
           ? activeProviderId === provider.id
@@ -517,28 +545,22 @@ export function ProviderCard({
                 appId === "codex" ||
                 appId === "grokbuild") &&
                 needsRouting && (
-                  <span className="inline-flex items-center rounded-md bg-sky-100 px-1.5 py-0.5 text-[10px] font-semibold text-sky-700 dark:bg-sky-900/40 dark:text-sky-300">
-                    {t("claudeCode.needsRouting", {
+                  <ProviderStatusBadge
+                    tone="info"
+                    label={t("provider.needsRouting", {
                       defaultValue: "需要路由",
                     })}
-                  </span>
+                  />
                 )}
 
-              {appId === "claude" && provider.category === "official" && (
-                <span className="inline-flex items-center rounded-md bg-slate-200 px-1.5 py-0.5 text-[10px] font-semibold text-slate-700 dark:bg-slate-700/60 dark:text-slate-200">
-                  {t("claudeCode.noRoutingSupport", {
-                    defaultValue: "不支持路由",
-                  })}
-                </span>
-              )}
-
-              {appId === "codex" && provider.category === "official" && (
-                <span className="inline-flex items-center rounded-md bg-slate-200 px-1.5 py-0.5 text-[10px] font-semibold text-slate-700 dark:bg-slate-700/60 dark:text-slate-200">
-                  {t("codex.noRoutingSupport", {
-                    defaultValue: "不支持路由",
-                  })}
-                </span>
-              )}
+              {(appId === "claude" || appId === "codex") &&
+                provider.category === "official" && (
+                  <ProviderStatusBadge
+                    label={t("provider.noRoutingSupport", {
+                      defaultValue: "不支持路由",
+                    })}
+                  />
+                )}
 
               {isAutoFailoverEnabled &&
                 isInFailoverQueue &&
@@ -903,6 +925,7 @@ export function ProviderCard({
               onToggleFailover={onToggleFailover}
               // OpenClaw: default model
               isDefaultModel={isDefaultModel}
+              isStateChangeProtected={isStateChangeProtected}
               defaultModelOptions={openclawDefaultModelOptions}
               onSetAsDefault={onSetAsDefault}
             />

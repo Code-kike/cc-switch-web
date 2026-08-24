@@ -29,8 +29,10 @@ let mockFormValues: ProviderFormValues;
 vi.mock("@/components/providers/forms/ProviderForm", () => ({
   ProviderForm: ({
     onSubmit,
+    onSubmitReadyChange,
   }: {
     onSubmit: (values: ProviderFormValues) => void;
+    onSubmitReadyChange?: (ready: boolean) => void;
   }) => (
     <form
       id="provider-form"
@@ -38,7 +40,14 @@ vi.mock("@/components/providers/forms/ProviderForm", () => ({
         event.preventDefault();
         onSubmit(mockFormValues);
       }}
-    />
+    >
+      {/* Pi reports submit readiness only after a preset is chosen. */}
+      <button
+        type="button"
+        aria-label="mark-form-ready"
+        onClick={() => onSubmitReadyChange?.(true)}
+      />
+    </form>
   ),
 }));
 
@@ -197,6 +206,40 @@ context_window = 500000
       category: "official",
       settingsConfig: { config: "" },
       ensureGrokBuildOfficialSeed: true,
+    });
+  });
+
+  it("gates the Pi add action until the form reports submit readiness", async () => {
+    const handleSubmit = vi.fn().mockResolvedValue(undefined);
+
+    mockFormValues = {
+      name: "Pi Provider",
+      websiteUrl: "",
+      settingsConfig: JSON.stringify({ name: "pi", models: [] }),
+      providerKey: "my-pi-key",
+    };
+
+    render(
+      <AddProviderDialog
+        open
+        onOpenChange={vi.fn()}
+        appId="pi"
+        onSubmit={handleSubmit}
+      />,
+    );
+
+    const addButton = screen.getByRole("button", { name: "common.add" });
+    expect(addButton).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "mark-form-ready" }));
+    expect(addButton).not.toBeDisabled();
+
+    fireEvent.click(addButton);
+
+    await waitFor(() => expect(handleSubmit).toHaveBeenCalledTimes(1));
+    expect(handleSubmit.mock.calls[0][0]).toMatchObject({
+      name: "Pi Provider",
+      providerKey: "my-pi-key",
     });
   });
 });
