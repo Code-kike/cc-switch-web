@@ -5,7 +5,7 @@
 - [ ] 分支 `sync/upstream-v3.20.0`；父主体 S1–S8 + 已归档 `feat-pi-native-agent` 均在 HEAD 之前。
 - [ ] `bdeaac75` 在 `product-upstream` remote 本地可达。
 - [ ] `.pi/`/`.pi-subagents/` 不在提交范围。
-- [ ] 基线快照（回归对照）：test:unit 173 files / 1044 tests；`cargo test --lib` 2083 passed / 5 ignored；Rust parity 37；web-routes **292 commands / 280 routes / 0 gaps**；locales 2637 parity；test:integration 50/54（4 PRD flakes）。
+- [x] 基线快照（回归对照）：test:unit 173 files / 1044 tests；`cargo test --lib` **2106** passed / 5 ignored（规划时误记 2083，已独立复核 `258245f4~1` 实测 2106）；Rust parity 37；web-routes **292 commands / 280 routes / 0 gaps**；locales 2637 parity；test:integration 50/54（4 PRD flakes）。
 
 ## 移植方法
 
@@ -30,15 +30,15 @@ W3 追加：`pnpm test:integration`、`pnpm build:web`、`pnpm smoke:web-server`
 ## 执行批次（ordered checklist）
 
 ### W1 — Codex Alpha Search 透传（~330 行，独立）
-- [ ] `proxy/server.rs`：追加四别名路由 `/alpha/search`、`/v1/alpha/search`、`/v1/v1/alpha/search`、`/codex/v1/alpha/search` → `post(handlers::handle_alpha_search)`，紧邻既有 `/responses` 四别名（现 310–313）同构排布
-- [ ] `proxy/handlers.rs`：新增 `pub async fn handle_alpha_search`，复用既有 `endpoint_with_query(&uri, "/alpha/search")`（handlers.rs:481）与 `handle_responses` 同形管线
-- [ ] `proxy/forwarder.rs`：
+- [x] `proxy/server.rs`：追加四别名路由 `/alpha/search`、`/v1/alpha/search`、`/v1/v1/alpha/search`、`/codex/v1/alpha/search` → `post(handlers::handle_alpha_search)`，紧邻既有 `/responses` 四别名（现 310–313）同构排布
+- [x] `proxy/handlers.rs`：新增 `pub async fn handle_alpha_search`，复用既有 `endpoint_with_query(&uri, "/alpha/search")`（handlers.rs:481）与 `handle_responses` 同形管线
+- [x] `proxy/forwarder.rs`：
   - `is_codex_alpha_search = matches!(app_type, AppType::Codex) && split_endpoint_and_query(&effective_endpoint).0 == "/alpha/search"`
   - full-URL 分支：`else if is_full_url && is_codex_alpha_search { rewrite_codex_alpha_search_full_url(&base_url, passthrough_query.as_deref())? }`，插在既有 `is_full_url` 分支（现 1239/1241 附近）之前
   - `fn rewrite_codex_alpha_search_full_url`：仅接受 `/responses` 结尾 URL → 取前缀拼 `/alpha/search` + 保留 query；opaque URL 返回上游原文错误
-- [ ] 移植 4 个测试：`server.rs` `alpha_search_routes_forward_to_canonical_upstream`（mock upstream Router，四别名归一断言）；`forwarder.rs` `alpha_search_rewrites_known_full_responses_urls`（`/v1`、`/backend-api/codex`、含 `%2F` 自定义前缀，query 保留）+ `alpha_search_rejects_opaque_full_url_instead_of_misrouting_payload`
-- [ ] **红线核验**：body cap / deadline 未触碰（forwarder 改动仅 URL 派生）；`check:web-routes` 计数不变
-- [ ] 门禁全绿 → commit
+- [x] 移植 4 个测试：`server.rs` `alpha_search_routes_forward_to_canonical_upstream`（mock upstream Router，四别名归一断言）；`forwarder.rs` `alpha_search_rewrites_known_full_responses_urls`（`/v1`、`/backend-api/codex`、含 `%2F` 自定义前缀，query 保留）+ `alpha_search_rejects_opaque_full_url_instead_of_misrouting_payload`
+- [x] **红线核验**：body cap / deadline 未触碰（forwarder 改动仅 URL 派生）；`check:web-routes` 计数不变
+- [x] 门禁全绿 → commit
 
 ### W2 — WebSearch 请求翻译 + markdown/引用原语（`transform_responses.rs` +3199/−293，39 测试）
 - [ ] 工具识别与校验：`is_anthropic_web_search_tool`、`anthropic_web_search_tool_name`、`anthropic_web_search_max_uses`（正整数校验）、`validate_anthropic_web_search_direct_mode`、`has_http_url_scheme`
@@ -73,6 +73,54 @@ W3 追加：`pnpm test:integration`、`pnpm build:web`、`pnpm smoke:web-server`
 - [ ] `docs/guides/claude-codex-routing-guide-{en,ja,zh}.md`：改写第 96 行 web-search 段落为实际能力（Responses hosted `web_search` 翻译、`allowed_domains` 保留、API-key 路由 `max_tool_calls`、Codex OAuth 桥端限流 + `max_uses_exceeded`、非强制 Codex 带 `max_uses` fail-closed、`blocked_domains` 显式失败、本地 WebFetch 不受影响）。三语内容对齐，**不宣称未实现能力**。
 - [ ] W2 dead-code 警告清零核验
 - [ ] 全量门禁（含 test:integration + build:web + smoke:web-server）→ commit
+
+
+## W1 结果（2026-08-24，258245f4）
+
+W1 Codex Alpha Search 透传完成。3 文件（+395/−0）。
+
+### hunk 锚定（按符号，非行号）
+- `proxy/server.rs` +223：四别名路由紧随既有 `/grokbuild/v1/responses/compact` 之后（即 `/responses` + compact 别名块末尾）；测试模块追加在 `get_circuit_breaker_stats` 之后（本文件此前无 `#[cfg(test)]` mod）。
+- `proxy/handlers.rs` +65：`handle_alpha_search` 插在 `handle_responses_compact` 与 `handle_grokbuild_responses_compact` 之间 —— 与上游完全相同的锚点对，fork 中逐字存在。
+- `proxy/forwarder.rs` +107：`is_codex_alpha_search` 紧随 `(effective_endpoint, passthrough_query)` 绑定；分支置于 `else if is_full_url { append_query_to_full_url(...) }` **之前**；`rewrite_codex_alpha_search_full_url` 位于 `append_query_to_full_url` 与 `build_codex_oauth_session_headers` 之间（与上游同邻居）。
+
+`+107`/`+223` 与上游 per-file 计数精确一致。**无任何 hunk 需要猜测插入点** —— 上游全部锚点符号在 fork 中均存在，规划标记的「forwarder 漂移 2679 行」对齐风险未实际发生。
+
+### 与上游最终态保真度
+- `rewrite_codex_alpha_search_full_url`：**字节级一致**。
+- `server.rs` 测试模块：**字节级一致**。
+- `handle_alpha_search`：仅两处 fork 适配 —— 加 `ctx.failover_enabled()`（双运行时 `forward_with_retry` 签名）、去掉 `ctx.outbound_model = result.outbound_model.take();`（fork `RequestContext` 无该字段，`handlers.rs:208` 已有记录）。body 解析失败保留上游 `ProxyError::InvalidRequest`（客户端畸形 body 应为 400），未跟随兄弟 handler 的 `Internal`。
+
+### 测试（3 函数全绿）
+- `proxy::forwarder::tests::alpha_search_rewrites_known_full_responses_urls`
+- `proxy::forwarder::tests::alpha_search_rejects_opaque_full_url_instead_of_misrouting_payload`
+- `proxy::server::tests::alpha_search_routes_forward_to_canonical_upstream`
+
+无需 mock 适配（fork `ProxyServer::new(config, db, Option<ProxyRuntimeCtx>)` 同位置接 `None`，上游测试原样编译）。零断言删改。
+
+**变异验证（不只信断言）**：把 `is_full_url && is_codex_alpha_search` 改成 `false && …` 后 server 测试失败（`left: 404, right: 202`）—— mock 上游只路由 `/v1/alpha/search`，该 404 正是分支所阻止的误路由到 `/v1/responses`。已复原并复验。
+
+### 门禁（全绿）
+- cargo fmt / format:check / typecheck ✓
+- **check:web-routes 292 commands / 280 routes / 0 missing/mismatch/dangling/fallback —— 计数不变** ✓（硬约束满足）
+- check:locales 2637 parity ✓
+- desktop + web cargo check ✓
+- `cargo test --lib proxy::` **1005 passed / 0 failed** ✓
+- `cargo test --lib` 全量 **2109 passed / 5 ignored**（基线 2106 → +3）✓
+- test:unit 173 files / 1044 tests ✓（无回归）
+- Rust parity 37 ✓
+- clippy 仅 2 处既有警告（`services/omo.rs`、`prompt_files.rs`，与本批无关）
+
+### 安全核验
+- 上限逐条 grep 确认不变：`MAX_RESPONSE_BODY_BYTES` 128 MiB、`JS_EXECUTION_TIMEOUT` 2s、`JS_MEMORY_LIMIT_BYTES` 16 MiB、`JS_MAX_STACK_BYTES` 256 KiB、`MAX_CODEX_CATALOG_BYTES` 32 MiB。forwarder diff 无任何 body/limit/deadline 处理行。
+- 无新出站目标：派生 URL 仍在 provider 自身 host + path 前缀内，出站仍经 forwarder + `ip_guard`。
+- fail-closed 逐字保留：opaque full URL 返回
+  `ProxyError::ConfigError("Codex Alpha Search cannot derive /alpha/search from an opaque full URL; use a base URL or a full URL ending in /responses")`，**不发出任何请求**。
+- 延期栈仍缺席（`transform_codex_anthropic.rs`/`transform_codex_chat.rs`/`streaming_codex_chat.rs`/`codex_chat_common.rs` 均不在 `providers/`）。
+- 无新 Tauri 命令；`src/` 未触碰。
+
+### 规划文档纠正
+`implement.md` 前置确认原记 `cargo test --lib` 基线 2083 —— 实测 `258245f4~1` 为 **2106**（主会话独立 checkout 复核确认）。差 23 个来自本分支更早提交（P3.5 +23），非本批回归。已在前置确认行内更正。
 
 ## 验证命令汇总
 
