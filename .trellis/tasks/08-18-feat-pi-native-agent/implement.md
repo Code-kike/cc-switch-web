@@ -112,20 +112,20 @@ pnpm smoke:web-server
 - [x] 门禁全绿 → commit
 
 ### P4 — 40d747c0 session usage + docs + i18n 收口 + 全量门禁
-- [ ] `services/session_usage_pi.rs`（纯新增，1496 行）：pi session JSONL importer + token/cost 解析 + dedup
-- [ ] `services/session_usage.rs`：sync_all_unlocked 加 "Pi" merge_sync_step
-- [ ] `services/mod.rs`：加 `pub mod session_usage_pi`
-- [ ] `database/schema.rs`：SCHEMA_VERSION 16→17 + `migrate_v16_to_v17`（session_usage_dedup_ledger）+ 测试
-- [ ] `database/{backup,mod}.rs`：v17 备份适配
-- [ ] `services/usage_stats.rs`：pi session data source 适配
-- [ ] `session_manager/providers/pi.rs`：40d747c0 增量（如已随 P1 落地则跳过）
-- [ ] `types/usage.ts`：AppType 加 `"pi"` + KNOWN_APP_TYPES 加 "pi"
-- [ ] `components/usage/UsageDashboard.tsx`：APP_FILTER_OPTIONS 含 pi（KNOWN_APP_TYPES 驱动）+ appFilter i18n
-- [ ] `components/usage/UsageHero.tsx`：TITLE_THEMES 加 pi（fuchsia）
-- [ ] `i18n/locales/{en,ja,zh}.json`：pi 顶层命名空间 + provider/settings/apps/appSwitcher 散键 + usage.appFilter.pi；**丢弃 zh-TW**
-- [ ] `docs/pi-native-contract-zh.md`（纯新增，60 行）：移植行为契约
-- [ ] 全量门禁最终跑一遍（含 build:web + smoke:web-server）
-- [ ] commit
+- [x] `services/session_usage_pi.rs`（纯新增，1496 行）：pi session JSONL importer + token/cost 解析 + dedup
+- [x] `services/session_usage.rs`：sync_all_unlocked 加 "Pi" merge_sync_step
+- [x] `services/mod.rs`：加 `pub mod session_usage_pi`
+- [x] `database/schema.rs`：SCHEMA_VERSION 16→17 + `migrate_v16_to_v17`（session_usage_dedup_ledger）+ 测试
+- [x] `database/{backup,mod}.rs`：v17 备份适配
+- [x] `services/usage_stats.rs`：pi session data source 适配
+- [x] `session_manager/providers/pi.rs`：40d747c0 增量（如已随 P1 落地则跳过）
+- [x] `types/usage.ts`：AppType 加 `"pi"` + KNOWN_APP_TYPES 加 "pi"
+- [x] `components/usage/UsageDashboard.tsx`：APP_FILTER_OPTIONS 含 pi（KNOWN_APP_TYPES 驱动）+ appFilter i18n
+- [x] `components/usage/UsageHero.tsx`：TITLE_THEMES 加 pi（fuchsia）
+- [x] `i18n/locales/{en,ja,zh}.json`：pi 顶层命名空间 + provider/settings/apps/appSwitcher 散键 + usage.appFilter.pi；**丢弃 zh-TW**
+- [x] `docs/pi-native-contract-zh.md`（纯新增，60 行）：移植行为契约
+- [x] 全量门禁最终跑一遍（含 build:web + smoke:web-server）
+- [x] commit
 
 
 
@@ -266,6 +266,35 @@ P3.5 services/skill.rs pi skills 安全路径补齐完成。1 文件改动（+11
 
 ### Carry-forward
 - ClaudeDesktop：skill.rs grep 0；diff 引入 0 处。
+- zh-TW 零回潮；`.pi/`/`.pi-subagents/` 未 stage。
+
+
+## P4 结果（2026-08-24，43a72a5f）
+
+P4 session usage + v16→v17 去重账本 + docs + i18n 收口完成。15 文件改动（+1726/−17）。
+
+### 实施要点
+- `session_usage_pi.rs`（纯新增 1496 行）：pi session JSONL importer，15 个回归测试全绿。
+- `session_usage.rs::sync_all_unlocked` 加 `"Pi"` merge_sync_step；`services/mod.rs` 注册 `session_usage_pi`。
+- DB `SCHEMA_VERSION` 16→17；`migrate_v16_to_v17` 创建 `session_usage_dedup` + semantic index；迁移测试绿。
+- `backup.rs`：表进 SQL_RESTORE / SYNC_SKIP / SYNC_PRESERVE；**fork 更严 authorizer 额外登记** `idx_session_usage_dedup_semantic`（上游只加表名，隔离复跑 ImportExport+WebDAV 4/4 后确认是真回归并修复）。
+- `types/usage.ts` AppType + KNOWN_APP_TYPES **只加 pi**（不加 openclaw/hermes）；UsageDashboard 由 KNOWN_APP_TYPES 驱动无需改文件；UsageHero fuchsia 主题。
+- i18n `usage.appFilter.pi` en/ja/zh；locales 2636→2637 parity。
+- `docs/pi-native-contract-zh.md` 移植；3 个 UX/需求文档按 Q1 排除。
+
+### 门禁（全绿，含 PRD #5 生产构建 + smoke）
+- cargo fmt / format:check / typecheck ✓
+- check:web-routes 0 missing/mismatch/dangling/fallback ✓
+- check:locales 2637 keys en/ja/zh parity ✓
+- desktop + web cargo check ✓
+- test:unit **173 files / 1044 tests** ✓
+- Rust parity 37 ✓；`session_usage_pi` 15 ✓；`migrate_v16_to_v17` 1 ✓
+- test:integration 49/54：4 PRD flake（ProviderList 1 + SkillsPage 3）+ 1 PromptPanel Gemini 时序 flake（隔离复跑 3/3 通过）
+- **build:web exit 0**（23.96s）✓
+- **smoke:web-server exit 0** ✓
+
+### Carry-forward
+- ClaudeDesktop：本批 diff 0 处。
 - zh-TW 零回潮；`.pi/`/`.pi-subagents/` 未 stage。
 
 ## 验证命令汇总
