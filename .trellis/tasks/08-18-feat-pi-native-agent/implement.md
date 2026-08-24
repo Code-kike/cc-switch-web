@@ -60,25 +60,25 @@ pnpm smoke:web-server
 - [x] 门禁全绿 → commit
 
 ### P2 — 前端 provider UI
-- [ ] `lib/api/types.ts`：AppId union 加 `"pi"`
-- [ ] `config/appConfig.tsx`：APP_IDS/SKILLS_APP_IDS/MCP_APP_IDS 加 "pi"（Pi 无 MCP → 不加 MCP_APP_IDS）+ APP_ICON_MAP 加 pi + PROXY_APP_IDS/ADDITIVE_APP_IDS 加 pi + isProxyAppId/isAdditiveAppId；**丢弃 claude-desktop**
-- [ ] `config/piModelCatalog.ts`/`piProviderPresets.ts`/`piThinkingProfiles.ts`（纯新增）
-- [ ] `lib/api/pi.ts`/`lib/query/pi.ts`（纯新增）：pi provider API + query hooks
-- [ ] `lib/piPromptSlug.ts`/`lib/piPromptTemplate.ts`（纯新增）
-- [ ] `components/providers/forms/PiProviderForm.tsx`（纯新增，2038 行）
-- [ ] `components/providers/forms/ProviderForm.tsx`：`appId === "pi"` → PiProviderForm；**丢弃 claude-desktop**
-- [ ] `components/providers/forms/helpers/requestHeaders.ts`/`RequestHeadersEditor.tsx`/`StructuredOptionsEditor.tsx`（纯新增）
-- [ ] `components/providers/ProviderStatusBadge.tsx`（纯新增）
-- [ ] `components/providers/{ProviderActions,ProviderCard,ProviderList,AddProviderDialog,EditProviderDialog}.tsx`：pi 集成；**丢弃 claude-desktop**
-- [ ] `components/providers/forms/ProviderPresetSelector.tsx`：pi preset；**丢弃 claude-desktop**
-- [ ] `components/providers/forms/OpenCodeFormFields.tsx`/`helpers/opencodeFormUtils.ts`/`EndpointSpeedTest.tsx`：requestHeaders 集成
-- [ ] `hooks/useProviderActions.ts`：pi provider action 适配
-- [ ] `App.tsx`：pi 路由 + usePiCurrentState + handleEnablePiProvider + proxyAppId 逻辑；**丢弃 claude-desktop**（8 处）
-- [ ] `components/AppSwitcher.tsx`：pi tab；**丢弃 claude-desktop**
-- [ ] `components/settings/{AppVisibilitySettings,DirectorySettings,SettingsPage,AboutSection,ProxyTabContent}.tsx`：pi settings；**丢弃 claude-desktop**
-- [ ] `config/appConfig.tsx` i18n apps/pi 键
-- [ ] `icons/extracted/index.ts`：加 pi SVG icon
-- [ ] 门禁全绿 → commit
+- [x] `lib/api/types.ts`：AppId union 加 `"pi"`
+- [x] `config/appConfig.tsx`：APP_IDS/SKILLS_APP_IDS/MCP_APP_IDS 加 "pi"（Pi 无 MCP → 不加 MCP_APP_IDS）+ APP_ICON_MAP 加 pi + PROXY_APP_IDS/ADDITIVE_APP_IDS 加 pi + isProxyAppId/isAdditiveAppId；**丢弃 claude-desktop**
+- [x] `config/piModelCatalog.ts`/`piProviderPresets.ts`/`piThinkingProfiles.ts`（纯新增）
+- [x] `lib/api/pi.ts`/`lib/query/pi.ts`（纯新增）：pi provider API + query hooks
+- [x] `lib/piPromptSlug.ts`/`lib/piPromptTemplate.ts`（纯新增）
+- [x] `components/providers/forms/PiProviderForm.tsx`（纯新增，2038 行）
+- [x] `components/providers/forms/ProviderForm.tsx`：`appId === "pi"` → PiProviderForm；**丢弃 claude-desktop**
+- [x] `components/providers/forms/helpers/requestHeaders.ts`/`RequestHeadersEditor.tsx`/`StructuredOptionsEditor.tsx`（纯新增）
+- [x] `components/providers/ProviderStatusBadge.tsx`（纯新增）
+- [x] `components/providers/{ProviderActions,ProviderCard,ProviderList,AddProviderDialog,EditProviderDialog}.tsx`：pi 集成；**丢弃 claude-desktop**
+- [x] `components/providers/forms/ProviderPresetSelector.tsx`：pi preset；**丢弃 claude-desktop**
+- [x] `components/providers/forms/OpenCodeFormFields.tsx`/`helpers/opencodeFormUtils.ts`/`EndpointSpeedTest.tsx`：requestHeaders 集成
+- [x] `hooks/useProviderActions.ts`：pi provider action 适配
+- [x] `App.tsx`：pi 路由 + usePiCurrentState + handleEnablePiProvider + proxyAppId 逻辑；**丢弃 claude-desktop**（8 处）
+- [x] `components/AppSwitcher.tsx`：pi tab；**丢弃 claude-desktop**
+- [x] `components/settings/{AppVisibilitySettings,DirectorySettings,SettingsPage,AboutSection,ProxyTabContent}.tsx`：pi settings；**丢弃 claude-desktop**
+- [x] `config/appConfig.tsx` i18n apps/pi 键
+- [x] `icons/extracted/index.ts`：加 pi SVG icon
+- [x] 门禁全绿 → commit
 
 ### P3 — 前端 prompts/skills/sessions UI
 - [ ] `components/prompts/PiPromptPanel.tsx`/`PiNativePromptResources.tsx`/`PromptLibrary.tsx`（纯新增）
@@ -146,6 +146,41 @@ P1 Rust 后端核心完成。36 文件改动（+3779/−46），7 新增文件�
 - zh-TW 零回潮（fork 无 zh-TW.json）。
 - .pi/ .pi-subagents/ untracked 未提交。
 - 安全上限：pi_config MAX_PI_FILE_BYTES=1MiB 保留；2s JS deadline/body limit 未触碰。
+
+
+## P2 结果（2026-08-24，a7fac324）
+
+P2 前端 provider UI 完成。59 文件改动（+6454/−127）。
+
+### 实施要点
+- 12 个纯新增前端文件：`config/{piModelCatalog,piProviderPresets,piThinkingProfiles}.ts`、`lib/{api/pi,query/pi,piPromptSlug,piPromptTemplate}.ts`、`components/providers/forms/{PiProviderForm,RequestHeadersEditor,StructuredOptionsEditor,helpers/requestHeaders}.tsx`、`components/providers/ProviderStatusBadge.tsx`。
+- `lib/api/types.ts` AppId union 加 `"pi"`；`config/appConfig.tsx` APP_IDS/SKILLS_APP_IDS 加 pi + `McpAppId = Exclude<AppId,"openclaw"|"pi">`（Pi 无 MCP）+ APP_ICON_MAP pi SVG。
+- `ProviderList`：pi 成员身份经 `usePiCurrentState` 折入既有 `isProviderInConfig`；`isPiAuthoritativeStateReady` gate + amber 读失败 `role="alert"` 提示；`supportsFailover = appId !== "pi"`。
+- `ProviderActions`/`ProviderCard`：pi 纳入 `isAdditiveMode`；新增 `isStateChangeProtected`（冻结主按钮 + 阻断删除 + `pi.current.stateUnavailableHint`）；3 个路由徽章迁移到 `ProviderStatusBadge`。
+- `App.tsx`：`usePiCurrentState` + `handleEnablePiProvider` + pi `onSwitch`/`onRemoveFromConfig` dispatch + `translatePiProviderMutationError` + pi 全局默认警告 memo + pi live-id 复制分支；proxy/failover toggle 与 MCP 头部按钮对 pi 隐藏。
+- Q4 model_fetch 通用增强随本批落地：`services/model_fetch.rs` request_headers + api_format（复用 `ClaudeAdapter::get_auth_headers` 单一真理源）+ `MAX_REQUEST_HEADERS=64` / name 256B / value 16KiB 上限；`commands/model_fetch.rs` + `web_api/handlers/config.rs` 参数透传。
+- i18n：`pi` 命名空间（empty/provider/form/current，各 60 键）+ 散键（`common.collapse`/`notifications.removeFromConfigFailed`/`confirm.piDefaultProviderWarning`/`settings.piConfigDir`/`settings.browsePlaceholderPi`/`apps.pi`/`provider.needsRouting`/`provider.noRoutingSupport`）；en/ja/zh 各 2574 parity；zh-TW 未创建。
+
+### 证实不适用（未移植，有据）
+- `FullScreenPanel contentClassName`：fork 无该 prop。
+- `ProviderPresetSelector` FormLabel→Label：fork `FormLabel` 显式容忍 `<FormField>` 外使用（`ui/form.tsx:44-51`）。
+- `ProviderActions isRemovalProtected`：上游为 OpenClaw/Hermes 重构，pi 传 false；保留 fork `disableRemoveFromConfig`。
+- `EditProviderDialog` submit-ready 管线：pi `isSubmitReady = isEdit || presetSelected`，edit 恒真。
+- `useProviderHealth` enabled gate：fork 已有 `healthEnabled = isProxyRunning && isInFailoverQueue`。
+- `settings.piConfigDirDescription` / `oneClickInstallHint`：fork DirectoryInput 恒传 `description={undefined}`；install hint 列表本就未含 OpenClaw/Hermes。
+- 未引入 `ADDITIVE_APP_IDS`/`PROXY_APP_IDS`/`isAdditiveAppId`/`isProxyAppId`（上游专有构件），沿用 fork 内联列表风格。
+
+### 门禁（全绿）
+- cargo fmt / format:check / typecheck ✓
+- check:web-routes 292 commands / 280 routes / 0 missing/mismatch/dangling/fallback ✓
+- check:locales en/ja/zh 各 2574 parity ✓
+- desktop + web cargo check ✓（0 errors）
+- test:unit **171 files / 1008 tests** ✓（+6 新 pi 测试）
+- Rust parity 37 passed ✓；`model_fetch` focused 28 passed ✓
+
+### Carry-forward
+- ClaudeDesktop：`grep src/` 6 处全为 HEAD 既有残留（`ensureClaudeDesktopOfficialSeed` 3 处 + `notifications.proxyReasonClaudeDesktop` 3 locale），零新增。
+- zh-TW 零回潮；`.pi/`/`.pi-subagents/` 未 stage。
 
 ## 验证命令汇总
 
