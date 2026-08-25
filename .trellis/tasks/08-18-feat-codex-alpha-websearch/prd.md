@@ -62,15 +62,15 @@ B 侧为保留引用，新增约 30 个 markdown 解析函数（code fence/容�
 - zh-TW 不存在，无相关 hunk。
 
 ## 验收标准
-- [ ] **A** Codex Alpha Search：4 条本地别名路由（`/alpha/search`、`/v1/alpha/search`、`/v1/v1/alpha/search`、`/codex/v1/alpha/search`）透传到所选 Codex provider 的 canonical `/alpha/search`；full-URL provider 仅从 `/responses` 结尾 URL 派生，opaque full URL **fail-closed 拒绝**且不误发 payload。
-- [ ] **B** Claude hosted WebSearch：请求翻译（`allowed_domains` 保留；`blocked_domains` 非空 → 显式失败；non-direct caller / `response_inclusion` / 未验证版本 → fail-closed）；响应侧成对 `server_tool_use` + `web_search_tool_result` 块、引用保留、`max_uses` 强制（API-key 路由映射 `max_tool_calls`；Codex OAuth 路由改由桥端限流 + `max_uses_exceeded`）、多轮重放、`usage.server_tool_use.web_search_requests` 计数。
-- [ ] **无新命令**：`check:web-routes` 保持 292 commands / 280 routes / 0 missing/mismatch/dangling/fallback（计数不变即为正确）。
-- [ ] proxy 安全上限零退化：128 MiB body cap、2s deadline、16 MiB heap、256 KiB stack、32 MiB catalog cap。
-- [ ] 不可信 markdown 解析有界；无新增出站目标（SSRF 面不变）。
-- [ ] 105 个上游测试全量移植并全绿（不删测试，只按 fork API 适配 mock）。
-- [ ] 全量门禁：test:unit 全绿（非 flake 项）、test:integration（4 PRD flakes 外全绿）、Rust parity（`web_api::`/`dual_runtime_parity::`/`web_proxy_lifecycle::`）、web-routes、locales parity、build:web exit 0、smoke:web-server exit 0；与父主体及已归档 pi 子任务无回归。
-- [ ] docs：三语 `claude-codex-routing-guide` 第 96 行 web-search 段落按实际能力改写（不宣称未实现能力）。
-- [ ] `transform_codex_anthropic.rs` 延期记录在案（Q1）。
+- [x] **A** Codex Alpha Search：4 条本地别名路由（`/alpha/search`、`/v1/alpha/search`、`/v1/v1/alpha/search`、`/codex/v1/alpha/search`）透传到所选 Codex provider 的 canonical `/alpha/search`；full-URL provider 仅从 `/responses` 结尾 URL 派生，opaque full URL **fail-closed 拒绝**且不误发 payload。
+- [x] **B** Claude hosted WebSearch：请求翻译（`allowed_domains` 保留；`blocked_domains` 非空 → 显式失败；non-direct caller / `response_inclusion` / 未验证版本 → fail-closed）；响应侧成对 `server_tool_use` + `web_search_tool_result` 块、引用保留、`max_uses` 强制（API-key 路由映射 `max_tool_calls`；Codex OAuth 路由改由桥端限流 + `max_uses_exceeded`）、多轮重放、`usage.server_tool_use.web_search_requests` 计数。
+- [x] **无新命令**：`check:web-routes` 保持 292 commands / 280 routes / 0 missing/mismatch/dangling/fallback（计数不变即为正确）。
+- [x] proxy 安全上限零退化：128 MiB body cap、2s deadline、16 MiB heap、256 KiB stack、32 MiB catalog cap。
+- [x] 不可信 markdown 解析有界（并经 W2.5 加固使二次复杂度受五个上限约束）；无新增**出站路径**（口径修正：`ip_guard` 挂在 `http_client::get_guarded()` 与 `web_api` 出站，proxy forwarder 热路径按 scope-C 契约刻意不设 guard）。
+- [x] 上游测试全量移植并全绿（不删测试、零断言删改）。实测上游增量为 **103**（streaming 64 而非规划估的 66；forwarder 2 / handlers 1 / server 1 / transform 39 无误差），另加 fork 侧新增 **20** 个（W2 1 + W2.5 7 + W3 11 + check 1）。
+- [x] 全量门禁：test:unit 全绿（非 flake 项）、test:integration（4 PRD flakes 外全绿）、Rust parity（`web_api::`/`dual_runtime_parity::`/`web_proxy_lifecycle::`）、web-routes、locales parity、build:web exit 0、smoke:web-server exit 0；与父主体及已归档 pi 子任务无回归。
+- [x] docs：三语 `claude-codex-routing-guide` 第 96 行 web-search 段落按实际能力改写（不宣称未实现能力）。
+- [x] `transform_codex_anthropic.rs` 整文件延期记录在案，且 Q1 前提在 W3 失效后已**原地修正**（单函数以私有 fn 落在 `handlers.rs`，延期栈四文件仍缺席，必需性经变异验证）。
 
 ## 裁定记录（brainstorm 2026-08-24，用户授权采纳推荐方案）
 
