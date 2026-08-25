@@ -13,6 +13,7 @@ vi.mock("@/components/providers/ProviderActions", () => ({
   ProviderActions: (props: {
     onDuplicate?: () => void;
     onConfigureUsage?: () => void;
+    isOfficialBlockedByProxy?: boolean;
   }) => (
     <>
       {props.onDuplicate ? (
@@ -21,6 +22,9 @@ vi.mock("@/components/providers/ProviderActions", () => ({
       {props.onConfigureUsage ? (
         <button onClick={props.onConfigureUsage}>configure-usage</button>
       ) : null}
+      <output data-testid="official-blocked-by-proxy">
+        {props.isOfficialBlockedByProxy ? "true" : "false"}
+      </output>
     </>
   ),
 }));
@@ -97,6 +101,7 @@ function renderCard(
   options: {
     status?: ManagedAuthStatus;
     isCurrent?: boolean;
+    isProxyTakeover?: boolean;
     onEdit?: (provider: Provider) => void;
     onConfigureUsage?: (provider: Provider) => void;
   } = {},
@@ -116,6 +121,7 @@ function renderCard(
         appId="codex"
         isCurrent={options.isCurrent ?? false}
         isProxyRunning={false}
+        isProxyTakeover={options.isProxyTakeover ?? false}
         onSwitch={vi.fn()}
         onEdit={options.onEdit ?? vi.fn()}
         onDelete={vi.fn()}
@@ -292,7 +298,7 @@ describe("ProviderCard Codex Official account identity", () => {
     };
     renderCard(provider, { isCurrent: true });
 
-expect(
+    expect(
       screen.getByText("账号会随 Codex CLI 当前登录变化"),
     ).toBeInTheDocument();
     expect(
@@ -319,5 +325,66 @@ expect(
     expect(
       screen.queryByText("账号会随 Codex CLI 当前登录变化"),
     ).not.toBeInTheDocument();
+  });
+
+  // The badge must track `supportsOfficialProxyTakeover`, which mirrors Rust
+  // `Provider::blocked_by_proxy_takeover`: managed cards route locally, unbound
+  // native-login and api-key cards stay blocked.
+  it("hides the no-routing badge on a managed Official card", () => {
+    renderCard(
+      { ...managedProvider("OpenAI Official"), id: "codex-official" },
+      { status: authStatus("fixed@example.com") },
+    );
+
+    expect(screen.queryByText("不支持路由")).toBeNull();
+  });
+
+  it("keeps the no-routing badge on unbound native-login and api-key cards", () => {
+    const { unmount } = renderCard({
+      id: "codex-official",
+      name: "OpenAI Official",
+      category: "official",
+      settingsConfig: { auth: {}, config: "" },
+    });
+    expect(screen.getByText("不支持路由")).toBeInTheDocument();
+    unmount();
+
+    renderCard({
+      id: "legacy-api-key",
+      name: "Legacy API Key",
+      category: "official",
+      settingsConfig: { auth: { OPENAI_API_KEY: "sk-stored" }, config: "" },
+    });
+    expect(screen.getByText("不支持路由")).toBeInTheDocument();
+  });
+
+  // Same derivation drives the switch button: if this regressed, the W3 Rust
+  // carve-out would be unreachable from the card UI even though the Rust layer
+  // accepts the switch.
+  it("keeps the switch action enabled for a managed Official card under takeover", () => {
+    renderCard(
+      { ...managedProvider("OpenAI Official"), id: "codex-official" },
+      { status: authStatus("fixed@example.com"), isProxyTakeover: true },
+    );
+
+    expect(screen.getByTestId("official-blocked-by-proxy")).toHaveTextContent(
+      "false",
+    );
+  });
+
+  it("keeps the switch action blocked for an unbound Official card under takeover", () => {
+    renderCard(
+      {
+        id: "codex-official",
+        name: "OpenAI Official",
+        category: "official",
+        settingsConfig: { auth: {}, config: "" },
+      },
+      { isProxyTakeover: true },
+    );
+
+    expect(screen.getByTestId("official-blocked-by-proxy")).toHaveTextContent(
+      "true",
+    );
   });
 });

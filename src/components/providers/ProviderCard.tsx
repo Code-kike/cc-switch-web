@@ -32,6 +32,8 @@ import { resolveManagedAccountId } from "@/lib/authBinding";
 import {
   resolveCodexOfficialIdentity,
   providerNeedsRouting,
+  isOfficialBlockedByTakeover,
+  supportsOfficialProxyTakeover,
 } from "@/utils/providerCapabilities";
 import { useProviderHealth } from "@/lib/query/failover";
 import { useUsageQuery } from "@/lib/query/queries";
@@ -343,8 +345,18 @@ export function ProviderCard({
     TEMPLATE_TYPES.OFFICIAL_SUBSCRIPTION;
   const officialSubscriptionEnabled =
     supportsOfficialSubscription && usageEnabled && isOfficialSubscriptionUsage;
-  const isOfficialBlockedByProxy =
-    isProxyTakeover && provider.category === "official";
+  // Single derivation of the Codex Official carve-out for this card: mirrors
+  // Rust `Provider::blocked_by_proxy_takeover`. Managed Official cards route
+  // locally; unbound native-login and api-key Official cards stay blocked.
+  const supportsOfficialRouting = supportsOfficialProxyTakeover(
+    appId,
+    provider,
+  );
+  const isOfficialBlockedByProxy = isOfficialBlockedByTakeover(
+    appId,
+    provider,
+    isProxyTakeover,
+  );
   const isCopilot =
     provider.meta?.providerType === PROVIDER_TYPES.GITHUB_COPILOT ||
     provider.meta?.usage_script?.templateType === "github_copilot";
@@ -553,8 +565,13 @@ export function ProviderCard({
                   />
                 )}
 
+              {/* W3 opened local routing for managed Codex Official cards, so the
+                  "no routing support" badge must not appear on them. Reuse the
+                  single capability derivation above so the badge cannot drift
+                  from `blocked_by_proxy_takeover`. */}
               {(appId === "claude" || appId === "codex") &&
-                provider.category === "official" && (
+                provider.category === "official" &&
+                !supportsOfficialRouting && (
                   <ProviderStatusBadge
                     label={t("provider.noRoutingSupport", {
                       defaultValue: "不支持路由",

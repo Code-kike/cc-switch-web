@@ -126,7 +126,9 @@ Confirm that all three states match: the current provider under the Codex tab is
 
 **Can I use an official OpenAI Codex account through local routing?**
 
-Not recommended. CC Switch blocks switching to official providers while local routing takeover is enabled, because accessing official APIs through a proxy may create account risk. Routing is mainly intended for third-party, aggregator, or protocol-conversion scenarios.
+Not recommended for an **Official card with no account bound**. CC Switch blocks switching to an Official provider that has no managed account bound while local routing takeover is enabled, because accessing official APIs through a proxy may create account risk; Claude Official providers are blocked unconditionally under takeover.
+
+The one exception is a **Codex Official card bound to a managed ChatGPT account**: that credential is resolved and injected by CC Switch server-side, so switching to it is allowed under takeover. Routing is still mainly intended for third-party, aggregator, or protocol-conversion scenarios.
 
 ## References
 

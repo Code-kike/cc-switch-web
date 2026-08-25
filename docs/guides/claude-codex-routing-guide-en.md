@@ -62,7 +62,9 @@ Again on the `Claude Code` tab, click the plus button and pick the **`Codex`** p
 
 ![Method 2: ChatGPT login status and account management in the Codex preset](../images/claude-codex-routing/03-codex-oauth-form.png)
 
-The login credentials are stored in `~/.cc-switch/codex_oauth_auth.json` (not `~/.codex/`), independent of the Codex CLI's own login; the token refreshes automatically before it expires.
+The login credentials are stored in `~/.cc-switch/codex_oauth_auth.json`, and the token refreshes automatically before it expires. The Claude-side `codex_oauth` preset path described here **does not write to `~/.codex/`**, so it stays independent of the Codex CLI's own login.
+
+> Exception: if you use an Official card bound to a managed account under the **Codex** tab, CC Switch writes the selected account's credential bundle (including `id_token`) into Codex's `~/.codex/auth.json`, so the Codex CLI and local routing see the same account. The credential store itself remains `~/.cc-switch/codex_oauth_auth.json`.
 
 ## Step 2: Enable local routing and take over Claude Code
 
@@ -120,7 +122,7 @@ See "Capabilities and known limitations": routed providers are managed against a
 
 **Restoring the official Claude setup**
 
-Switch back to an official provider, or turn off the `Claude Code` routing toggle on the Routing page — CC Switch restores the pre-takeover live config, and the official login credentials are unaffected throughout. After restoring, you'll again need to open a new terminal session.
+Turn off the `Claude Code` routing toggle on the Routing page first, then switch back to an official provider — CC Switch restores the pre-takeover live config, and the official login credentials are unaffected throughout. The order matters: while takeover is still on, switching to a Claude official provider is refused outright. After restoring, you'll again need to open a new terminal session.
 
 **Should you enable FAST mode? (Method 2)**
 

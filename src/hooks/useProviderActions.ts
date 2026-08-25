@@ -24,7 +24,7 @@ import {
   useSwitchProviderMutation,
 } from "@/lib/query";
 import { extractErrorMessage } from "@/utils/errorUtils";
-import { supportsOfficialProxyTakeover } from "@/utils/providerCapabilities";
+import { isOfficialBlockedByTakeover } from "@/utils/providerCapabilities";
 import { openclawKeys } from "@/hooks/useOpenClaw";
 import { usageKeys } from "@/lib/query/usage";
 import { providerNeedsRouting } from "@/utils/providerCapabilities";
@@ -232,17 +232,13 @@ export function useProviderActions(
         );
       }
 
-      // Codex official account cards can reuse the active native ChatGPT login
-      // through local routing. Other apps' official providers remain blocked.
-      const officialSupportsTakeover = supportsOfficialProxyTakeover(
-        activeApp,
-        provider,
-      );
-      if (
-        isProxyTakeover &&
-        provider.category === "official" &&
-        !officialSupportsTakeover
-      ) {
+      // Only a Codex Official card bound to a managed OAuth account can use
+      // local routing: the forwarder resolves that account's token server-side.
+      // Unbound native-login Official cards have no server-side credential and
+      // stay blocked (fail-closed), as do other apps' official providers.
+      // Shared definition with ProviderCard; mirrors Rust
+      // `Provider::blocked_by_proxy_takeover`.
+      if (isOfficialBlockedByTakeover(activeApp, provider, isProxyTakeover)) {
         toast.error(
           t("notifications.officialBlockedByProxy", {
             defaultValue:

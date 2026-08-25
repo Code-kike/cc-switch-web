@@ -168,14 +168,23 @@ directory may contain long-lived credentials, notably:
 
 - `codex_oauth_auth.json` — Codex/ChatGPT OAuth refresh tokens (`0600` on Unix).
 - Copilot OAuth auth store (same class).
+- `~/.codex/auth.json` — when a Codex Official card is bound to a managed OAuth
+  account, cc-switch writes that account's credential bundle (including
+  `id_token`) into Codex's own live auth file so the CLI and local routing share
+  one account. Same credential class as the two entries above.
 - CLI config files under `~/.claude`, `~/.codex`, `~/.gemini` that hold API keys.
 
-These files are written with `0600` permissions but are **not encrypted at rest**.
+cc-switch's own credential stores are created with `0600` permissions on Unix.
+For files owned by another application (such as `~/.codex/auth.json`), the atomic
+replace **preserves the existing permission bits** the owning app set instead of
+forcing `0600`. Either way these files are **not encrypted at rest**.
 The built-in WebDAV / S3 sync snapshot bundles only the SQLite database and the
 skills archive — it does **not** upload these OAuth files. If you run your own
 backups (rsync, snapshots, external sync), exclude these files or ensure the
 backup target is trusted, since anyone who can read them obtains long-lived tokens.
 
-这些文件以 `0600` 权限写入，但**未加密存储**。内置的 WebDAV / S3 同步快照仅打包 SQLite
+cc-switch 自有的凭据文件在 Unix 上以 `0600` 创建；对于属于其他应用的文件（如
+`~/.codex/auth.json`），原子替换会**保留该应用原有的权限位**而不强制改为 `0600`。
+两者均**未加密存储**。内置的 WebDAV / S3 同步快照仅打包 SQLite
 数据库与技能归档，**不会**上传这些 OAuth 文件。若你使用自有备份方案（rsync、快照、外部同步），
 请排除上述文件或确保备份目标可信——任何能读取它们的人都会获得长期有效的令牌。

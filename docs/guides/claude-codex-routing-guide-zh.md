@@ -62,7 +62,9 @@ CC Switch 的做法是让 Claude Code 始终连本机路由，仍以 Anthropic M
 
 ![方式二：Codex 预设的 ChatGPT 登录状态与账号管理](../images/claude-codex-routing/03-codex-oauth-form.png)
 
-登录凭据保存在 `~/.cc-switch/codex_oauth_auth.json`（不是 `~/.codex/`），与 Codex CLI 自己的登录互不影响；token 会在到期前自动刷新。
+登录凭据保存在 `~/.cc-switch/codex_oauth_auth.json`，token 会在到期前自动刷新。本节的 Claude 侧 `codex_oauth` 预设路径**不会写入 `~/.codex/`**，与 Codex CLI 自己的登录互不影响。
+
+> 例外：如果你在 **Codex** 标签下使用绑定了托管账号的官方卡，CC Switch 会把所选账号的凭据包（含 `id_token`）写入 Codex 的 `~/.codex/auth.json`，以便 Codex CLI 与本地路由看到同一个账号。凭据的存储位置仍是 `~/.cc-switch/codex_oauth_auth.json`。
 
 ## 第二步：开启本地路由并接管 Claude Code
 
@@ -120,7 +122,7 @@ CC Switch 的做法是让 Claude Code 始终连本机路由，仍以 Anthropic M
 
 **想恢复官方 Claude 用法**
 
-切回官方供应商，或在路由页面关闭 `Claude Code` 的路由开关——CC Switch 会恢复接管前的 live 配置，官方登录凭据全程不受影响。恢复后同样需要重开终端会话。
+先在路由页面关闭 `Claude Code` 的路由开关，再切回官方供应商——CC Switch 会恢复接管前的 live 配置，官方登录凭据全程不受影响。接管仍开启时切回 Claude 官方供应商会被直接拒绝，所以顺序不能颠倒。恢复后同样需要重开终端会话。
 
 **FAST 模式要不要开（方式二）**
 

@@ -22,6 +22,35 @@ function renderActions(
 }
 
 describe("ProviderActions", () => {
+  // Ported from upstream a2e22f33, which made `onDuplicate` optional plus
+  // conditionally rendered. NOTE ON REACHABILITY: no production caller omits the
+  // prop — in this fork `ProviderCard` (:66 required, :910 unconditional),
+  // `ProviderList` and `App.tsx` all pass it, and upstream v3.20.0 is the same
+  // (ProviderCard is its only consumer). So the optional branch is exercised only
+  // from tests. Kept upstream-verbatim to avoid drift in the next sync, with the
+  // reverse anchor below so the conditional cannot silently become always-false.
+  it("omits duplication when the caller disallows it", () => {
+    render(
+      <ProviderActions
+        appId="codex"
+        isCurrent={false}
+        onSwitch={vi.fn()}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByTitle("provider.duplicate")).not.toBeInTheDocument();
+  });
+
+  it("renders duplication when the caller supplies a handler", () => {
+    // Reverse anchor for the conditional above: without this, `onDuplicate &&`
+    // could regress to always-false and only the negative test would pass.
+    renderActions({ appId: "codex" });
+
+    expect(screen.getByTitle("provider.duplicate")).toBeInTheDocument();
+  });
+
   it("allows removing the current Hermes provider from live config", () => {
     const props = renderActions({
       appId: "hermes",

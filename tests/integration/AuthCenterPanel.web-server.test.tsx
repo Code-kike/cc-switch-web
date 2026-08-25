@@ -102,6 +102,19 @@ function getSection(titlePattern: RegExp): HTMLElement {
   return section;
 }
 
+// Account rows are bordered cards, but the two sections order their utility
+// classes differently and a2e22f33 added `space-y-2` plus an amber variant for
+// reauth-required Codex rows. Match on class TOKENS rather than a literal class
+// string so the helper does not break every time the row markup is restyled.
+function isAccountRow(element: HTMLElement): boolean {
+  const tokens = new Set(element.classList);
+  return (
+    tokens.has("rounded-md") &&
+    tokens.has("border") &&
+    (tokens.has("bg-muted/30") || tokens.has("bg-amber-50/70"))
+  );
+}
+
 function getAccountRow(
   section: HTMLElement,
   accountLabel: string,
@@ -109,10 +122,7 @@ function getAccountRow(
   const label = within(section).getByText(accountLabel);
   let current: HTMLElement | null = label instanceof HTMLElement ? label : null;
 
-  while (
-    current &&
-    !current.className.includes("p-2 rounded-md border bg-muted/30")
-  ) {
+  while (current && !isAccountRow(current)) {
     current = current.parentElement;
   }
 
@@ -225,8 +235,14 @@ describe.sequential("AuthCenterPanel against real web server", () => {
     expect(screen.getByText(remoteHintDescriptionRegex)).toBeInTheDocument();
 
     const copilotSection = getSection(copilotHeadingRegex);
+    // a2e22f33 gates the login button on `isStatusSuccess` (upstream-verbatim):
+    // no login affordance is offered until the managed-auth status query has
+    // actually loaded, so this must await the resolved status instead of reading
+    // the first paint.
     fireEvent.click(
-      within(copilotSection).getByRole("button", { name: copilotLoginRegex }),
+      await within(copilotSection).findByRole("button", {
+        name: copilotLoginRegex,
+      }),
     );
 
     expect(
@@ -293,8 +309,12 @@ describe.sequential("AuthCenterPanel against real web server", () => {
 
     const codexSection = getSection(codexHeadingRegex);
 
+    // See the Copilot case above: the login button appears only after the
+    // managed-auth status query resolves (a2e22f33 `isStatusSuccess` gate).
     fireEvent.click(
-      within(codexSection).getByRole("button", { name: codexLoginRegex }),
+      await within(codexSection).findByRole("button", {
+        name: codexLoginRegex,
+      }),
     );
     expect(
       await within(codexSection).findByText(

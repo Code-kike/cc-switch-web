@@ -328,8 +328,15 @@ describe("useProviderActions", () => {
     expect(switchProviderMutateAsync).toHaveBeenCalledWith(provider.id);
   });
 
-  it("allows the native Codex official provider during takeover", async () => {
-    switchProviderMutateAsync.mockResolvedValueOnce(undefined);
+  it("blocks the unbound native-login Codex official card during takeover", async () => {
+    // Fork-specific (diverges from upstream `allows the native Codex official
+    // provider during takeover`): upstream opens *any* Codex Official card under
+    // takeover because it forwards the client's inbound Authorization. This fork
+    // replaces inbound Authorization in the forwarder, so an unbound native-login
+    // card has no server-side credential and Rust
+    // `Provider::blocked_by_proxy_takeover` blocks it at all four enforcement
+    // points. The UI must emit the explicit refusal rather than let the switch
+    // fail later in the service layer.
     const { wrapper } = createWrapper();
     const provider = createProvider({
       id: "codex-official",
@@ -345,8 +352,8 @@ describe("useProviderActions", () => {
       await result.current.switchProvider(provider);
     });
 
-    expect(switchProviderMutateAsync).toHaveBeenCalledWith("codex-official");
-    expect(toastErrorMock).not.toHaveBeenCalled();
+    expect(switchProviderMutateAsync).not.toHaveBeenCalled();
+    expect(toastErrorMock).toHaveBeenCalledTimes(1);
   });
 
   it("continues blocking other official providers during takeover", async () => {

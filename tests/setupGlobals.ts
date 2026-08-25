@@ -59,3 +59,17 @@ if (
     configurable: true,
   });
 }
+
+// Radix primitives call the Pointer Capture APIs on trigger interaction; jsdom
+// does not implement them. Upstream carries the same three polyfills here.
+if (!Element.prototype.hasPointerCapture) {
+  Element.prototype.hasPointerCapture = () => false;
+}
+
+if (!Element.prototype.setPointerCapture) {
+  Element.prototype.setPointerCapture = () => {};
+}
+
+if (!Element.prototype.releasePointerCapture) {
+  Element.prototype.releasePointerCapture = () => {};
+}

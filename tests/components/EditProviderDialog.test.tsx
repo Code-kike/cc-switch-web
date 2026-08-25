@@ -1,9 +1,4 @@
-import {
-  fireEvent,
-  render,
-  screen,
-  waitFor,
-} from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useEffect } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Provider } from "@/types";
@@ -127,6 +122,11 @@ vi.mock("@/components/providers/forms/ProviderForm", () => ({
   },
 }));
 
+vi.mock("@/components/providers/AuthSettingsPanel", () => ({
+  AuthSettingsPanel: ({ target }: { target: string | null }) =>
+    target ? <div data-testid="auth-settings-panel">{target}</div> : null,
+}));
+
 import { EditProviderDialog } from "@/components/providers/EditProviderDialog";
 
 describe("EditProviderDialog", () => {
@@ -135,6 +135,35 @@ describe("EditProviderDialog", () => {
     mockCodexManagedAccountSelected = false;
     submitReadyCallbacks = [];
     vi.clearAllMocks();
+  });
+
+  it("clears the nested auth panel before the dialog reopens", async () => {
+    const provider: Provider = {
+      id: "official",
+      name: "OpenAI Official",
+      settingsConfig: { auth: {}, config: "" },
+    };
+    const props = {
+      provider,
+      onOpenChange: vi.fn(),
+      onSubmit: vi.fn(),
+      appId: "codex" as const,
+    };
+    const { rerender } = render(<EditProviderDialog open {...props} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "manage-auth" }));
+    expect(screen.getByTestId("auth-settings-panel")).toHaveTextContent(
+      "codex_oauth",
+    );
+
+    rerender(<EditProviderDialog open={false} {...props} />);
+    rerender(<EditProviderDialog open {...props} />);
+
+    await waitFor(() => {
+      expect(
+        screen.queryByTestId("auth-settings-panel"),
+      ).not.toBeInTheDocument();
+    });
   });
 
   it("keeps an unbound Codex Official provider ID unchanged", async () => {

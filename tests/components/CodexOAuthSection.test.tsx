@@ -239,13 +239,19 @@ describe("CodexOAuthSection", () => {
   it("renders each account quota in Auth Center", () => {
     Object.assign(state, {
       hasAnyAccount: true,
-      accounts: [{ id: "account-1", login: "user@example.com" }],
+      accounts: [
+        { id: "account-1", login: "user@example.com" },
+        { id: "account-2", login: "second@example.com" },
+      ],
       defaultAccountId: "account-1",
     });
 
     render(<AuthCenterPanel />);
 
     expect(renderAccountQuotaMock).toHaveBeenCalledWith("account-1");
-    expect(screen.getByTestId("account-quota")).toHaveTextContent("account-1");
+    expect(renderAccountQuotaMock).toHaveBeenCalledWith("account-2");
+    expect(
+      screen.getAllByTestId("account-quota").map((quota) => quota.textContent),
+    ).toEqual(["account-1", "account-2"]);
   });
 });

@@ -81,20 +81,53 @@ export function resolveCodexOfficialIdentity(
     : null;
 }
 
-/** Keep the UI capability rule aligned with the Rust takeover policy. */
+/**
+ * Keep the UI capability rule aligned with the Rust takeover policy.
+ *
+ * Single source of truth on the Rust side is
+ * `Provider::blocked_by_proxy_takeover` (src-tauri/src/provider.rs), pinned by
+ * `blocked_by_proxy_takeover_opens_only_managed_codex_official_cards`. This
+ * fork opens **only managed** Codex Official cards under takeover: the
+ * forwarder resolves the bound account's token and injects
+ * `chatgpt-account-id`. Unbound native-login (and api-key) Official cards have
+ * no server-side credential here, because this fork does not carry upstream's
+ * inbound Authorization passthrough.
+ *
+ * Degradation direction: this gates an **authorization** decision, so it must
+ * stay **fail-closed** — return false whenever the card is not a managed
+ * account. Do NOT widen it back to "any non-api-key Official identity"
+ * (upstream's shape, which ended in an unreachable `return true`): the UI would
+ * stop emitting the explicit `notifications.officialBlockedByProxy` refusal and
+ * the switch would instead fail deeper in the Rust service layer, turning a
+ * clear switch-time refusal into a failing Codex session.
+ */
 export function supportsOfficialProxyTakeover(
   appId: AppId,
   provider: Pick<Provider, "id" | "category" | "meta" | "settingsConfig">,
 ): boolean {
-  const identity = resolveCodexOfficialIdentity(appId, provider);
-  if (!identity || identity === "api_key") return false;
-  if (
-    provider.id === CODEX_OFFICIAL_PROVIDER_ID ||
-    identity === "managed_account"
-  ) {
-    return true;
-  }
-  return true;
+  return resolveCodexOfficialIdentity(appId, provider) === "managed_account";
+}
+
+/**
+ * Whether switching to this provider must be refused because local routing
+ * takeover is active — the UI mirror of Rust
+ * `Provider::blocked_by_proxy_takeover`.
+ *
+ * Single definition for every frontend surface (card switch button, switch
+ * action hook). Do not re-derive the three-part condition at call sites: an
+ * earlier copy in `ProviderCard` missed the managed carve-out and made the
+ * server-side-supported switch unreachable from the card UI.
+ */
+export function isOfficialBlockedByTakeover(
+  appId: AppId,
+  provider: Pick<Provider, "id" | "category" | "meta" | "settingsConfig">,
+  isProxyTakeover: boolean | undefined,
+): boolean {
+  return (
+    isProxyTakeover === true &&
+    provider.category === "official" &&
+    !supportsOfficialProxyTakeover(appId, provider)
+  );
 }
 
 /**
