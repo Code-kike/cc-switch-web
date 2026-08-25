@@ -17,6 +17,9 @@ const state = {
   defaultAccountId: null as string | null,
   migrationError: null as string | null,
   hasAnyAccount: false,
+  isAuthenticated: false,
+  isStatusSuccess: true,
+  isStatusError: false,
   pollingState: "idle" as "idle" | "polling" | "success" | "error",
   deviceCode: null as null | {
     user_code: string;

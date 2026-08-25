@@ -399,6 +399,39 @@ W0 只**孤立地**调研了 `a2e22f33` 单个提交，没有逐项核对「这�
 `cargo test --lib` **2288** passed / 5 ignored（基线 2273；+16 量级，含 3 个新 carve-out/adapter 测试）。全量跑中 `database::tests::sql_import_*` 偶发 `创建数据库安全备份失败: not an error`，隔离重跑即过，属既有 flake，非本批引入。
 `proxy::` **1153**（基线 1138）。parity **38**。test:unit **173 / 1044**。locales **2637**。web-routes **292/280/0**。`SCHEMA_VERSION` **17**。fmt / typecheck / web-server example check 全绿。延期栈四文件仍缺席；`migrate_legacy_codex_official_managed_binding` 仍缺席。
 
+## W4 落地结果（2026-08-25）
+
+子代理中途被截，主会话收口：补 `ProviderForm` 未用名/类型修正、`EditProviderDialog` 接 `AuthSettingsPanel`+`handlePanelClose`、`codexProviderPresets` 的 OpenAI Official 加 `providerType: "codex_oauth"`（子代理漏了，导致 `isCodexOfficialProvider` 始终 false、`CodexOAuthSection` 不渲染、10 个移交用例找不到 `select-managed-account`）。
+
+### Q1 最小表面落地
+
+- `CodexFormFields` 补 `CodexOAuthSection` 渲染块（`isCodexOauthPreset` 门）+ 12 个新 prop 接线，不整体对齐上游 1364 行。
+- `ProviderForm` codex 路径传 `isCodexOauthPreset={isCodexOfficialProvider}`，`isCodexOfficialProvider` 三条件（`hasExistingCodexOfficialIdentity` / `wasCodexOfficialManagedOauthBound` / `presetProviderType === "codex_oauth" && preset.category === "official"`）。
+- `codexProviderPresets` 的 OpenAI Official 补 `providerType: "codex_oauth"`；`CodexProviderPreset.providerType` 类型扩为 `"xai_oauth" | "codex_oauth"`。
+- `ClaudeFormFields` 已有渲染（S4b），本批补 4 个新 prop 接线。
+- `AddProviderDialog` / `EditProviderDialog` 接 `onManageAuthAccounts` + `AuthSettingsPanel`（EditProviderDialog 子代理漏接 JSX，主会话补）。
+- `AuthCenterPanel` 加 `authScrollTarget` prop + 三个 section ref（scroll-into-view）。
+- `FullScreenPanel` / `CopilotAuthSection` / `CodexOAuthSection` / `useManagedAuth` / `assembleSettingsConfig` 移植上游 managed-account hunk。
+- 取回 `7265596a` 的 `ProviderForm.codexManagedAccount.test.tsx`（521 行 / 10 用例）全绿。
+
+### fork 安全增强保留
+
+上游 `CopilotAuthSection` / `CodexOAuthSection` 的初始 login 按钮的 `disabled` 只含 enterprise domain 条件；fork 旧测试钉住「pending 时 disable」（`isAddingAccount`）。本批保留 fork 既有安全行为，给两个 login 按钮补 `disabled={isAddingAccount || …}`，不弱化。
+
+### 已有测试适配（不弱化断言，只补 mock 字段）
+
+`useManagedAuth`（W4 新增）暴露 `isStatusSuccess` / `isStatusError`；`AuthCenterPanel` / `CopilotAuthSection` / `CodexOAuthSection` 测试的 hook mock 缺这两个字段，导致 login 按钮条件 `isStatusSuccess && !hasAnyAccount` 不成立。补 `isStatusSuccess: true` / `isStatusError: false` / `isAuthenticated: false` 到三处 `state` mock。`CodexOAuthSection` 测试的 `@/components/ui/select` mock 补 `SelectSeparator`（新组件用了）。
+
+### 门禁（W4）
+
+test:unit **176 files / 1057 tests**（基线 173 / 1044，+3 files / +13 tests）。含 10 个移交用例全绿。`cargo test --lib` **2289** passed / 5 ignored（Rust 本批未改，+1 为既有计数漂移）。prettier / typecheck 全绿。web-routes **292/280/0**。locales **2637**。`SCHEMA_VERSION` **17**。
+
+### 移交 W5 的项
+
+- `CodexOAuthSection.test`(+383) / `AddProviderDialog.test`(+90) / `EditProviderDialog.test`(+128) / `FullScreenPanel.test`(+33) / `useManagedAuth.test`(+86) / `useAddProviderMutation.test`(+57) 等剩余上游测试
+- `test:integration` + `build:web` + `smoke:web-server`
+- 文档同步：`docs/guides/codex-deepseek-routing-guide` / `claude-codex-routing-guide` 的「official 一律阻止」措辞、`SECURITY.md` 的 `~/.codex/auth.json` 凭据说明
+
 ## 验证命令汇总
 
 见门禁块。关键额外检查：

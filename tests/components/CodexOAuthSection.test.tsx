@@ -13,6 +13,9 @@ const state = {
   accounts: [] as Array<{ id: string; login: string }>,
   defaultAccountId: null as string | null,
   hasAnyAccount: false,
+  isAuthenticated: false,
+  isStatusSuccess: true,
+  isStatusError: false,
   pollingState: "idle" as "idle" | "polling" | "success" | "error",
   deviceCode: null as null | {
     user_code: string;
@@ -72,6 +75,7 @@ vi.mock("@/components/ui/select", () => ({
   SelectTrigger: ({ children }: any) => <div>{children}</div>,
   SelectValue: ({ placeholder }: any) => <span>{placeholder}</span>,
   SelectContent: ({ children }: any) => <div>{children}</div>,
+  SelectSeparator: () => <hr />,
   SelectItem: ({ children, value }: any) => {
     const onValueChange = React.useContext(selectContext);
     return (

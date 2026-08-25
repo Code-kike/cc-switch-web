@@ -35,6 +35,8 @@ export interface AssembleSettingsConfigParams {
   geminiEnv?: string;
   geminiConfig?: string;
   envStringToObj?: (value: string) => Record<string, string>;
+  /** Official managed Codex cards persist only the accountId binding. */
+  stripCodexOfficialAuth?: boolean;
   // omo draft state
   omoAgents?: Record<string, unknown>;
   omoCategories?: Record<string, unknown>;
@@ -69,13 +71,14 @@ export function assembleSettingsConfig(
     omoAgents = {},
     omoCategories = {},
     omoOtherFieldsStr = "",
+    stripCodexOfficialAuth = false,
   } = params;
 
   let settingsConfig: string;
 
   if (appId === "codex") {
     try {
-      const authJson = JSON.parse(codexAuth);
+      const authJson = stripCodexOfficialAuth ? {} : JSON.parse(codexAuth);
       settingsConfig = JSON.stringify({
         auth: authJson,
         config: codexConfig ?? "",

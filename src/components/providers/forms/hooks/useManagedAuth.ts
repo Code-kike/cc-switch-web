@@ -1,5 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
+import { toast } from "sonner";
 import { authApi, settingsApi } from "@/lib/api";
 import { copyText } from "@/lib/clipboard";
 import { extractErrorMessage } from "@/utils/errorUtils";
@@ -21,6 +23,7 @@ export function useManagedAuth(
     fallback = "Authentication failed. Please try again.",
   ) => extractErrorMessage(error) || fallback;
   const queryClient = useQueryClient();
+  const { t } = useTranslation();
   const queryKey = ["managed-auth-status", authProvider];
 
   const [pollingState, setPollingState] = useState<PollingState>("idle");
@@ -36,6 +39,8 @@ export function useManagedAuth(
   const {
     data: authStatus,
     isLoading: isLoadingStatus,
+    isSuccess: isStatusSuccess,
+    isError: isStatusError,
     refetch: refetchStatus,
   } = useQuery<ManagedAuthStatus>({
     queryKey,
@@ -166,6 +171,11 @@ export function useManagedAuth(
       setPollingState("idle");
       setDeviceCode(null);
       setError(null);
+      toast.success(
+        t("managedAuth.accountRemoved", {
+          defaultValue: "账号已移除",
+        }),
+      );
       await refetchStatus();
       await queryClient.invalidateQueries({ queryKey });
     },
@@ -233,6 +243,10 @@ export function useManagedAuth(
   return {
     authStatus,
     isLoadingStatus,
+    // Distinguish "status loaded successfully" from "loading / failed" so
+    // callers don't treat a failed query's empty `accounts` as authoritative.
+    isStatusSuccess,
+    isStatusError,
     accounts,
     hasAnyAccount: accounts.length > 0,
     isAuthenticated: authStatus?.authenticated ?? false,

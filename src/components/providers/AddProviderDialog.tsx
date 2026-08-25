@@ -6,12 +6,13 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { FullScreenPanel } from "@/components/common/FullScreenPanel";
 import type { Provider, CustomEndpoint, UniversalProvider } from "@/types";
-import type { AppId } from "@/lib/api";
+import type { AppId, ManagedAuthProvider } from "@/lib/api";
 import { universalProvidersApi } from "@/lib/api";
 import {
   ProviderForm,
   type ProviderFormValues,
 } from "@/components/providers/forms/ProviderForm";
+import { AuthSettingsPanel } from "@/components/providers/AuthSettingsPanel";
 import { UniversalProviderFormModal } from "@/components/universal/UniversalProviderFormModal";
 import { UniversalProviderPanel } from "@/components/universal";
 import { providerPresets } from "@/config/claudeProviderPresets";
@@ -58,6 +59,8 @@ export function AddProviderDialog({
   const [selectedUniversalPreset, setSelectedUniversalPreset] =
     useState<UniversalProviderPreset | null>(null);
   const [isFormSubmitting, setIsFormSubmitting] = useState(false);
+  const [authSettingsTarget, setAuthSettingsTarget] =
+    useState<ManagedAuthProvider | null>(null);
   // Pi cannot submit until a preset (or "custom") is chosen: its native
   // models.json node has no meaningful default shape. Other apps are ready
   // as soon as the form mounts.
@@ -65,6 +68,22 @@ export function AddProviderDialog({
   useEffect(() => {
     setIsFormReady(appId !== "pi");
   }, [appId, open]);
+  useEffect(() => {
+    setAuthSettingsTarget(null);
+  }, [appId, open]);
+
+  const closeDialog = useCallback(() => {
+    setAuthSettingsTarget(null);
+    onOpenChange(false);
+  }, [onOpenChange]);
+
+  const handlePanelClose = useCallback(() => {
+    if (authSettingsTarget) {
+      setAuthSettingsTarget(null);
+      return;
+    }
+    closeDialog();
+  }, [authSettingsTarget, closeDialog]);
 
   const handleUniversalProviderSave = useCallback(
     async (provider: UniversalProvider) => {
@@ -285,9 +304,9 @@ export function AddProviderDialog({
       }
 
       await onSubmit(providerData);
-      onOpenChange(false);
+      closeDialog();
     },
-    [appId, onSubmit, onOpenChange],
+    [appId, onSubmit, closeDialog],
   );
 
   const footer =
@@ -295,7 +314,7 @@ export function AddProviderDialog({
       <>
         <Button
           variant="outline"
-          onClick={() => onOpenChange(false)}
+          onClick={closeDialog}
           className="border-border/20 hover:bg-accent hover:text-accent-foreground"
         >
           {t("common.cancel")}
@@ -314,7 +333,7 @@ export function AddProviderDialog({
       <>
         <Button
           variant="outline"
-          onClick={() => onOpenChange(false)}
+          onClick={closeDialog}
           className="border-border/20 hover:bg-accent hover:text-accent-foreground"
         >
           {t("common.cancel")}
@@ -333,7 +352,7 @@ export function AddProviderDialog({
     <FullScreenPanel
       isOpen={open}
       title={t("provider.addNewProvider")}
-      onClose={() => onOpenChange(false)}
+      onClose={handlePanelClose}
       footer={footer}
     >
       {showUniversalTab ? (
@@ -355,7 +374,8 @@ export function AddProviderDialog({
               appId={appId}
               submitLabel={t("common.add")}
               onSubmit={handleSubmit}
-              onCancel={() => onOpenChange(false)}
+              onCancel={closeDialog}
+              onManageAuthAccounts={setAuthSettingsTarget}
               onSubmittingChange={setIsFormSubmitting}
               onSubmitReadyChange={setIsFormReady}
               showButtons={false}
@@ -372,12 +392,18 @@ export function AddProviderDialog({
           appId={appId}
           submitLabel={t("common.add")}
           onSubmit={handleSubmit}
-          onCancel={() => onOpenChange(false)}
+          onCancel={closeDialog}
+          onManageAuthAccounts={setAuthSettingsTarget}
           onSubmittingChange={setIsFormSubmitting}
           onSubmitReadyChange={setIsFormReady}
           showButtons={false}
         />
       )}
+
+      <AuthSettingsPanel
+        target={authSettingsTarget}
+        onClose={() => setAuthSettingsTarget(null)}
+      />
 
       {showUniversalTab && (
         <UniversalProviderFormModal

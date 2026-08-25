@@ -50,6 +50,7 @@ import type {
   ClaudeApiFormat,
   ClaudeApiKeyField,
 } from "@/types";
+import type { ManagedAuthProvider } from "@/lib/api";
 import type { TemplateValueConfig } from "@/config/claudeProviderPresets";
 
 interface EndpointCandidate {
@@ -76,6 +77,12 @@ interface ClaudeFormFieldsProps {
   selectedGitHubAccountId?: string | null;
   /** GitHub 账号选择回调（多账号支持） */
   onGitHubAccountSelect?: (accountId: string | null) => void;
+  /** 打开托管账号管理入口 */
+  onManageAuthAccounts?: (target: ManagedAuthProvider) => void;
+  onCodexAuthSelectionConfirmed?: () => void;
+  onCodexAuthSelectionInvalidated?: () => void;
+  allowUnboundSelection?: boolean;
+  allowUnboundSelectionWithoutStatus?: boolean;
 
   // Codex OAuth (ChatGPT Plus/Pro)
   isCodexOauthPreset?: boolean;
@@ -158,6 +165,11 @@ export function ClaudeFormFields({
   isCopilotAuthenticated,
   selectedGitHubAccountId,
   onGitHubAccountSelect,
+  onManageAuthAccounts,
+  onCodexAuthSelectionConfirmed,
+  onCodexAuthSelectionInvalidated,
+  allowUnboundSelection,
+  allowUnboundSelectionWithoutStatus,
   isCodexOauthPreset,
   isCodexOauthAuthenticated,
   selectedCodexAccountId,
@@ -527,16 +539,34 @@ export function ClaudeFormFields({
       {/* GitHub Copilot OAuth 认证 */}
       {isCopilotPreset && (
         <CopilotAuthSection
+          mode="select"
           selectedAccountId={selectedGitHubAccountId}
           onAccountSelect={onGitHubAccountSelect}
+          onManageAccounts={
+            onManageAuthAccounts
+              ? () => onManageAuthAccounts("github_copilot")
+              : undefined
+          }
         />
       )}
 
       {/* Codex OAuth 认证 (ChatGPT Plus/Pro) */}
       {isCodexOauthPreset && (
         <CodexOAuthSection
+          mode="select"
           selectedAccountId={selectedCodexAccountId}
           onAccountSelect={onCodexAccountSelect}
+          onSelectionConfirmed={onCodexAuthSelectionConfirmed}
+          onSelectionInvalidated={onCodexAuthSelectionInvalidated}
+          onManageAccounts={
+            onManageAuthAccounts
+              ? () => onManageAuthAccounts("codex_oauth")
+              : undefined
+          }
+          allowUnboundSelection={allowUnboundSelection}
+          allowUnboundSelectionWithoutStatus={
+            allowUnboundSelectionWithoutStatus
+          }
           fastModeEnabled={codexFastMode}
           onFastModeChange={onCodexFastModeChange}
         />

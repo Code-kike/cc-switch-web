@@ -27,8 +27,9 @@ export interface CodexProviderPreset {
   iconColor?: string; // 图标颜色
   // Codex API 格式
   apiFormat?: CodexApiFormat;
-  // 托管账号预设：目前仅 xAI OAuth（本地代理按请求注入 token）
-  providerType?: "xai_oauth";
+  // 托管账号预设：本地代理按请求注入 token（xAI OAuth）或按绑定账号解析（Codex
+  // Official managed OAuth，即 ChatGPT Plus/Pro 反代）
+  providerType?: "xai_oauth" | "codex_oauth";
   // OAuth 预设隐藏 API Key，并要求保存前已有可用托管账号
   requiresOAuth?: boolean;
   // Codex 模型目录，保存为 settingsConfig.modelCatalog.models
@@ -108,6 +109,7 @@ export const codexProviderPresets: CodexProviderPreset[] = [
     websiteUrl: "https://chatgpt.com/codex",
     isOfficial: true,
     category: "official",
+    providerType: "codex_oauth",
     auth: {},
     config: ``,
     theme: {

@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import { Download, Loader2 } from "lucide-react";
 import EndpointSpeedTest from "./EndpointSpeedTest";
+import { CodexOAuthSection } from "./CodexOAuthSection";
 import { ApiKeySection, EndpointField, ModelInputWithFetch } from "./shared";
 import { XaiOAuthSection } from "./XaiOAuthSection";
 import {
@@ -13,7 +14,7 @@ import {
   type FetchedModel,
 } from "@/lib/api/model-fetch";
 import type { ProviderCategory } from "@/types";
-import type { AppId } from "@/lib/api";
+import type { AppId, ManagedAuthProvider } from "@/lib/api";
 
 interface EndpointCandidate {
   url: string;
@@ -26,6 +27,19 @@ interface CodexFormFieldsProps {
   isXaiOauthAuthenticated?: boolean;
   selectedXaiAccountId?: string | null;
   onXaiAccountSelect?: (accountId: string | null) => void;
+  isCodexOauthPreset?: boolean;
+  selectedCodexAccountId?: string | null;
+  onCodexAccountSelect?: (accountId: string | null) => void;
+  onCodexAuthSelectionConfirmed?: () => void;
+  onCodexAuthSelectionInvalidated?: () => void;
+  onManageAuthAccounts?: (target: ManagedAuthProvider) => void;
+  codexOauthSelectionLabel?: string;
+  codexOauthNoneOptionLabel?: string;
+  codexOauthNoneOptionDescription?: string;
+  codexOauthAllowUnboundSelection?: boolean;
+  codexOauthAllowUnboundSelectionWithoutStatus?: boolean;
+  codexOauthNativeLoginOnly?: boolean;
+  codexOauthRequireExplicitSelection?: boolean;
   // API Key
   codexApiKey: string;
   onApiKeyChange: (key: string) => void;
@@ -63,6 +77,19 @@ export function CodexFormFields({
   isXaiOauthAuthenticated = false,
   selectedXaiAccountId,
   onXaiAccountSelect,
+  isCodexOauthPreset = false,
+  selectedCodexAccountId,
+  onCodexAccountSelect,
+  onCodexAuthSelectionConfirmed,
+  onCodexAuthSelectionInvalidated,
+  onManageAuthAccounts,
+  codexOauthSelectionLabel,
+  codexOauthNoneOptionLabel,
+  codexOauthNoneOptionDescription,
+  codexOauthAllowUnboundSelection,
+  codexOauthAllowUnboundSelectionWithoutStatus,
+  codexOauthNativeLoginOnly,
+  codexOauthRequireExplicitSelection,
   codexApiKey,
   onApiKeyChange,
   category,
@@ -191,8 +218,32 @@ export function CodexFormFields({
         />
       )}
 
+      {isCodexOauthPreset && (
+        <CodexOAuthSection
+          mode="select"
+          selectedAccountId={selectedCodexAccountId}
+          onAccountSelect={onCodexAccountSelect}
+          onSelectionConfirmed={onCodexAuthSelectionConfirmed}
+          onSelectionInvalidated={onCodexAuthSelectionInvalidated}
+          onManageAccounts={
+            onManageAuthAccounts
+              ? () => onManageAuthAccounts("codex_oauth")
+              : undefined
+          }
+          selectionLabel={codexOauthSelectionLabel}
+          noneOptionLabel={codexOauthNoneOptionLabel}
+          noneOptionDescription={codexOauthNoneOptionDescription}
+          allowUnboundSelection={codexOauthAllowUnboundSelection}
+          allowUnboundSelectionWithoutStatus={
+            codexOauthAllowUnboundSelectionWithoutStatus
+          }
+          nativeLoginOnly={codexOauthNativeLoginOnly}
+          requireExplicitSelection={codexOauthRequireExplicitSelection}
+        />
+      )}
+
       {/* Codex API Key 输入框（托管 OAuth 预设无需 Key） */}
-      {!isXaiOauthPreset && (
+      {!isCodexOauthPreset && !isXaiOauthPreset && (
         <ApiKeySection
           id="codexApiKey"
           label="API Key"
