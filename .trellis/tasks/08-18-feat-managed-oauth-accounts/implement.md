@@ -98,13 +98,24 @@ W1 凭据与数据面（~2,600 行，独立，无 W2 依赖）
   commands/proxy.rs store.rs tray.rs(+40/-2) forwarder.rs(+73/-26)
   providers/codex.rs(+28/-6) copilot_auth.rs(+7/-0) auth.ts(+3/-0)
 
-W2 提供者事务层（~2,900 行，本任务最硬批）
-  provider/mod.rs(+2831/-155)：managed helper 四函数 + add/update/switch managed arms
+W2 提供者事务层（~2,900 行）
+  provider/mod.rs(+2831/-155)：managed helper 四函数 + add/update managed arms
   + migrate_legacy + reapply_current + 0455a92c 移交的 add/update 事务（同批解决纠缠冲突）
   + lib.rs startup 钩子（依赖 provider/mod.rs 的迁移函数）
+  + W1 移交 5：provider/mod.rs:2359/2376/2533/2594/2931 改调 write_live_with_common_config_for_state
   ⚠ 保留 fork pi 早返回（import_pi 冲突 2 块）+ 保留 S2 never-clobber 语义
+  ⚠ 三处 official 阻断**本批不动**（W3 同批放开）
 
-W3 前端最小表面（~2,200 行，Q1 裁定）
+W3 代理服务层 + 协同放开三处阻断（~2,600 行，本任务最硬批）
+  services/proxy.rs(+2517/-285，29 冲突块，逐 hunk 手工) —— W0 计划遗漏未列入任何批次，据 W1 移交注记归入此处
+  + W1 移交 3：commands/proxy.rs + services/proxy.rs:2627 + services/provider/mod.rs:2808
+    三处 official 阻断**必须同一 commit 放开**（只放开命令层 = 零效果 + 未审查浅层缺口）
+  + W1 移交 4：set_auto_failover_enabled 前置校验移到 switch_proxy_target 之前（proxy.rs:3003 原子性）
+  + W1 移交 1：forwarder.rs(+73/-26) 复评 —— 若 fork 无 inbound passthrough 面则维持丢弃并记录
+  + W1 移交 5 余项：services/proxy.rs:2119 改调 write_live_with_common_config_for_state
+  ⚠ 22 个生产冲突集中在 fork S2 d2b070c9 never-clobber 与上游改写碰撞区 → 保留 fork 语义
+
+W4 前端最小表面（~2,200 行，Q1 裁定）
   CodexOAuthSection.tsx(+410/-90，漂移 1 行可直接落) ProviderForm.tsx(+260/-77)
   CodexFormFields.tsx 仅补 OAuth 渲染块 + 4 新 prop 接线（不整体对齐 1364 行）
   ClaudeFormFields(+16) CopilotAuthSection(+225/-111) AddProviderDialog(+36/-8)
@@ -115,7 +126,7 @@ W3 前端最小表面（~2,200 行，Q1 裁定）
   取回 7265596a 的 ProviderForm.codexManagedAccount.test.tsx（10 用例）
   + 前端新测试（ManagedAuthStatusError +86、ProviderCard.codexAccount +214 等）
 
-W4 剩余测试 + 全量门禁（~1,400 行）
+W5 剩余测试 + 全量门禁（~1,400 行）
   CodexOAuthSection.test(+383) AddProviderDialog.test(+90) EditProviderDialog.test(+128)
   FullScreenPanel.test(+33) useManagedAuth.test(+86) useAddProviderMutation.test(+57)
   其余小测试；test:integration + build:web + smoke + 迁移幂等回归 + 凭据面专项核验
