@@ -701,14 +701,18 @@ pub(crate) fn build_effective_settings_with_common_config(
 /// Write the live snapshot for a provider, without touching managed Codex
 /// OAuth auth.
 ///
-/// Kept byte-identical to its pre-managed-accounts behavior on purpose, and
-/// **not** because its callers lack a manager: every current caller
-/// (`ProviderService` add/update/switch and `ProxyService::sync_live_config`)
-/// holds an `&AppState` and could call [`write_live_with_common_config_for_state`]
-/// instead. Those call sites live in the provider-transaction files this batch
-/// does not touch, so they must be switched over there — until then a managed
-/// Codex Official card reached through this entry keeps its stored placeholder
-/// auth instead of the selected account's bundle.
+/// Kept byte-identical to its pre-managed-accounts behavior on purpose.
+///
+/// `ProviderService` add/update/switch were switched over to
+/// [`write_live_with_common_config_for_state`] with the managed
+/// provider-transaction layer. Exactly one caller remains:
+/// `ProxyService::restore_live_from_ssot_for_app` (`services/proxy.rs`, itself
+/// only reached from the placeholder-takeover recovery path), which holds
+/// `&self`/`self.db` rather than an `&AppState` — so switching it over needs an
+/// `AppState` handle or a separate manager-aware entry, and is deferred to the
+/// proxy-service batch. Until then a managed Codex Official card recovered
+/// through that path keeps its stored placeholder auth instead of the selected
+/// account's bundle.
 pub(crate) fn write_live_with_common_config(
     db: &Database,
     app_type: &AppType,
@@ -745,6 +749,50 @@ pub(crate) fn write_live_with_common_config_for_state(
 
 fn codex_oauth_manager_from_state(state: &AppState) -> Option<Arc<RwLock<CodexOAuthManager>>> {
     futures::executor::block_on(state.proxy_service.runtime_ctx()).map(|ctx| ctx.codex_oauth)
+}
+
+/// `AppState`-scoped variant of
+/// [`build_effective_provider_for_live_with_codex_oauth_manager`], used by the
+/// managed Codex transaction preflight so one operation resolves (and caches)
+/// the account token exactly once and reuses the very same bundle when it later
+/// writes the live snapshot.
+///
+/// Upstream reads `state.codex_oauth_manager` directly; the fork keeps the
+/// manager in the proxy runtime context so it resolves in both runtimes. Same
+/// fail-closed contract as [`write_live_with_common_config_for_state`].
+pub(crate) fn build_effective_provider_for_live_for_state(
+    state: &AppState,
+    app_type: &AppType,
+    provider: &Provider,
+) -> Result<Provider, AppError> {
+    let codex_oauth_manager = codex_oauth_manager_from_state(state);
+    build_effective_provider_for_live_with_codex_oauth_manager(
+        state.db.as_ref(),
+        app_type,
+        provider,
+        codex_oauth_manager.as_ref(),
+    )
+}
+
+/// `AppState`-scoped variant of
+/// [`prepare_codex_managed_oauth_live_auth_switch_away`].
+///
+/// Fail-closed on a missing runtime context: returning `Ok(None)` would look
+/// like "no refresh token on disk" and downgrade the caller to the
+/// unconditional `clear_codex_live_auth_for_managed_account` path, dropping the
+/// compare-before-write guard that keeps a CLI-rotated login from being
+/// clobbered. Account binding is an authorization decision, so it errors
+/// instead (spec: Degradation Direction).
+pub(crate) fn prepare_codex_managed_oauth_live_auth_switch_away_for_state(
+    state: &AppState,
+    account_id: &str,
+) -> Result<Option<String>, AppError> {
+    let Some(manager) = codex_oauth_manager_from_state(state) else {
+        return Err(AppError::Message(
+            "Codex OAuth 托管账号不可用，请重启应用后重试".to_string(),
+        ));
+    };
+    prepare_codex_managed_oauth_live_auth_switch_away(manager, account_id.to_string())
 }
 
 pub(crate) fn write_live_with_common_config_for_codex_oauth_manager(
@@ -785,13 +833,7 @@ fn apply_codex_managed_oauth_auth(
         return Ok(());
     }
 
-    let Some(account_id) = provider
-        .meta
-        .as_ref()
-        .and_then(|meta| meta.managed_account_id_for("codex_oauth"))
-        .map(|id| id.trim().to_string())
-        .filter(|id| !id.is_empty())
-    else {
+    let Some(account_id) = provider.managed_codex_oauth_account_id() else {
         return Ok(());
     };
 
@@ -883,7 +925,6 @@ fn get_codex_managed_oauth_live_auth_value(
 /// Before replacing an outgoing managed account's live auth, adopt any Codex
 /// CLI-rotated refresh generation and return the exact disk refresh token for
 /// a compare-before-write check.
-#[allow(dead_code)]
 pub(crate) fn prepare_codex_managed_oauth_live_auth_switch_away(
     manager: Arc<RwLock<CodexOAuthManager>>,
     account_id: String,

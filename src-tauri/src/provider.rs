@@ -86,6 +86,31 @@ impl Provider {
             || self.claude_base_url_contains("chatgpt.com/backend-api/codex")
     }
 
+    /// The managed ChatGPT account id bound to this provider, trimmed, or
+    /// `None` when there is no binding (or only a blank one).
+    ///
+    /// Domain-level single definition of the
+    /// `meta.authBinding[codex_oauth].accountId` + trim + non-empty derivation.
+    /// The provider-transaction layer, `live.rs` and the tray all decide
+    /// "is this card managed?" from this one function so they cannot disagree
+    /// about a blank binding.
+    ///
+    /// Deliberately **not** gated on `category == "official"`: the transaction
+    /// layer has to recognise a binding before it validates the category, and
+    /// [`Self::is_managed_codex_official_account_card`] adds that gate on top.
+    ///
+    /// Two call sites intentionally stay on the looser bare-`is_some()` check
+    /// (`live.rs` backfill stripping and managed-auth recording): treating a
+    /// blank binding as managed there strips/records rather than persists, which
+    /// is the fail-safe direction for those paths.
+    pub fn managed_codex_oauth_account_id(&self) -> Option<String> {
+        self.meta
+            .as_ref()
+            .and_then(|meta| meta.managed_account_id_for("codex_oauth"))
+            .map(|account_id| account_id.trim().to_string())
+            .filter(|account_id| !account_id.is_empty())
+    }
+
     /// A Codex Official row bound to a managed ChatGPT account.
     ///
     /// The local proxy can serve these itself: it resolves the bound account's
@@ -93,11 +118,7 @@ impl Provider {
     /// to be forwarded from a client-side login.
     pub fn is_managed_codex_official_account_card(&self) -> bool {
         self.category.as_deref() == Some("official")
-            && self
-                .meta
-                .as_ref()
-                .and_then(|meta| meta.managed_account_id_for("codex_oauth"))
-                .is_some_and(|account_id| !account_id.trim().is_empty())
+            && self.managed_codex_oauth_account_id().is_some()
     }
 
     /// Any Codex Official card: the built-in native-login row or a managed

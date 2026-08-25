@@ -37,6 +37,7 @@
 - `src/lib/api/web-commands.ts` **未在 54 文件内** → 与上一子任务同理，`check:web-routes` 计数应保持 **292/280/0 不变**。
 - `database/` 仅触及 `dao/providers.rs`（+100，查询列表扩展），**未触及 `schema.rs`** → 无 schema 迁移，`SCHEMA_VERSION` 保持 17。
 - `lib.rs` 新增 startup 调用 `ProviderService::migrate_legacy_codex_official_managed_binding`（**数据迁移而非 schema 迁移**，把遗留 Codex Official 账号绑定迁到新结构）。
+  > **W2 更正（2026-08-25）**：该函数与其 startup 钩子被 **`0455a92c` 删除**，v3.20.0 全树无此符号 → 不移植。见下「裁定记录 · Q3」。
 
 ### S4b 移交测试的真实需求（推翻规划期假设）
 - 文件是 **10 个用例**（PRD stub 原写 8 —— 更正）；fork 适配版 521 行存于 `7265596a`，上游版 610 行。
@@ -69,7 +70,7 @@
 - [ ] takeover restore 不覆盖官方 ChatGPT 登录（`d2b070c9` 行为不回归）。
 - [ ] `ProviderForm.codexManagedAccount.test.tsx` **10** 个用例全绿（取回自 `7265596a`）。
 - [ ] `0455a92c` Rust managed-codex 事务（`preflight_managed_codex_live` 等）落地后，S4b 移交的用例无回归。
-- [ ] 遗留绑定数据迁移 `migrate_legacy_codex_official_managed_binding` 在 startup 幂等、失败不阻断启动。
+- [x] ~~遗留绑定数据迁移 `migrate_legacy_codex_official_managed_binding` 在 startup 幂等、失败不阻断启动。~~ —— **作废（W2 裁定 Q3）**：上游 `0455a92c` 已删除该函数与钩子，v3.20.0 无此符号；由 `update_keeps_official_provider_id_when_binding_and_unbinding`（绑定/解绑保持 provider id 不变）取代。改为验收：**该符号不得出现在 fork 树中**，且上述取代用例全绿。
 - [ ] **无新命令**：`check:web-routes` 保持 292/280/0；**无 schema 迁移**：`SCHEMA_VERSION` 仍为 17。
 - [ ] 安全上限零退化；managed `id_token` 写入不扩大凭据泄露面（日志不含 token、写入走既有 atomic + 0600 路径）。
 - [ ] ClaudeDesktop / zh-TW hunk 零回潮；延期栈四文件仍缺席。
@@ -86,6 +87,23 @@
   - 逐 hunk 判定三类归属：(a) 落在 fork 存在且语义一致的锚点 → 可移植；(b) 依赖 fork 缺失的上游符号 → 需先补依赖或降级；(c) 命中 fork 已裁掉表面（ClaudeDesktop / 延期栈）→ 丢弃。
   - 理由：前两个子任务分批顺利是因为规划期已确认基线对齐；本次基线明确不对齐，直接开工很可能在第二批撞上依赖倒置而被迫回滚重排。单批 2000+ 行冲突解决不可审查。
 - **PRD stub 更正**：测试为 **10** 用例（非 8）；`CodexFormFields` fork 侧 **304** 行（非 294）、上游 **1364** 行（非 1394）。
+
+### Q3 `migrate_legacy_codex_official_managed_binding` 是否移植（W2 开工后发现，2026-08-25）
+
+**裁定：不移植**（函数 + `matches_interrupted_codex_official_migration` + `validate_codex_official_card_identity` + lib.rs startup 钩子 + 其 4 个上游测试，全部不移植）。
+
+证据链：
+
+1. `git log --oneline 413c09e0..v3.20.0 -- src-tauri/src/services/provider/mod.rs` → 区间内仅 `84e75ad2`(已归档子任务)、`a2e22f33`、`0455a92c`。
+2. `git show 0455a92c -- src-tauri/src/services/provider/mod.rs`（79+/737−）**删除**这三个函数；`git show 0455a92c -- src-tauri/src/lib.rs` 删除那 10 行 startup 钩子。
+3. `git grep -n migrate_legacy_codex_official_managed_binding v3.20.0` → **空**（目标态全树无此符号）。`matches_interrupted_codex_official_migration` 同。
+4. 取代关系：`0455a92c` 删 5 个测试（`codex_official_card_identity_keeps_one_native_login_card`、`update_promotes_one_legacy_unbound_codex_card_to_native_login`、`update_switches_one_official_card_between_native_and_managed_login`、`legacy_fixed_codex_account_binding_migrates_without_changing_selection`、`legacy_fixed_codex_migration_resumes_only_its_exact_clone`），加 2 个（`add_accepts_multiple_unbound_codex_official_cards`、`update_keeps_official_provider_id_when_binding_and_unbinding`）。即：从「只允许一张原生登录卡 + 迁移遗留绑定」改为「允许多张未绑定 official 卡 + 绑定/解绑保持 provider id」。
+5. 迁移对象不存在于 fork：函数 doc 自述迁移的是 *“the early PR shape where a managed account was bound directly to the fixed `codex-official` row”* —— PR #3879 自身中间提交的形态，fork 从未发布过。
+6. **移植反而有害**：该迁移会 `save_provider(新 UUID 行)` + `set_current_provider`(DB 与本地 settings) + `remove_from_failover_queue(fixed)`，即把用户当前供应商从固定 `codex-official` id **搬到新 UUID 行**。v3.20.0 的取代实现明确保持 id 不变。W4 前端落地后 fork DB 可能出现「fixed 卡带绑定」，届时移植版会在下次启动拆分该行 —— 上游主动放弃的破坏性数据改动。
+
+连带作废：design.md 的 startup 数据流一项、幂等性回滚说明；implement.md 的末批 review gate「幂等性专项」与风险项「数据迁移不幂等」。
+
+**替代验收**（已写入验收标准）：fork 树不得出现该符号；`update_keeps_official_provider_id_when_binding_and_unbinding` + `add_accepts_multiple_unbound_codex_official_cards` 全绿。
 
 ## Open questions（W0 后回答）
 - 实现批次切分（依赖 W0 的 hunk 归属清单）。

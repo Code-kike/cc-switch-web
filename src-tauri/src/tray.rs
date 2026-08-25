@@ -255,11 +255,7 @@ fn provider_uses_official_subscription(provider: &crate::provider::Provider) -> 
     // app-wide subscription cache cannot represent it safely.
     if provider.id != crate::database::CODEX_OFFICIAL_PROVIDER_ID
         && provider.category.as_deref() == Some("official")
-        && provider
-            .meta
-            .as_ref()
-            .and_then(|meta| meta.managed_account_id_for("codex_oauth"))
-            .is_some_and(|id| !id.trim().is_empty())
+        && provider.managed_codex_oauth_account_id().is_some()
     {
         return false;
     }

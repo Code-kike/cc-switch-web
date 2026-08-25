@@ -38,8 +38,14 @@ Auth Center / AuthSettingsPanel  ── 多 OAuth 账号列表（Codex / Copilot
       managed_codex_oauth_account_id / managed_codex_add_transaction_error
   → codex_oauth_auth.rs: 把所选账号 id_token 写入 official managed auth.json
   → proxy/provider_router.rs + services/proxy.rs: 按绑定账号解析出站凭据
-  → startup: migrate_legacy_codex_official_managed_binding（数据迁移，幂等）
 ```
+
+> **W2 更正（2026-08-25）**：上游 `a2e22f33` 曾在 startup 调用
+> `migrate_legacy_codex_official_managed_binding`，但该函数与其钩子被 **`0455a92c`
+> 删除**，v3.20.0 全树无此符号 → **不移植**。取代它的是「绑定/解绑保持 provider id
+> 不变」（`update_keeps_official_provider_id_when_binding_and_unbinding`）与「允许多张
+> 未绑定 official 卡」（`add_accepts_multiple_unbound_codex_official_cards`）。证据链见
+> prd.md「裁定记录 · Q3」。
 
 ### 关键契约
 
@@ -81,7 +87,8 @@ fork 现状：
 - `lib.rs` diff 中 `+\s+commands::` 计数 0；`commands/auth.rs` 无新 `#[tauri::command]`。
 - `src/lib/api/web-commands.ts` 不在 54 文件内 → `check:web-routes` 必须保持 **292/280/0 不变**。
 - `database/` 仅 `dao/providers.rs`（+100 查询列扩展），**`schema.rs` 未触及** → `SCHEMA_VERSION` 保持 **17**。
-- `lib.rs` startup 新增 `migrate_legacy_codex_official_managed_binding` —— **数据**迁移，非 schema 迁移；须幂等且失败只 `log::warn!` 不阻断启动（上游即此形状）。
+- `lib.rs` startup ~~新增 `migrate_legacy_codex_official_managed_binding`~~ —— **作废（W2 裁定 Q3）**：`0455a92c` 已删除该函数与钩子，v3.20.0 无此符号，本任务不移植。
+  > 若**将来**确有 fork 侧数据迁移要在 startup 执行，落点**不是** `lib.rs::setup()`（上游形状，仅桌面执行 → 违反双运行时等价），而是 `bootstrap::run_post_db_bootstrap`（bootstrap.rs:170，桌面 `lib.rs:494` 与 `examples/server.rs:335` 共同调用，`examples/server.rs:1136` 已有顺序断言），失败仅 `log::warn!`，与该函数内既有各步一致。
 
 ## 丢弃项（carry-forward）
 
@@ -113,7 +120,7 @@ W0 不改生产代码、不 commit 代码，只产出调研结论并由主会话
 ## 兼容性与回滚
 
 - 每批独立 commit → 单批失败 `git reset --hard <上一批>`。
-- **无 schema 迁移** → 无 DB 回滚面；但 `migrate_legacy_codex_official_managed_binding` 会改数据，须幂等（重复执行不产生第二条绑定）。
+- **无 schema 迁移** → 无 DB 回滚面；~~`migrate_legacy_codex_official_managed_binding` 会改数据，须幂等~~ —— **作废（W2 裁定 Q3）**：本任务不引入任何 startup 数据迁移，因此无幂等性面。
 - 无新命令 → 无 Web route parity 回滚面。
 - 子任务在同分支、独立 PR；回滚不影响父主体与两个已归档子任务。
 

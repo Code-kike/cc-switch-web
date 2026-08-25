@@ -83,10 +83,15 @@ cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features
 日志：全 diff 仅 **1 条** `log::warn!`（+624），只含 `account_id` 与 `{err}`，**无 token**。W1 落地时须复核 `{err}` 的 Display 不携带 token 字段。
 `reauth_required = data.id_token.is_none()`（旧账号引导重登）—— fail-closed 契约的锚点。
 
-### `migrate_legacy_codex_official_managed_binding` 幂等性
+### `migrate_legacy_codex_official_managed_binding` 幂等性 —— **作废（W2 裁定 Q3）**
+
+> W0 只读了 `a2e22f33` 单个提交，漏查它与 `v3.20.0` 之间的 `0455a92c`。后者（mod.rs 79+/737−）
+> **删除** `migrate_legacy_codex_official_managed_binding` / `matches_interrupted_codex_official_migration`
+> / `validate_codex_official_card_identity` 及 lib.rs 的 10 行 startup 钩子；
+> `git grep -n migrate_legacy_codex_official_managed_binding v3.20.0` 为空。因此**不移植**，
+> 下文仅作历史记录保留。证据链与取代验收见 prd.md「裁定记录 · Q3」。
 
 上游实现**幂等**：完成标记 = 清除 fixed 卡的绑定；`existing_managed` 查找 + `matches_interrupted_codex_official_migration` 允许中断后 **resume**（复用已生成 id 而非新建）；已迁移库重跑返回 `Ok(None)`（绑定已清）。失败路径带完整回滚（fixed 行 / failover 成员 / current / local current / 已建 managed 行）。
-fork 回归测试须断言：(a) 连续两次运行不产生第二条 managed 行；(b) 中断态（managed 行已建、fixed 未清）重跑复用同一 id；(c) 回滚失败时错误串包含两者。
 
 ### 批次切分（据上确定）
 
@@ -105,6 +110,9 @@ W2 提供者事务层（~2,900 行）
   + W1 移交 5：provider/mod.rs:2359/2376/2533/2594/2931 改调 write_live_with_common_config_for_state
   ⚠ 保留 fork pi 早返回（import_pi 冲突 2 块）+ 保留 S2 never-clobber 语义
   ⚠ 三处 official 阻断**本批不动**（W3 同批放开）
+  ⚠ **W2 开工后修正**：`migrate_legacy` / `reapply_current` / `lib.rs` 钩子 均**不移植**；
+    `switch` managed 事务**列入本批**；update 的 takeover 分支**移交 W3**。
+    详见下方「W2 落地结果与裁定」。
 
 W3 代理服务层 + 协同放开三处阻断（~2,600 行，本任务最硬批）
   services/proxy.rs(+2517/-285，29 冲突块，逐 hunk 手工) —— W0 计划遗漏未列入任何批次，据 W1 移交注记归入此处
@@ -185,12 +193,158 @@ W1 保留外层 RwLock，所有新调用点统一用 `.read().await`（manager �
 ### 6. 文档
 `docs/guides/codex-deepseek-routing-guide-{en,zh,ja}.md:129` 与 `SECURITY.md:169-171` 需在 W3/收尾同步（前者「official 一律阻止」措辞待 3 号放开后修正；后者需说明 `~/.codex/auth.json` 现在承载 cc-switch 写入的 managed OAuth 凭据）。
 
+**W2 补充**：`docs/guides/claude-codex-routing-guide-{en,zh,ja}.md:65` 的「登录凭据保存在
+`~/.cc-switch/codex_oauth_auth.json`（不是 `~/.codex/`），与 Codex CLI 自己的登录互不影响」同样需修正：
+W1 的 `codex_config.rs:682 sync_codex_managed_oauth_live_auth_after_refresh` 会把所选托管账号的
+bundle（含 `id_token`）写入 Codex live `auth.json`，所以「不写 `~/.codex/`」在**托管 Codex Official
+卡**路径下不再成立。措辞建议：保留「凭据存储位置仍是 `~/.cc-switch/codex_oauth_auth.json`」，
+只把「不写 `~/.codex/`」限定到 Claude 侧 codex_oauth 预设路径。与 `SECURITY.md:169-171` 是同一事实的两处记载，
+一并同步。**本批不改的理由**：账号选择的用户可见面在 W4 才落地，现在改会先于实现描述行为。
+
 ### W1 关键适配（与上游不同之处）
 - **ADR 0003**：`sync_codex_managed_oauth_live_auth_after_refresh` 的 live auth.json 写入用 `write_json_file_managed`（上游 `write_json_file`）；`CodexLiveFileState` 增 `CodexLiveWriteMode::{ManagedExternal,CcSwitchOwned}`，回滚写入与正向写入同模式（auth/config/catalog = managed，cc-switch marker = 严格拒绝末端符号链接）。
 - **`futures::executor::block_on`** 取代 `tauri::async_runtime::block_on`（live.rs 4 处），因 live.rs 在 web 构建中经 `#[path]` 编入且 `tauri` 为 optional。
 - **谓词单一定义**：`Provider::{is_managed_codex_official_account_card,is_codex_official_card,supports_failover}` 落在 `provider.rs`（领域层），router/tray/DAO/commands 统一调用；未保留上游 `proxy::providers::is_codex_official_provider` / `provider_router::provider_supports_failover` 两个别名（W2 移植时需把上游调用路径改为领域方法）。
 - **`reauth_required` 双运行时**：`commands/auth.rs` 与 `web_api/handlers/auth.rs` 各自的 `ManagedAuthAccount` 均补该字段并从 `GitHubAccount.reauth_required` 映射；`requires_reauth` 仍为 xAI 专用（两字段不可合并）。新增 `web_api::` 断言钉住。
 - **凭据删除串行化**：`proxy/runtime_ctx.rs` 的 `remove_managed_account_serialized` / `clear_managed_auth_serialized`（锁序 switch-lock → manager），桌面命令与 web handler 共用。放在 runtime_ctx.rs 是因该文件本就同时 import `ProxyService` 与 `CodexOAuthManager`，不新增依赖边。
+
+## W2 落地结果与裁定（2026-08-25）
+
+### 移植基准修正：按 `a2e22f33^..v3.20.0` 的**净 diff**，不是 `a2e22f33` 单提交
+
+`git log --oneline 413c09e0..v3.20.0 -- src-tauri/src/services/provider/mod.rs` → 区间内仅
+`84e75ad2`（已归档子任务）、`a2e22f33`、`0455a92c`。因此目标态 = v3.20.0，净 diff
+**+2188/−150**（而非 `a2e22f33` 单提交的 +2831/−155 再被 `0455a92c` 删 737 行）。
+`git apply --3way` 净 diff → **11 冲突块**。
+
+行数拆解（修正 W0 的「~2,900 行」估算）：测试 **+1494**（上游 2302→3796 行，占 73%），
+生产 `impl` 区 **+520**（上游 2334→2854）。fork 的 `impl` 区 2590 → 约 3110，全文件约 6.7k
+（与上游 6778 同量级）。
+
+### 逐冲突块处置（11 块）
+
+| 冲突位置 | 处置 | 依据 |
+|---|---|---|
+| `pub(crate) use live::{...}` 重导出列表 | 合并：保留 fork 的 `sanitize_claude_settings_for_live` + `write_live_with_common_config`，补 `write_live_with_common_config_for_state` | fork 侧两个符号上游无；`_for_codex_oauth_manager` 不需在 mod.rs 重导出 |
+| `official_provider_supports_proxy_takeover` + `reapply_current_codex_official_live`（整块） | **丢弃**（保留 fork 的删除） | 两者均存在于 `a2e22f33^`，属**已有基线漂移**而非本提交 hunk。前者是 takeover 下放开 official 的使能开关（W3）；后者唯一调用方是 `commands/settings.rs:82` 的「统一会话开关」特性，fork 无此特性（`grep unified_session` 零命中）→ 移植即死代码 |
+| 测试 `use` 列表 | 取 `AuthBinding, AuthBindingSource`；**丢弃** `UsageScript` 与 `ClaudeDesktopMode/ClaudeDesktopModelRoute` | 前两个为本批新测试所需；后者属漂移/ClaudeDesktop 已裁表面 |
+| 测试 helper 块 | 只取 `managed_codex_provider`；**丢弃** `codex_settings` / `usage_script_with_credentials` / `codex_provider_with_usage` | 后三个在 `a2e22f33^` 已存在，属漂移，fork 测试不用 |
+| 测试模块尾部三处文本撞车 | 不用 `--3way` 结果，改为从 v3.20.0 提取 17 个新测试单独适配后追加 | `--3way` 把 fork 测试体（hermes 种子）与上游新测试交织，不可审查 |
+| `add` / `update` / `switch` 三处生产冲突 | 手工逐 hunk，保留 fork 周边（Hermes 分支、OMO 分支、pi 早返回） | 见下「语义保留」 |
+
+### 已确认无回退的 fork 语义
+
+- **pi 早返回**：`import_pi_providers_from_live`（mod.rs:35）仍为 `pi::import_from_live(state)` 单行委派；`add`/`update`/`switch`/`delete` 头部的 `if app_type == AppType::Pi { return pi::...; }` 未被任何上游 hunk 触及（managed 分支全部置于 pi 早返回**之后**）。
+- **S2 `d2b070c9` never-clobber**：本批**未修改** `services/proxy.rs`（never-clobber 的实现位置），也未改 `provider/mod.rs:2808` 的 official 阻断。新增的 managed 事务均经 `CodexLiveStateSnapshot::restore_preserving_newer_same_account_auth()` 回滚（W1 落地，语义就是「不覆盖更新的同账号 auth」）。
+- **三处 official 阻断**：`commands/proxy.rs` / `services/proxy.rs:2627` / `services/provider/mod.rs:2808` 均保持关闭。
+
+### 本批内的两项范围调整（均需记录）
+
+**调整 1 —— `switch` 的 managed 事务列入本批**（批次行在 `36a7e4b3` 被缩成「add/update managed arms」）。
+理由：它只依赖 W1 已落地的 `CodexLiveStateSnapshot` / `prepare_codex_managed_oauth_live_auth_switch_away` /
+`clear_codex_live_auth_for_managed_account*`，**无 `services/proxy.rs` 依赖**；而 17 个新测试中有 5 个
+（`switch_*` / `managed_codex_switch_*` / `switch_away_*`）直接驱动它。若置后，`add`/`update` 已能写入
+托管凭据而「激活托管卡」的主路径仍写占位 auth —— 半工作态比一次性落地风险更大。
+
+**调整 2 —— `update` 的 takeover 分支移交 W3，本批 fail-closed**。
+缺的是两个 `services/proxy.rs`（W3）符号，不在本批范围：
+
+| 上游符号 | v3.20.0 | fork 现状 |
+|---|---|---|
+| `sync_codex_live_from_provider_while_proxy_active_guarded` | proxy.rs:719 `pub(crate)` | **不存在**（fork 仅有无守卫版 proxy.rs:406） |
+| `update_live_backup_from_provider_inner` | proxy.rs:2801，`pub(crate)`，**4 参**（多 `clear_codex_auth_for_account: Option<&str>`） | proxy.rs:2520，私有，**3 参** |
+
+后者正是 W0 列出的 22 个 proxy.rs 生产冲突之一 → 本批改它必在 W3 重新合一次。
+降级方向选 **fail-closed**（`provider.codex.managedOfficial.takeoverUpdateUnsupported`）：若改为
+落回 fork 旧路径，会把存储的占位 auth 写进 takeover 备份并跳过 compare-before-write 守卫
+（CLI 轮换后的登录会被覆盖）—— 账号绑定属授权决策，按 spec「Degradation Direction」应 fail-closed。
+
+**因此上游测试 `managed_codex_takeover_update_db_failure_restores_backup_live_and_binding`
+（150 行）延至 W3**（唯一依赖 takeover 分支的新测试；其取据 = 测试体使用 `save_live_backup`）。
+本批代以 fork 自有用例 `managed_codex_update_under_takeover_fails_closed_until_proxy_batch` 钉住
+fail-closed 行为，W3 落地时用上游用例取代。其余 **16** 个新测试本批全量移植并全绿。
+
+### 测试适配记录（逐项，供验收比对）
+
+| 适配 | 范围 | 取据 |
+|---|---|---|
+| `tauri::async_runtime::block_on` → `futures::executor::block_on` | 16 个测试全部 | C2：`provider/mod.rs` 经 `examples/web_services.rs:43` 的 `#[path]` 进 web 构建，**且其 `#[cfg(test)]` 模块会被 web example 的 test 构建编译**（已验证：`cargo test --example server` 曾因此报 `NoopEventSink` 未找到） |
+| `state.codex_oauth_manager.X()` → `codex_oauth.read().await.X()` + 新增 `with_codex_oauth_test_home` 验证台 | 16 个测试中用到 manager 的 14 个 | fork 无 `AppState::codex_oauth_manager` 字段，manager 在 proxy runtime ctx（W1 保留外层 `Arc<RwLock<_>>`，移交项 2）；验证台按 `lib.rs`/`examples/server.rs` 同样方式 `set_runtime_ctx` |
+| `crate::commands::remove_codex_oauth_account_with_switch_lock` → `proxy::runtime_ctx::remove_managed_account_serialized`；`logout_codex_oauth_with_switch_lock` → `clear_managed_auth_serialized` | `codex_auth_center_*` 3 个 | W1 已把锁序守卫落在 `runtime_ctx.rs`（桌面命令与 web handler 共用），而非上游的命令层函数 |
+| `ProviderService::managed_codex_oauth_account_id` → 非限定自由函数 | `update_keeps_official_provider_id_when_binding_and_unbinding` | helper 已移入 `managed_codex.rs` |
+| **删去 unified-session-bucket 注入**（下详） | 同上 1 个测试 | fork 无该特性 |
+
+**unified-session-bucket 适配的完整取据与影响**：上游该测试先向 `unbound.settings_config["config"]`
+注入 `codex_config::inject_codex_unified_session_bucket("")`，再断言 unbind 后 `config == ""`，
+以覆盖「unbind 剔除 live-only 统一会话路由」。fork 两侧都没有：
+`git grep strip_codex_unified_session_bucket_from_settings a2e22f33^` → 存于 `codex_config.rs`/`live.rs`（即
+**本提交之前就已存在**，属基线漂移），而 fork `grep -rn unified_session src-tauri/src` 零命中。
+因此：
+- 本批**丢弃**注入与 `update` 里对应的 `strip_codex_unified_session_bucket_from_settings` 调用 hunk（分类 (c)）。
+- 保留的 `assert_eq!(saved_unbound.settings_config["config"], json!(""))` 在 fork 下退为**空断言**
+  （`unbound` 本就以 `config: ""` 构造）—— 已在测试内注释声明。该测试其余断言（绑定/解绑
+  保持 provider id、DB current、本地 current、绑定存在性）**未弱化**，且它才是本测试在
+  `0455a92c` 里的立意（取代 `migrate_legacy` 的那两个新用例之一）。
+- 待补：若未来移植 unified-session 特性，需同时恢复该注入与 `update` 的 strip 调用。
+
+### 架构：新增 `provider/managed_codex.rs`
+
+10 个 managed helper（上游作为 `impl ProviderService` 顶部的连续 216 行块）移入新模块，与同
+目录既有分层（`live.rs`/`pi.rs`/`usage.rs`/`endpoints.rs`/`gemini_auth.rs`）一致。名字与上游逐
+字相同、mod.rs 以 `use managed_codex::{...}` 非限定调用 → 未来上游 hunk 只需去掉 `Self::` 前缀。
+**不**移的部分：`add`/`update`/`switch` 内的 managed arms（嵌在 fork 已漂移的函数体中，无论如何都要原地手合），
+以及 16 个新测试（全部依赖 mod.rs 测试模块里的 `with_test_home`/`TempHome` 验证台；兄弟文件无共享验证台惯例）。
+
+### 谓词单一定义（审阅意见采纳）
+
+新增 `Provider::managed_codex_oauth_account_id()`（provider.rs，trim+非空，不含 category 门），
+`is_managed_codex_official_account_card` 改为在其上加 category 门；`managed_codex.rs` / `live.rs:833` /
+`tray.rs:258` 统一调用，消除三份重复派生。
+三处**有意保留**裸 `.is_some()`（`live.rs:1170` backfill 剔除、`live.rs:1452` managed auth 记录、
+`forwarder.rs:1390` token 取用）：前两处把空串绑定当作托管会剔除/记录而非持久化，是该路径的
+**fail-safe** 方向；第三处属 forwarder.rs（W1 已定丢弃、W3 复评）。已在 provider.rs 的 doc 记录原因。
+
+`switch` 的 outgoing 账号推导同样改调 `outgoing_managed_codex_oauth_account_id`（上游在 `switch`
+里内联重算），使 `AppType::Codex` 门控只有一份。**这在 fork 是必需的**：`codex_oauth` 也是
+Claude 侧 provider type（`Provider::is_codex_oauth`、`proxy/providers/claude.rs:48`、
+`live.rs:91 apply_codex_oauth_claude_context_defaults`），所以 Claude provider 可带
+`authBinding[codex_oauth]`（PRD 明列 `appId="claude"` + `providerType: "codex_oauth"` 路径）。
+上游不门控无害（它读永远存在的 `AppState::codex_oauth_manager`），但 fork 的
+`prepare_..._for_state` 在无 runtime ctx 时 **fail-closed** → 不门控会让一次普通 Claude 切换直接失败；
+且 `clear_outgoing_...` 只在 Codex 门控的事务分支内调用，预备态无人收尾。
+回归用例：`claude_switch_off_a_codex_oauth_bound_provider_never_touches_codex_live`（故意用
+不注入 ctx 的 `with_test_home`）。**变异验证**：临时抽掉 helper 首行的 Codex 门控 → 该用例
+FAILED（panic at mod.rs 的 switch）；恢复后通过。
+
+### 另两项审阅修正
+
+1. **删除死条件**：`clear_stale_codex_live_auth_after_official_switch` 的守卫本欲按上游扩宽为
+   `category == "official" || is_codex_official_provider(provider)`。上游该谓词（v3.20.0
+   `proxy/providers/codex.rs:265`）会按 settings 形状识别「category 非 official 但实为 official」的卡，
+   fork 有意未移植（W1 改用领域谓词）；而 `Provider::is_codex_official_card` 首行就要求
+   `category == Some("official")`，严格窄于第一个分支 → `A || (A && …) ≡ A`。故只保留原条件 +
+   新增的 `target_managed_codex_account_id.is_none()` 豁免，并在注释里记下未移植的形状识别扩宽。
+2. **`NoopEventSink` 门控位置修正**：`runtime_events.rs` 的 `NoopEventSink` 体为空、不依赖 tauri，
+   却与 `TauriEventSink` 一同被 `#[cfg(feature = "desktop")]` 门控，致使 web example 的 test 构建拿不到它。
+   改为 `#[cfg(any(feature = "desktop", test))]`（含 `runtime/mod.rs` 的 re-export）—— 两个测试构建都能用，
+   而非 test 的 web 构建仍门控掉，**警告数不变**（实测：完全不门控 = +2 条 dead-code 警告，
+   `any(desktop, test)` = 70 条与基线相同）。比在测试模块里另造一份空 sink 更少重复。
+
+### 移交 W3 的项（累计）
+1. `services/proxy.rs` 全量（+2517/−285，29 冲突块）。
+2. 上述两个符号 + `update` takeover 分支 + 上游测试 `managed_codex_takeover_update_db_failure_restores_backup_live_and_binding`。
+3. `managed_codex_takeover_transaction_error`（上游 helper 之一，仅 takeover 分支使用，本批不落地以免死代码）。
+4. `write_live_with_common_config` 的最后一个调用方 `ProxyService::restore_live_from_ssot_for_app`（proxy.rs:2119）—— 它持 `&self`/`self.db` 而**非** `&AppState`，切换需先取得 AppState 或另开入口。
+5. W1 移交项 1/2/3/4 仍在 W3（forwarder.rs 复评、去掉外层 `Arc<RwLock<CodexOAuthManager>>`、三处 official 阻断同批放开、`set_auto_failover_enabled` 前置校验前移）。
+
+### 不移植（详见 prd.md「裁定记录 · Q3」）
+
+`migrate_legacy_codex_official_managed_binding` / `matches_interrupted_codex_official_migration` /
+`validate_codex_official_card_identity` / lib.rs startup 钩子 / 其 4 个上游测试 —— 均被 `0455a92c`
+删除，v3.20.0 全树无此符号。因此 **`lib.rs` 本批零改动**。
+若将来确需 startup 数据迁移，落点是 `bootstrap::run_post_db_bootstrap`（双运行时共用扩展点，
+bootstrap.rs:170，lib.rs:494 + examples/server.rs:335），**不是** `lib.rs::setup()`（上游形状，仅桌面执行
+→ 违反双运行时等价）。
 
 ## 验证命令汇总
 
@@ -207,7 +361,7 @@ W1 保留外层 RwLock，所有新调用点统一用 `.read().await`（manager �
 - W0 后：hunk 归属清单 + 依赖拓扑经主会话复核，据此确定 W1..Wn，再开工。
 - 每批 commit 前：全量门禁全绿（test:unit 必须全绿，非 flake 项）。
 - auth 相关批次后：`reauth_required` fail-closed 双用例 + `id_token` 写入路径权限/日志脱敏专项确认。
-- 末批后：`migrate_legacy_codex_official_managed_binding` 幂等性专项 + 真实 Web 服务冒烟。
+- 末批后：~~`migrate_legacy_codex_official_managed_binding` 幂等性专项~~（**作废，W2 裁定 Q3**；改为确认该符号不存在于 fork 树）+ 真实 Web 服务冒烟。
 - 全部完成后：**父任务跨子任务集成 review**（三子任务的 Web API parity、安全边界、相互无冲突）+ 统一 changelog 补入三子任务结果 + 合 `main`。
 
 ## 风险点与回滚
@@ -216,5 +370,5 @@ W1 保留外层 RwLock，所有新调用点统一用 `.read().await`（manager �
 - **最大风险 = 三个大漂移文件的 hunk 对齐**（`proxy.rs` 3661 / `codex_config.rs` 3396 / `provider/mod.rs` 1705）。W0 的作用正是把这个风险前移到调研阶段。若 W0 发现某文件无法安全逐 hunk 对齐，**停下报告**并考虑降级范围，不得猜测插入点。
 - **依赖倒置**：`0455a92c` 的 managed-codex 事务依赖 `a2e22f33` 引入的 `preflight_managed_codex_live` 等函数 → 必须先落 `a2e22f33` 的对应 hunk。W0 须把这条依赖显式列入拓扑。
 - **凭据泄露**：`codex_oauth_auth.rs` +1053 直接处理 `id_token`。不得只依赖编译与测试通过；须逐条核验写入权限与日志脱敏。
-- **数据迁移不幂等**：`migrate_legacy_codex_official_managed_binding` 每次启动都跑，若不幂等会重复绑定。须有幂等回归测试。
+- ~~**数据迁移不幂等**：`migrate_legacy_codex_official_managed_binding` 每次启动都跑，若不幂等会重复绑定。须有幂等性回归测试。~~ —— **作废（W2 裁定 Q3）**：不移植该迁移，本任务无 startup 数据迁移。取代风险项：**误移植上游已删代码** —— 移植它会在下次启动把 fixed `codex-official` 行搬到新 UUID（`save_provider` 新行 + 双端 `set_current_provider` + `remove_from_failover_queue`），而 v3.20.0 的取代实现明确保持 id 不变。
 - **误注册 Web API 命令**：本提交无新命令，`check:web-routes` 计数是硬约束。
