@@ -346,6 +346,18 @@ FAILED（panic at mod.rs 的 switch）；恢复后通过。
 bootstrap.rs:170，lib.rs:494 + examples/server.rs:335），**不是** `lib.rs::setup()`（上游形状，仅桌面执行
 → 违反双运行时等价）。
 
+### 方法论缺口备案：W0 未对齐目标 tag
+
+W0 只**孤立地**调研了 `a2e22f33` 单个提交，没有逐项核对「这个交付物在目标 tag `v3.20.0`
+上是否仍然存在」。正因如此，`migrate_legacy_codex_official_managed_binding` 被当作交付物
+写进了 PRD 验收标准、design 数据流与 implement W2 批次行，直到 W2 开工才发现它在区间内的
+下游提交 `0455a92c` 被删除（v3.20.0 零命中）。
+
+**修正规则（后续批次与同类移植任务适用）**：移植的是**提交区间**（`base..target`）而不是单个
+提交时，每个拟定交付物必须在规划阶段先对着**目标 tag** 验证存在性（`git grep -n <symbol>
+<target-tag>`），再写入验收标准与批次表 —— 中间提交引入的符号可能在下游提交里被删除，孤立
+读单个提交的 diff 无法发现这一点。
+
 ## 验证命令汇总
 
 见门禁块。关键额外检查：
