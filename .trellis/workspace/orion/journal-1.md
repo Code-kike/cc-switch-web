@@ -1024,3 +1024,29 @@ Completed child task feat-pi-native-agent: ported Product upstream 84e75ad2 (pi 
 ### Status
 
 [OK] **Completed**
+
+
+## Session 30: Port Codex Alpha Search + Claude hosted WebSearch into Web-first fork
+
+**Date**: 2026-08-25
+**Task**: Port Codex Alpha Search + Claude hosted WebSearch into Web-first fork
+**Branch**: `sync/upstream-v3.20.0`
+
+### Summary
+
+Completed child task feat-codex-alpha-websearch: ported Product upstream bdeaac75 (9 files, +10041/-1691) as 4 batches. W1 Codex Alpha Search passthrough (4 local aliases, fail-closed full-URL derivation). W2 hosted WebSearch request translation + ~30 markdown citation primitives with a 7-row fail-closed matrix. W2.5 fork-side hardening: the sub-agent proactively reported that 4 markdown shapes are O(n^2) (worst 6.7s CPU on 128 KiB of hostile model output) on an already-live path, so five caps were added at the single citation-dedup entry with deliberate fail-OPEN skip semantics, dropping the worst case to 116us while the legal caps-maxed worst case stayed flat at 57ms. W3 response/stream bridge + non-streaming aggregation + usage + three-language docs. Baseline research paid off: streaming_responses.rs and transform_responses.rs drifted only 28/78 lines from upstream pre-commit, so nearly 10k lines applied on upstream anchors; the flagged forwarder/handlers drift risk (2679/2287 lines) never materialized because every upstream anchor symbol existed. Q1 (skip transform_codex_anthropic.rs) was amended mid-task: its premise 'the fork has no Anthropic SSE aggregator' expired when W3 introduced exactly that, so one function was ported as a private fn in handlers.rs with mutation-proven necessity while all four deferred files stayed absent. Final check found two real defects: rewrite_codex_alpha_search_full_url sliced a raw URL by a length derived from Url::parse().path(), which panics on multi-byte boundaries and silently misderives on dot-segment URLs (present verbatim upstream, worth reporting there), and a 1ms Date.now() boundary flake fixed by porting upstream's own 60s margin. Spec grew two scenarios: fail-open vs fail-closed classified by what degradation costs, and the private-helper exception to a deferred-stack boundary. Final gate: cargo test --lib 2233, test:unit 173/1044 green, Rust parity 37, check:web-routes held at 292/280/0, test:integration 50/54 (4 PRD flakes), build:web + smoke exit 0.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `258245f4` | (see git log) |
+| `a49e7af5` | (see git log) |
+| `860b0523` | (see git log) |
+| `c917d5cf` | (see git log) |
+| `ff067851` | (see git log) |
+| `e59d9c98` | (see git log) |
+
+### Status
+
+[OK] **Completed**
