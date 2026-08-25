@@ -123,6 +123,30 @@ W4 剩余测试 + 全量门禁（~1,400 行）
 
 W0 结论已由主会话写入。每批门禁全绿 + 单批 commit；`check:web-routes` 恒 292/280/0；`SCHEMA_VERSION` 恒 17。
 
+## 跨批次移植约束（W1 后经审阅补入，W2/W3/W4 必须遵守）
+
+### C1 —— managed 外部配置写入必须走 managed 原子写（ADR 0003）
+
+`~/.codex/auth.json`、`config.toml`、catalog 属**外部应用拥有**的托管配置。新增写点一律经 `crate::config::write_json_file_managed` / `write_text_file_managed`（内部 `AtomicWriteMode::FollowManagedSymlink`），跟随合法符号链接并原子替换其目标 —— 否则会砸掉 dotfiles / NixOS 的符号链接布局。
+
+**不得**复制 `codex_oauth_auth.rs:1492` 的 `write_store_atomic`（裸 `fs::rename`）到任何 auth.json 写点；该函数的正当作用域仅限 data_dir 内的 `~/.cc-switch/codex_oauth_auth.json`（唯一调用点 :1588）。
+
+> 移植方向提示：**上游用的是严格版 `write_json_file`（`RejectFinalSymlink`）**。W1 在 `codex_config.rs:715/792` 改用 `_managed` 是**正确的 fork 适配**（对齐 fork 基线既有的 190/1277 用法与 ADR 0003），不是安全放宽。W2/W3 遇到同类写点时同样按 fork 侧改写，不要「忠于上游」改回严格版。
+
+### C2 —— `tauri::async_runtime` 可否照搬：按文件是否进 web 构建逐个核实
+
+fork 的 `tauri` 是 optional 依赖，**但这不等于「`async_runtime` 仅限 `commands/` 与 `lib.rs`」**（该前提已被证伪：`tray.rs` 4+1 处、`linux_fix.rs`、`services/s3_auto_sync.rs`、`services/webdav_auto_sync.rs` 均在用，其中 `tray.rs` 就在 W1 清单内且保留了上游用法）。
+
+判定方法 —— 对每个待移植文件核实其是否进入 web 构建：
+
+```bash
+grep -nE 'mod <name>|#\[path.*<name>' src-tauri/examples/server.rs
+```
+
+已核实：`codex_config.rs`(:143 `#[path]`)、`provider.rs`(:187 `#[path]`) **在** web 构建内；`live.rs` / `provider_router.rs` / `codex_oauth_auth.rs` 经父模块传递编入；`tray.rs` **不在**（`mod tray` 计数 0）→ 其 `async_runtime` 用法可照搬。
+
+进 web 构建的文件里，上游的 `tauri::async_runtime::block_on` 改用 `futures::executor::block_on`（fork 在 `live.rs:1352/1364` 的既有惯用法）。
+
 ## W1 落地结果与移交 W2 的项（2026-08-25）
 
 W1 已落 17 文件（+2832/−107），全量门禁绿。以下 W1 清单项经证据判定**移交 W2**，非遗漏：
