@@ -37,36 +37,91 @@ cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features
 
 对三个大漂移文件逐 hunk 判定归属。**不写生产代码、不改测试**，只产出结论。
 
-- [ ] `src-tauri/src/services/proxy.rs`（+2517/−285，漂移 3661）：逐 hunk 分类
-- [ ] `src-tauri/src/services/provider/mod.rs`（+2831/−155，漂移 1705）：逐 hunk 分类
-- [ ] `src-tauri/src/codex_config.rs`（+699/−2，漂移 3396）：逐 hunk 分类
-- [ ] 每个 hunk 归入三类之一，并给出证据：
+- [x] `src-tauri/src/services/proxy.rs`（+2517/−285，漂移 3661）：逐 hunk 分类
+- [x] `src-tauri/src/services/provider/mod.rs`（+2831/−155，漂移 1705）：逐 hunk 分类
+- [x] `src-tauri/src/codex_config.rs`（+699/−2，漂移 3396）：逐 hunk 分类
+- [x] 每个 hunk 归入三类之一，并给出证据：
   - **(a) 可移植** —— 落在 fork 存在且语义一致的锚点上（给出锚点符号名 + fork 行号）
   - **(b) 需先补依赖** —— 依赖 fork 缺失的上游符号（列出缺失符号 + 其上游定义位置 + 是否由本提交自身引入）
   - **(c) 丢弃** —— 命中 fork 已裁掉的表面（ClaudeDesktop / 延期 Codex Chat 栈 / zh-TW），给出判定依据
-- [ ] 产出 **依赖拓扑**：哪些 (b) 类 hunk 互为前置，形成必须遵守的落地顺序
-- [ ] 顺带确认另外三个中等漂移文件的归属：`services/provider/live.rs`（+470/−8，漂移 712）、`proxy/provider_router.rs`（+131/−17，漂移 465）、`proxy/providers/codex_oauth_auth.rs`（+1053/−52，漂移仅 127 → 预期可直接落地）
-- [ ] 给出**建议批次切分**（含每批预估行数与前置关系）
-- [ ] 输出结论供主会话写入本文件的 W1..Wn
+- [x] 产出 **依赖拓扑**：哪些 (b) 类 hunk 互为前置，形成必须遵守的落地顺序
+- [x] 顺带确认另外三个中等漂移文件的归属：`services/provider/live.rs`（+470/−8，漂移 712）、`proxy/provider_router.rs`（+131/−17，漂移 465）、`proxy/providers/codex_oauth_auth.rs`（+1053/−52，漂移仅 127 → 预期可直接落地）
+- [x] 给出**建议批次切分**（含每批预估行数与前置关系）
+- [x] 输出结论供主会话写入本文件的 W1..Wn
 
 **W0 硬约束**：只读调研。允许 `git show` / `git apply --check` / `--3way` 干跑到临时副本以测可行性，但**不得**留下任何工作树改动，不得 commit。
 
-### W1..Wn — 待 W0 结论后填写
+## W0 结果（主会话内联完成，子代理被内容策略拦截）
 
-（W0 完成后由主会话据 hunk 归属清单与依赖拓扑补写。）
+### `--3way` 可行性（真实仓库内 dry-run，冲突块计数）
 
-预置的跨批次红线（无论如何切分都适用）：
-- [ ] **无新命令**：`check:web-routes` 每批保持 292/280/0。本提交不触 `web-commands.ts`（已证实不在 54 文件内），计数变化即误引入。
-- [ ] **无 schema 迁移**：`SCHEMA_VERSION` 保持 17。`database/` 仅 `dao/providers.rs`。
-- [ ] `migrate_legacy_codex_official_managed_binding` 幂等（重复执行不产生第二条绑定），失败只 `log::warn!` 不阻断启动。
-- [ ] **auth 降级方向 = fail-closed**（spec「Degradation Direction」）：`reauth_required` 账号不得保存；无法认证的绑定不得持久化。两个移交用例钉住此点。
-- [ ] **managed `id_token` 写入不扩大凭据面**：走 fork 既有 atomic + 0600 路径；日志不含 token；逐条核验而非只看编译通过。
-- [ ] ClaudeDesktop hunk 全量丢弃（含 `ClaudeDesktopProviderForm.tsx` +48/−10 与其测试 +122）；zh-TW 丢弃。
-- [ ] 延期栈四文件仍缺席；若某函数被证明必需，按 spec「Deferred Upstream Stack — Private-Helper Exception」处理（私有 fn + 无新 `mod` + 变异验证必需性）。
-- [ ] 安全上限零退化：128 MiB body / 2s / 16 MiB / 256 KiB / 32 MiB + 五个 `MAX_CITATION_DEDUP_*`。
-- [ ] S4b 移交测试 `ProviderForm.codexManagedAccount.test.tsx` **10 用例**全绿（`git show 7265596a:tests/components/ProviderForm.codexManagedAccount.test.tsx` 取回）。
-- [ ] 前端按 Q1 裁定：只补测试断言到的最小表面（`CodexFormFields` 的 `CodexOAuthSection` 渲染块 + 4 个新 prop 双侧接线 + `ProviderForm` 推导），**不整体对齐上游 1364 行**。
-- [ ] 上游测试全量移植、不删测试、不弱化断言。
+| 文件 | 冲突块 | 判定 |
+|---|---|---|
+| `services/proxy.rs` | **29** | `--3way` 不可用，逐 hunk 手工 |
+| `services/provider/mod.rs` | **10** | 手工为主 |
+| `codex_oauth_auth.rs` | 5 | 漂移仅 127 行；冲突集中在漂移区，可 `--3way` + 定点解决 |
+| `codex_config.rs` | 4 | 可 `--3way` + 定点解决 |
+| `provider/live.rs` | 2 | 近直接落地 |
+| `provider_router.rs` | 2 | 近直接落地 |
+
+### 冲突分布（按符号，非行号）
+
+**proxy.rs 29 块**：22 个生产冲突集中在 fork S2 `d2b070c9`（never-clobber）与上游改写的碰撞区 —— `hot_switch_provider_inner`(6)、`takeover_live_config_best_effort`(3)、`write_codex_live_verbatim_with_auth_guard`(2)、`rollback_hot_switch_preparation`(2)，其余各 1（`sync_live_config_to_provider`、`takeover_live_configs`、`takeover_live_config_strict`、`restore_live_from_ssot_for_app`、`update_live_backup_from_provider_inner`、`preserve_toml_mcp_servers_from_existing_config`、`write_codex_takeover_live_for_provider`）。**移植红线：fork 的 never-clobber 语义必须保留，不得被上游 hunk 回退。** 剩余 7 个在测试模块。
+
+**provider/mod.rs 10 块**：`import_pi_providers_from_live`(2，fork pi 早返回 vs 上游新增）、`reapply_current_codex_official_live`(1)、`add`(1)、`update`(2)、`switch`(1)、`sync_current_provider_for_app`(1)、测试(2)。`add`/`update` 冲突正是 **a2e22f33 自身 managed arms 与 0455a92c 移交事务纠缠处**。
+
+### 依赖拓扑（含上游提交时序证据）
+
+`git merge-base --is-ancestor` 证实：**`a2e22f33`（08-16）是 `0455a92c`（08-18）的祖先**（PRD 移交链方向正确，日期看似相反）。因此：
+1. `a2e22f33` 的 managed helper（`managed_codex_oauth_account_id`:2323、`preflight_managed_codex_live`:2510、`write_preflighted_or_current_live`:2529、`managed_codex_add_transaction_error`:2570，均在 provider/mod.rs）先落。
+2. `0455a92c` 的 add/update 事务后落，依赖上面四个函数。
+3. 二者都在 `add`(4909)/`update`(5392/5437) 内 → **必须同批解决**，不能拆两批。
+
+### `codex_oauth_auth.rs` 凭据面枚举（W1 核验清单）
+
+写入点：accounts store 持久化 `id_token`（空串过滤为缺失）、refresh 后更新 `id_token`、managed bundle 写入 live auth.json 前的「R0 不覆盖 N0」重读守卫、写入前 live re-read 校验。
+日志：全 diff 仅 **1 条** `log::warn!`（+624），只含 `account_id` 与 `{err}`，**无 token**。W1 落地时须复核 `{err}` 的 Display 不携带 token 字段。
+`reauth_required = data.id_token.is_none()`（旧账号引导重登）—— fail-closed 契约的锚点。
+
+### `migrate_legacy_codex_official_managed_binding` 幂等性
+
+上游实现**幂等**：完成标记 = 清除 fixed 卡的绑定；`existing_managed` 查找 + `matches_interrupted_codex_official_migration` 允许中断后 **resume**（复用已生成 id 而非新建）；已迁移库重跑返回 `Ok(None)`（绑定已清）。失败路径带完整回滚（fixed 行 / failover 成员 / current / local current / 已建 managed 行）。
+fork 回归测试须断言：(a) 连续两次运行不产生第二条 managed 行；(b) 中断态（managed 行已建、fixed 未清）重跑复用同一 id；(c) 回滚失败时错误串包含两者。
+
+### 批次切分（据上确定）
+
+```
+W1 凭据与数据面（~2,600 行，独立，无 W2 依赖）
+  codex_config.rs(+699) codex_oauth_auth.rs(+1053) live.rs(+470)
+  provider_router.rs(+131) dao/providers.rs(+100) commands/auth.rs(+49/-17)
+  commands/codex_oauth.rs commands/failover.rs(+98/-7) commands/provider.rs(+23/-8)
+  commands/proxy.rs store.rs tray.rs(+40/-2) forwarder.rs(+73/-26)
+  providers/codex.rs(+28/-6) copilot_auth.rs(+7/-0) auth.ts(+3/-0)
+
+W2 提供者事务层（~2,900 行，本任务最硬批）
+  provider/mod.rs(+2831/-155)：managed helper 四函数 + add/update/switch managed arms
+  + migrate_legacy + reapply_current + 0455a92c 移交的 add/update 事务（同批解决纠缠冲突）
+  + lib.rs startup 钩子（依赖 provider/mod.rs 的迁移函数）
+  ⚠ 保留 fork pi 早返回（import_pi 冲突 2 块）+ 保留 S2 never-clobber 语义
+
+W3 前端最小表面（~2,200 行，Q1 裁定）
+  CodexOAuthSection.tsx(+410/-90，漂移 1 行可直接落) ProviderForm.tsx(+260/-77)
+  CodexFormFields.tsx 仅补 OAuth 渲染块 + 4 新 prop 接线（不整体对齐 1364 行）
+  ClaudeFormFields(+16) CopilotAuthSection(+225/-111) AddProviderDialog(+36/-8)
+  EditProviderDialog(+54/-9) ProviderActions(+12/-10) ProviderCard(+153/-32)
+  AuthCenterPanel(+46/-4) AuthSettingsPanel(+25 新) FullScreenPanel(+45/-11)
+  useManagedAuth(+14) mutations.ts(+25/-6) providerCapabilities(+21/-6)
+  codexProviderPresets(+3/-2) i18n en/ja/zh(+32/-1)
+  取回 7265596a 的 ProviderForm.codexManagedAccount.test.tsx（10 用例）
+  + 前端新测试（ManagedAuthStatusError +86、ProviderCard.codexAccount +214 等）
+
+W4 剩余测试 + 全量门禁（~1,400 行）
+  CodexOAuthSection.test(+383) AddProviderDialog.test(+90) EditProviderDialog.test(+128)
+  FullScreenPanel.test(+33) useManagedAuth.test(+86) useAddProviderMutation.test(+57)
+  其余小测试；test:integration + build:web + smoke + 迁移幂等回归 + 凭据面专项核验
+```
+
+W0 结论已由主会话写入。每批门禁全绿 + 单批 commit；`check:web-routes` 恒 292/280/0；`SCHEMA_VERSION` 恒 17。
 
 ## 验证命令汇总
 
