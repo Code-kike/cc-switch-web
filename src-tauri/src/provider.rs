@@ -86,6 +86,46 @@ impl Provider {
             || self.claude_base_url_contains("chatgpt.com/backend-api/codex")
     }
 
+    /// A Codex Official row bound to a managed ChatGPT account.
+    ///
+    /// The local proxy can serve these itself: it resolves the bound account's
+    /// token and injects `chatgpt-account-id` from this binding, so nothing has
+    /// to be forwarded from a client-side login.
+    pub fn is_managed_codex_official_account_card(&self) -> bool {
+        self.category.as_deref() == Some("official")
+            && self
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.managed_account_id_for("codex_oauth"))
+                .is_some_and(|account_id| !account_id.trim().is_empty())
+    }
+
+    /// Any Codex Official card: the built-in native-login row or a managed
+    /// account card. Authentication for these is account-scoped rather than a
+    /// stored provider credential.
+    ///
+    /// Domain-level single definition: the `category == "official"` /
+    /// built-in-id / non-empty `codex_oauth` binding triple used to be spelled
+    /// out inline in the tray, the router and the proxy commands, where the
+    /// copies could drift apart.
+    pub fn is_codex_official_card(&self) -> bool {
+        if self.category.as_deref() != Some("official") {
+            return false;
+        }
+
+        self.id == crate::database::CODEX_OFFICIAL_PROVIDER_ID
+            || self.is_managed_codex_official_account_card()
+    }
+
+    /// Whether this provider may take part in failover retry for `app_type`.
+    ///
+    /// A Codex Official card never may: its requests carry the selected
+    /// account's own Authorization header, so retrying one against a different
+    /// card would cross the account boundary.
+    pub fn supports_failover(&self, app_type: &str) -> bool {
+        app_type != "codex" || !self.is_codex_official_card()
+    }
+
     /// Whether the provider form's "auth field" was explicitly set to
     /// ANTHROPIC_API_KEY. The form only persists `meta.apiKeyField` for the
     /// non-default choice, so `None` means the default ANTHROPIC_AUTH_TOKEN.
@@ -756,6 +796,68 @@ pub struct OpenCodeModelLimit {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn official_account_card_detection_covers_native_and_managed_rows() {
+        let mut provider: Provider = Provider::with_id(
+            "managed-official-account".to_string(),
+            "OpenAI Official".to_string(),
+            json!({ "auth": {}, "config": "" }),
+            None,
+        );
+        provider.category = Some("official".to_string());
+        assert!(
+            !provider.is_codex_official_card(),
+            "an Official row without a managed binding is not an account card"
+        );
+
+        let mut native = provider.clone();
+        native.id = crate::database::CODEX_OFFICIAL_PROVIDER_ID.to_string();
+        assert!(
+            native.is_codex_official_card(),
+            "the built-in Official row is the native-login card"
+        );
+
+        provider.meta = Some(crate::provider::ProviderMeta {
+            auth_binding: Some(crate::provider::AuthBinding {
+                source: crate::provider::AuthBindingSource::ManagedAccount,
+                auth_provider: Some("codex_oauth".to_string()),
+                account_id: Some("acct-managed".to_string()),
+            }),
+            ..Default::default()
+        });
+        assert!(
+            provider.is_codex_official_card(),
+            "an Official row bound to a managed ChatGPT account is an account card"
+        );
+
+        let mut third_party = provider.clone();
+        third_party.category = Some("third_party".to_string());
+        assert!(
+            !third_party.is_codex_official_card(),
+            "a non-official category never counts, even with a managed binding"
+        );
+    }
+    #[test]
+    fn codex_official_cards_never_support_failover() {
+        let mut provider = Provider::with_id(
+            crate::database::CODEX_OFFICIAL_PROVIDER_ID.to_string(),
+            "OpenAI Official".to_string(),
+            json!({ "auth": {}, "config": "" }),
+            None,
+        );
+        provider.category = Some("official".to_string());
+        assert!(!provider.supports_failover("codex"));
+        // The rule is Codex-scoped: the same row under another app is unaffected.
+        assert!(provider.supports_failover("claude"));
+
+        let third_party = Provider::with_id(
+            "third-party".to_string(),
+            "Third Party".to_string(),
+            json!({ "auth": {}, "config": "" }),
+            None,
+        );
+        assert!(third_party.supports_failover("codex"));
+    }
     use super::{
         ClaudeModelConfig, CodexModelConfig, GeminiModelConfig, OpenCodeProviderConfig, Provider,
         ProviderManager, ProviderMeta, UniversalProvider, UsageScript,

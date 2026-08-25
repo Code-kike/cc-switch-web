@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use tokio::sync::RwLock;
 
-use crate::proxy::providers::codex_oauth_auth::CodexOAuthManager;
+use crate::proxy::providers::codex_oauth_auth::{CodexOAuthError, CodexOAuthManager};
 use crate::proxy::providers::copilot_auth::CopilotAuthManager;
 use crate::proxy::providers::xai_oauth_auth::XaiOAuthManager;
 use crate::runtime::UiEventSink;
@@ -54,4 +54,39 @@ impl ProxyRuntimeCtx {
     pub fn refresh_tray(&self) {
         self.sink.refresh_tray();
     }
+}
+
+/// Remove a managed Codex account, serialized against managed provider
+/// add/update/switch/hot-switch.
+///
+/// Lock order is **switch lock -> manager**. A switch that already preflighted a
+/// managed bundle would otherwise be able to recreate `auth.json` after the
+/// removal committed, resurrecting a credential the user just deleted.
+///
+/// Both runtimes must call this instead of taking the locks themselves
+/// (desktop: `commands::auth::auth_remove_account`; web:
+/// `web_api::handlers::auth::auth_remove_account`). Inlining the guard per
+/// runtime is what lets the ordering silently drift on one side.
+pub(crate) async fn remove_managed_account_serialized(
+    proxy_service: &ProxyService,
+    manager: &Arc<RwLock<CodexOAuthManager>>,
+    account_id: &str,
+) -> Result<(), CodexOAuthError> {
+    let _switch_guard = proxy_service
+        .lock_switch_for_app(crate::app_config::AppType::Codex.as_str())
+        .await;
+    manager.read().await.remove_account(account_id).await
+}
+
+/// Clear every managed Codex credential, serialized against managed provider
+/// add/update/switch/hot-switch. Same lock order and same rationale as
+/// [`remove_managed_account_serialized`].
+pub(crate) async fn clear_managed_auth_serialized(
+    proxy_service: &ProxyService,
+    manager: &Arc<RwLock<CodexOAuthManager>>,
+) -> Result<(), CodexOAuthError> {
+    let _switch_guard = proxy_service
+        .lock_switch_for_app(crate::app_config::AppType::Codex.as_str())
+        .await;
+    manager.read().await.clear_auth().await
 }

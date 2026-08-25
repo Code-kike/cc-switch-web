@@ -8,6 +8,7 @@ use crate::proxy::providers::copilot_auth::{
     CopilotAuthError, GitHubAccount, GitHubDeviceCodeResponse,
 };
 use crate::proxy::providers::xai_oauth_auth::{XaiOAuthAccount, XaiOAuthError};
+use crate::store::AppState;
 
 const AUTH_PROVIDER_GITHUB_COPILOT: &str = "github_copilot";
 const AUTH_PROVIDER_CODEX_OAUTH: &str = "codex_oauth";
@@ -22,6 +23,9 @@ pub struct ManagedAuthAccount {
     pub authenticated_at: i64,
     pub is_default: bool,
     pub github_domain: String,
+    /// Codex 专用：旧账号缺少写入原生 Codex auth.json 所需的 id_token。
+    pub reauth_required: bool,
+    /// xAI 专用：refresh token 已失效，账号不可再用于请求。
     pub requires_reauth: bool,
 }
 
@@ -60,13 +64,14 @@ fn map_account(
 ) -> ManagedAuthAccount {
     ManagedAuthAccount {
         is_default: default_account_id == Some(account.id.as_str()),
+        reauth_required: account.reauth_required,
+        requires_reauth: false,
         id: account.id,
         provider: provider.to_string(),
         login: account.login,
         avatar_url: account.avatar_url,
         authenticated_at: account.authenticated_at,
         github_domain: account.github_domain,
-        requires_reauth: false,
     }
 }
 
@@ -82,6 +87,7 @@ fn map_xai_account(
         avatar_url: account.avatar_url,
         authenticated_at: account.authenticated_at,
         github_domain: account.github_domain,
+        reauth_required: false,
         requires_reauth: account.requires_reauth,
     }
 }
@@ -166,7 +172,7 @@ pub async fn auth_poll_for_account(
             }
         }
         AUTH_PROVIDER_CODEX_OAUTH => {
-            let auth_manager = codex_state.0.write().await;
+            let auth_manager = codex_state.0.read().await;
             match auth_manager.poll_for_token(&device_code).await {
                 Ok(account) => {
                     let default_account_id = auth_manager.get_status().await.default_account_id;
@@ -306,6 +312,7 @@ pub async fn auth_get_status(
 pub async fn auth_remove_account(
     auth_provider: String,
     account_id: String,
+    app_state: State<'_, AppState>,
     copilot_state: State<'_, CopilotAuthState>,
     codex_state: State<'_, CodexOAuthState>,
     xai_state: State<'_, XaiOAuthState>,
@@ -319,13 +326,13 @@ pub async fn auth_remove_account(
                 .await
                 .map_err(|e| e.to_string())
         }
-        AUTH_PROVIDER_CODEX_OAUTH => {
-            let auth_manager = codex_state.0.write().await;
-            auth_manager
-                .remove_account(&account_id)
-                .await
-                .map_err(|e| e.to_string())
-        }
+        AUTH_PROVIDER_CODEX_OAUTH => crate::proxy::runtime_ctx::remove_managed_account_serialized(
+            &app_state.proxy_service,
+            &codex_state.0,
+            &account_id,
+        )
+        .await
+        .map_err(|error| error.to_string()),
         AUTH_PROVIDER_XAI_OAUTH => {
             let auth_manager = xai_state.0.write().await;
             auth_manager
@@ -355,7 +362,7 @@ pub async fn auth_set_default_account(
                 .map_err(|e| e.to_string())
         }
         AUTH_PROVIDER_CODEX_OAUTH => {
-            let auth_manager = codex_state.0.write().await;
+            let auth_manager = codex_state.0.read().await;
             auth_manager
                 .set_default_account(&account_id)
                 .await
@@ -375,6 +382,7 @@ pub async fn auth_set_default_account(
 #[tauri::command(rename_all = "camelCase")]
 pub async fn auth_logout(
     auth_provider: String,
+    app_state: State<'_, AppState>,
     copilot_state: State<'_, CopilotAuthState>,
     codex_state: State<'_, CodexOAuthState>,
     xai_state: State<'_, XaiOAuthState>,
@@ -385,10 +393,12 @@ pub async fn auth_logout(
             let auth_manager = copilot_state.0.write().await;
             auth_manager.clear_auth().await.map_err(|e| e.to_string())
         }
-        AUTH_PROVIDER_CODEX_OAUTH => {
-            let auth_manager = codex_state.0.write().await;
-            auth_manager.clear_auth().await.map_err(|e| e.to_string())
-        }
+        AUTH_PROVIDER_CODEX_OAUTH => crate::proxy::runtime_ctx::clear_managed_auth_serialized(
+            &app_state.proxy_service,
+            &codex_state.0,
+        )
+        .await
+        .map_err(|error| error.to_string()),
         AUTH_PROVIDER_XAI_OAUTH => {
             let auth_manager = xai_state.0.write().await;
             auth_manager.clear_auth().await.map_err(|e| e.to_string())

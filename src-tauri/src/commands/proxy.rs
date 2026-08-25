@@ -253,7 +253,14 @@ pub async fn switch_proxy_provider(
     app_type: String,
     provider_id: String,
 ) -> Result<(), String> {
-    // Block official providers during proxy takeover
+    // Block official providers during proxy takeover.
+    //
+    // Upstream `a2e22f33` carves out Codex Official account cards here, but the
+    // load-bearing rejections live in `ProxyService::hot_switch_provider_inner`
+    // and `ProviderService::switch` ("defense-in-depth" copies of this check).
+    // Loosening only this entry point would change nothing while leaving the
+    // shallow guard open, so the carve-out has to be made in the batch that
+    // owns those files.
     let provider = state
         .db
         .get_provider_by_id(&provider_id, &app_type)

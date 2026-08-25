@@ -39,7 +39,7 @@ pub async fn add_to_failover_queue(
 ) -> Result<(), String> {
     state
         .db
-        .add_to_failover_queue(&app_type, &provider_id)
+        .add_to_failover_queue_checked(&app_type, &provider_id)
         .map_err(|e| e.to_string())
 }
 
@@ -88,4 +88,61 @@ pub async fn set_auto_failover_enabled(
         .proxy_service
         .set_auto_failover_enabled(&app_type, enabled)
         .await
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::database::Database;
+    use crate::provider::{AuthBinding, AuthBindingSource, Provider, ProviderMeta};
+    use serde_json::json;
+
+    #[test]
+    fn failover_entry_point_rejects_codex_official_account_cards() {
+        let db = Database::memory().expect("memory db");
+        let mut official = Provider::with_id(
+            "official-a".to_string(),
+            "OpenAI Official".to_string(),
+            json!({ "auth": {}, "config": "" }),
+            None,
+        );
+        official.category = Some("official".to_string());
+        official.meta = Some(ProviderMeta {
+            auth_binding: Some(AuthBinding {
+                source: AuthBindingSource::ManagedAccount,
+                auth_provider: Some("codex_oauth".to_string()),
+                account_id: Some("account-a".to_string()),
+            }),
+            ..Default::default()
+        });
+        db.save_provider("codex", &official).expect("save official");
+
+        assert!(
+            db.add_to_failover_queue_checked("codex", &official.id)
+                .is_err(),
+            "an account card must not be queueable"
+        );
+        assert!(
+            db.get_available_providers_for_failover("codex")
+                .expect("list available")
+                .iter()
+                .all(|provider| provider.id != official.id),
+            "an account card must not be offered as a queue candidate either"
+        );
+    }
+
+    #[test]
+    fn failover_entry_point_accepts_third_party_providers() {
+        let db = Database::memory().expect("memory db");
+        let provider = Provider::with_id(
+            "third-party".to_string(),
+            "Third Party".to_string(),
+            json!({ "auth": {}, "config": "" }),
+            None,
+        );
+        db.save_provider("codex", &provider).expect("save");
+
+        assert!(db
+            .add_to_failover_queue_checked("codex", &provider.id)
+            .is_ok());
+    }
 }

@@ -123,6 +123,40 @@ W4 剩余测试 + 全量门禁（~1,400 行）
 
 W0 结论已由主会话写入。每批门禁全绿 + 单批 commit；`check:web-routes` 恒 292/280/0；`SCHEMA_VERSION` 恒 17。
 
+## W1 落地结果与移交 W2 的项（2026-08-25）
+
+W1 已落 17 文件（+2832/−107），全量门禁绿。以下 W1 清单项经证据判定**移交 W2**，非遗漏：
+
+### 1. `forwarder.rs`(+73/−26) → W2
+上游 hunk 修改的是 fork **不存在**的前置面：`validate_codex_official_authorization`、`codex_official_auth_passthrough`、`categorize_proxy_error` 的 codex-official 分支，全部 0 命中（`a2e22f33^` 侧有 8 个文件引用 `requires_openai_auth`，fork 仅 3 个）。
+
+该守卫保护的是「客户端 inbound Authorization 直通上游」路径，fork 无此路径：fork forwarder 在 1381–1410 由 `CodexOAuthManager` **服务端解析**绑定账号 token，并在 1509–1512 **自行注入** `chatgpt-account-id`（取自 provider 绑定）。因此不存在可跨账号复用的 inbound token，账号边界由「注入哪个 token」保证。
+
+落地前提 = 先移植 `a2e22f33^` 的 passthrough 特性（超出本 commit diff），且与 fork「takeover 下阻止 official」策略冲突（策略实现在 `services/proxy.rs:2627` / `services/provider/mod.rs:2808`，均 W1 禁改）。
+
+### 2. `store.rs`(+9/−1) + `commands/codex_oauth.rs`(+7/−4) → W2
+两者的全部内容都是上游「去掉外层 `Arc<RwLock<CodexOAuthManager>>`」重构。fork 的 manager 生命周期是 `lib.rs`(desktop) / `examples/server.rs`(web) 构造后注入 `set_runtime_ctx` + `app.manage`/`ApiState`；upstream `store.rs` 改为在 `AppState::new` 内构造，在 fork 会产生**第二个实例**（状态分叉）。锁降级需同时改 `runtime_ctx.rs`/`web_api/state.rs`/`services/proxy.rs`/`lib.rs`/`examples/server.rs`。
+W1 保留外层 RwLock，所有新调用点统一用 `.read().await`（manager 内部已由本批新增的 `lifecycle_lock`/`storage_lock` 串行化，语义等价于无外层锁）。
+
+### 3. Codex Official 卡在 takeover 下的 switch carve-out → W2
+`commands/proxy.rs` 的 official 阻断保持 fork 原样。上游在此处放开，但 fork 的**承重**阻断在 `ProxyService::hot_switch_provider_inner`(proxy.rs:2627) 与 `ProviderService::switch`(mod.rs:2808) 的 defense-in-depth 副本里，二者 W1 禁改 → 只放开命令层等于零效果且留下未审查的浅层缺口。三处须在 W2 同批放开。
+
+### 4. `set_auto_failover_enabled` 的前置校验 → W2
+本批把「Codex Official 账号卡不可入 failover 队列」落为 `Database::add_to_failover_queue_checked`（桌面命令 + web handler 共用），**未**加在裸 `add_to_failover_queue` 上：`services/proxy.rs:3003` 在 `switch_proxy_target` 成功**之后**才补写队列（其 "FIX 4 原子性" 注释），此处报错会造成「切换已生效但 `auto_failover_enabled` 未持久化」。上游把校验放在切换**前**，属 `services/proxy.rs`（W2）。运行时安全网已就位：`ProviderRouter::select_providers_with_config` 跳过账号卡，`get_available_providers_for_failover` 不再把它列为候选。
+
+### 5. W2 需切换的调用点
+`write_live_with_common_config`（无 manager 版）保留原语义。`services/provider/mod.rs:2359/2376/2533/2594/2931` 与 `services/proxy.rs:2119` 均持 `&AppState`，W2 须改调 `write_live_with_common_config_for_state`，否则 managed Codex Official 卡写 live 时仍走占位 auth。
+
+### 6. 文档
+`docs/guides/codex-deepseek-routing-guide-{en,zh,ja}.md:129` 与 `SECURITY.md:169-171` 需在 W3/收尾同步（前者「official 一律阻止」措辞待 3 号放开后修正；后者需说明 `~/.codex/auth.json` 现在承载 cc-switch 写入的 managed OAuth 凭据）。
+
+### W1 关键适配（与上游不同之处）
+- **ADR 0003**：`sync_codex_managed_oauth_live_auth_after_refresh` 的 live auth.json 写入用 `write_json_file_managed`（上游 `write_json_file`）；`CodexLiveFileState` 增 `CodexLiveWriteMode::{ManagedExternal,CcSwitchOwned}`，回滚写入与正向写入同模式（auth/config/catalog = managed，cc-switch marker = 严格拒绝末端符号链接）。
+- **`futures::executor::block_on`** 取代 `tauri::async_runtime::block_on`（live.rs 4 处），因 live.rs 在 web 构建中经 `#[path]` 编入且 `tauri` 为 optional。
+- **谓词单一定义**：`Provider::{is_managed_codex_official_account_card,is_codex_official_card,supports_failover}` 落在 `provider.rs`（领域层），router/tray/DAO/commands 统一调用；未保留上游 `proxy::providers::is_codex_official_provider` / `provider_router::provider_supports_failover` 两个别名（W2 移植时需把上游调用路径改为领域方法）。
+- **`reauth_required` 双运行时**：`commands/auth.rs` 与 `web_api/handlers/auth.rs` 各自的 `ManagedAuthAccount` 均补该字段并从 `GitHubAccount.reauth_required` 映射；`requires_reauth` 仍为 xAI 专用（两字段不可合并）。新增 `web_api::` 断言钉住。
+- **凭据删除串行化**：`proxy/runtime_ctx.rs` 的 `remove_managed_account_serialized` / `clear_managed_auth_serialized`（锁序 switch-lock → manager），桌面命令与 web handler 共用。放在 runtime_ctx.rs 是因该文件本就同时 import `ProxyService` 与 `CodexOAuthManager`，不新增依赖边。
+
 ## 验证命令汇总
 
 见门禁块。关键额外检查：

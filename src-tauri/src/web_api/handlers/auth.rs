@@ -21,6 +21,9 @@ pub struct ManagedAuthAccount {
     pub authenticated_at: i64,
     pub is_default: bool,
     pub github_domain: String,
+    /// Codex 专用：旧账号缺少写入原生 Codex auth.json 所需的 id_token。
+    pub reauth_required: bool,
+    /// xAI 专用：refresh token 已失效，账号不可再用于请求。
     pub requires_reauth: bool,
 }
 
@@ -126,13 +129,14 @@ fn map_account(
 ) -> ManagedAuthAccount {
     ManagedAuthAccount {
         is_default: default_account_id == Some(account.id.as_str()),
+        reauth_required: account.reauth_required,
+        requires_reauth: false,
         id: account.id,
         provider: provider.to_string(),
         login: account.login,
         avatar_url: account.avatar_url,
         authenticated_at: account.authenticated_at,
         github_domain: account.github_domain,
-        requires_reauth: false,
     }
 }
 
@@ -148,6 +152,7 @@ fn map_xai_account(
         avatar_url: account.avatar_url,
         authenticated_at: account.authenticated_at,
         github_domain: account.github_domain,
+        reauth_required: false,
         requires_reauth: account.requires_reauth,
     }
 }
@@ -240,7 +245,7 @@ async fn auth_poll_for_account(
             }
         }
         AUTH_PROVIDER_CODEX_OAUTH => {
-            let manager = state.codex_oauth.write().await;
+            let manager = state.codex_oauth.read().await;
             match manager.poll_for_token(&request.device_code).await {
                 Ok(account) => {
                     let default_account_id = manager.get_status().await.default_account_id;
@@ -377,11 +382,13 @@ async fn auth_remove_account(
                 .map_err(ApiError::from_anyhow)?;
         }
         AUTH_PROVIDER_CODEX_OAUTH => {
-            let manager = state.codex_oauth.write().await;
-            manager
-                .remove_account(&request.account_id)
-                .await
-                .map_err(ApiError::from_anyhow)?;
+            crate::proxy::runtime_ctx::remove_managed_account_serialized(
+                &state.app_state.proxy_service,
+                &state.codex_oauth,
+                &request.account_id,
+            )
+            .await
+            .map_err(ApiError::from_anyhow)?;
         }
         AUTH_PROVIDER_XAI_OAUTH => {
             let manager = state.xai_oauth.write().await;
@@ -409,7 +416,7 @@ async fn auth_set_default_account(
                 .map_err(ApiError::from_anyhow)?;
         }
         AUTH_PROVIDER_CODEX_OAUTH => {
-            let manager = state.codex_oauth.write().await;
+            let manager = state.codex_oauth.read().await;
             manager
                 .set_default_account(&request.account_id)
                 .await
@@ -438,8 +445,12 @@ async fn auth_logout(
             manager.clear_auth().await.map_err(ApiError::from_anyhow)?;
         }
         AUTH_PROVIDER_CODEX_OAUTH => {
-            let manager = state.codex_oauth.write().await;
-            manager.clear_auth().await.map_err(ApiError::from_anyhow)?;
+            crate::proxy::runtime_ctx::clear_managed_auth_serialized(
+                &state.app_state.proxy_service,
+                &state.codex_oauth,
+            )
+            .await
+            .map_err(ApiError::from_anyhow)?;
         }
         AUTH_PROVIDER_XAI_OAUTH => {
             let manager = state.xai_oauth.write().await;
@@ -592,5 +603,33 @@ mod tests {
         assert!(!status.accounts[0].requires_reauth);
         assert!(!status.accounts[1].is_default);
         assert!(status.accounts[1].requires_reauth);
+    }
+
+    #[test]
+    fn codex_account_mapping_preserves_reauth_required_for_web_dispatch() {
+        // Codex 的 reauth_required 与 xAI 的 requires_reauth 是两个独立字段：
+        // 前者表示账号无持久化 id_token（需重登），后者是 xAI refresh 凭据失效。
+        // 前端 fail-closed 阻断读的是 reauth_required，Web 运行时必须与桌面一致
+        // 地把它从 GitHubAccount 映射出去，否则需重认证的账号在 Web 下可被保存。
+        let account = crate::proxy::providers::copilot_auth::GitHubAccount {
+            id: "legacy".to_string(),
+            login: "legacy@example.com".to_string(),
+            avatar_url: None,
+            authenticated_at: 30,
+            github_domain: "chatgpt.com".to_string(),
+            reauth_required: true,
+        };
+
+        let mapped = map_account(AUTH_PROVIDER_CODEX_OAUTH, account, Some("legacy"));
+
+        assert!(mapped.is_default);
+        assert!(
+            mapped.reauth_required,
+            "a Codex account without a stored id_token must stay flagged for reauth in web mode"
+        );
+        assert!(
+            !mapped.requires_reauth,
+            "requires_reauth is xAI-only and must not absorb the Codex reauth flag"
+        );
     }
 }

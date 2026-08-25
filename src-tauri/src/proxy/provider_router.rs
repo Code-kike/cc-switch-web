@@ -73,8 +73,24 @@ impl ProviderRouter {
         let mut result = Vec::new();
         let mut total_providers = 0usize;
         let mut circuit_open_count = 0usize;
+        let current_id = self.effective_current_provider_id(app_type);
+        let current_provider = current_id
+            .as_deref()
+            .map(|id| self.db.get_provider_by_id(id, app_type))
+            .transpose()?
+            .flatten();
 
-        if auto_failover_enabled {
+        if auto_failover_enabled
+            && current_provider
+                .as_ref()
+                .is_some_and(|provider| !provider.supports_failover(app_type))
+        {
+            // A selected Codex Official account is an explicit account choice.
+            // Keep it as a single route even if an old failover setting remains
+            // enabled; retrying would reuse its inbound token for another card.
+            total_providers = 1;
+            result.push(current_provider.expect("checked above"));
+        } else if auto_failover_enabled {
             // 故障转移开启：仅使用故障转移队列（基准顺序 = 队列顺序 P1 → P2 → ...）
             let all_providers = self.db.get_all_providers(app_type)?;
 
@@ -86,12 +102,17 @@ impl ProviderRouter {
                 .map(|item| item.provider_id)
                 .collect();
 
-            total_providers = ordered_ids.len();
-
             for provider_id in ordered_ids {
                 let Some(provider) = all_providers.get(&provider_id).cloned() else {
                     continue;
                 };
+                // A stale queue entry for a Codex Official card is skipped
+                // rather than counted, so it can neither be retried nor make
+                // the "all providers tripped" branch fire.
+                if !provider.supports_failover(app_type) {
+                    continue;
+                }
+                total_providers += 1;
 
                 let circuit_key = format!("{app_type}:{}", provider.id);
                 let breaker = self.get_or_create_circuit_breaker(&circuit_key).await;
@@ -106,7 +127,6 @@ impl ProviderRouter {
             // Random 策略（D2 粘性直到失败）：当前供应商排首位，其余洗牌。
             // Sequential 路径不做任何重排——与上游行为逐字节一致。
             if failover_strategy == FailoverStrategy::Random && result.len() > 1 {
-                let current_id = self.effective_current_provider_id(app_type);
                 Self::apply_random_strategy(
                     &mut result,
                     current_id.as_deref(),
@@ -115,13 +135,9 @@ impl ProviderRouter {
             }
         } else {
             // 故障转移关闭：仅使用当前供应商，跳过熔断器检查
-            let current_id = self.effective_current_provider_id(app_type);
-
-            if let Some(current_id) = current_id {
-                if let Some(current) = self.db.get_provider_by_id(&current_id, app_type)? {
-                    total_providers = 1;
-                    result.push(current);
-                }
+            if let Some(current) = current_provider {
+                total_providers = 1;
+                result.push(current);
             }
         }
 
