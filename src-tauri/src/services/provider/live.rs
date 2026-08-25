@@ -698,33 +698,6 @@ pub(crate) fn build_effective_settings_with_common_config(
     Ok(effective_settings)
 }
 
-/// Write the live snapshot for a provider, without touching managed Codex
-/// OAuth auth.
-///
-/// Kept byte-identical to its pre-managed-accounts behavior on purpose.
-///
-/// `ProviderService` add/update/switch were switched over to
-/// [`write_live_with_common_config_for_state`] with the managed
-/// provider-transaction layer. Exactly one caller remains:
-/// `ProxyService::restore_live_from_ssot_for_app` (`services/proxy.rs`, itself
-/// only reached from the placeholder-takeover recovery path), which holds
-/// `&self`/`self.db` rather than an `&AppState` — so switching it over needs an
-/// `AppState` handle or a separate manager-aware entry, and is deferred to the
-/// proxy-service batch. Until then a managed Codex Official card recovered
-/// through that path keeps its stored placeholder auth instead of the selected
-/// account's bundle.
-pub(crate) fn write_live_with_common_config(
-    db: &Database,
-    app_type: &AppType,
-    provider: &Provider,
-) -> Result<(), AppError> {
-    let mut effective_provider = provider.clone();
-    effective_provider.settings_config =
-        build_effective_settings_with_common_config(db, app_type, provider)?;
-
-    write_live_snapshot(app_type, &effective_provider)
-}
-
 /// `AppState`-scoped entry that resolves the Codex OAuth manager from the proxy
 /// runtime context. Desktop (`lib.rs` setup) and web (`examples/server.rs`)
 /// both inject the same `Arc` there, so this is the one lookup that works in

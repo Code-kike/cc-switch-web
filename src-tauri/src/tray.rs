@@ -692,8 +692,11 @@ pub fn create_tray_menu(
 
             for (id, provider) in sort_providers(&providers) {
                 let is_current = current_id == *id;
+                // Same rule as the three service/command guards, from one
+                // definition: `Provider::blocked_by_proxy_takeover`. The tray
+                // used to inline `category == "official"` and could drift.
                 let is_official_blocked =
-                    is_app_taken_over && provider.category.as_deref() == Some("official");
+                    is_app_taken_over && provider.blocked_by_proxy_takeover(app_type_str);
                 let label = if is_official_blocked {
                     format!("{} \u{26D4}", &provider.name) // ⛔ emoji
                 } else {

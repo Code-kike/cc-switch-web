@@ -138,6 +138,35 @@ impl Provider {
             || self.is_managed_codex_official_account_card()
     }
 
+    /// An Official Codex card whose live `auth.json` is owned by Codex or by a
+    /// managed account rather than by this row: the fixed native-login row, a
+    /// managed account card, or an unbound Official card (PRD: several unbound
+    /// "follow login" cards are allowed).
+    ///
+    /// Used by the takeover backup/restore arbitration, which must neither freeze
+    /// such a login into the DB backup nor replace it with the row's stored auth.
+    /// Upstream asks the same question through the shape-detecting
+    /// `proxy::providers::is_codex_official_provider`; the fork expresses it in
+    /// domain terms instead (W1). Two known differences:
+    ///
+    /// - An official-category card that carries its own `OPENAI_API_KEY` is
+    ///   excluded here, as upstream excludes it: its stored key *is* the
+    ///   credential, so takeover must be free to project it
+    ///   (`codex_sync_current_to_live_during_takeover_preserves_oauth_auth_json`
+    ///   pins a mis-categorized DeepSeek row of exactly that shape).
+    /// - A card that is official only *by shape* while its `category` says
+    ///   otherwise is not recognized, because the fork does not carry upstream's
+    ///   shape detection. Residual gap, same one recorded for the stale-auth
+    ///   cleanup in `services/provider/mod.rs`.
+    pub fn codex_official_login_is_live_owned(&self) -> bool {
+        self.category.as_deref() == Some("official")
+            && self
+                .settings_config
+                .pointer("/auth/OPENAI_API_KEY")
+                .and_then(Value::as_str)
+                .is_none_or(|key| key.trim().is_empty())
+    }
+
     /// Whether this provider may take part in failover retry for `app_type`.
     ///
     /// A Codex Official card never may: its requests carry the selected
@@ -145,6 +174,41 @@ impl Provider {
     /// card would cross the account boundary.
     pub fn supports_failover(&self, app_type: &str) -> bool {
         app_type != "codex" || !self.is_codex_official_card()
+    }
+
+    /// Whether switching to this provider must be refused while `app_type` is
+    /// under local-routing takeover.
+    ///
+    /// Single definition for all four enforcement points (`switch_proxy_provider`
+    /// command, `ProxyService::hot_switch_provider_inner`,
+    /// `ProviderService::switch`, and the tray menu's disabled state). They each
+    /// used to inline `category == "official"`, which is how the tray kept
+    /// blocking cards the service layer had already accepted.
+    ///
+    /// # Codex carve-out (narrower than upstream)
+    ///
+    /// Upstream `a2e22f33` narrows this to
+    /// `category == "official" && !official_provider_supports_proxy_takeover(..)`
+    /// so *any* Codex Official card (including unbound native-login) can be
+    /// selected while takeover is active. That depends on inbound Authorization
+    /// passthrough (`codex_official_auth_passthrough` +
+    /// `validate_codex_official_authorization`), which this fork does not have:
+    /// the forwarder *replaces* inbound Authorization with adapter headers.
+    ///
+    /// The fork therefore opens only **managed** Official cards: `CodexAdapter`
+    /// returns `AuthStrategy::CodexOAuth`, the forwarder resolves the bound
+    /// account token and injects `chatgpt-account-id`. Unbound native-login
+    /// Official cards have no server-side credential and stay blocked
+    /// (fail-closed: opening them would turn a clear switch-time refusal into a
+    /// failing Codex session).
+    pub fn blocked_by_proxy_takeover(&self, app_type: &str) -> bool {
+        if self.category.as_deref() != Some("official") {
+            return false;
+        }
+        if app_type == "codex" && self.is_managed_codex_official_account_card() {
+            return false;
+        }
+        true
     }
 
     /// Whether the provider form's "auth field" was explicitly set to
@@ -878,6 +942,53 @@ mod tests {
             None,
         );
         assert!(third_party.supports_failover("codex"));
+    }
+
+    #[test]
+    fn blocked_by_proxy_takeover_opens_only_managed_codex_official_cards() {
+        let mut managed = Provider::with_id(
+            "managed-official-account".to_string(),
+            "OpenAI Official".to_string(),
+            json!({ "auth": {}, "config": "" }),
+            None,
+        );
+        managed.category = Some("official".to_string());
+        managed.meta = Some(ProviderMeta {
+            auth_binding: Some(crate::provider::AuthBinding {
+                source: crate::provider::AuthBindingSource::ManagedAccount,
+                auth_provider: Some("codex_oauth".to_string()),
+                account_id: Some("acct-managed".to_string()),
+            }),
+            ..Default::default()
+        });
+        assert!(
+            !managed.blocked_by_proxy_takeover("codex"),
+            "managed Official cards are the fork carve-out"
+        );
+        assert!(
+            managed.blocked_by_proxy_takeover("claude"),
+            "the carve-out is Codex-scoped; Claude Official stays blocked"
+        );
+
+        let mut native = Provider::with_id(
+            crate::database::CODEX_OFFICIAL_PROVIDER_ID.to_string(),
+            "OpenAI Official".to_string(),
+            json!({ "auth": {}, "config": "" }),
+            None,
+        );
+        native.category = Some("official".to_string());
+        assert!(
+            native.blocked_by_proxy_takeover("codex"),
+            "unbound native-login Official stays fail-closed (no inbound passthrough)"
+        );
+
+        let third_party = Provider::with_id(
+            "third-party".to_string(),
+            "Third Party".to_string(),
+            json!({ "auth": {}, "config": "" }),
+            None,
+        );
+        assert!(!third_party.blocked_by_proxy_takeover("codex"));
     }
     use super::{
         ClaudeModelConfig, CodexModelConfig, GeminiModelConfig, OpenCodeProviderConfig, Provider,

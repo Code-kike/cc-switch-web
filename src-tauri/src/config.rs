@@ -351,6 +351,18 @@ pub fn atomic_write_managed(path: &Path, data: &[u8]) -> Result<(), AppError> {
     atomic_write_with_mode(path, data, AtomicWriteMode::FollowManagedSymlink)
 }
 
+/// Resolve where a managed write to `path` actually lands (ADR 0003).
+///
+/// Callers that need more than "replace the contents" — e.g. the Codex auth
+/// no-clobber transaction, which claims the file by renaming it aside and only
+/// re-installs while the path is still vacant — must run their rename/hard-link
+/// protocol against the *resolved* target. Running it against a managed symlink
+/// would move or replace the link itself and destroy the user's dotfiles layout,
+/// which is exactly what [`atomic_write_managed`] exists to prevent.
+pub(crate) fn resolve_managed_write_path(path: &Path) -> Result<PathBuf, AppError> {
+    resolve_atomic_write_path(path, AtomicWriteMode::FollowManagedSymlink)
+}
+
 /// Ensure a write target resolves inside the effective allowed root.
 ///
 /// The root itself may be a user-managed directory symlink. Existing targets

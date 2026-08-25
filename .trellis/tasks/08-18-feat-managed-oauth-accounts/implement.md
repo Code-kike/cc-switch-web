@@ -358,6 +358,47 @@ W0 只**孤立地**调研了 `a2e22f33` 单个提交，没有逐项核对「这�
 <target-tag>`），再写入验收标准与批次表 —— 中间提交引入的符号可能在下游提交里被删除，孤立
 读单个提交的 diff 无法发现这一点。
 
+## W3 落地结果（2026-08-25）
+
+13 文件 +2521/−358。子代理中途被截，主会话收口：补 `seed_codex_model_template` 测试 helper、按任务契约打开 managed Official carve-out。
+
+### Codex carve-out：比上游窄，只放开 managed Official
+
+`Provider::blocked_by_proxy_takeover` 是四处分发点的单一定义（命令 / `hot_switch_provider_inner` / `ProviderService::switch` / tray）。
+
+- **打开**：`app_type == "codex" && is_managed_codex_official_account_card()` —— fork 能服务：`CodexAdapter` 返回 `AuthStrategy::CodexOAuth` 占位，forwarder 按 strategy 解析绑定账号 token 并注入 `chatgpt-account-id`。
+- **保持关闭（fail-closed）**：unbound 原生登录 Official 卡。fork 没有上游的 inbound Authorization passthrough（`codex_official_auth_passthrough` / `validate_codex_official_authorization`），forwarder **替换** inbound Authorization。打开它们会把切换时的明确拒绝变成一次失败的 Codex 会话。
+- Claude Official 仍一律拦截（carve-out 仅 Codex 作用域）。Claude 侧 `codex_oauth` 预设是 `third_party`，不受此谓词影响。
+
+出站路径（CodexAdapter，按本文件 xAI 模式，不复制 ClaudeAdapter 的 ChatGPT 协议）：
+- `extract_base_url` 对 managed Official 钉死 `CHATGPT_CODEX_BASE_URL`
+- `extract_auth` 返回 `CodexOAuth` 占位（**不**依赖 `meta.provider_type`，测试卡与生产卡都只靠 `auth_binding`）
+- `build_url` 在钉死 origin 下保留客户端 path（`/responses`、`/responses/compact`、`/alpha/search`），不强制 `/responses`
+- `get_auth_headers` 成对发送 `originator`+`version`
+
+`CODEX_OAUTH_ORIGINATOR` / `CODEX_OAUTH_CLIENT_VERSION` 从 `claude.rs` 私有常量提升到 `proxy/providers/mod.rs`（与 `CHATGPT_CODEX_BASE_URL` 并列），两处适配器共用，避免双份漂移（成对缺一即 404）。
+
+钉住测试：
+- `blocked_by_proxy_takeover_opens_only_managed_codex_official_cards`
+- `managed_official_card_pins_chatgpt_origin_and_codex_oauth_strategy`
+- `unbound_official_card_has_no_server_side_credential`
+
+### 其余 W3 范围
+
+- `services/proxy.rs` 净移植（never-clobber 测试仍在：`codex_*_preserves_oauth_auth_json*`）
+- `update` takeover 分支落地：`sync_codex_live_from_provider_while_proxy_active_guarded`、`update_live_backup_from_provider_inner` 第 4 参、`managed_codex_takeover_transaction_error`；W2 过渡用例被上游 `managed_codex_takeover_update_db_failure_restores_backup_live_and_binding` 取代
+- `set_auto_failover_enabled` 前置校验经 `Database::ensure_provider_supports_failover`（切换前拒绝，队列写入仍在切换成功后）
+- `restore_live_from_ssot_for_app` 改调 `write_live_with_common_config_for_codex_oauth_manager`；无调用方的 `write_live_with_common_config` 已删
+- `forwarder.rs` inbound passthrough **维持丢弃**（fork 无此面；账号边界由「注入哪个 token」保证）
+- 外层 `Arc<RwLock<CodexOAuthManager>>` **永久分叉保留**（去掉会在 `AppState::new` 构造第二份 manager）
+- C1：live auth.json 写入走 `write_json_file_managed`；新增 `resolve_managed_write_path` 供 no-clobber rename 协议打到解析后的目标，避免砸掉符号链接
+- C2：web 构建文件无新增 `tauri::async_runtime`
+
+### 门禁（W3）
+
+`cargo test --lib` **2288** passed / 5 ignored（基线 2273；+16 量级，含 3 个新 carve-out/adapter 测试）。全量跑中 `database::tests::sql_import_*` 偶发 `创建数据库安全备份失败: not an error`，隔离重跑即过，属既有 flake，非本批引入。
+`proxy::` **1153**（基线 1138）。parity **38**。test:unit **173 / 1044**。locales **2637**。web-routes **292/280/0**。`SCHEMA_VERSION` **17**。fmt / typecheck / web-server example check 全绿。延期栈四文件仍缺席；`migrate_legacy_codex_official_managed_binding` 仍缺席。
+
 ## 验证命令汇总
 
 见门禁块。关键额外检查：

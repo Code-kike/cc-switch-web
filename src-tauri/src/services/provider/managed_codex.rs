@@ -98,6 +98,51 @@ pub(super) fn managed_codex_transaction_error(
     }
 }
 
+/// Rollback for a managed Codex transaction that also mutated the takeover Live
+/// backup: the DB backup row is part of the same logical commit as the live
+/// bundle, so it has to be restored (or deleted, when there was none) together
+/// with `~/.codex`.
+pub(super) fn managed_codex_takeover_transaction_error(
+    state: &AppState,
+    operation: &str,
+    error: AppError,
+    snapshot: &crate::codex_config::CodexLiveStateSnapshot,
+    previous_backup: Option<&crate::proxy::types::LiveBackup>,
+    restore_local_current: Option<(&AppType, Option<&str>)>,
+) -> AppError {
+    let mut rollback_failures = Vec::new();
+    if let Some((app_type, previous_local_current)) = restore_local_current {
+        if let Err(rollback_error) =
+            crate::settings::set_current_provider(app_type, previous_local_current)
+        {
+            rollback_failures.push(format!("恢复本地 current 失败: {rollback_error}"));
+        }
+    }
+    let backup_restore = match previous_backup {
+        Some(backup) => futures::executor::block_on(
+            state
+                .db
+                .save_live_backup(AppType::Codex.as_str(), &backup.original_config),
+        ),
+        None => futures::executor::block_on(state.db.delete_live_backup(AppType::Codex.as_str())),
+    };
+    if let Err(rollback_error) = backup_restore {
+        rollback_failures.push(format!("恢复 Codex Live 备份失败: {rollback_error}"));
+    }
+    if let Err(rollback_error) = snapshot.restore_preserving_newer_same_account_auth() {
+        rollback_failures.push(rollback_error.to_string());
+    }
+
+    if rollback_failures.is_empty() {
+        error
+    } else {
+        AppError::Message(format!(
+            "{operation}失败: {error}; 回滚同时失败: {}",
+            rollback_failures.join("; ")
+        ))
+    }
+}
+
 pub(super) fn managed_codex_add_transaction_error(
     state: &AppState,
     operation: &str,

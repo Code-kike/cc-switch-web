@@ -42,7 +42,15 @@ pub(crate) use live::{
     build_effective_settings_with_common_config, normalize_provider_common_config_for_storage,
     provider_exists_in_live_config, sanitize_claude_settings_for_live,
     strip_common_config_from_live_settings, sync_current_provider_for_app_to_live,
-    write_live_with_common_config, write_live_with_common_config_for_state,
+    write_live_with_common_config_for_state,
+};
+
+// Re-exported for `ProxyService`, which resolves the Codex OAuth manager from the
+// injected proxy runtime context instead of holding an `AppState`.
+pub(crate) use live::{
+    build_effective_provider_for_live_with_codex_oauth_manager,
+    prepare_codex_managed_oauth_live_auth_switch_away,
+    write_live_with_common_config_for_codex_oauth_manager,
 };
 
 // Internal re-exports
@@ -56,9 +64,9 @@ use live::{
 use managed_codex::{
     clear_outgoing_managed_codex_live_auth, ensure_outgoing_managed_codex_live_auth_unchanged,
     managed_codex_add_transaction_error, managed_codex_oauth_account_id,
-    managed_codex_transaction_error, outgoing_managed_codex_oauth_account_id,
-    preflight_managed_codex_live, prepare_outgoing_managed_codex_live_auth,
-    write_preflighted_or_current_live,
+    managed_codex_takeover_transaction_error, managed_codex_transaction_error,
+    outgoing_managed_codex_oauth_account_id, preflight_managed_codex_live,
+    prepare_outgoing_managed_codex_live_auth, write_preflighted_or_current_live,
 };
 use usage::validate_usage_script;
 
@@ -3597,66 +3605,159 @@ wire_api = "responses"
         });
     }
 
-    /// W2 stops the managed `update` transaction at the takeover branch: it needs
-    /// `sync_codex_live_from_provider_while_proxy_active_guarded` and the
-    /// managed-account parameter on `update_live_backup_from_provider_inner`,
-    /// both of which live in `services/proxy.rs` (later batch). Falling through
-    /// to the legacy path would write the stored placeholder auth into the
-    /// takeover backup and skip the compare-before-write guard, so the branch
-    /// fails closed instead.
+    /// Upstream's replacement for W2's interim fail-closed test, now that the
+    /// takeover branch is real: a DB failure at the end of the managed takeover
+    /// transaction must restore the Live backup row, the whole `~/.codex` bundle
+    /// and the previous account binding.
     ///
-    /// Upstream's `managed_codex_takeover_update_db_failure_restores_backup_live_and_binding`
-    /// replaces this test once that branch lands.
+    /// Fork adaptations: `futures::executor::block_on` (C2) and the managed
+    /// account manager comes from the injected proxy runtime context instead of
+    /// `AppState::codex_oauth_manager`.
     #[test]
     #[serial]
-    fn managed_codex_update_under_takeover_fails_closed_until_proxy_batch() {
+    fn managed_codex_takeover_update_db_failure_restores_backup_live_and_binding() {
         with_codex_oauth_test_home(|state, codex_oauth, _| {
             crate::settings::reload_settings().expect("reload settings");
             futures::executor::block_on(async {
-                codex_oauth
-                    .read()
-                    .await
+                let manager = codex_oauth.read().await;
+                manager
                     .add_test_account_with_access_token(
-                        "acct-takeover",
-                        "managed-access",
-                        Some("managed-id"),
+                        "acct-managed-a",
+                        "managed-token-a",
+                        Some("managed-id-a"),
                     )
                     .await
-                    .expect("seed managed account");
+                    .expect("seed managed account A");
+                manager
+                    .add_test_account_with_access_token(
+                        "acct-managed-b",
+                        "managed-token-b",
+                        Some("managed-id-b"),
+                    )
+                    .await
+                    .expect("seed managed account B");
             });
-            let provider = managed_codex_provider("managed-takeover", "acct-takeover");
+
+            let mut provider = Provider::with_id(
+                "managed-official-a".to_string(),
+                "OpenAI Official A".to_string(),
+                json!({
+                    "auth": {},
+                    "config": "model = \"gpt-5.4\"\n"
+                }),
+                None,
+            );
+            provider.category = Some("official".to_string());
+            provider.meta = Some(ProviderMeta {
+                auth_binding: Some(AuthBinding {
+                    source: AuthBindingSource::ManagedAccount,
+                    auth_provider: Some("codex_oauth".to_string()),
+                    account_id: Some("acct-managed-a".to_string()),
+                }),
+                ..Default::default()
+            });
             state
                 .db
                 .save_provider(AppType::Codex.as_str(), &provider)
-                .expect("save managed provider");
-            ProviderService::switch(state, AppType::Codex, &provider.id)
-                .expect("activate managed provider");
+                .expect("save official provider A");
+            state
+                .db
+                .set_current_provider(AppType::Codex.as_str(), &provider.id)
+                .expect("set DB current");
+            crate::settings::set_current_provider(&AppType::Codex, Some(&provider.id))
+                .expect("set local current");
 
-            // Simulate proxy takeover owning the live config.
-            futures::executor::block_on(state.db.save_live_backup(
-                AppType::Codex.as_str(),
-                &json!({ "auth": {}, "config": "" }).to_string(),
-            ))
-            .expect("seed live backup");
-
-            let mut renamed = provider.clone();
-            renamed.name = "Renamed while taken over".to_string();
-            let error = ProviderService::update(state, AppType::Codex, None, renamed)
-                .expect_err("managed update under takeover must fail closed");
-            assert!(
-                error.to_string().contains("接管") || error.to_string().contains("takeover"),
-                "error must name the takeover restriction, got: {error}"
-            );
-
-            assert_eq!(
+            futures::executor::block_on(async {
                 state
                     .db
-                    .get_provider_by_id(&provider.id, AppType::Codex.as_str())
-                    .expect("read provider")
-                    .expect("provider row must survive")
-                    .name,
-                provider.name,
-                "a fail-closed update must not persist the rename"
+                    .update_proxy_config(ProxyConfig {
+                        listen_port: 15_721,
+                        ..Default::default()
+                    })
+                    .await
+                    .expect("set proxy port");
+                state
+                    .db
+                    .save_live_backup(
+                        AppType::Codex.as_str(),
+                        &serde_json::to_string(&json!({
+                            "config": "model = \"gpt-5.4\"\n"
+                        }))
+                        .expect("serialize baseline backup"),
+                    )
+                    .await
+                    .expect("save baseline backup");
+                state
+                    .proxy_service
+                    .sync_codex_live_from_provider_while_proxy_active(&provider)
+                    .await
+                    .expect("seed managed takeover live");
+            });
+
+            let backup_before =
+                futures::executor::block_on(state.db.get_live_backup(AppType::Codex.as_str()))
+                    .expect("read baseline backup")
+                    .expect("baseline backup exists");
+            let live_before = crate::codex_config::CodexLiveStateSnapshot::capture()
+                .expect("capture managed takeover live");
+
+            {
+                let conn = state.db.conn.lock().expect("lock database");
+                conn.execute_batch(
+                    "CREATE TRIGGER reject_managed_takeover_provider_update
+                     BEFORE UPDATE ON providers
+                     WHEN NEW.app_type = 'codex'
+                       AND NEW.id = 'managed-official-a'
+                       AND NEW.name = 'OpenAI Official B'
+                     BEGIN
+                       SELECT RAISE(ABORT, 'forced managed takeover provider failure');
+                     END;",
+                )
+                .expect("install provider failure trigger");
+            }
+
+            let mut updated = provider.clone();
+            updated.name = "OpenAI Official B".to_string();
+            updated
+                .meta
+                .as_mut()
+                .and_then(|meta| meta.auth_binding.as_mut())
+                .expect("managed binding")
+                .account_id = Some("acct-managed-b".to_string());
+
+            let error = ProviderService::update(state, AppType::Codex, None, updated)
+                .expect_err("DB failure should abort takeover update");
+            assert!(
+                error
+                    .to_string()
+                    .contains("forced managed takeover provider failure"),
+                "update should surface DB failure: {error}"
+            );
+
+            let saved = state
+                .db
+                .get_provider_by_id(&provider.id, AppType::Codex.as_str())
+                .expect("read provider after rollback")
+                .expect("provider still exists");
+            assert_eq!(saved.name, "OpenAI Official A");
+            assert_eq!(
+                saved
+                    .meta
+                    .as_ref()
+                    .and_then(|meta| meta.managed_account_id_for("codex_oauth")),
+                Some("acct-managed-a".to_string())
+            );
+
+            let backup_after =
+                futures::executor::block_on(state.db.get_live_backup(AppType::Codex.as_str()))
+                    .expect("read backup after rollback")
+                    .expect("backup still exists");
+            assert_eq!(backup_after.original_config, backup_before.original_config);
+            assert_eq!(
+                crate::codex_config::CodexLiveStateSnapshot::capture()
+                    .expect("capture live after rollback"),
+                live_before,
+                "failed takeover update must restore auth/config/catalog/marker exactly"
             );
         });
     }
@@ -4197,71 +4298,144 @@ impl ProviderService {
                 return Ok(true);
             }
 
-            // The lock acquired before reading existing/current spans the
-            // complete transaction, so no concurrent hot-switch can observe a gap.
-            let has_live_backup =
-                futures::executor::block_on(state.db.get_live_backup(app_type.as_str()))?.is_some();
-            let live_taken_over = state
-                .proxy_service
-                .detect_takeover_in_live_config_for_app(&app_type);
-
-            if has_live_backup || live_taken_over {
-                // Fail closed until the proxy-service batch lands. Upstream's
-                // takeover transaction needs two `services/proxy.rs` symbols the
-                // fork does not have yet: the managed-account parameter on
-                // `update_live_backup_from_provider_inner`, and
-                // `sync_codex_live_from_provider_while_proxy_active_guarded`.
-                // Falling through to the legacy path would write the stored
-                // placeholder auth into the takeover backup and skip the
-                // compare-before-write guard that protects a CLI-rotated login.
-                // Account binding is an authorization decision, so this errors
-                // rather than degrading (spec: Degradation Direction).
-                return Err(AppError::localized(
-                    "provider.codex.managedOfficial.takeoverUpdateUnsupported",
-                    "代理接管 Codex 期间暂不支持修改托管账号绑定，请先停止接管后重试",
-                    "Editing a managed Codex account binding while proxy takeover is active is not supported yet; stop the takeover and retry",
-                ));
-            }
-
             let outgoing_live_refresh_token = prepare_outgoing_managed_codex_live_auth(
                 state,
                 outgoing_managed_codex_account_id.as_deref(),
             )?;
+
+            // The lock acquired before reading existing/current spans the
+            // complete direct/takeover transaction. Backup update and takeover
+            // Live sync therefore cannot expose a gap to concurrent hot-switch.
+            let previous_backup =
+                futures::executor::block_on(state.db.get_live_backup(app_type.as_str()))?;
+            let has_live_backup = previous_backup.is_some();
+            let live_taken_over = state
+                .proxy_service
+                .detect_takeover_in_live_config_for_app(&app_type);
             let preflighted_provider = preflight_managed_codex_live(state, &app_type, &provider)?;
             // Capture after preflight: a legitimate refresh may have advanced
             // auth.json, and rollback must never restore the older generation.
             let snapshot = crate::codex_config::CodexLiveStateSnapshot::capture()?;
+
+            if !has_live_backup && !live_taken_over {
+                let commit_result = (|| {
+                    ensure_outgoing_managed_codex_live_auth_unchanged(
+                        outgoing_managed_codex_account_id.as_deref(),
+                        outgoing_live_refresh_token.as_deref(),
+                    )?;
+                    write_preflighted_or_current_live(
+                        state,
+                        &app_type,
+                        &provider,
+                        preflighted_provider.as_ref(),
+                    )?;
+                    clear_outgoing_managed_codex_live_auth(
+                        outgoing_managed_codex_account_id.as_deref(),
+                        outgoing_live_refresh_token.as_deref(),
+                    )?;
+                    state.db.save_provider(app_type.as_str(), &provider)?;
+                    Ok::<(), AppError>(())
+                })();
+                if let Err(error) = commit_result {
+                    return Err(managed_codex_transaction_error(
+                        "更新托管 Codex provider",
+                        error,
+                        &snapshot,
+                        None,
+                    ));
+                }
+
+                if let Err(err) = McpService::sync_enabled_for_app(state, &app_type) {
+                    log::warn!(
+                        "保存供应商后重投影 {app_type:?} MCP 失败（将在下次同步时自愈）: {err}"
+                    );
+                }
+                return Ok(true);
+            }
 
             let commit_result = (|| {
                 ensure_outgoing_managed_codex_live_auth_unchanged(
                     outgoing_managed_codex_account_id.as_deref(),
                     outgoing_live_refresh_token.as_deref(),
                 )?;
-                write_preflighted_or_current_live(
-                    state,
-                    &app_type,
-                    &provider,
-                    preflighted_provider.as_ref(),
-                )?;
+                futures::executor::block_on(
+                    state.proxy_service.update_live_backup_from_provider_inner(
+                        app_type.as_str(),
+                        &provider,
+                        outgoing_managed_codex_account_id.as_deref(),
+                    ),
+                )
+                .map_err(|error| AppError::Message(format!("更新 Live 备份失败: {error}")))?;
+
+                if live_taken_over {
+                    futures::executor::block_on(
+                        state
+                            .proxy_service
+                            .sync_codex_live_from_provider_while_proxy_active_guarded(
+                                &provider,
+                                outgoing_managed_codex_account_id.as_deref(),
+                                outgoing_live_refresh_token.as_deref(),
+                            ),
+                    )
+                    .map_err(|error| {
+                        AppError::Message(format!("同步 Codex Live 配置失败: {error}"))
+                    })?;
+                } else {
+                    // A backup without a takeover marker is a recoverable
+                    // half-takeover state. Keep the actual Live bundle aligned
+                    // with the edited current provider as well as the backup.
+                    //
+                    // This is deliberately *not* the non-managed convention a few
+                    // hundred lines below ("a backup alone means Live is owned by
+                    // takeover, so only the backup is updated"). A managed card's
+                    // Live auth is the bound account's bundle: leaving it stale
+                    // would keep serving the previous account after the binding
+                    // changed, which is the very state this transaction exists to
+                    // make atomic. Upstream draws the same line here.
+                    ensure_outgoing_managed_codex_live_auth_unchanged(
+                        outgoing_managed_codex_account_id.as_deref(),
+                        outgoing_live_refresh_token.as_deref(),
+                    )?;
+                    write_preflighted_or_current_live(
+                        state,
+                        &app_type,
+                        &provider,
+                        preflighted_provider.as_ref(),
+                    )?;
+                }
+
                 clear_outgoing_managed_codex_live_auth(
                     outgoing_managed_codex_account_id.as_deref(),
                     outgoing_live_refresh_token.as_deref(),
                 )?;
+
+                // DB is the final commit. Every fallible side effect above can be
+                // restored exactly while the previous provider row is untouched.
                 state.db.save_provider(app_type.as_str(), &provider)?;
                 Ok::<(), AppError>(())
             })();
             if let Err(error) = commit_result {
-                return Err(managed_codex_transaction_error(
-                    "更新托管 Codex provider",
+                return Err(managed_codex_takeover_transaction_error(
+                    state,
+                    "更新接管中的 Codex provider",
                     error,
                     &snapshot,
+                    previous_backup.as_ref(),
                     None,
                 ));
             }
 
+            // Same warn-only reconciliation as the direct managed branch above and
+            // the non-managed path below. This branch rewrote Codex live, where MCP
+            // servers are only carried over verbatim
+            // (`ProxyService::preserve_toml_mcp_servers_from_existing_config`), so
+            // orphaned entries need the DB-authoritative pass (ADR 0004). Upstream
+            // omits it here; that asymmetry would leave orphans until the next
+            // switch self-heals.
             if let Err(err) = McpService::sync_enabled_for_app(state, &app_type) {
                 log::warn!("保存供应商后重投影 {app_type:?} MCP 失败（将在下次同步时自愈）: {err}");
             }
+
             return Ok(true);
         }
 
@@ -4532,8 +4706,11 @@ impl ProviderService {
         let should_hot_switch = is_app_taken_over || live_taken_over;
 
         // Block switching to official providers when proxy takeover is active.
-        // Using a proxy with official APIs (Anthropic/OpenAI/Google) may cause account bans.
-        if should_hot_switch && _provider.category.as_deref() == Some("official") {
+        // Using a proxy with official APIs (Anthropic/OpenAI/Google) may cause
+        // account bans. Single definition shared with the proxy command, the
+        // hot-switch path and the tray: `Provider::blocked_by_proxy_takeover`
+        // (managed Codex Official cards are the only carve-out).
+        if should_hot_switch && _provider.blocked_by_proxy_takeover(app_type.as_str()) {
             return Err(AppError::localized(
                 "switch.official_blocked_by_proxy",
                 "代理接管模式下不能切换到官方供应商，使用代理访问官方 API 可能导致账号被封禁。请先关闭代理接管，或选择第三方供应商。",

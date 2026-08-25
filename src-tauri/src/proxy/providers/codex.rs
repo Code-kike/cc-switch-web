@@ -136,6 +136,14 @@ impl ProviderAdapter for CodexAdapter {
     }
 
     fn extract_base_url(&self, provider: &Provider) -> Result<String, ProxyError> {
+        // Managed Official ChatGPT cards: pin the ChatGPT backend origin so a
+        // stored/empty config cannot relay the bound account token elsewhere.
+        // Unbound native-login Official cards do not take this path — they have
+        // no server-side credential and stay blocked at switch time.
+        if provider.is_managed_codex_official_account_card() {
+            return Ok(super::CHATGPT_CODEX_BASE_URL.to_string());
+        }
+
         // Managed xAI OAuth credentials are valid only for the pinned xAI
         // origin. Ignore editable config so a stored token cannot be relayed
         // to an arbitrary endpoint.
@@ -193,6 +201,18 @@ impl ProviderAdapter for CodexAdapter {
     }
 
     fn extract_auth(&self, provider: &Provider) -> Option<AuthInfo> {
+        // Managed Official ChatGPT cards: placeholder only. The forwarder
+        // already resolves AuthStrategy::CodexOAuth via CodexOAuthManager and
+        // injects chatgpt-account-id from the provider binding (same path as
+        // the Claude-side codex_oauth preset). Do not copy ClaudeAdapter's
+        // ChatGPT protocol here — originator/version live in the shared module.
+        if provider.is_managed_codex_official_account_card() {
+            return Some(AuthInfo::new(
+                "codex_oauth_placeholder".to_string(),
+                AuthStrategy::CodexOAuth,
+            ));
+        }
+
         // The real access token is resolved per request by the forwarder from
         // the managed xAI account. This placeholder only selects that path.
         if provider.is_xai_oauth() {
@@ -209,6 +229,14 @@ impl ProviderAdapter for CodexAdapter {
     fn build_url(&self, base_url: &str, endpoint: &str) -> String {
         let base_trimmed = base_url.trim_end_matches('/');
         let endpoint_trimmed = endpoint.trim_start_matches('/');
+
+        // ChatGPT backend: keep the client's path (e.g. /responses, /responses/compact,
+        // /alpha/search) under the pinned origin. Do not force /responses the way
+        // ClaudeAdapter does — that rewrite exists because Claude clients speak
+        // /v1/messages, which Codex clients never send.
+        if base_trimmed == super::CHATGPT_CODEX_BASE_URL {
+            return format!("{base_trimmed}/{endpoint_trimmed}");
+        }
 
         // OpenAI/Codex 的 base_url 可能是：
         // - 纯 origin: https://api.openai.com  (需要自动补 /v1)
@@ -248,7 +276,26 @@ impl ProviderAdapter for CodexAdapter {
         auth: &AuthInfo,
     ) -> Result<Vec<(http::HeaderName, http::HeaderValue)>, ProxyError> {
         use super::adapter::auth_header_value;
+        use http::HeaderValue;
         let bearer = format!("Bearer {}", auth.api_key);
+        if auth.strategy == AuthStrategy::CodexOAuth {
+            // Bearer is overwritten by the forwarder with the live access_token.
+            // originator+version must be sent as a pair (see CODEX_OAUTH_* docs).
+            return Ok(vec![
+                (
+                    http::HeaderName::from_static("authorization"),
+                    auth_header_value(&bearer)?,
+                ),
+                (
+                    http::HeaderName::from_static("originator"),
+                    HeaderValue::from_static(super::CODEX_OAUTH_ORIGINATOR),
+                ),
+                (
+                    http::HeaderName::from_static("version"),
+                    HeaderValue::from_static(super::CODEX_OAUTH_CLIENT_VERSION),
+                ),
+            ]);
+        }
         Ok(vec![(
             http::HeaderName::from_static("authorization"),
             auth_header_value(&bearer)?,
@@ -414,6 +461,50 @@ experimental_bearer_token = "sk-config-key"
 
         let auth = adapter.extract_auth(&provider).unwrap();
         assert_eq!(auth.api_key, "sk-env-key-12345678");
+    }
+
+    fn managed_official_card() -> Provider {
+        let mut provider = create_provider(json!({ "auth": {}, "config": "" }));
+        provider.category = Some("official".to_string());
+        provider.meta = Some(crate::provider::ProviderMeta {
+            auth_binding: Some(crate::provider::AuthBinding {
+                source: crate::provider::AuthBindingSource::ManagedAccount,
+                auth_provider: Some("codex_oauth".to_string()),
+                account_id: Some("acct-managed".to_string()),
+            }),
+            ..Default::default()
+        });
+        provider
+    }
+
+    #[test]
+    fn managed_official_card_pins_chatgpt_origin_and_codex_oauth_strategy() {
+        let adapter = CodexAdapter::new();
+        let provider = managed_official_card();
+        assert_eq!(
+            adapter.extract_base_url(&provider).expect("pinned origin"),
+            super::super::CHATGPT_CODEX_BASE_URL,
+        );
+        let auth = adapter.extract_auth(&provider).expect("placeholder auth");
+        assert_eq!(auth.strategy, AuthStrategy::CodexOAuth);
+        assert_eq!(auth.api_key, "codex_oauth_placeholder");
+        assert_eq!(
+            adapter.build_url(super::super::CHATGPT_CODEX_BASE_URL, "/responses/compact"),
+            "https://chatgpt.com/backend-api/codex/responses/compact",
+        );
+        let headers = adapter.get_auth_headers(&auth).expect("oauth headers");
+        let names: Vec<_> = headers.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["authorization", "originator", "version"]);
+    }
+
+    #[test]
+    fn unbound_official_card_has_no_server_side_credential() {
+        let adapter = CodexAdapter::new();
+        let mut provider = create_provider(json!({ "auth": {}, "config": "" }));
+        provider.category = Some("official".to_string());
+        provider.id = crate::database::CODEX_OFFICIAL_PROVIDER_ID.to_string();
+        assert!(adapter.extract_base_url(&provider).is_err());
+        assert!(adapter.extract_auth(&provider).is_none());
     }
 
     #[test]

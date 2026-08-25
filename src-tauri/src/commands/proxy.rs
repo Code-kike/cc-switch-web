@@ -253,20 +253,15 @@ pub async fn switch_proxy_provider(
     app_type: String,
     provider_id: String,
 ) -> Result<(), String> {
-    // Block official providers during proxy takeover.
-    //
-    // Upstream `a2e22f33` carves out Codex Official account cards here, but the
-    // load-bearing rejections live in `ProxyService::hot_switch_provider_inner`
-    // and `ProviderService::switch` ("defense-in-depth" copies of this check).
-    // Loosening only this entry point would change nothing while leaving the
-    // shallow guard open, so the carve-out has to be made in the batch that
-    // owns those files.
+    // Block official providers during proxy takeover. One of four enforcement
+    // points sharing `Provider::blocked_by_proxy_takeover` (managed Codex
+    // Official cards are the only carve-out; see that method's doc).
     let provider = state
         .db
         .get_provider_by_id(&provider_id, &app_type)
         .map_err(|e| format!("读取供应商失败: {e}"))?
         .ok_or_else(|| format!("供应商不存在: {provider_id}"))?;
-    if provider.category.as_deref() == Some("official") {
+    if provider.blocked_by_proxy_takeover(&app_type) {
         return Err(
             "代理接管模式下不能切换到官方供应商 (Cannot switch to official provider during proxy takeover)"
                 .to_string(),

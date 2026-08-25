@@ -308,6 +308,390 @@ impl CodexLiveStateSnapshot {
     }
 }
 
+/// Exact `auth.json` generation observed when a guarded write begins.
+///
+/// Thin wrapper over [`CodexLiveFileState`] so capture/permission handling stays
+/// in one place; the extra `value()` accessor exists because restore
+/// arbitration inspects the JSON shape (`auth_mode` / tokens) rather than bytes.
+pub(crate) struct CodexAuthFileSnapshot(CodexLiveFileState);
+
+impl CodexAuthFileSnapshot {
+    pub(crate) fn capture() -> Result<Self, AppError> {
+        CodexLiveFileState::capture(get_codex_auth_path(), CodexLiveWriteMode::ManagedExternal)
+            .map(Self)
+    }
+
+    pub(crate) fn value(&self) -> Result<Option<Value>, AppError> {
+        self.0
+            .contents
+            .as_deref()
+            .map(serde_json::from_slice)
+            .transpose()
+            .map_err(|error| AppError::Message(format!("读取 Codex auth 失败: {error}")))
+    }
+
+    fn contents(&self) -> Option<&[u8]> {
+        self.0.contents.as_deref()
+    }
+
+    #[cfg(unix)]
+    fn mode(&self) -> Option<u32> {
+        self.0.mode
+    }
+}
+
+/// Owns the exact `auth.json` generation observed at restore start.
+///
+/// A plain compare-then-write is unsafe because Codex can replace `auth.json`
+/// between those two operations. We instead atomically move the current file
+/// aside ("claim"), compare the moved bytes against the expected generation, and
+/// only install a replacement while the path is still vacant. A newer Codex
+/// login therefore always wins, in both the forward and the rollback direction.
+///
+/// ADR 0003: the claim/install protocol needs `rename` + `hard_link` on the real
+/// file, so the managed final symlink is resolved **once** in [`Self::begin`] and
+/// every subsequent step runs against the resolved target. Renaming the link
+/// itself aside would break a dotfiles/NixOS layout, which is precisely what
+/// [`crate::config::atomic_write_managed`] exists to avoid.
+pub(crate) struct CodexAuthFileTransaction {
+    /// The managed path itself (`~/.codex/auth.json`), which may be a symlink.
+    /// Deletion targets this, per ADR 0003: "deleting a managed path does not
+    /// imply deleting its resolved target" — removing only the target would
+    /// leave the user's dotfiles link dangling.
+    managed_path: PathBuf,
+    /// Resolved write target the claim/install protocol operates on.
+    path: PathBuf,
+    quarantined: Option<PathBuf>,
+    installed: Option<Vec<u8>>,
+    /// Permission bits of the claimed generation, donated to the replacement the
+    /// same way [`crate::config::atomic_write_managed`] donates them.
+    #[cfg(unix)]
+    donated_mode: Option<u32>,
+    finished: bool,
+}
+
+impl CodexAuthFileTransaction {
+    pub(crate) fn begin(expected: &CodexAuthFileSnapshot) -> Result<Self, AppError> {
+        let managed_path = get_codex_auth_path();
+        let path = crate::config::resolve_managed_write_path(&managed_path)?;
+        let mut transaction = Self {
+            managed_path: managed_path.clone(),
+            path: path.clone(),
+            quarantined: None,
+            installed: None,
+            #[cfg(unix)]
+            donated_mode: expected.mode(),
+            finished: false,
+        };
+
+        let Some(expected_contents) = expected.contents() else {
+            return match fs::read(&path) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(transaction),
+                Ok(_) => Err(Self::changed_error()),
+                Err(error) => Err(AppError::io(&path, error)),
+            };
+        };
+
+        // The no-clobber install/rollback protocol below requires hard links.
+        // Probe before moving the live credentials so unsupported custom Codex
+        // directories fail closed with auth.json still in place.
+        //
+        // The claim has to be a `rename`, not a read-copy: a read-then-compare
+        // -then-write leaves a window in which Codex's own write lands between
+        // the compare and the write and is then silently overwritten. Renaming
+        // makes the path vacant, so the `hard_link` install below fails outright
+        // if anything recreated it — the newer login always wins.
+        let probe = Self::unique_sibling_path(&path, "restore-probe")?;
+        match fs::hard_link(&path, &probe) {
+            Ok(()) => {
+                fs::remove_file(&probe).map_err(|error| AppError::IoContext {
+                    context: format!("清理 Codex auth 事务能力探针失败: {}", probe.display()),
+                    source: error,
+                })?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(Self::changed_error());
+            }
+            Err(error) => {
+                return Err(AppError::IoContext {
+                    context: format!(
+                        "Codex auth 所在文件系统不支持安全恢复，原凭据未修改: {}",
+                        path.display()
+                    ),
+                    source: error,
+                });
+            }
+        }
+
+        let quarantine = Self::unique_sibling_path(&path, "restore-backup")?;
+        match fs::rename(&path, &quarantine) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(Self::changed_error());
+            }
+            Err(error) => {
+                return Err(AppError::IoContext {
+                    context: format!("认领 Codex auth 失败: {}", path.display()),
+                    source: error,
+                });
+            }
+        }
+        transaction.quarantined = Some(quarantine.clone());
+
+        let actual = fs::read(&quarantine).map_err(|error| AppError::IoContext {
+            context: format!("读取已认领的 Codex auth 失败: {}", quarantine.display()),
+            source: error,
+        })?;
+        // Byte equality, deliberately *not*
+        // `CodexLiveStateSnapshot::chatgpt_auth_generation` arbitration. The two
+        // answer different questions and must not be unified:
+        //
+        //   - `restore_preserving_newer_same_account_auth` asks a policy question
+        //     ("may I roll auth back to my snapshot?") and compares generations.
+        //   - this asks a compare-and-swap question ("is the file still exactly
+        //     what the caller arbitrated on?"). The caller already decided whether
+        //     to keep or drop the live login *from these bytes*; any other content
+        //     means that decision was computed against stale input.
+        //
+        // Relaxing this to generation equality would let a concurrent write slip
+        // through the CAS and be overwritten — losing a rotation that did not bump
+        // `last_refresh`, or an API-key-mode file that has no generation at all.
+        // Being too strict only costs a retryable error with credentials intact.
+        if actual != expected_contents {
+            let restore_result = transaction.restore_quarantined_if_vacant();
+            transaction.finished = true;
+            return match restore_result {
+                Ok(()) => Err(Self::changed_error()),
+                Err(restore_error) => Err(AppError::Message(format!(
+                    "{}; 恢复较新的 Codex auth 失败: {restore_error}",
+                    Self::changed_error()
+                ))),
+            };
+        }
+
+        Ok(transaction)
+    }
+
+    /// Install `replacement` at the claimed path, or leave it vacant when `None`
+    /// (an exact-generation deletion: the claim already moved the file aside and
+    /// [`Self::commit`] discards the quarantined copy).
+    pub(crate) fn install(&mut self, replacement: Option<Vec<u8>>) -> Result<(), AppError> {
+        let Some(contents) = replacement else {
+            return Ok(());
+        };
+
+        if let Some(parent) = self.path.parent() {
+            fs::create_dir_all(parent).map_err(|error| AppError::io(parent, error))?;
+        }
+        let temporary = Self::unique_sibling_path(&self.path, "restore-new")?;
+        let write_result = (|| -> Result<(), AppError> {
+            let mut options = fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let mut file = options
+                .open(&temporary)
+                .map_err(|error| AppError::io(&temporary, error))?;
+            use std::io::Write;
+            file.write_all(&contents)
+                .and_then(|_| file.flush())
+                .map_err(|error| AppError::io(&temporary, error))?;
+            drop(file);
+            // Donate the claimed generation's bits, matching
+            // `atomic_write_resolved`. Created 0600 first so the credential is
+            // never briefly world-readable.
+            #[cfg(unix)]
+            if let Some(mode) = self.donated_mode {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&temporary, fs::Permissions::from_mode(mode))
+                    .map_err(|error| AppError::io(&temporary, error))?;
+            }
+
+            match fs::hard_link(&temporary, &self.path) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    Err(Self::changed_error())
+                }
+                Err(error) => Err(AppError::IoContext {
+                    context: format!("安装 Codex auth 失败: {}", self.path.display()),
+                    source: error,
+                }),
+            }
+        })();
+        let _ = fs::remove_file(&temporary);
+
+        if let Err(error) = write_result {
+            // If Codex created a newer file while the expected generation was
+            // quarantined, never put the older generation back over it.
+            if self.path.exists() {
+                self.discard_quarantined();
+                self.finished = true;
+            }
+            return Err(error);
+        }
+
+        self.installed = Some(contents);
+        Ok(())
+    }
+
+    pub(crate) fn commit(mut self) -> Result<(), AppError> {
+        self.discard_quarantined();
+        // Nothing installed means the caller asked for an exact-generation
+        // deletion. The claim removed the resolved target, so a managed symlink
+        // would be left dangling; ADR 0003 says deletion applies to the managed
+        // path itself, which is also what W1's
+        // `clear_codex_live_auth_for_managed_account_if_unchanged` does.
+        if self.installed.is_none() && self.managed_path != self.path {
+            match fs::remove_file(&self.managed_path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    self.finished = true;
+                    return Err(AppError::io(&self.managed_path, error));
+                }
+            }
+        }
+        self.finished = true;
+        Ok(())
+    }
+
+    pub(crate) fn rollback(mut self) -> Result<(), AppError> {
+        let result = self.rollback_inner();
+        self.finished = true;
+        result
+    }
+
+    fn rollback_inner(&mut self) -> Result<(), AppError> {
+        if let Some(installed) = self.installed.take() {
+            let replacement_quarantine = Self::unique_sibling_path(&self.path, "restore-rollback")?;
+            match fs::rename(&self.path, &replacement_quarantine) {
+                Ok(()) => {
+                    let current =
+                        fs::read(&replacement_quarantine).map_err(|error| AppError::IoContext {
+                            context: format!(
+                                "读取待回滚 Codex auth 失败: {}",
+                                replacement_quarantine.display()
+                            ),
+                            source: error,
+                        })?;
+                    if current == installed {
+                        fs::remove_file(&replacement_quarantine).map_err(|error| {
+                            AppError::IoContext {
+                                context: format!(
+                                    "删除待回滚 Codex auth 失败: {}",
+                                    replacement_quarantine.display()
+                                ),
+                                source: error,
+                            }
+                        })?;
+                    } else {
+                        // Codex replaced our installed generation. Restore that
+                        // newer file if the path is still vacant and discard the
+                        // old expected generation.
+                        Self::restore_file_if_vacant(&replacement_quarantine, &self.path)?;
+                        self.discard_quarantined();
+                        return Ok(());
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    // A concurrent logout removed our generation. Missing auth
+                    // is newer state too; do not resurrect the old credentials.
+                    self.discard_quarantined();
+                    return Ok(());
+                }
+                Err(error) => {
+                    return Err(AppError::IoContext {
+                        context: format!("回滚 Codex auth 失败: {}", self.path.display()),
+                        source: error,
+                    });
+                }
+            }
+        }
+
+        self.restore_quarantined_if_vacant()
+    }
+
+    fn restore_quarantined_if_vacant(&mut self) -> Result<(), AppError> {
+        let Some(quarantined) = self.quarantined.take() else {
+            return Ok(());
+        };
+        Self::restore_file_if_vacant(&quarantined, &self.path)
+    }
+
+    fn restore_file_if_vacant(source: &Path, destination: &Path) -> Result<(), AppError> {
+        match fs::hard_link(source, destination) {
+            Ok(()) => {
+                fs::remove_file(source).map_err(|error| AppError::IoContext {
+                    context: format!("清理 Codex auth 事务文件失败: {}", source.display()),
+                    source: error,
+                })?;
+                Ok(())
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                // The destination was recreated by Codex and is newer than the
+                // quarantined generation.
+                fs::remove_file(source).map_err(|error| AppError::IoContext {
+                    context: format!("清理旧 Codex auth 事务文件失败: {}", source.display()),
+                    source: error,
+                })?;
+                Ok(())
+            }
+            Err(error) => Err(AppError::IoContext {
+                context: format!(
+                    "恢复 Codex auth 事务文件失败: {} -> {}",
+                    source.display(),
+                    destination.display()
+                ),
+                source: error,
+            }),
+        }
+    }
+
+    fn discard_quarantined(&mut self) {
+        if let Some(path) = self.quarantined.take() {
+            if let Err(error) = fs::remove_file(&path) {
+                log::warn!(
+                    "清理旧 Codex auth 事务文件失败 ({}): {error}",
+                    path.display()
+                );
+            }
+        }
+    }
+
+    fn unique_sibling_path(path: &Path, label: &str) -> Result<PathBuf, AppError> {
+        let parent = path.parent().ok_or_else(|| {
+            AppError::Config(format!("无效的 Codex auth 路径: {}", path.display()))
+        })?;
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("auth.json");
+        Ok(parent.join(format!(
+            ".{file_name}.cc-switch-{label}-{}",
+            uuid::Uuid::new_v4()
+        )))
+    }
+
+    fn changed_error() -> AppError {
+        AppError::Message(
+            "Codex auth 在恢复期间发生变化；为避免覆盖新凭据，本次恢复已取消，请重试".to_string(),
+        )
+    }
+}
+
+impl Drop for CodexAuthFileTransaction {
+    fn drop(&mut self) {
+        if !self.finished {
+            if let Err(error) = self.rollback_inner() {
+                log::error!("Codex auth 事务自动回滚失败: {error}");
+            }
+        }
+    }
+}
+
 /// Which Codex tool surface the generated model catalog should target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CodexCatalogToolProfile {
