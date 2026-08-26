@@ -3377,6 +3377,105 @@ fn anthropic_sse_to_message_value(body: &str) -> Result<Value, ProxyError> { /* 
 
 ---
 
+### Scenario: Commit-Range Porting — Target-Tag Existence & Cross-Layer Predicate Mirrors
+
+> Source: `feat-managed-oauth-accounts` (v3.20.0 sync, child 3). Two independent
+> planning defects cost a mid-batch scope rewrite and a reviewer escalation;
+> both are mechanical to prevent.
+
+#### 1. Scope / Trigger
+
+- Trigger: porting a **commit range** (`base..target`) rather than a single
+  commit, and/or porting a Rust policy that also has a frontend mirror.
+
+#### 2. Signatures (the two checks)
+
+```bash
+# (a) deliverable existence — against the TARGET TAG, not the source commit:
+git grep -n <symbol> v3.20.0        # empty ⇒ superseded downstream, do not port
+
+# (b) file existence — extension-wildcarded, never single-extension:
+find tests -name '*.test.ts*'      # or: git ls-tree -r --name-only <ref> -- tests/
+```
+
+#### 3. Contracts
+
+- A symbol introduced by an intermediate commit may be **deleted by a later
+  commit in the same range** (`migrate_legacy_codex_official_managed_binding`
+  was added by `a2e22f33` and deleted by `0455a92c`; zero hits at `v3.20.0`).
+  Porting it anyway is worse than dead code: it ran destructive data migration
+  the upstream deliberately abandoned. Every acceptance-criteria item must pass
+  check (a) **at planning time**, before it enters prd/implement.
+- A wrong-extension existence probe reports MISSING for an existing file and
+  can trigger an overwrite-style dispatch. Use wildcards; when a dispatch brief
+  says "create X", the implementer must still re-check with (b) and merge if it
+  exists (append-only), never overwrite.
+- When a Rust guard has a frontend capability mirror (e.g. Rust
+  `Provider::blocked_by_proxy_takeover` vs TS `supportsOfficialProxyTakeover`),
+  the mirror must be (1) a **single derivation** consumed by every UI surface
+  (card button, action hook, badge), and (2) pinned by tests on BOTH sides of
+  the boundary. The fork's first frontend copy returned `true` for unbound
+  native-login Official cards while Rust fail-closed them — doc claimed
+  alignment, behavior diverged, found only at W5 review. A mirror that drifts
+  turns a clear switch-time refusal into a runtime failure toast.
+- Deliberate upstream divergences in such mirrors must be recorded where the
+  next sync will collide: in-code comment + task doc + test name that states
+  the fork semantics ("blocks the unbound … during takeover" vs upstream's
+  "allows the native …").
+
+#### 4. Validation & Error Matrix
+
+- Deliverable absent at target tag -> remove from acceptance criteria & batch
+  plan; record the superseding implementation instead.
+- Existence probe with a single hard-coded extension -> reject the probe result;
+  re-run wildcarded before writing any plan line or dispatch brief.
+- Frontend mirror returning a looser answer than its Rust policy -> fix the
+  mirror, add a failing-test pin on the loose case, and annotate with the
+  Degradation Direction classification (authorization → fail-closed).
+
+#### 5. Good/Base/Bad Cases
+
+- Good: `git grep migrate_legacy… v3.20.0` empty ⇒ ruling recorded in PRD Q3,
+  replaced-acceptance written (`update_keeps_official_provider_id_…`).
+- Base: symbol exists at target but fork lacks prerequisites ⇒ classify per
+  hunk (port / prerequisite-first / drop) as usual.
+- Bad: planning from the single-commit diff only ⇒ mid-batch discovery, batch
+  re-plan, and a startup hook nearly shipped that would have moved the user's
+  current provider off the fixed id.
+
+#### 6. Tests Required
+
+- Both sides of any cross-layer predicate mirror: Rust test pinning the guard
+  matrix + frontend unit test asserting each identity class
+  (`managed_account` / `native_login` / api-key) under the mirror.
+- Mutation evidence for load-bearing mirrors: widen the predicate ⇒ named test
+  fails.
+
+#### 7. Wrong vs Correct
+
+##### Wrong
+
+```ts
+// doc says "aligned with the Rust takeover policy", but returns true for
+// native_login too — upstream's unreachable-true shape
+export function supportsOfficialProxyTakeover(appId, provider) {
+  return resolveCodexOfficialIdentity(appId, provider) !== null;
+}
+```
+
+##### Correct
+
+```ts
+// managed carve-out ONLY; unbound native-login stays blocked (fail-closed).
+// Do NOT widen: widening converts the explicit switch-time refusal into a
+// failing Codex session (see Provider::blocked_by_proxy_takeover in provider.rs).
+export function supportsOfficialProxyTakeover(appId, provider) {
+  return resolveCodexOfficialIdentity(appId, provider) === "managed_account";
+}
+```
+
+---
+
 ## Testing Requirements
 
 <!-- What level of testing is expected -->

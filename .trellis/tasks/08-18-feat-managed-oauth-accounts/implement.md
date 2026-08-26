@@ -490,6 +490,12 @@ doc 声明要避免的结果。
 
 ### 集成测试修正（每处追溯到具名上游行为）
 
+> **终验补充（trellis-check，2026-08-26）**：check agent 在一次 `test:integration` 全量跑中偶发
+> `PromptPanel.web-server.test.tsx:382` 失败（save 后同步 `getByRole("switch")`，早于服务端确认与
+> 重渲染）。主会话对照实验：当前 HEAD 隔离 **3/3** 过、W4 前基线 `89d0c7b3` 隔离 **4/4** 过、另一次
+> 全量跑 **50/54 恰为 4 白名单 flake** —— 该测试文件与 `src/components/prompts/` 在 W1–W5 **零改动**。
+> 结论：一次性时序竞态（测试自身缺 waitFor），非本任务引入；留作已知潜伏 flake 观察项。
+
 `AuthCenterPanel.web-server` 在 `979a32dc` 即 **2/2 失败**（stash 验证），属 W4 引入的真实回归而非既有 5s 超时 flake —— W4 把 `test:integration` 延到 W5，故此前未暴露。
 
 - 登录按钮改为 `await findByRole`：a2e22f33 把按钮门控在 `isStatusSuccess`（状态未加载完不提供登录入口，上游逐字），不能读首帧。
