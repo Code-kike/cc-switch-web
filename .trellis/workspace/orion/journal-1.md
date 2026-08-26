@@ -1172,3 +1172,62 @@ integration **50/54**（恰 4 白名单 flake）/ web-routes **292/280/0** / loc
 ### Status
 
 [OK] **Completed**
+
+---
+
+## 2026-08-26 — v3.20.0 systemd 部署（运维动作，未建 Trellis 任务）
+
+PRD 裁定 #11 把 systemd 部署列为合并后的独立确认步骤。本次执行。
+
+### 现场：不是首次部署，是在跑服务的原地升级
+
+| 项 | 升级前 | 升级后 |
+|---|---|---|
+| 二进制 | 8/1 构建（旧 main = v3.18.0） | 8/26 13:43，19.9 MB |
+| 服务 | active，PID 1036（8/22 起） | active，PID 3591129，NRestarts=0 |
+| 活库 schema | **16** | **17** |
+| provider 数 | 24 | 28（+4 pi） |
+| 代理接管 | 四 app 全 `enabled=0`，无接管态 | 同 |
+
+### 关键判断：schema 升级单向
+
+`schema.rs:449` 对 `user_version > SCHEMA_VERSION` 直接拒绝启动。所以**回滚不能只换二进制**，
+必须同时恢复库。回滚三件套（已备好）：
+
+```
+~/.cc-switch/deploy-rollback/cc-switch-web.pre-3.20.0.20260826_133606       # 旧二进制
+~/.cc-switch/deploy-rollback/cc-switch.pre-3.20.0.20260826_133606.db        # sqlite3 .backup 一致快照，integrity ok
+systemctl --user restart cc-switch-web.service
+```
+
+库快照用 `sqlite3 .backup` 而非 `cp`（服务在跑，cp 可能取到不一致页）。
+另外 `database/mod.rs:129` 自身在迁移前也会自动备份，备份失败即中止迁移 —— 双保险。
+
+迁移 16→17 是纯新增（`CREATE TABLE IF NOT EXISTS session_usage_dedup` + `CREATE INDEX IF NOT EXISTS`），
+无 ALTER / 无改写 / 无删除，所以实际风险低。
+
+### provider 24 → 28 的解释（我自己的检查先报了"应为 24"，需澄清）
+
+新增 4 行**全部是 `app_type=pi`**：`axonhub-claude` / `axonhub-gpt` / `axonhub-grok` / `axonhub-国产`，
+与 `~/.pi/agent/models.json` 里的四个 provider 逐一对应 —— 是 pi 子任务的 `import_pi_providers_from_live`
+从用户既有 Pi 原生配置导入，不是丢数据也不是种默认值。备份库里 `app_type='pi'` 计数为 **0**，
+非 pi 的 24 行（claude 10 / codex 11 / gemini 2 / hermes 1）一个没少。
+
+### 验证
+
+- 服务 active / enabled，NRestarts=0
+- `user_version` **17**，`integrity_check` **ok**
+- `session_usage_dedup` 表已建
+- HTTP `/` 200；`/api/providers/get-providers` 三个 app 计数与 DB 逐一相符（claude 10 / codex 11 / pi 4）
+- 新特性端到端：PI-SYNC 导入 1 条（扫 81 文件）；pi 的 4 个 provider 经 API 可读
+
+### 日志里两条非故障项
+
+- `CODEX-SYNC deferred 114`：rollout 父链未写到 child fork 时刻，是 v3.19.2 S6b 引入的既有设计行为，非升级问题
+- 一条 `501 Not Implemented`：**我自己验证时探错端点**造成（`/api/providers/claude` 不存在，
+  desktop-only 命令在 web 模式返回 `WEB_NOT_SUPPORTED`）。查 `web-commands.ts` SSOT 后改用
+  `/api/providers/get-providers` 即正常。**教训：验证端点应先读路由 SSOT，别凭直觉猜路径。**
+
+### Status
+
+[OK] **Completed** —— 部署完成，服务健康，回滚物料就位。
