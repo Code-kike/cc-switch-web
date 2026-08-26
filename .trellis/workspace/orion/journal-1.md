@@ -1050,3 +1050,54 @@ Completed child task feat-codex-alpha-websearch: ported Product upstream bdeaac7
 ### Status
 
 [OK] **Completed**
+
+---
+
+## 2026-08-26 — feat-managed-oauth-accounts 完成归档
+
+**任务**：managed OAuth account selection（父任务 08-18-sync-upstream-v3.20.0 的第 3 个、最后一个子任务）
+**分支**：sync/upstream-v3.20.0　**批次**：W0 调研 + W1–W5 实现，共 5 个实现 commit + 4 个 docs/spec commit
+
+### 结果概要
+
+移植 `a2e22f33`（54 文件 +11601/−1131）+ S4b 移交的 `0455a92c` managed-codex 事务到 fork。
+基线不对齐（proxy.rs 撞 3661 行漂移）→ W0 逐 hunk 调研先行，实测 --3way 冲突块数后切批。
+
+| 批次 | commit | 内容 |
+|---|---|---|
+| W1 | `38d04f5a` | 凭据与数据面 17 文件：id_token 进 managed bundle、reauth_required 双运行时、ADR0003 managed 原子写 |
+| W2 | `6738c700` | provider 事务层净 diff（+2188）：managed helper 移入新模块 managed_codex.rs；add/update/switch 事务 |
+| W3 | `89d0c7b3` | proxy 服务层 + 三处 official 阻断同 commit 放开（carve-out 比上游窄：仅 managed Official） |
+| W4 | `979a32dc` | 前端最小表面（Q1 反推）：CodexFormFields 补 OAuth 块、10 个移交用例全绿 |
+| W5 | `2f822677` | 剩余上游测试 + 文档同步 + 全量门禁 + PRD 验收核验 |
+
+终态门禁：cargo test --lib **2289** passed / 5 ignored；test:unit **177 files / 1089 tests**；
+integration 50/54（恰 4 白名单 flake）；web-routes **292/280/0**；locales **2664** parity；
+SCHEMA_VERSION **17**；build:web / smoke exit 0。
+
+### 关键裁定（详见 prd.md / implement.md）
+
+- **Q3 不移植 migrate_legacy_codex_official_managed_binding**：`0455a92c` 在 v3.20.0 删除了它
+  （git grep 零命中），移植反而会把用户 current provider 从固定 id 搬到新 UUID —— 上游主动放弃的破坏性改动。
+- **Codex takeover carve-out 只放开 managed Official**：fork 无 inbound Authorization passthrough，
+  unbound 原生登录保持 fail-closed（打开 = 把明确拒绝变成一次失败的 Codex 会话）。
+- **前端谓词与 Rust 对齐**：supportsOfficialProxyTakeover 收窄为仅 managed_account +
+  单一派生 isOfficialBlockedByTakeover（ProviderCard/useProviderActions 共用），全部变异验证钉住。
+- **有意分歧备案**：useProviderActions.test 的 native-login takeover 用例反转上游断言；
+  useProviderActions.ts / ProviderCard.tsx / providerCapabilities.ts 下次同步会冲突，须按取据判定。
+
+### 方法论沉淀（已入 spec bdb99038）
+
+1. 提交区间移植必须对**目标 tag** 核验每个交付物存在性（中间提交引入的符号可能被下游删除）。
+2. 存在性检查用扩展通配（`find tests -name '*.test.ts*'`），单扩展名 grep 曾把既有 133 行套件误报为缺失。
+3. Rust 策略的前端镜像谓词必须是单一派生 + 双侧测试钉住（doc 声称对齐 ≠ 行为对齐）。
+
+### 教训
+
+- 子代理 7 次被内容策略截断 → lean prompt 是唯一稳定形态；被截后主会话按 git status 接力收口。
+- W4 曾把 test:integration 延到 W5，导致 AuthCenterPanel.web-server 2/2 回归晚一批才暴露 ——
+  门禁延后 = 回归发现延后。
+
+### Status
+
+[OK] **Completed**
