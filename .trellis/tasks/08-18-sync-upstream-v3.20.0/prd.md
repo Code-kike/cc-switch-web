@@ -54,6 +54,9 @@
 
 - 本仓库 `main` 当前版本 `3.19.2`；上次同步任务（`08-08-sync-upstream-latest`）已
   完成归档，移植到 `v3.19.2` tag + post-tag 提交 `413c09e0`（Codex catalog 覆盖修复）。
+  > **合并期更正（2026-08-26）**：`main` 实际停在 **3.18.0** —— v3.19.2 同步已归档但**未合入 main**，
+  > 其提交留在 sync 分支上。本任务从该分支切出，故同步链未断；但合 main 时一次交付两个周期
+  > （3.18.0 → 3.20.0）。今后规划期应直接读 `git show main:package.json` 而非沿用归档结论。
 - `413c09e0` 是 `v3.20.0` 的祖先 —— 上次基线完全包含在 v3.20.0 中，无回退缺口。
 - `product-upstream/main` HEAD = `0b5da510`（= `v3.20.0`）—— 本次无 post-tag 提交。
 - 新区间 `413c09e0..v3.20.0` 共 **71 个非 merge 提交**。
@@ -137,15 +140,25 @@ follow-login) `897ca892`(OAuth usage configurable) `a98829ba`(IME-safe fields)
 
 ## 验收标准
 
-- [ ] Product upstream 目标边界（`v3.20.0`）由用户明确确认。
-- [ ] 71 个提交中每个功能性提交都有可审计处置结果（移植/适配/排除/延期）和理由。
-- [ ] 所有纳入能力完成 Web API / browser UI / headless runtime 适配，新命令在
-      `web-commands.ts` 注册并过 `check:web-routes`。
-- [ ] Web-first fork 的安全边界、无认证部署决定和 updater 禁用决定未退化。
-- [ ] 前端、Rust、Web 路由、locale、集成测试、生产构建及真实 Web 服务冒烟通过。
-- [ ] 数据迁移前有备份，失败可恢复；服务重启后关键流程可用。
-- [ ] 版本与 fork 自有发布说明反映实际移植范围，不宣称未实现的上游能力。
-- [ ] 三个子任务各自独立过门禁并归档；父任务做跨子任务集成 review 后统一合 main。
+> 证据见 implement.md「跨子任务集成 review 结果」（2026-08-26）与各批次结果段。
+
+- [x] Product upstream 目标边界（`v3.20.0`）由用户明确确认。 —— grilling 裁定 #1。
+- [x] 71 个提交中每个功能性提交都有可审计处置结果（移植/适配/排除/延期）和理由。 —— S1–S8 逐提交
+      `[x]`/`[~]` 标注 + 每个 skip 附 proven-inapplicable 取据；三子任务各自 implement.md 同样逐项。
+- [x] 所有纳入能力完成 Web API / browser UI / headless runtime 适配，新命令在
+      `web-commands.ts` 注册并过 `check:web-routes`。 —— 292 commands / 280 routes / 0 gaps；
+      pi 的 9 个新命令三处注册（`web-commands.ts` + `web_api/handlers/pi.rs` + `lib.rs`）。
+- [x] Web-first fork 的安全边界、无认证部署决定和 updater 禁用决定未退化。 —— 五类 carry-forward
+      上限全部原值；三子任务守卫互不削弱；updater/release 链未恢复。
+- [x] 前端、Rust、Web 路由、locale、集成测试、生产构建及真实 Web 服务冒烟通过。 —— `cargo test --lib`
+      2290、test:unit 177/1089、parity 38、integration 50/54（恰 4 白名单 flake）、locales 2664、
+      build:web 与 smoke:web-server 均 exit 0。
+- [x] 数据迁移前有备份，失败可恢复；服务重启后关键流程可用。 —— `SCHEMA_VERSION` 17；pi 的
+      `migrate_v16_to_v17` + `SQL_RESTORE_INDEXES` 条目完整；冒烟中新库走完 v15→v16→v17。
+- [x] 版本与 fork 自有发布说明反映实际移植范围，不宣称未实现的上游能力。 —— 集成 review 发现发布文档
+      反向失真（已交付被声明为未交付），`6676dfdc` 已修 CHANGELOG + 三语 release notes。
+- [x] 三个子任务各自独立过门禁并归档；父任务做跨子任务集成 review 后统一合 main。 —— 三子任务分别
+      归档于 `7d839ed8` / `b6f02cfc` / `e1b88f48`；集成 review 见 implement.md；合并 `65436f90`。
 
 ## 默认排除候选（已并入裁定）
 

@@ -135,7 +135,12 @@ cargo test --manifest-path src-tauri/Cargo.toml web_proxy_lifecycle::
 - [x] 确认子任务 `feat-managed-oauth-accounts` 规划完成（**依赖 S2 `d2b070c9` 落地**）—— 已归档 `e1b88f48`
 - [x] 各子任务归档后，父做跨子任务集成 review —— 见下「跨子任务集成 review 结果」
 - [x] 统一版本/changelog，补入三子任务结果（CHANGELOG + 三语 release notes）
-- [ ] 合入 `main`（待用户确认）
+- [x] 合入 `main` —— `65436f90`（`--no-ff`，与 main 历次 sync 分支同惯例），0 冲突。
+      **实况更正**：`main` 合并前在 **3.18.0**，不是 PRD「已确认事实」写的 3.19.2 —— v3.19.2 那次同步
+      从未合入 main，其提交在本分支上。故本次合并交付**两个上游周期**（3.18.0 → 3.20.0，147 commit）；
+      同步链未断（v3.20.0 分支基于已完成的 v3.19.2 工作切出）。回滚点 `5687d4c0`。
+      合并后在 main 上复跑：`cargo test --lib` **2290** / test:unit **177 files / 1089** /
+      web-routes **292/280/0** / locales **2664** / `SCHEMA_VERSION` **17** / fmt+typecheck 全绿。
 
 ## 跨子任务集成 review 结果（2026-08-26，HEAD 14b8416e）
 
