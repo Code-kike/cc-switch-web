@@ -114,9 +114,13 @@ export function supportsOfficialProxyTakeover(
  * `Provider::blocked_by_proxy_takeover`.
  *
  * Single definition for every frontend surface (card switch button, switch
- * action hook). Do not re-derive the three-part condition at call sites: an
- * earlier copy in `ProviderCard` missed the managed carve-out and made the
- * server-side-supported switch unreachable from the card UI.
+ * action hook, no-routing badge). Do not re-derive the three-part condition at
+ * call sites: an earlier copy in `ProviderCard` missed the managed carve-out and
+ * made the server-side-supported switch unreachable from the card UI.
+ *
+ * Mirrors Rust `Provider::blocked_by_proxy_takeover`, whose doc carries the full
+ * consumer table (four switch-refusal points plus the takeover-enable ban-risk
+ * warning). Keep the two in step — the Rust side is the authority.
  */
 export function isOfficialBlockedByTakeover(
   appId: AppId,

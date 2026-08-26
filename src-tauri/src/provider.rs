@@ -176,14 +176,27 @@ impl Provider {
         app_type != "codex" || !self.is_codex_official_card()
     }
 
-    /// Whether switching to this provider must be refused while `app_type` is
-    /// under local-routing takeover.
+    /// Whether local-routing takeover makes this provider unsafe to route
+    /// through the proxy for `app_type`.
     ///
-    /// Single definition for all four enforcement points (`switch_proxy_provider`
-    /// command, `ProxyService::hot_switch_provider_inner`,
-    /// `ProviderService::switch`, and the tray menu's disabled state). They each
+    /// This is a **classifier**, not a single action: the same answer drives two
+    /// different consequences, and both must stay on one definition.
+    ///
+    /// | Consumer | Consequence when `true` |
+    /// |---|---|
+    /// | `switch_proxy_provider` command | refuse the switch |
+    /// | `ProxyService::hot_switch_provider_inner` | refuse the switch (defense in depth) |
+    /// | `ProviderService::switch` | refuse the switch (defense in depth) |
+    /// | tray menu | render the entry disabled |
+    /// | `ProxyService::set_takeover_for_app` (enable path) | emit `proxy-official-warning` for the card that is **already current** |
+    ///
+    /// The fifth consumer is deliberately on this predicate even though it
+    /// neither refuses nor blocks anything: warning about a path this fork
+    /// itself serves would train users to ignore the warning. Do not split the
+    /// predicate to "fix" the wording mismatch — every one of these five sites
     /// used to inline `category == "official"`, which is how the tray kept
-    /// blocking cards the service layer had already accepted.
+    /// blocking cards the service layer had already accepted, and how the
+    /// takeover warning kept firing on managed cards after the carve-out landed.
     ///
     /// # Codex carve-out (narrower than upstream)
     ///
@@ -201,6 +214,9 @@ impl Provider {
     /// Official cards have no server-side credential and stay blocked
     /// (fail-closed: opening them would turn a clear switch-time refusal into a
     /// failing Codex session).
+    ///
+    /// The frontend mirror is `providerCapabilities.ts::isOfficialBlockedByTakeover`,
+    /// itself built on `supportsOfficialProxyTakeover`; keep the two in step.
     pub fn blocked_by_proxy_takeover(&self, app_type: &str) -> bool {
         if self.category.as_deref() != Some("official") {
             return false;

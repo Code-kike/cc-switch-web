@@ -208,16 +208,33 @@ card is served by this fork; it must not get a ban-risk warning"），恢复后�
 测试台新增 `inject_recording_runtime_ctx`（`ChannelEventSink` + 返回 manager 以便种入托管账号）——
 这是观测 `emit_json` 的唯一途径，此前测试模块没有录制型 sink。
 
-**其余 6 处内联逐处定性为不同语义，保留**（审阅要求的逐处判定）：
+**其余内联判定点逐处定性为不同语义，保留**（审阅要求的逐处判定）。
 
-| 位置 | 语义 | 结论 |
-|---|---|---|
-| `proxy.rs:1385` | 保证 official 行的 auth 为空（凭据卫生） | 更宽即 fail-safe，已有 in-code 注释 → 保留 |
-| `tray.rs:257` | `provider_uses_official_subscription`：app-wide 订阅缓存能否表示该卡 | **已显式对 managed Codex 返回 false** → 保留 |
-| `tray.rs:282` / `1056` | 用量脚本/缓存优先级，均委派上者 | 同上 → 保留 |
-| `provider/mod.rs:4947` | stale live auth 清理 | 已带 W2 注释 + `target_managed_codex_account_id.is_none()` 托管豁免 → 保留 |
-| `provider/mod.rs:6217` | Grok Build TOML 校验严格度 | 与 Codex/接管无关 → 保留 |
-| `stream_check.rs:88` | 不对 official 端点做未认证探测 | 更宽即 fail-safe → 保留 |
+> **普查模式更正（grounded-reviewer 指正）**：首次普查用 `== Some("official")` 匹配，漏掉否定式与
+> 非 `as_deref` 形态三处（`codex_config.rs:1412` / `:2647` / `live.rs:805`），把总数误记为 6。
+> 正确模式是 **`category[^=]*(==|!=)\s*Some\("official"\)`**（含 `!=` 与 `category == Some(..)`），
+> 排除赋值 / 测试 fixture 后 Rust 生产侧共 **12 处**：1 处已收敛（本次修正的 `proxy.rs:1130`）+ 11 处保留。
+> 下次同步排查务必用此模式，勿沿用窄模式。
+
+| 位置 | 所在函数 | 语义 | 结论 |
+|---|---|---|---|
+| `proxy.rs:1130` | `set_takeover_for_app` | 接管开启时的封禁风险警告 | **已改用谓词**（本次修正） |
+| `proxy.rs:1393` | `sync_live_config_to_provider` | 保证 official 行的 auth 为空（凭据卫生） | 更宽即 fail-safe，已有 in-code 注释 → 保留 |
+| `tray.rs:257` | `provider_uses_official_subscription` | app-wide 订阅缓存能否表示该卡 | **已显式对 managed Codex 返回 false** → 保留 |
+| `tray.rs:282` | `format_usage_suffix` | 用量后缀优先级，委派上者 | → 保留 |
+| `tray.rs:1057` | `refresh_all_usage_in_tray` | 是否发用量请求，委派上者 | → 保留 |
+| `provider/mod.rs:4948` | `switch_normal` | stale live auth 清理 | 已带 W2 注释 + `target_managed_codex_account_id.is_none()` 托管豁免 → 保留 |
+| `provider/mod.rs:6218` | `validate_provider_settings` | Grok Build TOML 校验严格度 | 与 Codex/接管无关 → 保留 |
+| `codex_config.rs:1412` | `should_restore_codex_provider_token_for_backfill` | backfill 是否回填 token | 不同语义 → 保留 |
+| `codex_config.rs:2647-2648` | `write_codex_live_for_provider` | live auth 写入路由（`==` 与 `!=` 成对） | 不同语义 → 保留 |
+| `live.rs:805` | `apply_codex_managed_oauth_auth` | managed OAuth apply 的早返回；**其后紧接托管账号判定** | 不同语义、无漂移 → 保留 |
+| `grok_config.rs:382` | `write_grok_provider_live` | Grok live 写入 | 与 Codex/接管无关 → 保留 |
+| `stream_check.rs:88` | `stream_check_all_providers` | 不对 official 端点做未认证探测 | 更宽即 fail-safe → 保留 |
+
+前端镜像 `providerCapabilities.ts::isOfficialBlockedByTakeover` 的 doc 已补「Rust 侧为权威、含完整消费者表」
+的交叉引用；`provider.rs` 的 doc 由「四处执行点 / 切换必须被拒绝」改写为**分类谓词 + 五消费者表格**
+（四处切换拒绝 + 接管开启时的封禁风险警告），并声明**不得为了措辞一致而再分裂谓词** —— 否则正是
+tray 与警告两次漂移的成因。四处调用点注释同步去掉过时计数。
 
 门禁复跑：`cargo test --lib` **2290** passed / 5 ignored（+1 新用例）；`proxy::` **1154**（+1）；
 parity **38**；web-routes **292/280/0**；locales **2664**；fmt / web-server example check 全绿。

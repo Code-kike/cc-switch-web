@@ -4708,8 +4708,9 @@ impl ProviderService {
         // Block switching to official providers when proxy takeover is active.
         // Using a proxy with official APIs (Anthropic/OpenAI/Google) may cause
         // account bans. Single definition shared with the proxy command, the
-        // hot-switch path and the tray: `Provider::blocked_by_proxy_takeover`
-        // (managed Codex Official cards are the only carve-out).
+        // hot-switch path, the tray and the takeover-enable warning:
+        // `Provider::blocked_by_proxy_takeover` (see its doc for the consumer
+        // table; managed Codex Official cards are the only carve-out).
         if should_hot_switch && _provider.blocked_by_proxy_takeover(app_type.as_str()) {
             return Err(AppError::localized(
                 "switch.official_blocked_by_proxy",

@@ -692,9 +692,10 @@ pub fn create_tray_menu(
 
             for (id, provider) in sort_providers(&providers) {
                 let is_current = current_id == *id;
-                // Same rule as the three service/command guards, from one
-                // definition: `Provider::blocked_by_proxy_takeover`. The tray
-                // used to inline `category == "official"` and could drift.
+                // Same rule as the switch-refusal guards, from one definition:
+                // `Provider::blocked_by_proxy_takeover` (see its doc for the full
+                // consumer table). The tray used to inline
+                // `category == "official"` and could drift.
                 let is_official_blocked =
                     is_app_taken_over && provider.blocked_by_proxy_takeover(app_type_str);
                 let label = if is_official_blocked {

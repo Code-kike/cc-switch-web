@@ -2891,9 +2891,10 @@ impl ProxyService {
             .ok_or_else(|| format!("供应商不存在: {provider_id}"))?;
 
         // Defense-in-depth: block official providers during proxy takeover.
-        // Same rule as `switch_proxy_provider`, `ProviderService::switch` and the
-        // tray, from one definition. Managed Codex Official cards are the only
-        // carve-out; see `Provider::blocked_by_proxy_takeover`.
+        // Same rule as `switch_proxy_provider`, `ProviderService::switch`, the
+        // tray and the takeover-enable warning, from one definition. Managed
+        // Codex Official cards are the only carve-out; see
+        // `Provider::blocked_by_proxy_takeover` for the consumer table.
         if provider.blocked_by_proxy_takeover(app_type) {
             return Err(
                 "代理接管模式下不能切换到官方供应商 (Cannot switch to official provider during proxy takeover)"
