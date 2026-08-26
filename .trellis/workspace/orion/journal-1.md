@@ -1101,3 +1101,74 @@ SCHEMA_VERSION **17**；build:web / smoke exit 0。
 ### Status
 
 [OK] **Completed**
+
+---
+
+## 2026-08-26 — sync-upstream-v3.20.0 父任务完成并合入 main
+
+**任务**：同步 Product upstream `413c09e0..v3.20.0`（71 非 merge 提交）到 Web-first fork
+**结构**：父主体 S1–S8（65 提交）+ 三个子任务，各自独立规划/门禁/归档
+**合并**：`65436f90`（`--no-ff`），0 冲突，main 3.18.0 → 3.20.0
+
+### 交付
+
+| 部分 | 结果 |
+|---|---|
+| 父主体 S1–S8 | 38 commit；每提交可审计处置（移植/适配/排除/延期），每个 skip 附 proven-inapplicable 取据 |
+| 子任务 1 pi-native-agent | `7d839ed8` 归档；Pi 成为一等 provider，9 个新 Web 命令，schema v16→v17 |
+| 子任务 2 codex-alpha-websearch | `b6f02cfc` 归档；Alpha Search 直通 + hosted WebSearch 全链转译，fail-closed URL 推导 |
+| 子任务 3 managed-oauth-accounts | `e1b88f48` 归档；账号绑定只存 id、reauth 拒绝保存、carve-out 仅托管卡 |
+
+终态门禁：`cargo test --lib` **2290** / test:unit **177 files / 1089** / parity **38** /
+integration **50/54**（恰 4 白名单 flake）/ web-routes **292/280/0** / locales **2664** /
+`SCHEMA_VERSION` **17** / build:web 与 smoke 均 exit 0。
+
+### 意外发现（两个都值得记）
+
+1. **main 实际在 3.18.0，不是 PRD 写的 3.19.2** —— v3.19.2 同步已归档但从未合入 main。
+   规划期照抄了归档任务的结论，没读 `git show main:package.json`。同步链没断（本分支基于
+   v3.19.2 工作切出），但合并一次交付两个周期。**教训：版本前提必须读当前 main 的实际文件。**
+2. **发布文档反向失真** —— CHANGELOG 与三语 release notes 写于子任务落地前，仍称三特性
+   「拆分为独立子任务，单独落地」并留「子任务范围之外」章节。**已交付能力被声明为未交付**，
+   是集成 review 的唯一阻塞项（`6676dfdc` 已修）。比通常的「宣称未实现能力」反过来，但同样违反
+   PRD「发布说明反映实际移植范围」。
+
+### 集成 review 的三项契约
+
+- **相互无冲突**：pi∩alpha=0、alpha∩oauth=0、pi∩oauth=15 文件（pi 建立的行零丢失）
+- **与父主体无回退**（这项我最初派单漏了，经审阅补测）：父主体 28 个实现 commit 新增的全部
+  Rust `fn` 与全部前端 `export` 在 HEAD 存活，脚本化核验零缺失；S2 never-clobber helper + 6 用例存活；
+  父主体 i18n 2506 键零丢失
+- **parity / 安全边界**：web-routes 逐项相同；五类上限原值；三子任务守卫互不削弱
+
+### review 后修正（架构审阅连开两枪）
+
+- `proxy.rs:1122` 是**第五处**未收敛的 official 判定（接管开启时的封禁警告），托管卡本该不告警却在告警。
+  改用 `blocked_by_proxy_takeover` + 变异验证。为此给测试模块补了第一个录制型 event sink。
+- 随后 `provider.rs` doc 仍写「四处执行点/切换必须被拒绝」，第五个消费者语义不同（警告 ≠ 拒绝）→
+  改写为**分类谓词 + 五消费者表格**，并声明不得为措辞一致再分裂谓词。
+
+### 计数被连续纠正两次（值得单独记）
+
+同一张「内联 official 判定」表格被 grounded-reviewer 纠正两轮：
+第一轮普查模式太窄（漏否定式与非 `as_deref`），第二轮改对模式后仍有两处差账
+（`codex_config.rs:2647/2648` 是独立两处被并成一行；`provider.rs` 4 处被整文件 `rg -v` 排除而未说明理由）。
+**教训：给下次同步用的清单，计数与排除项都必须可复现 —— 写明模式、写明减项、写明为什么减。**
+
+### 方法论沉淀（已入 spec `bdb99038`）
+
+1. 提交区间移植必须对**目标 tag** 核验每个交付物存在性（中间提交的符号可能被下游删除）
+2. 存在性检查用扩展通配，单扩展名 grep 曾把既有 133 行套件误报为缺失
+3. Rust 策略的前端镜像谓词必须单一派生 + 双侧测试钉住（doc 声称对齐 ≠ 行为对齐）
+
+### 遗留（不阻塞）
+
+- pi 徽章统一后 3 个无引用 locale 键（三语齐备，check:locales 绿）
+- README 枚举 5 应用而 `AppId` 有 8（grokbuild/hermes 既有漂移 + pi 新增）→ 独立 README 任务
+- `useProviderActions.ts` / `ProviderCard.tsx` / `providerCapabilities.ts` 的 Official-takeover 谓词
+  与上游有意分歧，下次同步这三个文件会冲突，须按 in-code 注释取据判定
+- **main 尚未推送 origin**（远端操作待确认）
+
+### Status
+
+[OK] **Completed**
