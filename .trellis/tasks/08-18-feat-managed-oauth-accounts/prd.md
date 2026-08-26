@@ -66,16 +66,19 @@
 - `.pi/`、`.pi-subagents/` 不得修改或提交。
 
 ## 验收标准
-- [ ] managed OAuth 多账号选择在 Web API / browser UI / headless runtime 三态下正确。
-- [ ] takeover restore 不覆盖官方 ChatGPT 登录（`d2b070c9` 行为不回归）。
-- [ ] `ProviderForm.codexManagedAccount.test.tsx` **10** 个用例全绿（取回自 `7265596a`）。
-- [ ] `0455a92c` Rust managed-codex 事务（`preflight_managed_codex_live` 等）落地后，S4b 移交的用例无回归。
-- [x] ~~遗留绑定数据迁移 `migrate_legacy_codex_official_managed_binding` 在 startup 幂等、失败不阻断启动。~~ —— **作废（W2 裁定 Q3）**：上游 `0455a92c` 已删除该函数与钩子，v3.20.0 无此符号；由 `update_keeps_official_provider_id_when_binding_and_unbinding`（绑定/解绑保持 provider id 不变）取代。改为验收：**该符号不得出现在 fork 树中**，且上述取代用例全绿。
-- [ ] **无新命令**：`check:web-routes` 保持 292/280/0；**无 schema 迁移**：`SCHEMA_VERSION` 仍为 17。
-- [ ] 安全上限零退化；managed `id_token` 写入不扩大凭据泄露面（日志不含 token、写入走既有 atomic + 0600 路径）。
-- [ ] ClaudeDesktop / zh-TW hunk 零回潮；延期栈四文件仍缺席。
-- [ ] 上游测试全量移植并全绿（不删测试、不弱化断言，只按 fork API 适配 mock）。
-- [ ] 全量门禁：test:unit 全绿（非 flake 项）、test:integration（4 PRD flakes 外全绿）、Rust parity（`web_api::`/`dual_runtime_parity::`/`web_proxy_lifecycle::`）、web-routes、locales parity、build:web exit 0、smoke:web-server exit 0；与父主体及两个已归档子任务无回归。
+
+> 勾选与证据见 implement.md「W5 落地结果 · PRD 验收核验」（2026-08-26，commit `2f822677`）。
+
+- [x] managed OAuth 多账号选择在 Web API / browser UI / headless runtime 三态下正确。 —— Web API：`web_api::` 断言含 `reauth_required` parity（W1）；browser UI：W4 的 10 个移交用例 + W5 的 12 条 Radix 选择用例 + `AuthCenterPanel.web-server` 真实服务 2/2；headless：`cargo check --features web-server --example server` 与 `smoke:web-server` exit 0。
+- [x] takeover restore 不覆盖官方 ChatGPT 登录（`d2b070c9` 行为不回归）。 —— `codex_*_preserves_oauth_auth_json*` 系列仍在且全绿（W3 核验，W4/W5 未改 `services/proxy.rs`）。
+- [x] `ProviderForm.codexManagedAccount.test.tsx` **10** 个用例全绿（取回自 `7265596a`）。 —— W4 落地，W5 全量 test:unit 内复核全绿。
+- [x] `0455a92c` Rust managed-codex 事务（`preflight_managed_codex_live` 等）落地后，S4b 移交的用例无回归。 —— W2/W3 落地；`cargo test --lib` 2289 passed / 0 failed。
+- [x] ~~遗留绑定数据迁移 `migrate_legacy_codex_official_managed_binding` 在 startup 幂等、失败不阻断启动。~~ —— **作废（W2 裁定 Q3）**：上游 `0455a92c` 已删除该函数与钩子，v3.20.0 无此符号；由 `update_keeps_official_provider_id_when_binding_and_unbinding`（绑定/解绑保持 provider id 不变）取代。改为验收：**该符号不得出现在 fork 树中**，且上述取代用例全绿。 —— W5 核验：该符号与其两个伴生函数在 `src-tauri/src/` + `src/` 全库 **0** 命中；`update_keeps_official_provider_id_when_binding_and_unbinding` 与 `add_accepts_multiple_unbound_codex_official_cards` 均通过。
+- [x] **无新命令**：`check:web-routes` 保持 292/280/0；**无 schema 迁移**：`SCHEMA_VERSION` 仍为 17。 —— W5 实测 292/280/0；`database/mod.rs:53` 为 17。
+- [x] 安全上限零退化；managed `id_token` 写入不扩大凭据泄露面（日志不含 token、写入走既有 atomic + 0600 路径）。 —— 128 MiB / 2s / 16 MiB / 256 KiB / 32 MiB + 五个 `MAX_CITATION_DEDUP_*` 全部原值；全库 `log::` 行无 `id_token`（唯一涉 token 的 `codex_oauth_auth.rs:681` 只打印 `account_id`）；写入走 `write_json_file_managed`（C1 / ADR 0003）。**措辞更正**：`0600` 仅对 cc-switch 首次创建的文件成立，外部应用拥有的 `~/.codex/auth.json` 由 `config.rs:462-473` 保留其原有权限位——已据此改写 `SECURITY.md:169-181`。
+- [x] ClaudeDesktop / zh-TW hunk 零回潮；延期栈四文件仍缺席。 —— 无 `ClaudeDesktopProviderForm.tsx`；locales 仅 en/ja/zh；`proxy/providers/` 四文件 0 命中。Rust 侧 4 个文件的 `claude-desktop` 字符串为既有 app-type 处理，W5 未改。
+- [x] 上游测试全量移植并全绿（不删测试、不弱化断言，只按 fork API 适配 mock）。 —— W5 逐文件记录见 implement.md。**两处例外已就地标注而非默默保留**：`ensureCodexOfficialSeed` 与 `onDuplicate` 可选分支为空断言（fork 无对应生产面）。**一处有意反转**：`useProviderActions.test` 的 native-login takeover 用例按 fork fail-closed 语义反转，取据见 implement.md「与上游的有意分歧」。
+- [x] 全量门禁：test:unit 全绿（非 flake 项）、test:integration（4 PRD flakes 外全绿）、Rust parity（`web_api::`/`dual_runtime_parity::`/`web_proxy_lifecycle::`）、web-routes、locales parity、build:web exit 0、smoke:web-server exit 0；与父主体及两个已归档子任务无回归。 —— test:unit 177/1089 全绿；test:integration 50/54（恰好 4 个白名单 flake）；parity 38；locales 2664 parity；build:web 与 smoke:web-server 均 exit 0。
 
 ## 裁定记录（brainstorm 2026-08-24，用户授权采纳推荐方案）
 

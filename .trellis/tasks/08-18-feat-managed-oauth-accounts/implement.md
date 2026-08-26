@@ -358,6 +358,13 @@ W0 只**孤立地**调研了 `a2e22f33` 单个提交，没有逐项核对「这�
 <target-tag>`），再写入验收标准与批次表 —— 中间提交引入的符号可能在下游提交里被删除，孤立
 读单个提交的 diff 无法发现这一点。
 
+**同族缺口（W5 派单前，grounded-reviewer 指正）**：存在性检查的**扩展名**写错同样会把
+事实报告带偏 —— W5 派单用 `.ts` 检查 `useManagedAuth.test`，得出「fork 缺失」，实际
+`.tsx` 存在（fork 自 `64a34eb3` 起就有 133 行套件）。子代理中途自行纠正为**追加合并**
+（`git show 2f822677 -- tests/hooks/useManagedAuth.test.tsx` = +50/−0，主会话已独立复核），
+未覆盖既有用例。修正规则：**存在性检查用 `find tests -name '*.test.ts*'`（带扩展通配）或
+`git ls-tree`，禁止单扩展名 grep**。
+
 ## W3 落地结果（2026-08-25）
 
 13 文件 +2521/−358。子代理中途被截，主会话收口：补 `seed_codex_model_template` 测试 helper、按任务契约打开 managed Official carve-out。
@@ -431,6 +438,97 @@ test:unit **176 files / 1057 tests**（基线 173 / 1044，+3 files / +13 tests�
 - `CodexOAuthSection.test`(+383) / `AddProviderDialog.test`(+90) / `EditProviderDialog.test`(+128) / `FullScreenPanel.test`(+33) / `useManagedAuth.test`(+86) / `useAddProviderMutation.test`(+57) 等剩余上游测试
 - `test:integration` + `build:web` + `smoke:web-server`
 - 文档同步：`docs/guides/codex-deepseek-routing-guide` / `claude-codex-routing-guide` 的「official 一律阻止」措辞、`SECURITY.md` 的 `~/.codex/auth.json` 凭据说明
+
+## W5 落地结果（2026-08-26，commit `2f822677`）
+
+25 文件 +1142/−71。末批：剩余上游测试 + 文档同步 + 全量门禁 + PRD 验收核验。
+
+### 上游测试移植（净 `a2e22f33^..v3.20.0`，只取 a2e22f33 + 0455a92c）
+
+| 文件 | 处置 |
+|---|---|
+| `ProviderActions.test` | +1 上游用例 +1 反向锚点；需先补上游 `onDuplicate?` + 条件渲染 hunk（W4 漏） |
+| `AddProviderDialog.test` | +2 上游用例；`ProviderForm` mock 补 `onManageAuthAccounts`，新增 `AuthSettingsPanel` mock |
+| `EditProviderDialog.test` | +1 上游用例 + `AuthSettingsPanel` mock（另两条净用例 S4b 已在） |
+| `CodexOAuthSection.test` | Auth Center quota 断言按上游加强为双账号 |
+| `CodexOAuthSection.managedSelection.test`（新建） | 11 条选择用例。既有套件 stub 掉 `@/components/ui/select`/Button/Label/i18next，而这批断言真实 Radix `combobox`/`option`/`listbox` 语义；`vi.mock` 文件级作用域 → 无法同文件共存。按 `providerConfigUtils.toml-edge-cases` 先例加范围后缀 |
+| `useManagedAuth.test` | 上游 removal-toast 用例**追加**。派发单称「fork 缺失」不实：fork 自 `64a34eb3` 起就有同路径 133 行套件（2 条结构化错误用例），上游是**新建**同名文件（+86）→ 合并，零删除 |
+| `setupGlobals.ts` | 补 `hasPointerCapture`/`setPointerCapture`/`releasePointerCapture`（上游同样带；真实 Radix 用例的前置） |
+| `useAddProviderMutation.test` | S4b `84d54e7d` 已至 v3.20.0 态，无需改动 |
+| `useProviderActions.test` | S4b 已至 v3.20.0 态，**但本批反转一条上游用例**，见下 |
+| `ClaudeDesktopProviderForm.test` | 丢弃（fork 无 claude-desktop） |
+
+两处空断言按 W2「unified-session-bucket」先例就地注释而非默默保留：`ensureCodexOfficialSeed`（fork 从无此字段）、`onDuplicate` 可选分支（fork 与上游均无省略该 prop 的生产调用方）。
+
+### 与上游的有意分歧（未来同步禁止直接回采上游版本）
+
+`tests/hooks/useProviderActions.test.tsx`：
+
+| | 上游 v3.20.0 | 本 fork（W5） |
+|---|---|---|
+| 用例名 | `allows the native Codex official provider during takeover`（`0455a92c` 从 `allows the built-in …` 改名） | `blocks the unbound native-login Codex official card during takeover` |
+| 断言 | `switchProviderMutateAsync` **被调用**（`"codex-official"`）、无 error toast | **未被调用** + 1 条 error toast |
+
+取据：上游放开任意 Codex Official 卡是因为它把客户端 inbound Authorization 直通上游
+（`codex_official_auth_passthrough` / `validate_codex_official_authorization`）；fork forwarder
+**替换** inbound Authorization（W1 移交项 1、W3 维持丢弃），未绑定卡无服务端凭据，故 Rust
+`Provider::blocked_by_proxy_takeover` 在四处执行点全部拦截（`provider.rs`，由
+`blocked_by_proxy_takeover_opens_only_managed_codex_official_cards` 钉住）。回采上游断言等于
+静默放宽 UI 拦截，把「切换时的明确拒绝」变成「一次失败的 Codex 会话」——正是 `provider.rs`
+doc 声明要避免的结果。
+
+兄弟用例 `allows a managed Codex Official card during takeover` **保持上游逐字**。分歧理由同时
+写在测试体注释与 commit `2f822677` 正文。
+
+### 跨层修正（均为 W4 遗留缺口，非新特性；全部经变异验证：放宽谓词即有具名用例 FAILED）
+
+1. **`supportsOfficialProxyTakeover` 收窄为仅 `managed_account`**。其自带 doc 声称「与 Rust takeover 策略对齐」，实际对 `native_login` 也返回 true（上游形状以不可达的 `return true` 收尾）→ 未绑定 fixed `codex-official` 卡失去明确的切换期拒绝，改为落到服务层失败。补 in-code Degradation Direction 分类注释（授权决策 → fail-closed，禁止反转）。
+2. **前端单一派生 `isOfficialBlockedByTakeover`**，`ProviderCard` 与 `useProviderActions` 共用。`ProviderCard` 原先自行写 `isProxyTakeover && category === "official"`，漏掉 carve-out → 托管 Official 卡切换按钮仍 disabled，W3 的 Rust carve-out 从卡片 UI 不可达。对应 Rust 侧 `blocked_by_proxy_takeover` 的单一定义惯例。
+3. **`noRoutingSupport` 徽章**改用同一谓词（原先对可路由的托管卡也显示「不支持路由」）。
+4. **i18n 27 键**（a2e22f33 + 0455a92c）补入 en/ja/zh，locales **2637 → 2664** parity。已核验：`979a32dc` 三语言均 0 命中（确为缺失，非重复添加），补后无重复键。上游 4 个 fork 未引用的键（`codex.accountNotSelected` / `codex.followCodexLogin` / `codexOauth.chatgptAccount` / `codexOauth.manageAccounts`）不补。`provider.blockedByProxyHint` 三语言收窄为「该官方供应商」（tooltip 只挂在被拦截的卡上，原措辞把卡级事实说成通则）。
+5. `useProviderActions.ts:234` 注释原写「Codex official account cards can reuse the active native ChatGPT login」——收窄后与 `provider.rs` doc 相反，已改写。
+
+### 集成测试修正（每处追溯到具名上游行为）
+
+`AuthCenterPanel.web-server` 在 `979a32dc` 即 **2/2 失败**（stash 验证），属 W4 引入的真实回归而非既有 5s 超时 flake —— W4 把 `test:integration` 延到 W5，故此前未暴露。
+
+- 登录按钮改为 `await findByRole`：a2e22f33 把按钮门控在 `isStatusSuccess`（状态未加载完不提供登录入口，上游逐字），不能读首帧。
+- `getAccountRow` 改为按 class **token** 匹配（`rounded-md` + `border` + `bg-muted/30`|`bg-amber-50/70`），不再匹配字面 class 串：a2e22f33 重排了 Codex 行的 class 并新增 amber reauth 变体。
+
+### 文档同步（W1 移交项 6 + W2 补充）
+
+- `codex-deepseek-routing-guide-{en,zh,ja}.md:129` FAQ：限定为「未绑定托管账号的官方卡」+ 补托管 Codex Official 卡的例外；Claude Official 仍无条件拦截。**line 15 的徽章条目无需改动**——徽章改用同一谓词后，「有徽章 ⇔ 被拦截」双向成立。
+- `claude-codex-routing-guide-{en,zh,ja}.md:65`：保留「凭据存储位置仍是 `~/.cc-switch/codex_oauth_auth.json`」，把「不写 `~/.codex/`」限定到 Claude 侧 `codex_oauth` 预设路径（由 W2 用例 `claude_switch_off_a_codex_oauth_bound_provider_never_touches_codex_live` 钉住），并补托管 Codex Official 卡的例外（W1 `sync_codex_managed_oauth_live_auth_after_refresh` 写入含 `id_token` 的 bundle）。
+- `claude-codex-routing-guide-{en,zh,ja}.md:125`（本批新增修正，超出 diff 范围但同源）：原文把「切回官方供应商」与「关闭路由开关」并列为两条可互换的退出路径，但接管仍开启时切回 Claude 官方卡会被直接拒绝 → 改为「先关开关，再切回」并说明顺序原因。ja 侧统一用 引き継ぎ（该文件全篇用词），不引入 接管。
+- `SECURITY.md:169-181`：`~/.codex/auth.json` 列入托管凭据类；把 `0600` 保证拆分为「cc-switch 自有凭据文件首次创建 = 0600」与「他应用拥有的文件 = 原子替换时保留其原有权限位」（`config.rs:428-436` 捕获 / `:462-473` 恢复）。中英两段镜像同步。
+
+### 门禁（W5，全量）
+
+`cargo fmt` / `prettier` / `typecheck` 全绿。web-routes **292/280/0**（恒定）。locales **2664** parity（+27）。
+`cargo check`（desktop + web-server example）全绿。`cargo test --lib` **2289** passed / 5 ignored；`proxy::` **1153**；
+parity **38**。test:unit **177 files / 1089 tests** 全绿（基线 176/1057；+1 file 为新建选择用例文件，+32 tests）。
+test:integration **50/54** —— 恰好 4 个 PRD 白名单 fixture flake（ProviderList official-seed 1、SkillsPage 3），
+`AuthCenterPanel` 已转绿。`build:web` exit 0；`smoke:web-server` exit 0。
+
+### PRD 验收核验（逐条证据）
+
+| 验收项 | 证据 |
+|---|---|
+| `migrate_legacy_codex_official_managed_binding` 不在 fork 树 | 它与 `matches_interrupted_codex_official_migration` / `validate_codex_official_card_identity` 在 `src-tauri/src/` + `src/` 全库 **0** 命中 |
+| 取代用例全绿 | `update_keeps_official_provider_id_when_binding_and_unbinding`、`add_accepts_multiple_unbound_codex_official_cards` 通过 |
+| carve-out 钉住 | `blocked_by_proxy_takeover_opens_only_managed_codex_official_cards`、`managed_official_card_pins_chatgpt_origin_and_codex_oauth_strategy`、`unbound_official_card_has_no_server_side_credential` 通过 |
+| 无新命令 / 无 schema 迁移 | 292/280/0；`database/mod.rs:53 SCHEMA_VERSION = 17` |
+| 安全上限零退化 | 128 MiB / 2s / 16 MiB / 256 KiB / 32 MiB + 五个 `MAX_CITATION_DEDUP_*` 全部原值 |
+| 日志无 token | 全库 `log::` 行无 `id_token`；唯一涉 token 的 `codex_oauth_auth.rs:681` 只打印 `account_id` |
+| ClaudeDesktop / zh-TW 零回潮 | 无 `ClaudeDesktopProviderForm.tsx`；`src/i18n/locales/` 仅 en/ja/zh。Rust 侧 4 个文件的 `claude-desktop` 字符串为既有 app-type 处理，W5 未改（`git diff 979a32dc` 空） |
+| 延期栈四文件缺席 | `src-tauri/src/proxy/providers/` 中 4 个文件 **0** 命中 |
+| 10 个移交用例 | `ProviderForm.codexManagedAccount.test.tsx` 在 test:unit 内全绿 |
+
+### 移交父任务跨子任务 review 的项
+
+`useProviderActions.ts` / `ProviderCard.tsx` / `providerCapabilities.ts` 的 Official-takeover 谓词已与上游
+有意分歧（fork 无 inbound Authorization passthrough），已在 in-code 注释与本节记录；下次同步这三个文件
+会冲突，需按此处取据判定而非直接回采。
 
 ## 验证命令汇总
 
