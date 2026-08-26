@@ -293,6 +293,139 @@ fn test_build_gemini_provider_without_model() {
     assert!(env.get("GEMINI_MODEL").is_none());
 }
 
+/// Construct a minimal provider request carrying a usage script.
+fn usage_script_request(code: &str, usage_enabled: Option<bool>) -> DeepLinkImportRequest {
+    DeepLinkImportRequest {
+        version: "v1".to_string(),
+        resource: "provider".to_string(),
+        app: Some("claude".to_string()),
+        name: Some("Test Claude".to_string()),
+        homepage: Some("https://example.com".to_string()),
+        endpoint: Some("https://api.example.com/v1/".to_string()),
+        api_key: Some("sk-main".to_string()),
+        icon: None,
+        model: None,
+        notes: None,
+        haiku_model: None,
+        sonnet_model: None,
+        opus_model: None,
+        config: None,
+        config_format: None,
+        config_url: None,
+        apps: None,
+        repo: None,
+        directory: None,
+        branch: None,
+        content: None,
+        description: None,
+        enabled: None,
+        usage_enabled,
+        usage_script: Some(BASE64_STANDARD.encode(code)),
+        usage_api_key: None,
+        usage_base_url: None,
+        usage_access_token: None,
+        usage_user_id: None,
+        usage_auto_interval: None,
+    }
+}
+
+#[test]
+fn test_deeplink_usage_script_does_not_copy_provider_credentials() {
+    use super::provider::build_provider_from_request;
+
+    let request = usage_script_request("return {};", Some(true));
+    let provider = build_provider_from_request(&AppType::Claude, &request).unwrap();
+    let script = provider
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.usage_script.as_ref())
+        .expect("usage script should be created");
+
+    assert!(script.enabled);
+    assert_eq!(script.api_key, None);
+    assert_eq!(script.base_url, None);
+}
+
+#[test]
+fn test_deeplink_usage_script_omits_overrides_matching_provider() {
+    use super::provider::build_provider_from_request;
+
+    let mut request = usage_script_request("return {};", Some(true));
+    request.usage_api_key = Some(" sk-main ".to_string());
+    request.usage_base_url = Some(" https://api.example.com/v1/ ".to_string());
+
+    let provider = build_provider_from_request(&AppType::Claude, &request).unwrap();
+    let script = provider
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.usage_script.as_ref())
+        .expect("usage script should be created");
+
+    assert_eq!(script.api_key, None);
+    assert_eq!(script.base_url, None);
+}
+
+#[test]
+fn test_deeplink_usage_script_preserves_distinct_overrides() {
+    use super::provider::build_provider_from_request;
+
+    let mut request = usage_script_request("return {};", Some(true));
+    request.usage_api_key = Some(" sk-usage ".to_string());
+    request.usage_base_url = Some(" https://usage.example/api/ ".to_string());
+
+    let provider = build_provider_from_request(&AppType::Claude, &request).unwrap();
+    let script = provider
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.usage_script.as_ref())
+        .expect("usage script should be created");
+
+    assert_eq!(script.api_key.as_deref(), Some("sk-usage"));
+    assert_eq!(
+        script.base_url.as_deref(),
+        Some("https://usage.example/api")
+    );
+}
+
+#[test]
+fn test_deeplink_usage_script_is_not_enabled_merely_by_carrying_code() {
+    use super::provider::build_provider_from_request;
+
+    let code = "export async function query() { return { cost: 0 }; }";
+    let request = usage_script_request(code, None);
+
+    let provider = build_provider_from_request(&AppType::Claude, &request).unwrap();
+    let script = provider
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.usage_script.as_ref())
+        .expect("usage script should still be created");
+
+    assert!(
+        !script.enabled,
+        "carrying untrusted code must not implicitly enable it"
+    );
+    assert_eq!(script.code, code);
+}
+
+#[test]
+fn test_deeplink_usage_script_honors_an_explicit_enable_request_from_the_link() {
+    use super::provider::build_provider_from_request;
+
+    let code = "export async function query() { return { cost: 0 }; }";
+    let request = usage_script_request(code, Some(true));
+
+    let provider = build_provider_from_request(&AppType::Claude, &request).unwrap();
+    let script = provider
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.usage_script.as_ref())
+        .expect("usage script should be created");
+
+    assert!(script.enabled);
+    assert_eq!(script.code, code);
+}
+
 #[test]
 fn test_parse_and_merge_config_claude() {
     // Prepare Base64 encoded Claude config

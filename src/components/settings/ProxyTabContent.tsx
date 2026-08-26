@@ -25,6 +25,13 @@ interface ProxyTabContentProps {
   onAutoSave: (updates: Partial<SettingsFormState>) => Promise<boolean | void>;
 }
 
+export const FAILOVER_APPS = [
+  { id: "claude", label: "Claude" },
+  { id: "codex", label: "Codex" },
+  { id: "gemini", label: "Gemini" },
+  { id: "grokbuild", label: "Grok Build" },
+] as const;
+
 export function ProxyTabContent({
   settings,
   onAutoSave,
@@ -35,6 +42,7 @@ export function ProxyTabContent({
 
   const {
     isRunning,
+    takeoverStatus,
     startProxyServer,
     stopWithRestore,
     isPending: isProxyPending,
@@ -111,7 +119,7 @@ export function ProxyTabContent({
                 className="gap-1.5 h-6 ml-auto mr-2"
               >
                 <Activity
-                  className={`h-3 w-3 ${isRunning ? "animate-pulse" : ""}`}
+                  className={`h-3 w-3 ${isRunning ? "status-heartbeat" : ""}`}
                 />
                 {isRunning
                   ? t("settings.advanced.proxy.running")
@@ -172,77 +180,46 @@ export function ProxyTabContent({
               )}
 
               <Tabs defaultValue="claude" className="w-full">
-                <TabsList className="grid w-full grid-cols-3">
-                  <TabsTrigger value="claude">Claude</TabsTrigger>
-                  <TabsTrigger value="codex">Codex</TabsTrigger>
-                  <TabsTrigger value="gemini">Gemini</TabsTrigger>
+                <TabsList className="grid w-full grid-cols-4">
+                  {FAILOVER_APPS.map(({ id, label }) => (
+                    <TabsTrigger key={id} value={id}>
+                      {label}
+                    </TabsTrigger>
+                  ))}
                 </TabsList>
-                <TabsContent value="claude" className="mt-4 space-y-6">
-                  <div className="space-y-4">
-                    <div>
-                      <h4 className="text-sm font-semibold">
-                        {t("proxy.failoverQueue.title")}
-                      </h4>
-                      <p className="text-xs text-muted-foreground">
-                        {t("proxy.failoverQueue.description")}
-                      </p>
-                    </div>
-                    <FailoverQueueManager
-                      appType="claude"
-                      disabled={failoverPanelsDisabled}
-                    />
-                  </div>
-                  <div className="border-t border-border/50 pt-6">
-                    <AutoFailoverConfigPanel
-                      appType="claude"
-                      disabled={failoverPanelsDisabled}
-                    />
-                  </div>
-                </TabsContent>
-                <TabsContent value="codex" className="mt-4 space-y-6">
-                  <div className="space-y-4">
-                    <div>
-                      <h4 className="text-sm font-semibold">
-                        {t("proxy.failoverQueue.title")}
-                      </h4>
-                      <p className="text-xs text-muted-foreground">
-                        {t("proxy.failoverQueue.description")}
-                      </p>
-                    </div>
-                    <FailoverQueueManager
-                      appType="codex"
-                      disabled={failoverPanelsDisabled}
-                    />
-                  </div>
-                  <div className="border-t border-border/50 pt-6">
-                    <AutoFailoverConfigPanel
-                      appType="codex"
-                      disabled={failoverPanelsDisabled}
-                    />
-                  </div>
-                </TabsContent>
-                <TabsContent value="gemini" className="mt-4 space-y-6">
-                  <div className="space-y-4">
-                    <div>
-                      <h4 className="text-sm font-semibold">
-                        {t("proxy.failoverQueue.title")}
-                      </h4>
-                      <p className="text-xs text-muted-foreground">
-                        {t("proxy.failoverQueue.description")}
-                      </p>
-                    </div>
-                    <FailoverQueueManager
-                      appType="gemini"
-                      disabled={failoverPanelsDisabled}
-                    />
-                  </div>
-                  <div className="border-t border-border/50 pt-6">
-                    <AutoFailoverConfigPanel
-                      appType="gemini"
-                      disabled={failoverPanelsDisabled}
-                    />
-                  </div>
-                </TabsContent>
+                {FAILOVER_APPS.map(({ id: appType }) => {
+                  const appFailoverDisabled =
+                    failoverPanelsDisabled ||
+                    !(takeoverStatus?.[appType] ?? false);
+                  return (
+                    <TabsContent
+                      key={appType}
+                      value={appType}
+                      className="mt-4 space-y-6"
+                    >
+                      <div className="space-y-4">
+                        <div>
+                          <h4 className="text-sm font-semibold">
+                            {t("proxy.failoverQueue.title")}
+                          </h4>
+                          <p className="text-xs text-muted-foreground">
+                            {t("proxy.failoverQueue.description")}
+                          </p>
+                        </div>
+                        <FailoverQueueManager
+                          appType={appType}
+                          disabled={appFailoverDisabled}
+                        />
+                      </div>
+                      <div className="border-t border-border/50 pt-6">
+                        <AutoFailoverConfigPanel
+                          appType={appType}
+                          disabled={appFailoverDisabled}
+                        />
+                      </div>
+                    </TabsContent>
+                  );
+                })}
               </Tabs>
             </div>
           </AccordionContent>

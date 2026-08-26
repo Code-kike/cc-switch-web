@@ -8,7 +8,7 @@
 
 pub mod runtime_events;
 
-#[cfg(feature = "desktop")]
+#[cfg(any(feature = "desktop", test))]
 pub use runtime_events::NoopEventSink;
 pub use runtime_events::{ChannelEventSink, EventEnvelope, UiEventSink};
 

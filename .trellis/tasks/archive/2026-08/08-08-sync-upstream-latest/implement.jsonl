@@ -1,0 +1,6 @@
+{"file": ".trellis/tasks/08-08-sync-upstream-latest/prd.md", "reason": "本次同步的目标边界、grilling 裁定结果与批次/门禁约束的权威定义"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "双运行时（Tauri command ↔ Web API 路由）移植时的跨层数据流思考清单"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "移植上游代码时优先复用 fork 既有适配层而非重复实现"}
+{"file": ".trellis/spec/frontend/index.md", "reason": "前端规范索引；移植 UI（搜索列表/批量开关/Auth Center 用量）时按需下钻"}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "上游新增 UI 状态（bulk toggles、route status 降耗）需符合 fork 状态管理约定"}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "新增命令/路由的 TS 类型契约要求"}

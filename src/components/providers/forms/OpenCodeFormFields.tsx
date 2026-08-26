@@ -2,12 +2,8 @@ import { useState, useEffect, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { FormLabel } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
+import { ImeSafeInput } from "@/components/ui/ime-safe-input";
 import { Button } from "@/components/ui/button";
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
 import {
   Select,
   SelectContent,
@@ -71,12 +67,13 @@ function ModelIdInput({
   }, [modelId]);
 
   return (
-    <Input
+    <ImeSafeInput
       value={localValue}
-      onChange={(e) => setLocalValue(e.target.value)}
-      onBlur={() => {
-        if (localValue !== modelId && localValue.trim()) {
-          onChange(localValue);
+      onValueChange={setLocalValue}
+      onBlur={(event) => {
+        const nextValue = event.currentTarget.value;
+        if (nextValue !== modelId && nextValue.trim()) {
+          onChange(nextValue);
         }
       }}
       placeholder={placeholder}
@@ -113,11 +110,11 @@ function ExtraOptionKeyInput({
   }, [isPlaceholderKey, optionKey]);
 
   return (
-    <Input
+    <ImeSafeInput
       value={localValue}
-      onChange={(e) => setLocalValue(e.target.value)}
-      onBlur={() => {
-        const trimmed = localValue.trim();
+      onValueChange={setLocalValue}
+      onBlur={(event) => {
+        const trimmed = event.currentTarget.value.trim();
         if (trimmed && trimmed !== optionKey) {
           const accepted = onChange(trimmed);
           if (accepted === false) {
@@ -152,11 +149,11 @@ function ModelOptionKeyInput({
   }, [optionKey]);
 
   return (
-    <Input
+    <ImeSafeInput
       value={localValue}
-      onChange={(e) => setLocalValue(e.target.value)}
-      onBlur={() => {
-        const trimmed = localValue.trim();
+      onValueChange={setLocalValue}
+      onBlur={(event) => {
+        const trimmed = event.currentTarget.value.trim();
         if (trimmed && trimmed !== optionKey) {
           onChange(trimmed);
         }
@@ -268,15 +265,6 @@ export function OpenCodeFormFields({
 
   const [fetchedModels, setFetchedModels] = useState<FetchedModel[]>([]);
   const [isFetchingModels, setIsFetchingModels] = useState(false);
-  const [extraOptionsOpen, setExtraOptionsOpen] = useState(
-    () => Object.keys(extraOptions).length > 0,
-  );
-
-  useEffect(() => {
-    if (Object.keys(extraOptions).length > 0) {
-      setExtraOptionsOpen(true);
-    }
-  }, [extraOptions]);
 
   const handleFetchModels = useCallback(() => {
     if (!baseUrl || !apiKey) {
@@ -749,46 +737,26 @@ export function OpenCodeFormFields({
       </div>
 
       {/* Extra Options Editor */}
-      <Collapsible
-        open={extraOptionsOpen}
-        onOpenChange={setExtraOptionsOpen}
-        className="space-y-2 border-l border-border-default pl-3"
-      >
+      <div className="space-y-2 border-l border-border-default pl-3">
         <div className="flex items-start justify-between gap-3">
-          <CollapsibleTrigger asChild>
-            <button
-              type="button"
-              className="flex min-w-0 max-w-3xl flex-1 items-start gap-2 text-left"
-            >
-              <ChevronRight
-                className={cn(
-                  "mt-0.5 h-4 w-4 shrink-0 text-muted-foreground transition-transform",
-                  extraOptionsOpen && "rotate-90",
-                )}
-              />
-              <span className="space-y-1">
-                <span className="block text-sm font-medium text-foreground">
-                  {t("opencode.extraOptions", {
-                    defaultValue: "Extra SDK Options",
-                  })}
-                </span>
-                <span className="block text-xs text-muted-foreground">
-                  {t("opencode.extraOptionsHint", {
-                    defaultValue:
-                      "Advanced SDK options not exposed by the structured fields.",
-                  })}
-                </span>
-              </span>
-            </button>
-          </CollapsibleTrigger>
+          <div className="max-w-3xl space-y-1">
+            <FormLabel>
+              {t("opencode.extraOptions", {
+                defaultValue: "Extra SDK Options",
+              })}
+            </FormLabel>
+            <p className="text-xs text-muted-foreground">
+              {t("opencode.extraOptionsHint", {
+                defaultValue:
+                  "Advanced SDK options not exposed by the structured fields.",
+              })}
+            </p>
+          </div>
           <Button
             type="button"
             variant="outline"
             size="sm"
-            onClick={() => {
-              setExtraOptionsOpen(true);
-              handleAddExtraOption();
-            }}
+            onClick={handleAddExtraOption}
             className="h-7 gap-1"
           >
             <Plus className="h-3.5 w-3.5" />
@@ -796,7 +764,7 @@ export function OpenCodeFormFields({
           </Button>
         </div>
 
-        <CollapsibleContent className="max-w-3xl space-y-2">
+        <div className="max-w-3xl">
           {Object.keys(extraOptions).length === 0 ? (
             <p className="text-sm text-muted-foreground py-1">
               {t("opencode.noExtraOptions", {
@@ -848,11 +816,11 @@ export function OpenCodeFormFields({
               ))}
             </div>
           )}
-        </CollapsibleContent>
-      </Collapsible>
+        </div>
+      </div>
 
       {/* Models Editor */}
-      <div className="space-y-3">
+      <div className="space-y-3 border-l border-border-default pl-3">
         <div className="flex items-center justify-between">
           <FormLabel>
             {t("opencode.models", { defaultValue: "Models" })}
@@ -940,9 +908,9 @@ export function OpenCodeFormFields({
                       />
                     )}
                   </div>
-                  <Input
+                  <ImeSafeInput
                     value={model.name}
-                    onChange={(e) => handleModelNameChange(key, e.target.value)}
+                    onValueChange={(value) => handleModelNameChange(key, value)}
                     placeholder={t("opencode.modelName", {
                       defaultValue: "Display Name",
                     })}

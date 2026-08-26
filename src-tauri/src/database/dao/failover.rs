@@ -61,6 +61,16 @@ impl Database {
     }
 
     /// 添加供应商到故障转移队列
+    ///
+    /// Deliberately unguarded: `ProxyService::set_auto_failover_enabled` calls
+    /// this *after* a successful `switch_proxy_target` (its "FIX 4" atomicity
+    /// comment), so rejecting here would leave the switch applied while
+    /// `auto_failover_enabled` stays unpersisted. That path instead validates the
+    /// candidate up front with [`Self::ensure_provider_supports_failover`], so
+    /// the rule is enforced before any state changes. Codex Official account
+    /// cards are additionally kept out of retry by
+    /// `ProviderRouter::select_providers_with_config`, and out of the candidate
+    /// list by `get_available_providers_for_failover`.
     pub fn add_to_failover_queue(&self, app_type: &str, provider_id: &str) -> Result<(), AppError> {
         let conn = lock_conn!(self.conn);
 
@@ -71,6 +81,49 @@ impl Database {
         .map_err(|e| AppError::Database(e.to_string()))?;
 
         Ok(())
+    }
+
+    /// Reject a provider the router refuses to retry.
+    ///
+    /// Single definition of the queue-membership rule, shared by
+    /// [`Self::add_to_failover_queue_checked`] (user-facing add) and
+    /// `ProxyService::set_auto_failover_enabled` (pre-switch validation of the
+    /// auto-adopted P1). Keeping one predicate call site per rule is what stops
+    /// the desktop command, the web handler and the enable path from drifting.
+    pub fn ensure_provider_supports_failover(
+        &self,
+        app_type: &str,
+        provider_id: &str,
+    ) -> Result<Provider, AppError> {
+        let provider = self
+            .get_provider_by_id(provider_id, app_type)?
+            .ok_or_else(|| AppError::Message(format!("供应商不存在: {provider_id}")))?;
+        if !provider.supports_failover(app_type) {
+            return Err(AppError::Message(
+                "Codex Official 账号卡不支持自动故障转移".to_string(),
+            ));
+        }
+        Ok(provider)
+    }
+
+    /// Add to the queue, rejecting rows the router refuses to retry.
+    ///
+    /// This is the entry point for user requests (desktop command + web
+    /// handler), so both runtimes enforce the same rule from one definition.
+    /// The internal auto-add in `ProxyService::set_auto_failover_enabled`
+    /// deliberately keeps using the unvalidated `add_to_failover_queue`: it runs
+    /// after a committed `switch_proxy_target`, where an error would leave the
+    /// switch applied and `auto_failover_enabled` unpersisted. It validates the
+    /// same rule via [`Self::ensure_provider_supports_failover`] before the
+    /// switch instead.
+    pub fn add_to_failover_queue_checked(
+        &self,
+        app_type: &str,
+        provider_id: &str,
+    ) -> Result<(), AppError> {
+        self.ensure_provider_supports_failover(app_type, provider_id)?;
+
+        self.add_to_failover_queue(app_type, provider_id)
     }
 
     /// 从故障转移队列中移除供应商
@@ -133,6 +186,10 @@ impl Database {
     }
 
     /// 获取可添加到故障转移队列的供应商（不在队列中的）
+    ///
+    /// Codex Official account cards are filtered out: the router refuses to
+    /// retry them, so offering one as a queue candidate would only produce an
+    /// entry that is silently skipped at request time.
     pub fn get_available_providers_for_failover(
         &self,
         app_type: &str,
@@ -142,6 +199,7 @@ impl Database {
         let available: Vec<Provider> = all_providers
             .into_values()
             .filter(|p| !p.in_failover_queue)
+            .filter(|p| p.supports_failover(app_type))
             .collect();
 
         Ok(available)

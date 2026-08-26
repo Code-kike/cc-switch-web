@@ -19,11 +19,20 @@ pub mod mcp;
 #[path = "../src/services/model_fetch.rs"]
 pub mod model_fetch;
 
+#[path = "../src/services/model_pricing.rs"]
+pub mod model_pricing;
+
 #[path = "../src/services/omo.rs"]
 pub mod omo;
 
 #[path = "../src/services/prompt.rs"]
 pub mod prompt;
+
+#[path = "../src/services/pi_prompt_files.rs"]
+pub mod pi_prompt_files;
+
+#[path = "../src/services/pi_state.rs"]
+pub(crate) mod pi_state;
 
 #[path = "../src/services/profile.rs"]
 pub mod profile;
@@ -52,8 +61,14 @@ pub mod session_usage_codex;
 #[path = "../src/services/session_usage_gemini.rs"]
 pub mod session_usage_gemini;
 
+#[path = "../src/services/session_usage_grokbuild.rs"]
+pub mod session_usage_grokbuild;
+
 #[path = "../src/services/session_usage_opencode.rs"]
 pub mod session_usage_opencode;
+
+#[path = "../src/services/session_usage_pi.rs"]
+pub mod session_usage_pi;
 
 #[path = "../src/services/skill.rs"]
 pub mod skill;
@@ -69,6 +84,9 @@ pub mod stream_check;
 
 #[path = "../src/services/subscription.rs"]
 pub mod subscription;
+
+#[path = "../src/services/subscription_grok.rs"]
+pub mod subscription_grok;
 
 #[path = "../src/services/sync_protocol.rs"]
 pub mod sync_protocol;

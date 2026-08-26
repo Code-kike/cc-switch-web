@@ -1,11 +1,16 @@
 import { useMemo, useState } from "react";
-import { GripVertical, ChevronDown, ChevronUp } from "lucide-react";
+import {
+  AlertTriangle,
+  GripVertical,
+  ChevronDown,
+  ChevronUp,
+} from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type {
   DraggableAttributes,
   DraggableSyntheticListeners,
 } from "@dnd-kit/core";
-import type { Provider } from "@/types";
+import type { OpenClawProviderConfig, Provider } from "@/types";
 import type { AppId } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { ProviderActions } from "@/components/providers/ProviderActions";
@@ -14,6 +19,7 @@ import UsageFooter from "@/components/UsageFooter";
 import SubscriptionQuotaFooter from "@/components/SubscriptionQuotaFooter";
 import CopilotQuotaFooter from "@/components/CopilotQuotaFooter";
 import CodexOauthQuotaFooter from "@/components/CodexOauthQuotaFooter";
+import XaiOauthQuotaFooter from "@/components/XaiOauthQuotaFooter";
 import { PROVIDER_TYPES, TEMPLATE_TYPES } from "@/config/constants";
 import { isHermesReadOnlyProvider } from "@/config/hermesProviderPresets";
 import { FailoverPriorityBadge } from "@/components/providers/FailoverPriorityBadge";
@@ -22,12 +28,20 @@ import {
   extractCodexBaseUrl,
   extractCodexExperimentalBearerToken,
 } from "@/utils/providerConfigUtils";
+import { resolveManagedAccountId } from "@/lib/authBinding";
+import {
+  resolveCodexOfficialIdentity,
+  providerNeedsRouting,
+  isOfficialBlockedByTakeover,
+  supportsOfficialProxyTakeover,
+} from "@/utils/providerCapabilities";
 import { useProviderHealth } from "@/lib/query/failover";
 import { useUsageQuery } from "@/lib/query/queries";
 import { useProviderLimits, useProviderStats } from "@/lib/query/usage";
 import { extractErrorMessage } from "@/utils/errorUtils";
 import { resolveProviderIcon } from "@/utils/providerIcon";
-import { providerNeedsRouting } from "@/utils/providerCapabilities";
+import { ProviderStatusBadge } from "@/components/providers/ProviderStatusBadge";
+import { useManagedAuth } from "@/components/providers/forms/hooks/useManagedAuth";
 
 interface DragHandleProps {
   attributes: DraggableAttributes;
@@ -64,11 +78,20 @@ interface ProviderCardProps {
   activeProviderId?: string; // 代理当前实际使用的供应商 ID（用于故障转移模式下标注绿色边框）
   // OpenClaw: default model
   isDefaultModel?: boolean;
-  onSetAsDefault?: () => void;
+  // Pi: native provider state unreadable → freeze membership/delete actions
+  isStateChangeProtected?: boolean;
+  onSetAsDefault?: (modelId?: string) => void;
 }
 
 /** 判断是否为官方供应商（无自定义 base URL / API key，直连官方 API） */
 function isOfficialProvider(provider: Provider, appId: AppId): boolean {
+  // Grok Build's official seed is identified by its explicit category. Do not
+  // infer it from an empty config: custom Grok endpoints may intentionally use
+  // the same shape while still requiring script credentials.
+  if (appId === "grokbuild") {
+    return provider.category === "official";
+  }
+
   const config = provider.settingsConfig as Record<string, any>;
   if (appId === "claude") {
     const baseUrl = config?.env?.ANTHROPIC_BASE_URL;
@@ -110,14 +133,32 @@ const extractApiUrl = (provider: Provider, fallbackText: string) => {
   const config = provider.settingsConfig;
 
   if (config && typeof config === "object") {
+    const object = config as Record<string, any>;
     const envBase =
-      (config as Record<string, any>)?.env?.ANTHROPIC_BASE_URL ||
-      (config as Record<string, any>)?.env?.GOOGLE_GEMINI_BASE_URL;
+      object?.env?.ANTHROPIC_BASE_URL || object?.env?.GOOGLE_GEMINI_BASE_URL;
     if (typeof envBase === "string" && envBase.trim()) {
       return envBase;
     }
 
-    const baseUrl = (config as Record<string, any>)?.config;
+    // Native additive configs (Pi / OpenClaw / OpenCode) carry the endpoint on
+    // the provider node or on its first model entry.
+    const directBaseUrl =
+      object.baseUrl ||
+      object.base_url ||
+      object.options?.baseURL ||
+      (Array.isArray(object.models)
+        ? object.models.find(
+            (model: unknown) =>
+              model &&
+              typeof model === "object" &&
+              typeof (model as Record<string, unknown>).baseUrl === "string",
+          )?.baseUrl
+        : undefined);
+    if (typeof directBaseUrl === "string" && directBaseUrl.trim()) {
+      return directBaseUrl;
+    }
+
+    const baseUrl = object.config;
 
     if (typeof baseUrl === "string" && baseUrl.includes("base_url")) {
       const extractedBaseUrl = extractCodexBaseUrl(baseUrl);
@@ -199,16 +240,45 @@ export function ProviderCard({
   activeProviderId,
   // OpenClaw: default model
   isDefaultModel,
+  isStateChangeProtected,
   onSetAsDefault,
 }: ProviderCardProps) {
   const { t } = useTranslation();
+  const codexOfficialIdentity = resolveCodexOfficialIdentity(appId, provider);
+  const managedCodexAccountId = resolveManagedAccountId(
+    provider.meta,
+    "codex_oauth",
+  )?.trim();
+  const {
+    accounts: managedAuthAccounts,
+    authStatus: managedAuthStatus,
+    isLoadingStatus: isManagedAuthLoading,
+  } = useManagedAuth("codex_oauth", undefined, {
+    enabled: codexOfficialIdentity === "managed_account",
+  });
+  const isCodexAuthStatusSuccess = Boolean(managedAuthStatus);
+  const isCodexAuthStatusError = !isManagedAuthLoading && !managedAuthStatus;
+  const managedCodexAccount = managedAuthAccounts.find(
+    (account) => account.id === managedCodexAccountId,
+  );
+  const isBoundCodexOfficial = codexOfficialIdentity === "managed_account";
+  const manualNote = provider.notes?.trim() || undefined;
+  const providerNameIncludesAccountLogin = Boolean(
+    managedCodexAccount?.login &&
+      (provider.name.trim() === managedCodexAccount.login ||
+        provider.name.trim() ===
+          `OpenAI Official (${managedCodexAccount.login})`),
+  );
 
   // OMO and OMO Slim share the same card behavior
   const isAnyOmo = isOmo || isOmoSlim;
   const handleDisableAnyOmo = isOmoSlim ? onDisableOmoSlim : onDisableOmo;
-  const isAdditiveMode = appId === "opencode" && !isAnyOmo;
+  const isAdditiveMode = (appId === "opencode" && !isAnyOmo) || appId === "pi";
   const supportsLiveConfigStatus =
-    (appId === "opencode" || appId === "openclaw" || appId === "hermes") &&
+    (appId === "opencode" ||
+      appId === "openclaw" ||
+      appId === "hermes" ||
+      appId === "pi") &&
     !isAnyOmo;
   const healthEnabled = isProxyRunning && isInFailoverQueue;
   const configuredDailyLimit = parseUsdNumber(provider.meta?.limitDailyUsd);
@@ -239,6 +309,15 @@ export function ProviderCard({
     return extractApiUrl(provider, fallbackUrlText);
   }, [provider, fallbackUrlText]);
 
+  const openclawDefaultModelOptions = useMemo(() => {
+    if (appId !== "openclaw") return [];
+    const config = provider.settingsConfig as OpenClawProviderConfig;
+    if (!Array.isArray(config?.models)) return [];
+    return config.models
+      .filter((model) => typeof model.id === "string" && model.id.trim())
+      .map((model) => ({ id: model.id, name: model.name }));
+  }, [appId, provider.settingsConfig]);
+
   const isClickableUrl = useMemo(() => {
     if (provider.notes?.trim()) {
       return false;
@@ -260,14 +339,24 @@ export function ProviderCard({
   //  3) 预设导入的官方一定带 category="official"，category 缺失的「真官方」现实中≈不存在。
   // 真官方就该有显式 category；手动新建官方应引导标注，而不是靠空字段猜。
   const supportsOfficialSubscription =
-    isOfficial && ["claude", "codex", "gemini"].includes(appId);
+    isOfficial && ["claude", "codex", "gemini", "grokbuild"].includes(appId);
   const isOfficialSubscriptionUsage =
     provider.meta?.usage_script?.templateType ===
     TEMPLATE_TYPES.OFFICIAL_SUBSCRIPTION;
   const officialSubscriptionEnabled =
     supportsOfficialSubscription && usageEnabled && isOfficialSubscriptionUsage;
-  const isOfficialBlockedByProxy =
-    isProxyTakeover && provider.category === "official";
+  // Single derivation of the Codex Official carve-out for this card: mirrors
+  // Rust `Provider::blocked_by_proxy_takeover`. Managed Official cards route
+  // locally; unbound native-login and api-key Official cards stay blocked.
+  const supportsOfficialRouting = supportsOfficialProxyTakeover(
+    appId,
+    provider,
+  );
+  const isOfficialBlockedByProxy = isOfficialBlockedByTakeover(
+    appId,
+    provider,
+    isProxyTakeover,
+  );
   const isCopilot =
     provider.meta?.providerType === PROVIDER_TYPES.GITHUB_COPILOT ||
     provider.meta?.usage_script?.templateType === "github_copilot";
@@ -276,7 +365,11 @@ export function ProviderCard({
   const isHermesReadOnly =
     appId === "hermes" && isHermesReadOnlyProvider(provider.settingsConfig);
   const isCodexOauth =
-    provider.meta?.providerType === PROVIDER_TYPES.CODEX_OAUTH;
+    appId === "codex"
+      ? isBoundCodexOfficial
+      : provider.meta?.providerType === PROVIDER_TYPES.CODEX_OAUTH;
+  // xAI OAuth (SuperGrok 反代)：额度经自管 OAuth token 自动显示，与 codex_oauth 同构
+  const isXaiOauth = provider.meta?.providerType === PROVIDER_TYPES.XAI_OAUTH;
   const isClaudeThirdParty =
     appId === "claude" && provider.category === "third_party";
   const needsRouting = providerNeedsRouting(appId, provider);
@@ -312,9 +405,12 @@ export function ProviderCard({
       : null;
 
   // 获取用量数据以判断是否有多套餐
-  // 累加模式应用（OpenCode/OpenClaw/Hermes）：使用 isInConfig 代替 isCurrent
+  // 累加模式应用（OpenCode/OpenClaw/Hermes/Pi）：使用 isInConfig 代替 isCurrent
   const shouldAutoQuery =
-    appId === "opencode" || appId === "openclaw" || appId === "hermes"
+    appId === "opencode" ||
+    appId === "openclaw" ||
+    appId === "hermes" ||
+    appId === "pi"
       ? isInConfig
       : isCurrent;
   const autoQueryInterval = shouldAutoQuery
@@ -346,14 +442,14 @@ export function ProviderCard({
   // 判断是否是"当前使用中"的供应商
   // - OMO/OMO Slim 供应商：使用 isCurrent
   // - OpenClaw：使用默认模型归属的 provider 作为当前项（蓝色边框）
-  // - OpenCode（非 OMO）：不存在"当前"概念，返回 false
+  // - OpenCode（非 OMO）/ Pi：不存在"当前"概念，返回 false
   // - 故障转移模式：代理实际使用的供应商（activeProviderId）
   // - 普通模式：isCurrent
   const isActiveProvider = isAnyOmo
     ? isCurrent
     : appId === "openclaw"
       ? Boolean(isDefaultModel)
-      : appId === "opencode"
+      : appId === "opencode" || appId === "pi"
         ? false
         : isAutoFailoverEnabled
           ? activeProviderId === provider.id
@@ -426,7 +522,13 @@ export function ProviderCard({
 
           <div className="space-y-1">
             <div className="flex flex-wrap items-center gap-2 min-h-7">
-              <h3 className="text-base font-semibold leading-none">
+              <h3
+                className={cn(
+                  "text-base font-semibold leading-none",
+                  codexOfficialIdentity && "min-w-0 flex-1 truncate",
+                )}
+                title={codexOfficialIdentity ? provider.name : undefined}
+              >
                 {provider.name}
               </h3>
 
@@ -455,45 +557,32 @@ export function ProviderCard({
                 appId === "codex" ||
                 appId === "grokbuild") &&
                 needsRouting && (
-                  <span className="inline-flex items-center rounded-md bg-sky-100 px-1.5 py-0.5 text-[10px] font-semibold text-sky-700 dark:bg-sky-900/40 dark:text-sky-300">
-                    {t("claudeCode.needsRouting", {
+                  <ProviderStatusBadge
+                    tone="info"
+                    label={t("provider.needsRouting", {
                       defaultValue: "需要路由",
                     })}
-                  </span>
+                  />
                 )}
 
-              {appId === "claude" && provider.category === "official" && (
-                <span className="inline-flex items-center rounded-md bg-slate-200 px-1.5 py-0.5 text-[10px] font-semibold text-slate-700 dark:bg-slate-700/60 dark:text-slate-200">
-                  {t("claudeCode.noRoutingSupport", {
-                    defaultValue: "不支持路由",
-                  })}
-                </span>
-              )}
-
-              {appId === "codex" && provider.category === "official" && (
-                <span className="inline-flex items-center rounded-md bg-slate-200 px-1.5 py-0.5 text-[10px] font-semibold text-slate-700 dark:bg-slate-700/60 dark:text-slate-200">
-                  {t("codex.noRoutingSupport", {
-                    defaultValue: "不支持路由",
-                  })}
-                </span>
-              )}
+              {/* W3 opened local routing for managed Codex Official cards, so the
+                  "no routing support" badge must not appear on them. Reuse the
+                  single capability derivation above so the badge cannot drift
+                  from `blocked_by_proxy_takeover`. */}
+              {(appId === "claude" || appId === "codex") &&
+                provider.category === "official" &&
+                !supportsOfficialRouting && (
+                  <ProviderStatusBadge
+                    label={t("provider.noRoutingSupport", {
+                      defaultValue: "不支持路由",
+                    })}
+                  />
+                )}
 
               {isAutoFailoverEnabled &&
                 isInFailoverQueue &&
                 failoverPriority && (
                   <FailoverPriorityBadge priority={failoverPriority} />
-                )}
-
-              {provider.category === "third_party" &&
-                provider.meta?.isPartner && (
-                  <span
-                    className="text-yellow-500 dark:text-yellow-400"
-                    title={t("provider.officialPartner", {
-                      defaultValue: "官方合作伙伴",
-                    })}
-                  >
-                    ⭐
-                  </span>
                 )}
 
               {isHermesReadOnly && (
@@ -532,7 +621,73 @@ export function ProviderCard({
               )}
             </div>
 
-            {displayUrl && (
+            {codexOfficialIdentity && codexOfficialIdentity !== "api_key" ? (
+              <div className="flex min-w-0 items-center gap-2 text-sm text-muted-foreground">
+                {codexOfficialIdentity === "native_login" ? (
+                  <span className="min-w-0 truncate" title={manualNote}>
+                    {manualNote ??
+                      t("codex.followCodexLoginDescription", {
+                        defaultValue: "账号会随 Codex CLI 当前登录变化",
+                      })}
+                  </span>
+                ) : managedCodexAccount ? (
+                  <>
+                    <span
+                      className="min-w-0 truncate"
+                      title={manualNote ?? managedCodexAccount.login}
+                    >
+                      {manualNote ??
+                        (providerNameIncludesAccountLogin
+                          ? t("codex.openAiAccount", {
+                              defaultValue: "OpenAI 账号",
+                            })
+                          : managedCodexAccount.login)}
+                    </span>
+                    {managedCodexAccount.requires_reauth && (
+                      <span className="inline-flex shrink-0 items-center gap-1 text-amber-700 dark:text-amber-300">
+                        <AlertTriangle className="h-3.5 w-3.5" />
+                        {t("codexOauth.reauthBadge", "需要重新登录")}
+                      </span>
+                    )}
+                  </>
+                ) : isCodexAuthStatusError ? (
+                  <span className="inline-flex min-w-0 items-center gap-1 text-amber-700 dark:text-amber-300">
+                    <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                    <span className="truncate">
+                      {t("codex.accountStatusUnavailable", {
+                        defaultValue: "无法读取账号信息",
+                      })}
+                    </span>
+                  </span>
+                ) : isCodexAuthStatusSuccess ? (
+                  <>
+                    <span className="inline-flex min-w-0 items-center gap-1 text-sm text-amber-700 dark:text-amber-300">
+                      <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                      <span className="truncate">
+                        {t("codex.boundAccountUnavailable", {
+                          defaultValue: "绑定的账号不可用",
+                        })}
+                      </span>
+                    </span>
+                    <button
+                      type="button"
+                      className="shrink-0 text-sm font-medium text-primary hover:underline"
+                      onClick={() => onEdit(provider)}
+                    >
+                      {t("codex.chooseAccount", {
+                        defaultValue: "选择账号",
+                      })}
+                    </button>
+                  </>
+                ) : (
+                  <span className="min-w-0 truncate">
+                    {t("codex.accountLoading", {
+                      defaultValue: "正在加载账号…",
+                    })}
+                  </span>
+                )}
+              </div>
+            ) : displayUrl ? (
               <button
                 type="button"
                 onClick={handleOpenWebsite}
@@ -547,7 +702,7 @@ export function ProviderCard({
               >
                 <span className="truncate">{displayUrl}</span>
               </button>
-            )}
+            ) : null}
 
             {(providerStatsError ||
               providerLimitsError ||
@@ -668,7 +823,20 @@ export function ProviderCard({
                   isCurrent={isCurrent}
                 />
               ) : isCodexOauth ? (
-                <CodexOauthQuotaFooter
+                !isBoundCodexOfficial || usageEnabled ? (
+                  <CodexOauthQuotaFooter
+                    meta={provider.meta}
+                    inline={true}
+                    isCurrent={isCurrent}
+                    autoQueryInterval={
+                      isBoundCodexOfficial
+                        ? (provider.meta?.usage_script?.autoQueryInterval ?? 5)
+                        : undefined
+                    }
+                  />
+                ) : null
+              ) : isXaiOauth ? (
+                <XaiOauthQuotaFooter
                   meta={provider.meta}
                   inline={true}
                   isCurrent={isCurrent}
@@ -754,7 +922,8 @@ export function ProviderCard({
               onConfigureUsage={
                 (isOfficial && !supportsOfficialSubscription) ||
                 isCopilot ||
-                isCodexOauth
+                (isCodexOauth && !isBoundCodexOfficial) ||
+                isXaiOauth
                   ? undefined
                   : () => onConfigureUsage(provider)
               }
@@ -773,6 +942,8 @@ export function ProviderCard({
               onToggleFailover={onToggleFailover}
               // OpenClaw: default model
               isDefaultModel={isDefaultModel}
+              isStateChangeProtected={isStateChangeProtected}
+              defaultModelOptions={openclawDefaultModelOptions}
               onSetAsDefault={onSetAsDefault}
             />
           </div>

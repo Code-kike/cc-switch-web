@@ -28,6 +28,7 @@ describe("DirectorySettings", () => {
           opencode: "/opencode",
           openclaw: "/openclaw",
           hermes: "/hermes",
+          pi: "/pi",
         }}
         onAppConfigChange={vi.fn()}
         onBrowseAppConfig={onBrowseAppConfig}

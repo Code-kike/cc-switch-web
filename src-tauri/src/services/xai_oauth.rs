@@ -5,6 +5,7 @@ use serde::Deserialize;
 use crate::proxy::providers::xai_oauth_auth::XaiOAuthManager;
 use crate::proxy::providers::XAI_API_BASE_URL;
 use crate::services::model_fetch::FetchedModel;
+use crate::services::subscription::{CredentialStatus, SubscriptionQuota};
 
 #[derive(Debug, Deserialize)]
 struct ModelsResponse {
@@ -17,6 +18,42 @@ struct ModelEntry {
     id: String,
     #[serde(default)]
     owned_by: Option<String>,
+}
+
+/// Query the SuperGrok subscription quota for a managed xAI OAuth account.
+///
+/// Keep this in the tauri-free service layer so the desktop command, Web API,
+/// and provider usage/tray paths all use the same account resolution and
+/// credential error semantics.
+pub async fn query_quota(
+    manager: &XaiOAuthManager,
+    account_id: Option<&str>,
+) -> Result<SubscriptionQuota, String> {
+    let resolved = match account_id.map(str::trim).filter(|id| !id.is_empty()) {
+        Some(id) => Some(id.to_string()),
+        None => manager.default_account_id().await,
+    };
+    let Some(id) = resolved else {
+        return Ok(SubscriptionQuota::not_found("xai_oauth"));
+    };
+
+    let token = match manager.get_valid_token_for_account(&id).await {
+        Ok(token) => token,
+        Err(error) => {
+            return Ok(SubscriptionQuota::error(
+                "xai_oauth",
+                CredentialStatus::Expired,
+                format!("xAI OAuth token unavailable: {error}"),
+            ));
+        }
+    };
+
+    crate::services::subscription_grok::query_grok_quota(
+        &token,
+        "xai_oauth",
+        "Please re-login via cc-switch.",
+    )
+    .await
 }
 
 pub async fn fetch_models(

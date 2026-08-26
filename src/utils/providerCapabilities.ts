@@ -1,8 +1,138 @@
 import type { AppId } from "@/lib/api";
 import type { Provider } from "@/types";
 import { isOAuthProviderType } from "@/config/constants";
+import { resolveManagedAccountId } from "@/lib/authBinding";
+import {
+  extractCodexBaseUrl,
+  extractCodexExperimentalBearerToken,
+  hasExplicitNonOpenAiCodexModelProvider,
+} from "@/utils/providerConfigUtils";
 
 export const GROKBUILD_OFFICIAL_PROVIDER_ID = "grokbuild-official";
+export const CODEX_OFFICIAL_PROVIDER_ID = "codex-official";
+
+export type CodexOfficialIdentity =
+  | "native_login"
+  | "managed_account"
+  | "api_key";
+
+const nonEmptyString = (value: unknown): boolean =>
+  typeof value === "string" && value.trim().length > 0;
+
+function hasExplicitCodexThirdPartyUpstream(
+  settings: Record<string, unknown>,
+): boolean {
+  const config = typeof settings.config === "string" ? settings.config : "";
+
+  return (
+    nonEmptyString(settings.baseUrl) ||
+    nonEmptyString(settings.baseURL) ||
+    nonEmptyString(settings.base_url) ||
+    Boolean(extractCodexExperimentalBearerToken(config)) ||
+    Boolean(extractCodexBaseUrl(config)) ||
+    hasExplicitNonOpenAiCodexModelProvider(config)
+  );
+}
+
+function hasStoredCodexApiKey(settings: Record<string, unknown>): boolean {
+  const auth = settings.auth as Record<string, unknown> | undefined;
+  return nonEmptyString(auth?.OPENAI_API_KEY);
+}
+
+export function resolveCodexOfficialIdentity(
+  appId: AppId,
+  provider: Pick<Provider, "id" | "category" | "meta" | "settingsConfig">,
+): CodexOfficialIdentity | null {
+  if (appId !== "codex") return null;
+
+  const managedAccountId = resolveManagedAccountId(
+    provider.meta,
+    "codex_oauth",
+  )?.trim();
+  const hasFixedOfficialId = provider.id === CODEX_OFFICIAL_PROVIDER_ID;
+  if (hasFixedOfficialId && provider.category === "official") {
+    return managedAccountId ? "managed_account" : "native_login";
+  }
+
+  const settings = provider.settingsConfig as Record<string, unknown>;
+  const auth = settings?.auth;
+  const config = settings?.config;
+  if (
+    !auth ||
+    typeof auth !== "object" ||
+    Array.isArray(auth) ||
+    (config != null && typeof config !== "string")
+  ) {
+    return null;
+  }
+
+  if (hasExplicitCodexThirdPartyUpstream(settings)) {
+    return null;
+  }
+
+  if (managedAccountId) {
+    return "managed_account";
+  }
+  if (hasStoredCodexApiKey(settings)) {
+    return provider.category === "official" ? "api_key" : null;
+  }
+  return hasFixedOfficialId || provider.category === "official"
+    ? "native_login"
+    : null;
+}
+
+/**
+ * Keep the UI capability rule aligned with the Rust takeover policy.
+ *
+ * Single source of truth on the Rust side is
+ * `Provider::blocked_by_proxy_takeover` (src-tauri/src/provider.rs), pinned by
+ * `blocked_by_proxy_takeover_opens_only_managed_codex_official_cards`. This
+ * fork opens **only managed** Codex Official cards under takeover: the
+ * forwarder resolves the bound account's token and injects
+ * `chatgpt-account-id`. Unbound native-login (and api-key) Official cards have
+ * no server-side credential here, because this fork does not carry upstream's
+ * inbound Authorization passthrough.
+ *
+ * Degradation direction: this gates an **authorization** decision, so it must
+ * stay **fail-closed** — return false whenever the card is not a managed
+ * account. Do NOT widen it back to "any non-api-key Official identity"
+ * (upstream's shape, which ended in an unreachable `return true`): the UI would
+ * stop emitting the explicit `notifications.officialBlockedByProxy` refusal and
+ * the switch would instead fail deeper in the Rust service layer, turning a
+ * clear switch-time refusal into a failing Codex session.
+ */
+export function supportsOfficialProxyTakeover(
+  appId: AppId,
+  provider: Pick<Provider, "id" | "category" | "meta" | "settingsConfig">,
+): boolean {
+  return resolveCodexOfficialIdentity(appId, provider) === "managed_account";
+}
+
+/**
+ * Whether switching to this provider must be refused because local routing
+ * takeover is active — the UI mirror of Rust
+ * `Provider::blocked_by_proxy_takeover`.
+ *
+ * Single definition for every frontend surface (card switch button, switch
+ * action hook, no-routing badge). Do not re-derive the three-part condition at
+ * call sites: an earlier copy in `ProviderCard` missed the managed carve-out and
+ * made the server-side-supported switch unreachable from the card UI.
+ *
+ * Mirrors Rust `Provider::blocked_by_proxy_takeover`, whose doc carries the full
+ * consumer table (four switch-refusal points plus the takeover-enable ban-risk
+ * warning). Keep the two in step — the Rust side is the authority.
+ */
+export function isOfficialBlockedByTakeover(
+  appId: AppId,
+  provider: Pick<Provider, "id" | "category" | "meta" | "settingsConfig">,
+  isProxyTakeover: boolean | undefined,
+): boolean {
+  return (
+    isProxyTakeover === true &&
+    provider.category === "official" &&
+    !supportsOfficialProxyTakeover(appId, provider)
+  );
+}
 
 /**
  * Whether a provider must use the local routing takeover for the selected app.
@@ -16,7 +146,12 @@ export function providerNeedsRouting(
   appId: AppId,
   provider: Provider,
 ): boolean {
-  if (provider.category === "official") return false;
+  if (
+    provider.category === "official" ||
+    resolveCodexOfficialIdentity(appId, provider)
+  )
+    return false;
+
   if (appId !== "claude" && appId !== "codex" && appId !== "grokbuild") {
     return false;
   }

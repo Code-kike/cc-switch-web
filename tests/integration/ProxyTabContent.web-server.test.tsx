@@ -302,6 +302,18 @@ describe.sequential("ProxyTabContent against real web server", () => {
     ).toBeInTheDocument();
     expect(screen.getByText(new RegExp(`:${proxyPort}`))).toBeInTheDocument();
 
+    // Failover controls are app-scoped: enable Claude takeover before editing
+    // its queue, otherwise the UI must keep the queue read-only even while the
+    // shared proxy process is running.
+    const claudeTakeoverLabel = screen.getByText("claude", { exact: true });
+    const claudeTakeoverRow = claudeTakeoverLabel.parentElement;
+    expect(claudeTakeoverRow).not.toBeNull();
+    const claudeTakeoverSwitch = within(claudeTakeoverRow!).getByRole(
+      "switch",
+    );
+    fireEvent.click(claudeTakeoverSwitch);
+    await waitFor(() => expect(claudeTakeoverSwitch).toBeChecked());
+
     // Collapse the proxy section: the running ProxyPanel mirrors the
     // failover queue, which would duplicate provider-name matches below.
     fireEvent.click(screen.getByText("settings.advanced.proxy.title"));

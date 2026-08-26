@@ -7,6 +7,7 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::json;
+use std::collections::BTreeMap;
 
 use super::super::ApiState;
 use super::common::{json_ok, validate_outbound_url, ApiError, ApiResult};
@@ -93,6 +94,9 @@ struct FetchModelsForConfigQuery {
     api_key: String,
     is_full_url: Option<bool>,
     models_url: Option<String>,
+    custom_user_agent: Option<String>,
+    api_format: Option<String>,
+    request_headers: Option<BTreeMap<String, String>>,
 }
 
 #[derive(Deserialize)]
@@ -206,6 +210,7 @@ pub fn router(state: ApiState) -> Router {
             "/config/fetch-models-for-config",
             post(fetch_models_for_config),
         )
+        .route("/config/get-opencode-models", get(get_opencode_models))
         .route(
             "/config/get-stream-check-config",
             get(get_stream_check_config),
@@ -272,6 +277,9 @@ async fn get_config_dir(Query(query): Query<AppQuery>) -> ApiResult<String> {
         crate::app_config::AppType::OpenCode => crate::opencode_config::get_opencode_dir(),
         crate::app_config::AppType::OpenClaw => crate::openclaw_config::get_openclaw_dir(),
         crate::app_config::AppType::Hermes => crate::hermes_config::get_hermes_dir(),
+        crate::app_config::AppType::Pi => {
+            crate::pi_config::get_pi_agent_dir().map_err(ApiError::from_anyhow)?
+        }
     };
     Ok(json_ok(dir.to_string_lossy().to_string()))
 }
@@ -485,14 +493,29 @@ async fn fetch_models_for_config(
     if let Some(models_url) = query.models_url.as_deref() {
         validate_outbound_url(models_url).await?;
     }
+    let user_agent = query
+        .custom_user_agent
+        .as_deref()
+        .map(HeaderValue::from_str)
+        .and_then(|result| result.ok());
     let models = crate::services::model_fetch::fetch_models(
         &query.base_url,
         &query.api_key,
         query.is_full_url.unwrap_or(false),
         query.models_url.as_deref(),
+        user_agent,
+        query.api_format.as_deref(),
+        query.request_headers.as_ref(),
     )
     .await
     .map_err(ApiError::bad_request)?;
+    Ok(json_ok(models))
+}
+
+async fn get_opencode_models() -> ApiResult<Vec<crate::services::model_fetch::OpenCodeModelRef>> {
+    let models = crate::services::model_fetch::get_opencode_models()
+        .await
+        .map_err(ApiError::internal)?;
     Ok(json_ok(models))
 }
 
@@ -599,6 +622,18 @@ async fn get_config_status(
                 path: crate::hermes_config::get_hermes_dir()
                     .to_string_lossy()
                     .to_string(),
+            }
+        }
+        crate::app_config::AppType::Pi => {
+            let config_path =
+                crate::pi_config::get_pi_models_path().map_err(ApiError::from_anyhow)?;
+            let path = crate::pi_config::get_pi_agent_dir()
+                .map_err(ApiError::from_anyhow)?
+                .to_string_lossy()
+                .to_string();
+            crate::config::ConfigStatus {
+                exists: config_path.exists(),
+                path,
             }
         }
     };

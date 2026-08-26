@@ -537,6 +537,7 @@ async fn query_provider_usage(
         app_type.clone(),
         &provider_id,
         Some(state.copilot_auth.as_ref()),
+        Some(state.xai_oauth.as_ref()),
         // Web runtime: enforce the SSRF guard on the saved custom-script
         // request.url before dialing.
         true,

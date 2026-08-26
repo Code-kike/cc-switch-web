@@ -34,10 +34,10 @@ mod model_capabilities;
 mod openclaw_config;
 mod opencode_config;
 mod panic_hook;
+mod pi_config;
 mod prompt;
 mod prompt_files;
 mod provider;
-mod provider_defaults;
 mod proxy;
 mod services;
 mod session_manager;
@@ -49,7 +49,9 @@ mod usage_events;
 mod usage_script;
 
 pub use app_config::{AppType, InstalledSkill, McpApps, McpServer, MultiAppConfig, SkillApps};
-pub use codex_config::{get_codex_auth_path, get_codex_config_path, write_codex_live_atomic};
+pub use codex_config::{
+    get_codex_auth_path, get_codex_config_path, read_codex_live_settings, write_codex_live_atomic,
+};
 pub use commands::open_provider_terminal;
 pub use commands::*;
 pub use config::{get_claude_mcp_path, get_claude_settings_path, read_json_file};
@@ -78,6 +80,8 @@ pub use store::AppState;
 use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
+#[cfg(target_os = "windows")]
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 #[cfg(target_os = "macos")]
 use tauri::image::Image;
@@ -238,6 +242,11 @@ pub fn run() {
         }));
     }
 
+    // Windows: 主窗口在首屏 web 内容加载完成前保持隐藏，避免 WebView2 原生层
+    // 先涂白/黑底造成 FOUC。on_page_load 在首帧 Finished 后显示窗口。
+    #[cfg(target_os = "windows")]
+    let startup_page_handled = AtomicBool::new(false);
+
     let builder = builder
         // 注册 deep-link 插件（处理 macOS AppleEvent 和其他平台的深链接）
         .plugin(tauri_plugin_deep_link::init())
@@ -266,6 +275,25 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::new().build())
+        .on_page_load(move |webview, payload| {
+            #[cfg(target_os = "windows")]
+            {
+                use tauri::webview::PageLoadEvent;
+                if webview.label() == "main"
+                    && payload.event() == PageLoadEvent::Finished
+                    && payload.url().scheme() != "about"
+                    && !startup_page_handled.swap(true, Ordering::Relaxed)
+                    && !crate::settings::get_settings().silent_startup
+                {
+                    let _ = webview.window().show();
+                    log::info!("主页面加载完成，主窗口已显示");
+                }
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                let _ = (webview, payload);
+            }
+        })
         .setup(|app| {
             let _ = rustls::crypto::ring::default_provider().install_default();
 
@@ -706,6 +734,17 @@ pub fn run() {
                     }
                 }
 
+                // 必须排在 auto-extract 之前：先把历史泄漏进 Gemini 共享片段的凭据
+                // 清干净，否则紧接着的提取会基于被污染的 live 再写一遍。
+                if let Err(e) =
+                    crate::services::provider::ProviderService::scrub_leaked_gemini_common_config(
+                        &state,
+                    )
+                    .await
+                {
+                    log::warn!("清理 Gemini 通用配置泄漏凭据失败: {e}");
+                }
+
                 initialize_common_config_snippets(&state);
 
                 // 检查 settings 表中的代理状态，自动恢复代理服务
@@ -807,7 +846,13 @@ pub fn run() {
                     log::info!("静默启动模式：主窗口已隐藏");
                 } else {
                     // 正常启动模式：显示窗口
+                    // Windows: 窗口显示延迟到主页面加载完成（见 on_page_load），
+                    // 避免 WebView2 原生层在 web 内容绘制前先涂白/黑底。
+                    #[cfg(not(target_os = "windows"))]
                     let _ = window.show();
+                    #[cfg(target_os = "windows")]
+                    log::info!("正常启动模式：等待主页面加载完成后显示主窗口");
+                    #[cfg(not(target_os = "windows"))]
                     log::info!("正常启动模式：主窗口已显示");
 
                     // Linux: 解决首次启动 UI 无响应问题（Tauri #10746 + wry #637）。
@@ -887,6 +932,7 @@ pub fn run() {
             commands::get_codex_oauth_quota,
             commands::get_codex_oauth_models,
             commands::get_xai_oauth_models,
+            commands::get_xai_oauth_quota,
             commands::get_coding_plan_quota,
             commands::get_balance,
             // New MCP via config.json (SSOT)
@@ -907,6 +953,16 @@ pub fn run() {
             commands::enable_prompt,
             commands::import_prompt_from_file,
             commands::get_current_prompt_file_content,
+            // Pi native coding agent (84e75ad2)
+            commands::get_pi_current_state,
+            commands::update_pi_provider_usage_script,
+            commands::get_pi_session_discovery,
+            commands::get_pi_prompt_file,
+            commands::replace_pi_prompt_file,
+            commands::delete_pi_prompt_file,
+            commands::list_pi_prompt_templates,
+            commands::upsert_pi_prompt_template,
+            commands::delete_pi_prompt_template,
             // Profile management (项目配置方案)
             commands::list_profiles,
             commands::create_profile,
@@ -916,6 +972,7 @@ pub fn run() {
             commands::apply_profile,
             // model list fetch (OpenAI-compatible /v1/models)
             commands::fetch_models_for_config,
+            commands::get_opencode_models,
             // ours: endpoint speed test + custom endpoint management
             commands::test_api_endpoints,
             commands::get_custom_endpoints,
@@ -1031,7 +1088,11 @@ pub fn run() {
             commands::get_request_detail,
             commands::get_model_pricing,
             commands::update_model_pricing,
+            commands::update_model_pricing_batch,
             commands::delete_model_pricing,
+            commands::get_models_dev_sync_config,
+            commands::save_models_dev_sync_config,
+            commands::record_models_dev_sync_result,
             commands::check_provider_limits,
             // Session usage sync
             commands::sync_session_usage,

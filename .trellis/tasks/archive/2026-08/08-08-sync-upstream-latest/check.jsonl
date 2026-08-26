@@ -1,0 +1,3 @@
+{"file": ".trellis/tasks/08-08-sync-upstream-latest/prd.md", "reason": "验收标准与门禁清单来源；检查每批是否满足 grilling 裁定"}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "前端质量门禁标准"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "核对 Tauri↔Web API 双端等价性（web-commands.ts SSOT、check:web-routes）"}

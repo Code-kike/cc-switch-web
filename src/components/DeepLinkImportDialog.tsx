@@ -8,6 +8,7 @@ import {
 } from "react";
 import { listen } from "@/lib/api/event-adapter";
 import { DeepLinkImportRequest, deeplinkApi } from "@/lib/api/deeplink";
+import { parseDeepLinkConfigPreview } from "@/utils/deepLinkConfigPreview";
 import {
   Dialog,
   DialogContent,
@@ -26,6 +27,14 @@ import { McpConfirmation } from "./deeplink/McpConfirmation";
 import { SkillConfirmation } from "./deeplink/SkillConfirmation";
 import { ProviderIcon } from "./ProviderIcon";
 import { extractErrorMessage } from "@/utils/errorUtils";
+import {
+  classifyEndpoint,
+  classifyEnvKey,
+  decodeDeeplinkPayload,
+  maskValue,
+  riskI18nKey,
+} from "@/utils/deeplinkRisk";
+import { decodeBase64Utf8 } from "@/lib/utils/base64";
 
 interface DeeplinkError {
   url: string;
@@ -281,73 +290,39 @@ export const DeepLinkImportDialog = forwardRef<DeepLinkImportDialogHandle>(
         ? "url"
         : null;
 
-    // Parse config file content for display
-    interface ParsedConfig {
-      type: "claude" | "codex" | "gemini";
-      env?: Record<string, string>;
-      auth?: Record<string, string>;
-      tomlConfig?: string;
-      raw: Record<string, unknown>;
-    }
+    // Decode and sanitize config payloads before rendering them. In particular,
+    // Grok Build and Codex carry executable TOML-like configuration; previewing
+    // the parsed structure avoids exposing credentials while still showing the
+    // exact non-secret values the user is about to import.
+    const parsedConfig = useMemo(
+      () => (request ? parseDeepLinkConfigPreview(request) : null),
+      [request],
+    );
 
-    // Helper to decode base64 with UTF-8 support
-    const b64ToUtf8 = (str: string): string => {
-      try {
-        const binString = atob(str);
-        const bytes = Uint8Array.from(binString, (m) => m.codePointAt(0) || 0);
-        return new TextDecoder().decode(bytes);
-      } catch (e) {
-        console.error("Failed to decode base64:", e);
-        return atob(str);
-      }
-    };
-
-    const parsedConfig = useMemo((): ParsedConfig | null => {
-      if (!request?.config) return null;
-      try {
-        const decoded = b64ToUtf8(request.config);
-        const parsed = JSON.parse(decoded) as Record<string, unknown>;
-
-        if (request.app === "claude") {
-          // Claude 格式: { env: { ANTHROPIC_AUTH_TOKEN: ..., ... } }
-          return {
-            type: "claude",
-            env: (parsed.env as Record<string, string>) || {},
-            raw: parsed,
-          };
-        } else if (request.app === "codex") {
-          // Codex 格式: { auth: { OPENAI_API_KEY: ... }, config: "TOML string" }
-          return {
-            type: "codex",
-            auth: (parsed.auth as Record<string, string>) || {},
-            tomlConfig: (parsed.config as string) || "",
-            raw: parsed,
-          };
-        } else if (request.app === "gemini") {
-          // Gemini 格式: 扁平结构 { GEMINI_API_KEY: ..., GEMINI_BASE_URL: ... }
-          return {
-            type: "gemini",
-            env: parsed as Record<string, string>,
-            raw: parsed,
-          };
-        }
-        return null;
-      } catch (e) {
-        console.error("Failed to parse config:", e);
-        return null;
-      }
-    }, [request?.config, request?.app]);
-
-    // Helper to mask sensitive values
-    const maskValue = (key: string, value: string): string => {
-      const sensitiveKeys = ["TOKEN", "KEY", "SECRET", "PASSWORD"];
-      const isSensitive = sensitiveKeys.some((k) =>
-        key.toUpperCase().includes(k),
+    /**
+     * Config env row. Values share the deeplink redaction helper, while keys
+     * that can alter process code loading are visibly classified as risky.
+     * `break-all` is intentional: imported payloads must not be hidden by CSS.
+     */
+    const EnvRow = ({ envKey, value }: { envKey: string; value: string }) => {
+      const risk = classifyEnvKey(envKey);
+      return (
+        <div className="grid grid-cols-2 gap-2 text-xs">
+          <span
+            className={`font-mono break-all ${
+              risk
+                ? "text-yellow-700 dark:text-yellow-500 font-semibold"
+                : "text-muted-foreground"
+            }`}
+          >
+            {risk && <span aria-hidden="true">⚠ </span>}
+            {envKey}
+          </span>
+          <span className="font-mono break-all">
+            {maskValue(envKey, value)}
+          </span>
+        </div>
       );
-      if (isSensitive && value.length > 8) {
-        return `${value.substring(0, 8)}${"*".repeat(12)}`;
-      }
-      return value;
     };
 
     const getTitle = () => {
@@ -494,24 +469,37 @@ export const DeepLinkImportDialog = forwardRef<DeepLinkImportDialogHandle>(
                         {t("deeplink.endpoint")}
                       </div>
                       <div className="col-span-2 text-sm break-all space-y-1">
-                        {request.endpoint?.split(",").map((ep, idx) => (
-                          <div
-                            key={idx}
-                            className={
-                              idx === 0
-                                ? "font-medium"
-                                : "text-muted-foreground"
-                            }
-                          >
-                            {idx === 0 ? "🔹 " : "└ "}
-                            {ep.trim()}
-                            {idx === 0 && request.endpoint?.includes(",") && (
-                              <span className="text-xs text-muted-foreground ml-2">
-                                ({t("deeplink.primaryEndpoint")})
-                              </span>
-                            )}
-                          </div>
-                        ))}
+                        {request.endpoint?.split(",").map((ep, idx) => {
+                          const endpointRisk = classifyEndpoint(ep.trim());
+                          return (
+                            <div
+                              key={idx}
+                              className={
+                                endpointRisk
+                                  ? "text-yellow-700 dark:text-yellow-500 font-semibold"
+                                  : idx === 0
+                                    ? "font-medium"
+                                    : "text-muted-foreground"
+                              }
+                            >
+                              {idx === 0 ? "🔹 " : "└ "}
+                              {endpointRisk && (
+                                <span aria-hidden="true">⚠ </span>
+                              )}
+                              {ep.trim()}
+                              {idx === 0 && request.endpoint?.includes(",") && (
+                                <span className="text-xs text-muted-foreground ml-2">
+                                  ({t("deeplink.primaryEndpoint")})
+                                </span>
+                              )}
+                              {endpointRisk && (
+                                <div className="text-xs font-normal mt-0.5">
+                                  {t(riskI18nKey(endpointRisk))}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
                       </div>
                     </div>
 
@@ -632,46 +620,38 @@ export const DeepLinkImportDialog = forwardRef<DeepLinkImportDialogHandle>(
                                 <div className="space-y-1.5">
                                   {Object.entries(parsedConfig.env).map(
                                     ([key, value]) => (
-                                      <div
+                                      <EnvRow
                                         key={key}
-                                        className="grid grid-cols-2 gap-2 text-xs"
-                                      >
-                                        <span className="font-mono text-muted-foreground truncate">
-                                          {key}
-                                        </span>
-                                        <span className="font-mono truncate">
-                                          {maskValue(key, String(value))}
-                                        </span>
-                                      </div>
+                                        envKey={key}
+                                        value={String(value)}
+                                      />
                                     ),
                                   )}
                                 </div>
                               )}
 
-                            {/* Codex config */}
-                            {parsedConfig.type === "codex" && (
+                            {/* Codex / Grok Build config */}
+                            {(parsedConfig.type === "codex" ||
+                              parsedConfig.type === "grokbuild") && (
                               <div className="space-y-2">
-                                {parsedConfig.auth &&
+                                {parsedConfig.type === "codex" &&
+                                  parsedConfig.auth &&
                                   Object.keys(parsedConfig.auth).length > 0 && (
                                     <div className="space-y-1.5">
                                       <div className="text-xs text-muted-foreground">
                                         Auth:
                                       </div>
-                                      {Object.entries(parsedConfig.auth).map(
-                                        ([key, value]) => (
-                                          <div
-                                            key={key}
-                                            className="grid grid-cols-2 gap-2 text-xs pl-2"
-                                          >
-                                            <span className="font-mono text-muted-foreground truncate">
-                                              {key}
-                                            </span>
-                                            <span className="font-mono truncate">
-                                              {maskValue(key, String(value))}
-                                            </span>
-                                          </div>
-                                        ),
-                                      )}
+                                      <div className="pl-2 space-y-1.5">
+                                        {Object.entries(parsedConfig.auth).map(
+                                          ([key, value]) => (
+                                            <EnvRow
+                                              key={key}
+                                              envKey={key}
+                                              value={String(value)}
+                                            />
+                                          ),
+                                        )}
+                                      </div>
                                     </div>
                                   )}
                                 {parsedConfig.tomlConfig && (
@@ -679,13 +659,8 @@ export const DeepLinkImportDialog = forwardRef<DeepLinkImportDialogHandle>(
                                     <div className="text-xs text-muted-foreground">
                                       TOML Config:
                                     </div>
-                                    <pre className="text-xs font-mono bg-background p-2 rounded overflow-x-auto max-h-24 whitespace-pre-wrap">
-                                      {parsedConfig.tomlConfig.substring(
-                                        0,
-                                        300,
-                                      )}
-                                      {parsedConfig.tomlConfig.length > 300 &&
-                                        "..."}
+                                    <pre className="text-xs font-mono bg-background p-2 rounded overflow-auto max-h-24 whitespace-pre-wrap break-all">
+                                      {parsedConfig.tomlConfig}
                                     </pre>
                                   </div>
                                 )}
@@ -698,17 +673,11 @@ export const DeepLinkImportDialog = forwardRef<DeepLinkImportDialogHandle>(
                                 <div className="space-y-1.5">
                                   {Object.entries(parsedConfig.env).map(
                                     ([key, value]) => (
-                                      <div
+                                      <EnvRow
                                         key={key}
-                                        className="grid grid-cols-2 gap-2 text-xs"
-                                      >
-                                        <span className="font-mono text-muted-foreground truncate">
-                                          {key}
-                                        </span>
-                                        <span className="font-mono truncate">
-                                          {maskValue(key, String(value))}
-                                        </span>
-                                      </div>
+                                        envKey={key}
+                                        value={String(value)}
+                                      />
                                     ),
                                   )}
                                 </div>
@@ -730,35 +699,66 @@ export const DeepLinkImportDialog = forwardRef<DeepLinkImportDialogHandle>(
                       </div>
                     )}
 
-                    {/* Usage Script Configuration (v3.9+) */}
-                    {request.usageScript && (
+                    {/* Keep this gate aligned with backend persistence: any usage field can be imported. */}
+                    {(request.usageScript ||
+                      request.usageEnabled !== undefined ||
+                      request.usageApiKey ||
+                      request.usageBaseUrl ||
+                      request.usageAccessToken ||
+                      request.usageUserId ||
+                      request.usageAutoInterval !== undefined) && (
                       <div className="space-y-3 pt-2 border-t border-border-default">
-                        <div className="grid grid-cols-3 items-center gap-4">
-                          <div className="font-medium text-sm text-muted-foreground">
-                            {t("deeplink.usageScript", {
-                              defaultValue: "用量查询",
-                            })}
+                        {(request.usageScript ||
+                          request.usageEnabled !== undefined) && (
+                          <div className="grid grid-cols-3 items-center gap-4">
+                            <div className="font-medium text-sm text-muted-foreground">
+                              {t("deeplink.usageScript", {
+                                defaultValue: "用量查询",
+                              })}
+                            </div>
+                            <div className="col-span-2 text-sm">
+                              <span
+                                className={`inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium ${
+                                  request.usageEnabled === true
+                                    ? "bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300"
+                                    : "bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400"
+                                }`}
+                              >
+                                {request.usageEnabled === true
+                                  ? t("deeplink.usageScriptEnabled", {
+                                      defaultValue: "已启用",
+                                    })
+                                  : t("deeplink.usageScriptDisabled", {
+                                      defaultValue: "未启用",
+                                    })}
+                              </span>
+                            </div>
                           </div>
-                          <div className="col-span-2 text-sm">
-                            <span
-                              className={`inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium ${
-                                request.usageEnabled !== false
-                                  ? "bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300"
-                                  : "bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400"
-                              }`}
-                            >
-                              {request.usageEnabled !== false
-                                ? t("deeplink.usageScriptEnabled", {
-                                    defaultValue: "已启用",
-                                  })
-                                : t("deeplink.usageScriptDisabled", {
-                                    defaultValue: "未启用",
-                                  })}
-                            </span>
-                          </div>
-                        </div>
+                        )}
 
-                        {/* Usage API Key (if different from provider) */}
+                        {request.usageScript && (
+                          <>
+                            {/* The complete executable payload must stay visible; never truncate it. */}
+                            <div className="space-y-1">
+                              <div className="font-medium text-sm text-muted-foreground">
+                                {t("deeplink.usageScriptCode")}
+                              </div>
+                              <pre className="max-h-48 overflow-auto rounded border border-border-default bg-muted/40 p-2 text-xs font-mono whitespace-pre-wrap break-all">
+                                {decodeDeeplinkPayload(
+                                  request.usageScript,
+                                  decodeBase64Utf8,
+                                )}
+                              </pre>
+                            </div>
+
+                            {/* Code is persisted even while disabled, so the warning is unconditional. */}
+                            <div className="text-yellow-600 dark:text-yellow-500 text-sm flex items-start gap-2">
+                              <span aria-hidden="true">⚠️</span>
+                              <span>{t("deeplink.usageScriptWarning")}</span>
+                            </div>
+                          </>
+                        )}
+
                         {request.usageApiKey &&
                           request.usageApiKey !== request.apiKey && (
                             <div className="grid grid-cols-3 items-center gap-4">
@@ -775,7 +775,6 @@ export const DeepLinkImportDialog = forwardRef<DeepLinkImportDialogHandle>(
                             </div>
                           )}
 
-                        {/* Usage Base URL (if different from provider) */}
                         {request.usageBaseUrl &&
                           request.usageBaseUrl !== request.endpoint && (
                             <div className="grid grid-cols-3 items-center gap-4">
@@ -790,7 +789,34 @@ export const DeepLinkImportDialog = forwardRef<DeepLinkImportDialogHandle>(
                             </div>
                           )}
 
-                        {/* Auto Query Interval */}
+                        {request.usageAccessToken && (
+                          <div className="grid grid-cols-3 items-center gap-4">
+                            <div className="font-medium text-sm text-muted-foreground">
+                              {t("deeplink.usageAccessToken", {
+                                defaultValue: "用量访问令牌",
+                              })}
+                            </div>
+                            <div className="col-span-2 text-sm font-mono text-muted-foreground">
+                              {request.usageAccessToken.length > 4
+                                ? `${request.usageAccessToken.substring(0, 4)}${"*".repeat(12)}`
+                                : "****"}
+                            </div>
+                          </div>
+                        )}
+
+                        {request.usageUserId && (
+                          <div className="grid grid-cols-3 items-center gap-4">
+                            <div className="font-medium text-sm text-muted-foreground">
+                              {t("deeplink.usageUserId", {
+                                defaultValue: "用量用户 ID",
+                              })}
+                            </div>
+                            <div className="col-span-2 text-sm font-mono break-all">
+                              {request.usageUserId}
+                            </div>
+                          </div>
+                        )}
+
                         {request.usageAutoInterval &&
                           request.usageAutoInterval > 0 && (
                             <div className="grid grid-cols-3 items-center gap-4">

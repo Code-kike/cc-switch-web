@@ -964,3 +964,140 @@ Completed the v3.16.5->v3.18.0 upstream sync task. S6: Codex usage rebuild + ses
 ### Next Steps
 
 - None - task complete
+
+
+## Session 28: Complete Product upstream v3.19.2 sync
+
+**Date**: 2026-08-09
+**Task**: Complete Product upstream v3.19.2 sync
+**Branch**: `sync/upstream-v3.19.2`
+
+### Summary
+
+Ported and verified Product upstream v3.19.2 plus the catalog ownership fix with Web-first adaptations across pricing, usage, backup, Codex, OMO, management UI, Skills, and Hermes.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `f2d951d9` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 29: Port pi native coding agent + session usage into Web-first fork
+
+**Date**: 2026-08-24
+**Task**: Port pi native coding agent + session usage into Web-first fork
+**Branch**: `sync/upstream-v3.20.0`
+
+### Summary
+
+Completed child task feat-pi-native-agent: ported Product upstream 84e75ad2 (pi native coding agent, 156 files) + 40d747c0 (pi session usage, 17 files) via 5-batch selective port. P1 Rust backend (pi_config/pi_state/pi_prompt_files/provider-pi/commands-pi/session_manager-pi + 9 commands with Web parity). P2 frontend provider UI (PiProviderForm 2038 lines + presets/catalog/thinking + AppId union + model_fetch request_headers/api_format). P3 frontend prompts/skills/sessions (PiPromptPanel + PiNativePromptResources + PromptLibrary, Q3 ruling kept non-pi PromptPanel path untouched with parameterized regression test). P3.5 corrected a P1 over-claim: services/skill.rs was ticked done but only 4 lines landed vs upstream +1141; ported 18 safety helpers (path alias/overlap validation, preserving uninstall, migrate alias rejection) + 19 regression tests, closing a bug where uninstalling a managed pi skill would delete a user's same-named external directory. P4 session_usage_pi importer + SCHEMA_VERSION 16->17 session_usage_dedup + docs/pi-native-contract-zh.md + i18n. Phase 2.2 check found three more P1 module-without-dispatcher gaps (session_manager never dispatched pi, PromptService lacked a Pi early-return so restore could rewrite AGENTS.md from DB flags, bootstrap skipped import_pi_providers_from_live) fixed in bdc273ff. Also found the fork's SQL restore authorizer is stricter than upstream: the new semantic index had to join SQL_RESTORE_INDEXES or WebDAV/SQL import is denied. Spec updated with an additive-provider wiring checklist, v17 restore contracts, and a new Pi Native AGENTS.md Prompt Activation scenario. Final gate: test:unit 173 files/1044 tests green, Rust parity 37, focused Rust 125, web-routes 292/0 gaps, locales 2637 parity, test:integration 50/54 (4 PRD flakes), build:web + smoke:web-server exit 0.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `18340719` | (see git log) |
+| `a7fac324` | (see git log) |
+| `cf465755` | (see git log) |
+| `cd8b950a` | (see git log) |
+| `43a72a5f` | (see git log) |
+| `bdc273ff` | (see git log) |
+| `ab02396c` | (see git log) |
+
+### Status
+
+[OK] **Completed**
+
+
+## Session 30: Port Codex Alpha Search + Claude hosted WebSearch into Web-first fork
+
+**Date**: 2026-08-25
+**Task**: Port Codex Alpha Search + Claude hosted WebSearch into Web-first fork
+**Branch**: `sync/upstream-v3.20.0`
+
+### Summary
+
+Completed child task feat-codex-alpha-websearch: ported Product upstream bdeaac75 (9 files, +10041/-1691) as 4 batches. W1 Codex Alpha Search passthrough (4 local aliases, fail-closed full-URL derivation). W2 hosted WebSearch request translation + ~30 markdown citation primitives with a 7-row fail-closed matrix. W2.5 fork-side hardening: the sub-agent proactively reported that 4 markdown shapes are O(n^2) (worst 6.7s CPU on 128 KiB of hostile model output) on an already-live path, so five caps were added at the single citation-dedup entry with deliberate fail-OPEN skip semantics, dropping the worst case to 116us while the legal caps-maxed worst case stayed flat at 57ms. W3 response/stream bridge + non-streaming aggregation + usage + three-language docs. Baseline research paid off: streaming_responses.rs and transform_responses.rs drifted only 28/78 lines from upstream pre-commit, so nearly 10k lines applied on upstream anchors; the flagged forwarder/handlers drift risk (2679/2287 lines) never materialized because every upstream anchor symbol existed. Q1 (skip transform_codex_anthropic.rs) was amended mid-task: its premise 'the fork has no Anthropic SSE aggregator' expired when W3 introduced exactly that, so one function was ported as a private fn in handlers.rs with mutation-proven necessity while all four deferred files stayed absent. Final check found two real defects: rewrite_codex_alpha_search_full_url sliced a raw URL by a length derived from Url::parse().path(), which panics on multi-byte boundaries and silently misderives on dot-segment URLs (present verbatim upstream, worth reporting there), and a 1ms Date.now() boundary flake fixed by porting upstream's own 60s margin. Spec grew two scenarios: fail-open vs fail-closed classified by what degradation costs, and the private-helper exception to a deferred-stack boundary. Final gate: cargo test --lib 2233, test:unit 173/1044 green, Rust parity 37, check:web-routes held at 292/280/0, test:integration 50/54 (4 PRD flakes), build:web + smoke exit 0.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `258245f4` | (see git log) |
+| `a49e7af5` | (see git log) |
+| `860b0523` | (see git log) |
+| `c917d5cf` | (see git log) |
+| `ff067851` | (see git log) |
+| `e59d9c98` | (see git log) |
+
+### Status
+
+[OK] **Completed**
+
+---
+
+## 2026-08-26 — feat-managed-oauth-accounts 完成归档
+
+**任务**：managed OAuth account selection（父任务 08-18-sync-upstream-v3.20.0 的第 3 个、最后一个子任务）
+**分支**：sync/upstream-v3.20.0　**批次**：W0 调研 + W1–W5 实现，共 5 个实现 commit + 4 个 docs/spec commit
+
+### 结果概要
+
+移植 `a2e22f33`（54 文件 +11601/−1131）+ S4b 移交的 `0455a92c` managed-codex 事务到 fork。
+基线不对齐（proxy.rs 撞 3661 行漂移）→ W0 逐 hunk 调研先行，实测 --3way 冲突块数后切批。
+
+| 批次 | commit | 内容 |
+|---|---|---|
+| W1 | `38d04f5a` | 凭据与数据面 17 文件：id_token 进 managed bundle、reauth_required 双运行时、ADR0003 managed 原子写 |
+| W2 | `6738c700` | provider 事务层净 diff（+2188）：managed helper 移入新模块 managed_codex.rs；add/update/switch 事务 |
+| W3 | `89d0c7b3` | proxy 服务层 + 三处 official 阻断同 commit 放开（carve-out 比上游窄：仅 managed Official） |
+| W4 | `979a32dc` | 前端最小表面（Q1 反推）：CodexFormFields 补 OAuth 块、10 个移交用例全绿 |
+| W5 | `2f822677` | 剩余上游测试 + 文档同步 + 全量门禁 + PRD 验收核验 |
+
+终态门禁：cargo test --lib **2289** passed / 5 ignored；test:unit **177 files / 1089 tests**；
+integration 50/54（恰 4 白名单 flake）；web-routes **292/280/0**；locales **2664** parity；
+SCHEMA_VERSION **17**；build:web / smoke exit 0。
+
+### 关键裁定（详见 prd.md / implement.md）
+
+- **Q3 不移植 migrate_legacy_codex_official_managed_binding**：`0455a92c` 在 v3.20.0 删除了它
+  （git grep 零命中），移植反而会把用户 current provider 从固定 id 搬到新 UUID —— 上游主动放弃的破坏性改动。
+- **Codex takeover carve-out 只放开 managed Official**：fork 无 inbound Authorization passthrough，
+  unbound 原生登录保持 fail-closed（打开 = 把明确拒绝变成一次失败的 Codex 会话）。
+- **前端谓词与 Rust 对齐**：supportsOfficialProxyTakeover 收窄为仅 managed_account +
+  单一派生 isOfficialBlockedByTakeover（ProviderCard/useProviderActions 共用），全部变异验证钉住。
+- **有意分歧备案**：useProviderActions.test 的 native-login takeover 用例反转上游断言；
+  useProviderActions.ts / ProviderCard.tsx / providerCapabilities.ts 下次同步会冲突，须按取据判定。
+
+### 方法论沉淀（已入 spec bdb99038）
+
+1. 提交区间移植必须对**目标 tag** 核验每个交付物存在性（中间提交引入的符号可能被下游删除）。
+2. 存在性检查用扩展通配（`find tests -name '*.test.ts*'`），单扩展名 grep 曾把既有 133 行套件误报为缺失。
+3. Rust 策略的前端镜像谓词必须是单一派生 + 双侧测试钉住（doc 声称对齐 ≠ 行为对齐）。
+
+### 教训
+
+- 子代理 7 次被内容策略截断 → lean prompt 是唯一稳定形态；被截后主会话按 git status 接力收口。
+- W4 曾把 test:integration 延到 W5，导致 AuthCenterPanel.web-server 2/2 回归晚一批才暴露 ——
+  门禁延后 = 回归发现延后。
+
+### Status
+
+[OK] **Completed**

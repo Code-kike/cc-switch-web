@@ -88,6 +88,7 @@ fn api_router(state: ApiState) -> Router {
         .merge(handlers::mcp::router(state.clone()))
         .merge(handlers::omo::router(state.clone()))
         .merge(handlers::openclaw::router(state.clone()))
+        .merge(handlers::pi::router(state.clone()))
         .merge(handlers::parity::router(state.clone()))
         .merge(handlers::prompts::router(state.clone()))
         .merge(handlers::profiles::router(state.clone()))

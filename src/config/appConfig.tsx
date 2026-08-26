@@ -23,6 +23,7 @@ export const APP_IDS: AppId[] = [
   "opencode",
   "openclaw",
   "hermes",
+  "pi",
 ];
 
 /** App IDs shown in Skills panels (excludes OpenClaw — it doesn't support Skills) */
@@ -33,10 +34,23 @@ export const SKILLS_APP_IDS: AppId[] = [
   "grokbuild",
   "opencode",
   "hermes",
+  "pi",
 ];
 
-/** App IDs shown in MCP panels (excludes OpenClaw) */
-export const MCP_APP_IDS: AppId[] = [...SKILLS_APP_IDS];
+/** App IDs shown in MCP panels (excludes OpenClaw and Pi — neither has native MCP) */
+export type McpAppId = Exclude<AppId, "openclaw" | "pi">;
+export const MCP_APP_IDS: McpAppId[] = [
+  "claude",
+  "codex",
+  "gemini",
+  "grokbuild",
+  "opencode",
+  "hermes",
+];
+
+export function isMcpAppId(appId: string): appId is McpAppId {
+  return (MCP_APP_IDS as string[]).includes(appId);
+}
 
 export const APP_ICON_MAP: Record<AppId, AppConfig> = {
   claude: {
@@ -115,5 +129,13 @@ export const APP_ICON_MAP: Record<AppId, AppConfig> = {
       "bg-violet-500/10 ring-1 ring-violet-500/20 hover:bg-violet-500/20 text-violet-600 dark:text-violet-400",
     badgeClass:
       "bg-violet-500/10 text-violet-700 dark:text-violet-300 hover:bg-violet-500/20 border-0 gap-1.5",
+  },
+  pi: {
+    label: "Pi",
+    icon: <ProviderIcon icon="pi" name="Pi" size={14} showFallback={false} />,
+    activeClass:
+      "bg-fuchsia-500/10 ring-1 ring-fuchsia-500/20 hover:bg-fuchsia-500/20 text-fuchsia-600 dark:text-fuchsia-400",
+    badgeClass:
+      "bg-fuchsia-500/10 text-fuchsia-700 dark:text-fuchsia-300 hover:bg-fuchsia-500/20 border-0 gap-1.5",
   },
 };

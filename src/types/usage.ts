@@ -66,6 +66,20 @@ export interface ModelPricing {
   cacheCreationCostPerMillion: string;
 }
 
+export interface ModelsDevSyncConfig {
+  autoSyncEnabled: boolean;
+  includeCommonModels: boolean;
+  selectedModelKeys: string[];
+  excludedCommonModelKeys: string[];
+  lastSyncAt: number | null;
+  lastSyncError: string | null;
+}
+
+export interface ModelsDevSyncState {
+  config: ModelsDevSyncConfig;
+  configPath: string;
+}
+
 export interface UsageSummary {
   totalRequests: number;
   totalCost: string;
@@ -139,7 +153,13 @@ export interface UsageRangeSelection {
   customEndDate?: number;
 }
 
-export type AppType = "claude" | "codex" | "gemini" | "grokbuild" | "opencode";
+export type AppType =
+  | "claude"
+  | "codex"
+  | "gemini"
+  | "grokbuild"
+  | "opencode"
+  | "pi";
 
 export type AppTypeFilter = "all" | AppType;
 
@@ -149,6 +169,7 @@ export const KNOWN_APP_TYPES: ReadonlyArray<AppType> = [
   "gemini",
   "grokbuild",
   "opencode",
+  "pi",
 ];
 
 export const CACHE_INCLUSIVE_APP_TYPES: ReadonlySet<string> = new Set([

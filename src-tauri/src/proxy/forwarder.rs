@@ -2,10 +2,10 @@
 //!
 //! 负责将请求转发到上游Provider，支持故障转移
 
-use super::hyper_client::ProxyResponse;
+use super::hyper_client::{ProxyResponse, MAX_RESPONSE_BODY_BYTES};
 use super::{
     body_filter::filter_private_params_with_whitelist,
-    content_encoding::{decompress_body, get_content_encoding},
+    content_encoding::{decompress_body_with_limit, get_content_encoding},
     error::*,
     failover_switch::FailoverSwitchManager,
     json_canonical::{canonicalize_value, short_value_hash},
@@ -158,7 +158,7 @@ impl RequestForwarder {
         provider_body: &Value,
         error: &ProxyError,
     ) -> bool {
-        adapter_name == "Claude"
+        matches!(adapter_name, "Claude" | "Codex")
             && self.rectifier_config.enabled
             && self.rectifier_config.request_media_fallback
             && !already_retried
@@ -1057,10 +1057,13 @@ impl RequestForwarder {
                 super::providers::copilot_model_map::apply_copilot_model_normalization(mapped_body);
             self.apply_copilot_live_model_resolution(provider, &mut mapped_body)
                 .await;
-        } else {
-            mapped_body =
-                super::model_mapper::strip_one_m_suffix_for_upstream_from_body(mapped_body);
         }
+
+        // Strip the [1M] context-capability marker only after Copilot's own
+        // normalization and live-model resolution. Claude model markers that
+        // Copilot accepts have already become `-1m`; mapped third-party model
+        // names such as `gpt-5.6-sol[1M]` must not reach the upstream API.
+        mapped_body = super::model_mapper::strip_one_m_suffix_for_upstream_from_body(mapped_body);
 
         // --- Copilot 优化器：分类 + 请求体优化（在格式转换之前执行） ---
         // 注意：确定性 ID 也在此处计算，因为 mapped_body 在格式转换时会被 move
@@ -1229,12 +1232,17 @@ impl RequestForwarder {
                 )
             };
 
+        let is_codex_alpha_search = matches!(app_type, AppType::Codex)
+            && split_endpoint_and_query(&effective_endpoint).0 == "/alpha/search";
+
         let url = if matches!(resolved_claude_api_format.as_deref(), Some("gemini_native")) {
             super::gemini_url::resolve_gemini_native_url(
                 &base_url,
                 &effective_endpoint,
                 is_full_url,
             )
+        } else if is_full_url && is_codex_alpha_search {
+            rewrite_codex_alpha_search_full_url(&base_url, passthrough_query.as_deref())?
         } else if is_full_url {
             append_query_to_full_url(&base_url, passthrough_query.as_deref())
         } else {
@@ -1908,12 +1916,16 @@ impl RequestForwarder {
         } else {
             let status_code = status.as_u16();
             let encoding = get_content_encoding(response.headers());
-            let raw = response.bytes().await?;
+            let raw = response.bytes_with_limit(MAX_RESPONSE_BODY_BYTES).await?;
             let decoded = match encoding {
-                Some(encoding) => match decompress_body(&encoding, &raw) {
-                    Ok(Some(decompressed)) => decompressed,
-                    _ => raw.to_vec(),
-                },
+                Some(encoding) => {
+                    match decompress_body_with_limit(&encoding, &raw, MAX_RESPONSE_BODY_BYTES) {
+                        Ok(Some(decompressed)) => decompressed,
+                        // Unsupported/corrupt/oversized decoded bodies fall back only to the
+                        // already size-bounded raw bytes for diagnostic text.
+                        _ => raw.to_vec(),
+                    }
+                }
                 None => raw.to_vec(),
             };
             let body_text = String::from_utf8(decoded).ok();
@@ -1945,14 +1957,17 @@ impl RequestForwarder {
         let status = response.status();
         let headers = response.headers().clone();
         let body_timeout = self.non_streaming_timeout;
-        let body = tokio::time::timeout(body_timeout, response.bytes())
-            .await
-            .map_err(|_| {
-                ProxyError::Timeout(format!(
-                    "响应体读取超时: {}s（上游发完响应头后 body 未到达）",
-                    body_timeout.as_secs()
-                ))
-            })??;
+        let body = tokio::time::timeout(
+            body_timeout,
+            response.bytes_with_limit(MAX_RESPONSE_BODY_BYTES),
+        )
+        .await
+        .map_err(|_| {
+            ProxyError::Timeout(format!(
+                "响应体读取超时: {}s（上游发完响应头后 body 未到达）",
+                body_timeout.as_secs()
+            ))
+        })??;
 
         Ok(ProxyResponse::buffered(status, headers, body))
     }
@@ -1964,12 +1979,14 @@ impl RequestForwarder {
         let status = response.status();
         let headers = response.headers().clone();
         let encoding = get_content_encoding(&headers);
-        let raw = response.bytes().await?;
+        let raw = response.bytes_with_limit(MAX_RESPONSE_BODY_BYTES).await?;
         let decoded = match encoding {
-            Some(encoding) => match decompress_body(&encoding, &raw) {
-                Ok(Some(decompressed)) => decompressed,
-                _ => raw.to_vec(),
-            },
+            Some(encoding) => {
+                match decompress_body_with_limit(&encoding, &raw, MAX_RESPONSE_BODY_BYTES) {
+                    Ok(Some(decompressed)) => decompressed,
+                    _ => raw.to_vec(),
+                }
+            }
             None => raw.to_vec(),
         };
 
@@ -2639,6 +2656,76 @@ fn append_query_to_full_url(base_url: &str, query: Option<&str>) -> String {
         }
         _ => base_url.to_string(),
     }
+}
+
+/// Derive the standalone Alpha Search endpoint from a Codex provider configured
+/// with a complete Responses URL.
+///
+/// Full-URL mode normally means "use this exact URL". That is correct for the
+/// request type it was configured for, but reusing a `/responses` URL for an
+/// Alpha Search request silently posts the search payload to the wrong API. Only
+/// rewrite URL shapes whose sibling endpoint is unambiguous; opaque full URLs
+/// fail closed with a configuration error instead of leaking the search payload
+/// to an unrelated route.
+fn rewrite_codex_alpha_search_full_url(
+    base_url: &str,
+    request_query: Option<&str>,
+) -> Result<String, ProxyError> {
+    let trimmed = base_url.trim();
+    let parsed = url::Url::parse(trimmed).map_err(|_| {
+        ProxyError::ConfigError(
+            "Codex Alpha Search requires a valid full Responses URL".to_string(),
+        )
+    })?;
+
+    // Fragments are never sent in HTTP requests. Drop one before splitting the
+    // query so an accidental fragment cannot move the incoming query behind `#`.
+    let without_fragment = trimmed
+        .split_once('#')
+        .map_or(trimmed, |(head, _fragment)| head);
+    let (url_without_query, base_query) = without_fragment
+        .split_once('?')
+        .map_or((without_fragment, None), |(head, query)| {
+            (head, Some(query))
+        });
+    let url_without_query = url_without_query.trim_end_matches('/');
+
+    let parsed_path = parsed.path().trim_end_matches('/').to_string();
+    let suffix = if parsed_path.ends_with("/responses/compact") {
+        "/responses/compact"
+    } else if parsed_path.ends_with("/responses") {
+        "/responses"
+    } else {
+        return Err(ProxyError::ConfigError(
+            "Codex Alpha Search cannot derive /alpha/search from an opaque full URL; use a base URL or a full URL ending in /responses".to_string(),
+        ));
+    };
+
+    // fork 侧加固（上游 bdeaac75 用 `&url_without_query[..len - suffix.len()]`）：
+    // `suffix` 来自**解析后**的 path，而切片作用在**原始**字符串上。两者在 dot-segment
+    // 归一化后会错位（`https://h/responses/x/..` 的 parsed path 是 `/responses/`），此时
+    // 按长度切片要么产出与 `/responses` 无关的垃圾前缀（静默误派生），要么直接 panic
+    // （`https://h/responses/éxxxxxx/..` 的 21 落在 'é' 的 20..22 内部）。
+    // 改为要求原始串**字面**以该后缀结尾：`strip_suffix` 天然对齐字符边界，且错位形状
+    // 落回既有的 fail-closed 分支 —— 与本函数「只在无歧义时派生」的契约同向收紧，
+    // 对所有当前可用形状（含 `%2F` 前缀、尾随 `/`、query/fragment）行为不变。
+    let prefix = url_without_query.strip_suffix(suffix).ok_or_else(|| {
+        ProxyError::ConfigError(
+            "Codex Alpha Search cannot derive /alpha/search from an opaque full URL; use a base URL or a full URL ending in /responses".to_string(),
+        )
+    })?;
+    let mut rewritten = format!("{prefix}/alpha/search");
+
+    let request_query = request_query.filter(|query| !query.is_empty());
+    let base_query = base_query.filter(|query| !query.is_empty());
+    match (base_query, request_query) {
+        (Some(base), Some(request)) => rewritten.push_str(&format!("?{base}&{request}")),
+        (Some(base), None) => rewritten.push_str(&format!("?{base}")),
+        (None, Some(request)) => rewritten.push_str(&format!("?{request}")),
+        (None, None) => {}
+    }
+
+    Ok(rewritten)
 }
 
 fn build_codex_oauth_session_headers(
@@ -3446,7 +3533,10 @@ mod tests {
             .expect("response should be buffered");
 
         assert_eq!(
-            prepared.bytes().await.unwrap(),
+            prepared
+                .bytes_with_limit(MAX_RESPONSE_BODY_BYTES)
+                .await
+                .unwrap(),
             Bytes::from_static(b"{\"ok\":true}")
         );
     }
@@ -3497,7 +3587,10 @@ mod tests {
             .expect("stream should be primed");
 
         assert_eq!(
-            prepared.bytes().await.unwrap(),
+            prepared
+                .bytes_with_limit(MAX_RESPONSE_BODY_BYTES)
+                .await
+                .unwrap(),
             Bytes::from_static(b"firstsecond")
         );
     }
@@ -3839,6 +3932,72 @@ mod tests {
     }
 
     #[test]
+    fn alpha_search_rewrites_known_full_responses_urls() {
+        let cases = [
+            (
+                "https://relay.example/v1/responses",
+                "https://relay.example/v1/alpha/search?client_version=0.144.6",
+            ),
+            (
+                "https://relay.example/backend-api/codex/responses/compact/",
+                "https://relay.example/backend-api/codex/alpha/search?client_version=0.144.6",
+            ),
+            (
+                "https://relay.example/custom/%2F/v1/responses?api-version=2026-07",
+                "https://relay.example/custom/%2F/v1/alpha/search?api-version=2026-07&client_version=0.144.6",
+            ),
+        ];
+
+        for (base_url, expected) in cases {
+            assert_eq!(
+                rewrite_codex_alpha_search_full_url(base_url, Some("client_version=0.144.6"))
+                    .expect("known Responses full URL should be rewritable"),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn alpha_search_rejects_opaque_full_url_instead_of_misrouting_payload() {
+        let error = rewrite_codex_alpha_search_full_url(
+            "https://relay.example/custom/rpc-endpoint",
+            Some("client_version=0.144.6"),
+        )
+        .expect_err("opaque endpoint must fail closed");
+
+        assert!(matches!(
+            error,
+            ProxyError::ConfigError(message)
+                if message.contains("cannot derive /alpha/search")
+        ));
+    }
+
+    #[test]
+    fn alpha_search_rejects_full_url_whose_raw_form_does_not_end_with_responses() {
+        // 解析后的 path 会做 dot-segment 归一化，原始串不会。上游按「原始串长度 −
+        // 解析后后缀长度」切片，这两种形状下会静默产出垃圾前缀 / 在多字节字符内 panic。
+        // fork 侧要求原始串字面以后缀结尾，错位形状一律 fail-closed。
+        for base in [
+            // parsed path = "/responses/" → 归一化后命中后缀，但原始串以 "/.." 结尾
+            "https://relay.example/responses/x/..",
+            // 同上，且长度差落在 'é' 的字节中间（上游此处 panic）
+            "https://relay.example/responses/éxxxxxx/..",
+        ] {
+            let error = rewrite_codex_alpha_search_full_url(base, Some("client_version=0.144.6"))
+                .expect_err("misaligned full URL must fail closed");
+
+            assert!(
+                matches!(
+                    error,
+                    ProxyError::ConfigError(ref message)
+                        if message.contains("cannot derive /alpha/search")
+                ),
+                "unexpected error for {base}: {error:?}"
+            );
+        }
+    }
+
+    #[test]
     fn build_gemini_native_url_uses_origin_when_base_ends_with_v1beta() {
         let url = crate::proxy::gemini_url::build_gemini_native_url(
             "https://generativelanguage.googleapis.com/v1beta",
@@ -4053,6 +4212,72 @@ mod tests {
         })
     }
 
+    fn body_with_codex_input_image(model: &str) -> Value {
+        json!({
+            "model": model,
+            "input": [{
+                "role": "user",
+                "content": [
+                    { "type": "input_image", "image_url": "data:image/png;base64,abc" }
+                ]
+            }]
+        })
+    }
+
+    fn body_with_codex_tool_output_image(stringified: bool) -> Value {
+        let output = json!({
+            "content": [{
+                "type": "input_image",
+                "image_url": "data:image/png;base64,TOOL_OUTPUT_SENTINEL"
+            }]
+        });
+        json!({
+            "model": "any-model",
+            "input": [{
+                "type": "function_call_output",
+                "call_id": "call_1",
+                "output": if stringified {
+                    Value::String(output.to_string())
+                } else {
+                    output
+                }
+            }]
+        })
+    }
+
+    fn body_with_stringified_chat_tool_image() -> Value {
+        let content = json!({
+            "content": [{
+                "type": "image",
+                "mimeType": "image/png",
+                "data": "CHAT_TOOL_SENTINEL"
+            }]
+        })
+        .to_string();
+        json!({
+            "model": "any-model",
+            "messages": [{
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "content": content
+            }]
+        })
+    }
+
+    fn body_with_gemini_image() -> Value {
+        json!({
+            "contents": [{
+                "role": "user",
+                "parts": [{
+                    "inlineData": {
+                        "mimeType": "image/png",
+                        "data": "GEMINI_SENTINEL"
+                    }
+                }]
+            }]
+        })
+    }
+
     fn image_unsupported_error() -> ProxyError {
         ProxyError::UpstreamError {
             status: 400,
@@ -4138,6 +4363,64 @@ mod tests {
         let fwd = forwarder_with_rectifier(RectifierConfig::default());
         let body = body_with_image("any-model");
         assert!(fwd.media_retry_should_trigger("Claude", false, &body, &image_unsupported_error()));
+    }
+
+    #[test]
+    fn reactive_triggers_for_codex_image_url_deserialize_errors() {
+        let fwd = forwarder_with_rectifier(RectifierConfig::default());
+        let body = body_with_codex_input_image("deepseek-v4-flash");
+        let error = ProxyError::UpstreamError {
+            status: 400,
+            body: Some(
+                r#"{"error":{"message":"Failed to deserialize the JSON body into the target type: messages[11]: unknown variant image_url, expected text"}}"#
+                    .to_string(),
+            ),
+        };
+
+        assert!(fwd.media_retry_should_trigger("Codex", false, &body, &error));
+    }
+
+    #[test]
+    fn reactive_triggers_for_structured_and_stringified_codex_tool_images() {
+        let fwd = forwarder_with_rectifier(RectifierConfig::default());
+
+        for stringified in [false, true] {
+            let body = body_with_codex_tool_output_image(stringified);
+            assert!(
+                fwd.media_retry_should_trigger("Codex", false, &body, &image_unsupported_error()),
+                "tool-output image should trigger retry (stringified={stringified})"
+            );
+        }
+    }
+
+    #[test]
+    fn reactive_triggers_for_chat_tool_and_gemini_images() {
+        let fwd = forwarder_with_rectifier(RectifierConfig::default());
+
+        assert!(fwd.media_retry_should_trigger(
+            "Claude",
+            false,
+            &body_with_stringified_chat_tool_image(),
+            &image_unsupported_error()
+        ));
+        assert!(fwd.media_retry_should_trigger(
+            "Claude",
+            false,
+            &body_with_gemini_image(),
+            &image_unsupported_error()
+        ));
+    }
+
+    #[test]
+    fn reactive_does_not_treat_context_limit_as_image_rejection() {
+        let fwd = forwarder_with_rectifier(RectifierConfig::default());
+        let body = body_with_codex_tool_output_image(false);
+        let context_error = ProxyError::UpstreamError {
+            status: 400,
+            body: Some(r#"{"error":{"message":"maximum context length exceeded"}}"#.to_string()),
+        };
+
+        assert!(!fwd.media_retry_should_trigger("Codex", false, &body, &context_error));
     }
 
     #[test]

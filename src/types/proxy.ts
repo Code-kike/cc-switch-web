@@ -49,6 +49,8 @@ export interface ProxyTakeoverStatus {
   opencode: boolean;
   openclaw: boolean;
   hermes: boolean;
+  // Pi is an additive provider and never participates in proxy takeover.
+  pi?: boolean;
 }
 
 export interface ProviderHealth {

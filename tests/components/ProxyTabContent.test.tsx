@@ -13,6 +13,12 @@ const autoFailoverConfigPropsSpy = vi.fn();
 
 let proxyStatusFixture = {
   isRunning: false,
+  takeoverStatus: {
+    claude: true,
+    codex: true,
+    gemini: true,
+    grokbuild: true,
+  },
   startProxyServer: startProxyServerMock,
   stopWithRestore: stopWithRestoreMock,
   isPending: false,
@@ -196,6 +202,12 @@ describe("ProxyTabContent", () => {
     autoFailoverConfigPropsSpy.mockReset();
     proxyStatusFixture = {
       isRunning: false,
+      takeoverStatus: {
+        claude: true,
+        codex: true,
+        gemini: true,
+        grokbuild: true,
+      },
       startProxyServer: startProxyServerMock,
       stopWithRestore: stopWithRestoreMock,
       isPending: false,

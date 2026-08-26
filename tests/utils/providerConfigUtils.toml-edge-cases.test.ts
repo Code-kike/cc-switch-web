@@ -5,10 +5,8 @@ import {
   extractCodexModelName,
   extractCodexTopLevelInt,
   setCodexBaseUrl,
-  setCodexGoalMode,
   setCodexModelName,
   setCodexTopLevelInt,
-  isCodexGoalModeEnabled,
 } from "@/utils/providerConfigUtils";
 
 /**
@@ -119,21 +117,6 @@ describe("providerConfigUtils TOML edge cases (characterization)", () => {
           "request_max_retries",
         ),
       ).toBe(3);
-    });
-  });
-
-  describe("KNOWN LIMITATION: CRLF input yields mixed line endings", () => {
-    it("setCodexGoalMode inserts LF-delimited [features] amid CRLF lines", () => {
-      const input =
-        'model = "m"\r\n[model_providers.custom]\r\nname = "custom"\r\n';
-      const output = setCodexGoalMode(input, true);
-
-      expect(isCodexGoalModeEnabled(output)).toBe(true);
-      expect(output).toContain("[features]\ngoals = true");
-      // Pre-existing CRLF lines are preserved verbatim (mixed endings) — the
-      // result still parses, but the layout is inconsistent.
-      expect(output).toContain("\r\n");
-      expect(() => parseToml(output)).not.toThrow();
     });
   });
 });

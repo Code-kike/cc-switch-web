@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Plus } from "lucide-react";
 import { toast } from "sonner";
@@ -6,12 +6,13 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { FullScreenPanel } from "@/components/common/FullScreenPanel";
 import type { Provider, CustomEndpoint, UniversalProvider } from "@/types";
-import type { AppId } from "@/lib/api";
+import type { AppId, ManagedAuthProvider } from "@/lib/api";
 import { universalProvidersApi } from "@/lib/api";
 import {
   ProviderForm,
   type ProviderFormValues,
 } from "@/components/providers/forms/ProviderForm";
+import { AuthSettingsPanel } from "@/components/providers/AuthSettingsPanel";
 import { UniversalProviderFormModal } from "@/components/universal/UniversalProviderFormModal";
 import { UniversalProviderPanel } from "@/components/universal";
 import { providerPresets } from "@/config/claudeProviderPresets";
@@ -31,6 +32,7 @@ interface AddProviderDialogProps {
     provider: Omit<Provider, "id"> & {
       providerKey?: string;
       suggestedDefaults?: OpenClawSuggestedDefaults;
+      ensureClaudeDesktopOfficialSeed?: boolean;
       ensureGrokBuildOfficialSeed?: boolean;
     },
   ) => Promise<void> | void;
@@ -43,11 +45,12 @@ export function AddProviderDialog({
   onSubmit,
 }: AddProviderDialogProps) {
   const { t } = useTranslation();
-  // OpenCode and OpenClaw don't support universal providers
+  // OpenCode, OpenClaw, Hermes and Pi don't support universal providers
   const showUniversalTab =
     appId !== "opencode" &&
     appId !== "openclaw" &&
     appId !== "hermes" &&
+    appId !== "pi" &&
     appId !== "grokbuild";
   const [activeTab, setActiveTab] = useState<"app-specific" | "universal">(
     "app-specific",
@@ -56,6 +59,31 @@ export function AddProviderDialog({
   const [selectedUniversalPreset, setSelectedUniversalPreset] =
     useState<UniversalProviderPreset | null>(null);
   const [isFormSubmitting, setIsFormSubmitting] = useState(false);
+  const [authSettingsTarget, setAuthSettingsTarget] =
+    useState<ManagedAuthProvider | null>(null);
+  // Pi cannot submit until a preset (or "custom") is chosen: its native
+  // models.json node has no meaningful default shape. Other apps are ready
+  // as soon as the form mounts.
+  const [isFormReady, setIsFormReady] = useState(appId !== "pi");
+  useEffect(() => {
+    setIsFormReady(appId !== "pi");
+  }, [appId, open]);
+  useEffect(() => {
+    setAuthSettingsTarget(null);
+  }, [appId, open]);
+
+  const closeDialog = useCallback(() => {
+    setAuthSettingsTarget(null);
+    onOpenChange(false);
+  }, [onOpenChange]);
+
+  const handlePanelClose = useCallback(() => {
+    if (authSettingsTarget) {
+      setAuthSettingsTarget(null);
+      return;
+    }
+    closeDialog();
+  }, [authSettingsTarget, closeDialog]);
 
   const handleUniversalProviderSave = useCallback(
     async (provider: UniversalProvider) => {
@@ -131,16 +159,19 @@ export function AddProviderDialog({
         ...(values.presetCategory ? { category: values.presetCategory } : {}),
         ...(values.meta ? { meta: values.meta } : {}),
       };
-
       if (appId === "grokbuild" && values.presetId) {
         providerData.ensureGrokBuildOfficialSeed =
           values.presetCategory === "official" &&
           values.presetId === GROKBUILD_OFFICIAL_PROVIDER_ID;
       }
 
-      // OpenCode/OpenClaw: pass providerKey for ID generation
+      // Apps whose native catalog has a stable provider key use it as the
+      // managed provider identity.
       if (
-        (appId === "opencode" || appId === "openclaw" || appId === "hermes") &&
+        (appId === "opencode" ||
+          appId === "openclaw" ||
+          appId === "hermes" ||
+          appId === "pi") &&
         values.providerKey
       ) {
         providerData.providerKey = values.providerKey;
@@ -273,9 +304,9 @@ export function AddProviderDialog({
       }
 
       await onSubmit(providerData);
-      onOpenChange(false);
+      closeDialog();
     },
-    [appId, onSubmit, onOpenChange],
+    [appId, onSubmit, closeDialog],
   );
 
   const footer =
@@ -283,7 +314,7 @@ export function AddProviderDialog({
       <>
         <Button
           variant="outline"
-          onClick={() => onOpenChange(false)}
+          onClick={closeDialog}
           className="border-border/20 hover:bg-accent hover:text-accent-foreground"
         >
           {t("common.cancel")}
@@ -291,7 +322,7 @@ export function AddProviderDialog({
         <Button
           type="submit"
           form="provider-form"
-          disabled={isFormSubmitting}
+          disabled={isFormSubmitting || !isFormReady}
           className="bg-primary text-primary-foreground hover:bg-primary/90"
         >
           <Plus className="h-4 w-4 mr-2" />
@@ -302,7 +333,7 @@ export function AddProviderDialog({
       <>
         <Button
           variant="outline"
-          onClick={() => onOpenChange(false)}
+          onClick={closeDialog}
           className="border-border/20 hover:bg-accent hover:text-accent-foreground"
         >
           {t("common.cancel")}
@@ -321,7 +352,7 @@ export function AddProviderDialog({
     <FullScreenPanel
       isOpen={open}
       title={t("provider.addNewProvider")}
-      onClose={() => onOpenChange(false)}
+      onClose={handlePanelClose}
       footer={footer}
     >
       {showUniversalTab ? (
@@ -343,8 +374,10 @@ export function AddProviderDialog({
               appId={appId}
               submitLabel={t("common.add")}
               onSubmit={handleSubmit}
-              onCancel={() => onOpenChange(false)}
+              onCancel={closeDialog}
+              onManageAuthAccounts={setAuthSettingsTarget}
               onSubmittingChange={setIsFormSubmitting}
+              onSubmitReadyChange={setIsFormReady}
               showButtons={false}
             />
           </TabsContent>
@@ -354,16 +387,23 @@ export function AddProviderDialog({
           </TabsContent>
         </Tabs>
       ) : (
-        // OpenCode/OpenClaw: directly show form without tabs
+        // OpenCode/OpenClaw/Hermes/Pi: directly show form without tabs
         <ProviderForm
           appId={appId}
           submitLabel={t("common.add")}
           onSubmit={handleSubmit}
-          onCancel={() => onOpenChange(false)}
+          onCancel={closeDialog}
+          onManageAuthAccounts={setAuthSettingsTarget}
           onSubmittingChange={setIsFormSubmitting}
+          onSubmitReadyChange={setIsFormReady}
           showButtons={false}
         />
       )}
+
+      <AuthSettingsPanel
+        target={authSettingsTarget}
+        onClose={() => setAuthSettingsTarget(null)}
+      />
 
       {showUniversalTab && (
         <UniversalProviderFormModal

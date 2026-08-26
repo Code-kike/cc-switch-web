@@ -29,10 +29,16 @@ pub trait UiEventSink: Send + Sync {
 }
 
 /// Drops every event. Used in tests or as a placeholder during migration.
-#[cfg(feature = "desktop")]
+///
+/// The body is empty and pulls in nothing from `tauri`, so the gate also admits
+/// `test`: the provider service's test module is compiled into the **web**
+/// example's test build as well (through the `#[path]` shim in
+/// `examples/web_services.rs`) and needs a sink there. Staying gated in the
+/// non-test web build keeps it from becoming dead code.
+#[cfg(any(feature = "desktop", test))]
 pub struct NoopEventSink;
 
-#[cfg(feature = "desktop")]
+#[cfg(any(feature = "desktop", test))]
 impl UiEventSink for NoopEventSink {
     fn emit_json(&self, _event: &str, _payload: Value) {}
 }

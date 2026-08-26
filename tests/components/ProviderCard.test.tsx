@@ -36,6 +36,10 @@ vi.mock("@/components/CodexOauthQuotaFooter", () => ({
   default: () => <div data-testid="codex-oauth-footer" />,
 }));
 
+vi.mock("@/components/XaiOauthQuotaFooter", () => ({
+  default: () => <div data-testid="xai-oauth-footer" />,
+}));
+
 vi.mock("@/lib/query/failover", () => ({
   useProviderHealth: (...args: unknown[]) => useProviderHealthMock(...args),
 }));
@@ -47,6 +51,14 @@ vi.mock("@/lib/query/queries", () => ({
 vi.mock("@/lib/query/usage", () => ({
   useProviderLimits: (...args: unknown[]) => useProviderLimitsMock(...args),
   useProviderStats: (...args: unknown[]) => useProviderStatsMock(...args),
+}));
+
+vi.mock("@/components/providers/forms/hooks/useManagedAuth", () => ({
+  useManagedAuth: () => ({
+    accounts: [],
+    authStatus: undefined,
+    isLoadingStatus: false,
+  }),
 }));
 
 function createProvider(overrides: Partial<Provider> = {}): Provider {

@@ -22,6 +22,7 @@ const useSortableMock = vi.fn();
 const providerCardRenderSpy = vi.fn();
 const useHermesLiveProviderIdsMock = vi.fn();
 const useHermesModelConfigMock = vi.fn();
+const usePiCurrentStateMock = vi.fn();
 
 vi.mock("@/hooks/useDragSort", () => ({
   useDragSort: (...args: unknown[]) => useDragSortMock(...args),
@@ -123,6 +124,10 @@ vi.mock("@/lib/query/omo", () => ({
   useCurrentOmoSlimProviderId: () => ({ data: null }),
 }));
 
+vi.mock("@/lib/query/pi", () => ({
+  usePiCurrentState: (...args: unknown[]) => usePiCurrentStateMock(...args),
+}));
+
 function createProvider(overrides: Partial<Provider> = {}): Provider {
   return {
     id: overrides.id ?? "provider-1",
@@ -154,6 +159,7 @@ beforeEach(() => {
   toastErrorMock.mockReset();
   useHermesLiveProviderIdsMock.mockReset();
   useHermesModelConfigMock.mockReset();
+  usePiCurrentStateMock.mockReset();
 
   useSortableMock.mockImplementation(({ id }: { id: string }) => ({
     setNodeRef: vi.fn(),
@@ -171,6 +177,12 @@ beforeEach(() => {
   });
   useHermesLiveProviderIdsMock.mockReturnValue({ data: undefined });
   useHermesModelConfigMock.mockReturnValue({ data: null });
+  usePiCurrentStateMock.mockReturnValue({
+    data: undefined,
+    isSuccess: false,
+    isError: false,
+    error: null,
+  });
 });
 
 describe("ProviderList Component", () => {
@@ -542,6 +554,110 @@ describe("ProviderList Component", () => {
     expect(cardBProps.isInConfig).toBe(true);
     expect(cardBProps.isCurrent).toBe(false);
     expect(cardBProps.isDefaultModel).toBe(false);
+  });
+
+  it("derives Pi membership from the native provider state", () => {
+    const providerA = createProvider({ id: "pi-a", name: "Pi A" });
+    const providerB = createProvider({ id: "pi-b", name: "Pi B" });
+    useDragSortMock.mockReturnValue({
+      sortedProviders: [providerA, providerB],
+      sensors: [],
+      handleDragEnd: vi.fn(),
+    });
+    usePiCurrentStateMock.mockReturnValue({
+      data: { enabledProviderIds: ["pi-a"], defaultProviderId: "pi-a" },
+      isSuccess: true,
+      isError: false,
+      error: null,
+    });
+
+    renderWithQueryClient(
+      <ProviderList
+        providers={{ "pi-a": providerA, "pi-b": providerB }}
+        currentProviderId="pi-b"
+        appId="pi"
+        onSwitch={vi.fn()}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onDuplicate={vi.fn()}
+        onOpenWebsite={vi.fn()}
+        isProxyRunning
+        isProxyTakeover
+        activeProviderId="pi-b"
+      />,
+    );
+
+    const cardAProps = providerCardRenderSpy.mock.calls[0][0];
+    const cardBProps = providerCardRenderSpy.mock.calls[1][0];
+    expect(cardAProps.isInConfig).toBe(true);
+    expect(cardBProps.isInConfig).toBe(false);
+    // Pi has no "current provider" concept and never participates in routing.
+    expect(cardAProps.isCurrent).toBe(false);
+    expect(cardBProps.isCurrent).toBe(false);
+    expect(cardAProps.isStateChangeProtected).toBe(false);
+    expect(cardAProps.isProxyRunning).toBe(false);
+    expect(cardAProps.isProxyTakeover).toBe(false);
+    expect(cardAProps.activeProviderId).toBeUndefined();
+  });
+
+  it("freezes Pi state changes and warns when the native state cannot be read", () => {
+    const provider = createProvider({ id: "pi-a", name: "Pi A" });
+    useDragSortMock.mockReturnValue({
+      sortedProviders: [provider],
+      sensors: [],
+      handleDragEnd: vi.fn(),
+    });
+    usePiCurrentStateMock.mockReturnValue({
+      data: undefined,
+      isSuccess: false,
+      isError: true,
+      error: new Error("models.json unreadable"),
+    });
+
+    renderWithQueryClient(
+      <ProviderList
+        providers={{ "pi-a": provider }}
+        currentProviderId=""
+        appId="pi"
+        onSwitch={vi.fn()}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onDuplicate={vi.fn()}
+        onOpenWebsite={vi.fn()}
+      />,
+    );
+
+    const cardProps = providerCardRenderSpy.mock.calls[0][0];
+    expect(cardProps.isInConfig).toBe(false);
+    expect(cardProps.isStateChangeProtected).toBe(true);
+
+    const notice = screen.getByRole("alert");
+    expect(notice).toHaveTextContent("models.json unreadable");
+  });
+
+  it("hides create and import affordances on the Pi empty state", () => {
+    useDragSortMock.mockReturnValue({
+      sortedProviders: [],
+      sensors: [],
+      handleDragEnd: vi.fn(),
+    });
+
+    renderWithQueryClient(
+      <ProviderList
+        providers={{}}
+        currentProviderId=""
+        appId="pi"
+        onSwitch={vi.fn()}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onDuplicate={vi.fn()}
+        onOpenWebsite={vi.fn()}
+        onCreate={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("pi.empty.title")).toBeInTheDocument();
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
   });
 
   it("filters providers with the search input", () => {

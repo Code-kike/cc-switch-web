@@ -85,7 +85,7 @@ async fn add_to_failover_queue(
     state
         .app_state
         .db
-        .add_to_failover_queue(&request.app_type, &request.provider_id)
+        .add_to_failover_queue_checked(&request.app_type, &request.provider_id)
         .map_err(ApiError::from_anyhow)?;
     Ok(json_ok(()))
 }

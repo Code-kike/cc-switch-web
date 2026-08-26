@@ -1072,6 +1072,7 @@ crate::services::s3_auto_sync::notify_db_changed(table);
 - Keep Web adapter imports such as `src/lib/api/model-fetch.ts` using the local Web adapter when they are required for browser/server mode.
 - Bump version metadata only after the relevant upstream behavior for the release has been ported and verified.
 - Desktop-only surfaces, such as Claude Desktop UI parity, may be explicitly deferred if the Web fork does not expose them yet; record the deferral in the task PRD/research instead of deleting Web behavior to match upstream.
+- Additive native-file providers (OpenCode, OpenClaw, Hermes, Pi) are not done when the new module file exists. The dispatcher, bootstrap live-import, and prompt native-file early-return must land in the same batch as the module, or the UI is empty / writes the wrong file.
 
 #### 4. Validation & Error Matrix
 
@@ -1106,6 +1107,25 @@ crate::services::s3_auto_sync::notify_db_changed(table);
   a named intentional upstream/port behavior (e.g. fixture stems must carry a
   trailing 36-char UUID once the importer defers non-UUID rollout names); a fix
   that cannot be traced is a masked product regression.
+- Additive-provider wiring checklist (run before ticking a batch that adds a
+  native-file app such as Pi):
+  - `session_manager/mod.rs` scan / load / delete / roots dispatch the new id
+  - `bootstrap.rs` calls `import_*_from_live` next to OpenCode/OpenClaw/Hermes
+  - prompt service early-returns to the native-file guard instead of projecting
+    DB `enabled` onto the live file
+  - `services/skill.rs` is not "done" when only the skills-dir match arm landed;
+    preserving-uninstall / alias-rejection helpers are a separate safety path
+- Never slice a raw URL string by a length derived from `Url::parse(..).path()`.
+  The parsed path is dot-segment normalized, so the two disagree and the slice
+  either panics on a multi-byte boundary or silently produces a prefix unrelated
+  to the intended suffix. Use `strip_suffix` / `strip_prefix` on the raw string so
+  misaligned shapes fall into the caller's reject branch. This class arrives
+  verbatim from upstream: `rewrite_codex_alpha_search_full_url` shipped it in
+  `bdeaac75` with no test for the misaligned shape.
+- Tests must not set a boundary margin of ~1 ms against `Date.now()` in async
+  paths; the assertion then depends on machine load. Use a margin far larger than
+  any plausible scheduling delay (upstream settled on 60 s for
+  `MODELS_DEV_STARTUP_SYNC_INTERVAL_MS`).
 
 #### 7. Wrong vs Correct
 
@@ -2157,8 +2177,9 @@ await workspaceApi.writeFile(loadedFilename, content);
 
 #### 2. Signatures
 
-- `database::SCHEMA_VERSION: i32 = 15`
+- `database::SCHEMA_VERSION: i32 = 17`
 - `Database::migrate_v14_to_v15(conn) -> Result<(), AppError>`
+- `Database::migrate_v16_to_v17(conn) -> Result<(), AppError>` creates `session_usage_dedup`
 - `import_sql_string_inner(&self, sql_raw: &str, preserve_tables: &[&str]) -> Result<String, AppError>`
 - Restore helpers:
   - `install_sql_restore_authorizer`
@@ -2187,6 +2208,13 @@ await workspaceApi.writeFile(loadedFilename, content);
 - The v14 -> v15 rebuild adds the `grokbuild` proxy row plus Grok MCP/Skills
   flags while preserving existing values including `failover_strategy`,
   `live_takeover_active`, retry/circuit settings, pricing fields, and timeouts.
+- The v16 -> v17 migration creates `session_usage_dedup` (data_source,
+  request_id, semantic_id, has_entry_id) plus `idx_session_usage_dedup_semantic`.
+  Continuity is 16 then 17; do not skip. The table belongs on `SQL_RESTORE_TABLES`,
+  `SYNC_SKIP_TABLES`, and `SYNC_PRESERVE_TABLES`. This fork's authorizer is
+  stricter than Product upstream: also register `idx_session_usage_dedup_semantic`
+  on `SQL_RESTORE_INDEXES`, or SQL import/WebDAV restore is denied even when the
+  table name is allowed.
 - SQLite may emit `CREATE TABLE "proxy_config"` after a rename/rebuild. Current
   exports from upgraded databases must accept this quoted canonical form.
 - Sync restore may reapply only `SYNC_PRESERVE_TABLES` from the local snapshot.
@@ -2235,6 +2263,7 @@ await workspaceApi.writeFile(loadedFilename, content);
   - `sql_import_accepts_schema_v2_legacy_objects_and_normalizes_them`
 - Migration regression:
   - `migrate_v14_to_v15_adds_grokbuild_proxy_row_and_enablement_flags`
+  - `migrate_v16_to_v17_creates_session_usage_dedup_ledger`
   - assert preservation of random failover, live takeover, retry count, MCP
     enablement, and Skills enablement, not only the new Grok defaults.
 - Atomicity and sync tests:
@@ -2999,6 +3028,450 @@ log::debug!("upstream response: {}", body_text); // full body into the log
 
 ```rust
 log::debug!("upstream response: {}", summarize_upstream_body(&body_text)); // metadata only
+```
+
+---
+
+### Scenario: Skill Source Resolution and Documentation URLs
+
+#### 1. Scope / Trigger
+
+- Trigger: installing or updating a repository-backed Skill when discovery
+  metadata may contain only a terminal skill ID instead of the repository's
+  full nested directory.
+- Applies when changing `src-tauri/src/services/skill.rs` source discovery,
+  repository extraction, SSOT copying, or `InstalledSkill.readme_url`
+  generation.
+
+#### 2. Signatures
+
+- `SkillService::resolve_skill_source_dir(root: &Path, raw_directory: &str)
+  -> Option<PathBuf>`
+- `SkillService::doc_path_for_source(repo_root: &Path, source: &Path)
+  -> Option<String>`
+- `SkillService::choose_doc_path(resolved_source_doc_path: Option<String>,
+  readme_url: Option<&str>, directory: &str) -> String`
+- `SkillService::build_skill_doc_url(owner, repo, branch, doc_path)
+  -> Option<String>`
+
+#### 3. Contracts
+
+- A resolved source directory is anchored by `SKILL.md`; a same-name wrapper
+  directory without the manifest is not a Skill source.
+- Resolution order is deterministic: an explicit sanitized relative path with
+  `SKILL.md`, then a bounded recursive name match with `SKILL.md`, then the
+  repository root when it contains `SKILL.md`.
+- The canonical resolved source must remain inside the canonical extracted
+  repository root before any files are copied into the SSOT directory.
+- For a freshly downloaded repository, documentation path priority is:
+  canonical resolved source path, existing `readme_url` path, then
+  `directory/SKILL.md`. The resolved source must win because skills.sh may
+  return only the last path segment.
+- `doc_path_for_source` emits a repository-relative, forward-slash path ending
+  in `SKILL.md`. `build_skill_doc_url` uses the branch that actually downloaded
+  successfully, including branch fallback.
+- When an existing SSOT directory skips download and no fresh resolved path is
+  available, retain the prior `readme_url` path before falling back to
+  `directory`.
+
+#### 4. Validation & Error Matrix
+
+- Direct same-name directory exists but has no `SKILL.md` -> skip it and search
+  for a real nested Skill; do not copy the wrapper.
+- No candidate containing `SKILL.md` exists -> return `SKILL_DIR_NOT_FOUND` and
+  leave the destination untouched.
+- Canonical source escapes the extracted repository root -> reject with
+  `INVALID_SKILL_DIRECTORY`.
+- skills.sh returns `foo`, while the manifest is at
+  `skills/category/foo/SKILL.md` -> resolve the nested directory and persist
+  that full document path.
+- A stale root-level `readme_url` conflicts with a freshly resolved nested
+  source -> the resolved nested path wins.
+- Repository owner/name/branch is invalid -> omit the external documentation
+  URL rather than storing an unsafe URL.
+
+#### 5. Good/Base/Bad Cases
+
+- Good: `directory = "ast-grep"` skips a wrapper at `ast-grep/` and resolves
+  `ast-grep/skills/ast-grep/SKILL.md`.
+- Base: a repository whose root contains `SKILL.md` resolves to the root and
+  produces the document path `SKILL.md`.
+- Base: an already-installed Skill reuses a valid prior `blob` or `tree`
+  `readme_url` path when no repository is downloaded.
+- Bad: accepting the first directory whose basename matches the skill ID, even
+  though it has no `SKILL.md`.
+- Bad: always generating `readme_url` as `{directory}/SKILL.md`; nested catalog
+  Skills then open a 404 page.
+
+#### 6. Tests Required
+
+- Direct nested path and repository-root resolution tests.
+- Regression for a same-name wrapper without `SKILL.md` plus a real nested
+  Skill.
+- Negative tests for a wrapper with no inner Skill and a repository with no
+  `SKILL.md` anywhere.
+- Nested catalog regression proving the resolved directory is found within the
+  bounded search.
+- `choose_doc_path` tests proving resolved source > prior `readme_url` >
+  directory fallback.
+- `doc_path_for_source` tests for nested and repository-root Skills using
+  forward slashes.
+- Installation/update coverage must assert the stored branch and
+  `readme_url` match the repository content that was actually downloaded.
+
+#### 7. Wrong vs Correct
+
+##### Wrong
+
+```rust
+let source = root.join(&skill.directory);
+if source.is_dir() {
+    copy_dir_recursive(&source, &dest)?;
+}
+let doc_path = format!("{}/SKILL.md", skill.directory);
+```
+
+##### Correct
+
+```rust
+let source = SkillService::resolve_skill_source_dir(root, &skill.directory)
+    .ok_or_else(|| anyhow!("Skill directory not found: {}", skill.directory))?;
+let resolved_doc_path = SkillService::doc_path_for_source(root, &source);
+let doc_path = SkillService::choose_doc_path(
+    resolved_doc_path,
+    skill.readme_url.as_deref(),
+    &skill.directory,
+);
+```
+
+---
+
+### Scenario: Pi Native AGENTS.md Prompt Activation
+
+#### 1. Scope / Trigger
+
+- Trigger: Pi prompt list/enable/disable/import/restore, or any path that would
+  write `~/.pi/agent/AGENTS.md` from the prompts table.
+- Applies to `PromptService` Pi early-returns, `PiAgentsFileGuard`, and the
+  six `*_pi_prompt_*` commands.
+
+#### 2. Signatures
+
+- `PiAgentsFileGuard::acquire() -> Result<PiAgentsFileGuard, AppError>`
+- `PiAgentsFileGuard::read() -> Result<PiPromptFileSnapshot, AppError>`
+- `get_pi_prompt_file` / `replace_pi_prompt_file` / `delete_pi_prompt_file`
+- `list_pi_prompt_templates` / `upsert_pi_prompt_template` / `delete_pi_prompt_template`
+- `pi_config::MAX_PI_FILE_BYTES = 1 MiB`
+
+#### 3. Contracts
+
+- Pi prompt activation is derived from native `AGENTS.md` content, not from the
+  prompts-table `enabled` column. Persisted Pi rows stay `enabled=false`.
+- Restore / enable / disable / import must not project DB flags onto the native
+  file. `sync_to_live` for Pi is a no-op.
+- All read-modify-write of `AGENTS.md` goes through `PiAgentsFileGuard`
+  (revision compare + 1 MiB cap + atomic write).
+- SYSTEM.md / APPEND_SYSTEM.md / `prompts/*.md` templates use
+  `PiPromptFileService` / `PiPromptTemplateService`, not the generic prompt file.
+- Frontend `PromptPanel` dispatches `appId === "pi"` to `PiPromptPanel`.
+  Non-pi apps keep `ManagementListSearch` + `filteredPromptEntries`; `PromptLibrary`
+  is only consumed by `PiPromptPanel`.
+
+#### 4. Validation & Error Matrix
+
+- Generic `PromptService::enable` on Pi without the native-file guard -> reject;
+  it would rewrite AGENTS.md from DB `enabled` flags.
+- File larger than 1 MiB -> reject.
+- Revision mismatch (external writer) -> `AppError::Conflict`.
+- Restore that copies DB content onto AGENTS.md -> reject; restore must leave
+  the native file as the source of truth.
+
+#### 5. Good/Base/Bad Cases
+
+- Good: enable/disable Pi prompt updates membership via `PiAgentsFileGuard` and
+  leaves other providers' prompt files untouched.
+- Base: empty AGENTS.md is a valid native file; list still returns templates.
+- Bad: `PromptService` falls through to the Claude/Codex projection path for Pi.
+
+#### 6. Tests Required
+
+- PromptService Pi early-return tests (get/upsert/enable/delete/import/current-file).
+- `PiAgentsFileGuard` revision-conflict and 1 MiB cap tests in `pi_prompt_files`.
+- Frontend: PromptPanel Q3 test that `PromptLibrary` never renders for
+  claude/codex/gemini/opencode and that `role="search"` stays outside the scroll viewport.
+
+#### 7. Wrong vs Correct
+
+##### Wrong
+
+```rust
+let content = state.db.get_prompts("pi")?
+    .into_iter()
+    .filter(|p| p.enabled)
+    .map(|p| p.content)
+    .collect::<Vec<_>>()
+    .join("\n");
+atomic_write(&agents_md, content.as_bytes())?;
+```
+
+##### Correct
+
+```rust
+if matches!(app, AppType::Pi) {
+    return Ok(PiAgentsFileGuard::acquire()?.read()?.content);
+}
+```
+
+---
+
+### Scenario: Degradation Direction — Fail-Closed vs Fail-Open Guards
+
+#### 1. Scope / Trigger
+
+- Trigger: adding a guard, cap, preflight, or validation that can *decline* to do
+  its normal work (size cap, candidate cap, derivation that may be ambiguous,
+  unrepresentable upstream constraint).
+- Applies whenever you must choose what happens when the guard trips.
+
+#### 2. Signatures
+
+- Fail-closed example: `rewrite_codex_alpha_search_full_url(base_url, query) -> Result<String, ProxyError>`
+- Fail-open example: `citation_dedup_analysis_is_affordable(text, citations) -> bool`
+  gating `markdown_citation_dedup_analysis` inside `text_with_url_citations`
+
+#### 3. Contracts
+
+- Classify the guard by **what degradation costs**, not by "safety" as a slogan:
+  - The guard protects a **routing / delivery / authorization decision** →
+    **fail closed**. Degrading would send data somewhere it was not meant to go,
+    or grant access that was not proven. Reject and send nothing.
+  - The guard protects a **presentation / optimization** step →
+    **fail open**. Degrading only worsens output cosmetics, while failing closed
+    would drop user-visible data or error an otherwise valid response.
+- Both directions may coexist in one change set. Do not "unify" them.
+- The chosen direction must carry an in-code comment stating the classification
+  and explicitly warning against inverting it, because the opposite choice looks
+  locally reasonable to a future reader.
+- A fail-open guard must still preserve every piece of user-visible payload; it may
+  only lose the refinement it was gating.
+
+#### 4. Validation & Error Matrix
+
+- Ambiguous full URL for endpoint derivation -> reject with a message naming the
+  accepted shape; no request issued.
+- Over-cap untrusted text in citation dedup -> skip analysis, emit **all**
+  citations, leave the body byte-for-byte unchanged.
+- A fail-open guard that drops payload -> reject the design; that is fail-closed
+  wearing the wrong label.
+- A fail-closed guard that "best-effort guesses" instead of erroring -> reject.
+
+#### 5. Good/Base/Bad Cases
+
+- Good: opaque `/responses`-less full URL returns `ConfigError` and nothing is sent.
+- Good: 32 KiB+ hostile markdown skips dedup, all citations still appear under
+  `Sources:`.
+- Base: below every cap, the refinement runs normally.
+- Bad: deriving `/alpha/search` from a guessed prefix (misdelivers the payload).
+- Bad: erroring the whole response because citation dedup was too expensive.
+
+#### 6. Tests Required
+
+- Both directions need tests, and the fail-closed one must assert **no request was
+  issued** (mock upstream that would 404 the wrong path is a good detector).
+- Mutation-check the guard rather than trusting the assertion: negating the
+  condition must fail tests. For fail-closed, negation produced `404 vs 202`; for
+  fail-open, forcing the preflight `false` failed 10 streaming tests and forcing it
+  `true` failed all 5 skip tests.
+- Fail-open needs a reverse anchor: a realistic input comfortably below the caps
+  must still be analyzed, so the caps cannot later be tightened silently.
+
+#### 7. Wrong vs Correct
+
+##### Wrong
+
+```rust
+// "be lenient" on an ambiguous routing input
+let prefix = url.find("/responses").map(|i| &url[..i]).unwrap_or(url);
+let target = format!("{prefix}/alpha/search");
+```
+
+##### Correct
+
+```rust
+let prefix = url_without_query.strip_suffix(suffix).ok_or_else(|| {
+    ProxyError::ConfigError("… use a base URL or a full URL ending in /responses".into())
+})?;
+```
+
+---
+
+### Scenario: Deferred Upstream Stack — Private-Helper Exception
+
+#### 1. Scope / Trigger
+
+- Trigger: a batch needs one function from an upstream module this fork has
+  deliberately deferred (currently the Codex Chat routing stack:
+  `transform_codex_anthropic.rs`, `transform_codex_chat.rs`,
+  `streaming_codex_chat.rs`, `codex_chat_common.rs`).
+
+#### 2. Signatures
+
+- Boundary probe: `ls src-tauri/src/proxy/providers/` and a `mod` grep on
+  `providers/mod.rs`
+- Example exception: `fn anthropic_sse_to_message_value(body: &str) -> Result<Value, ProxyError>`
+  as a private fn inside `proxy/handlers.rs`
+
+#### 3. Contracts
+
+- The deferral boundary is mechanical: **no new file in the deferred directory and
+  no new `mod` declaration**. It is not "we do not call that stack" — that phrasing
+  expires the moment a batch introduces the missing consumer.
+- A single needed function may be ported as a **private** fn inside its only
+  consumer. It must not be `pub`/`pub(crate)`, and must not resurrect the module.
+- Port it at upstream's post-commit state, including sub-hunks the original
+  deferral ruling had waived, if those sub-hunks are load-bearing for the consumer.
+- Necessity must be **mutation-proven**, not asserted: revert the sub-hunk and show
+  a named test fails.
+- When a deferral rationale's premise expires, **amend the ruling in place with the
+  new evidence**; do not silently rewrite the original text. The invalidated premise
+  must stay auditable.
+
+#### 4. Validation & Error Matrix
+
+- New file appears in the deferred directory -> reject, boundary broken.
+- Helper exported beyond its consumer -> reject; it becomes a de-facto module API.
+- "We need it because upstream calls it" with no mutation evidence -> reject.
+- Original deferral text edited to look correct in hindsight -> reject; amend instead.
+
+#### 5. Good/Base/Bad Cases
+
+- Good: one private fn in `handlers.rs`; all four deferred files still absent;
+  necessity shown by a test that reports `usage.server_tool_use.web_search_requests`
+  as `Null` instead of `1` when the sub-hunk is reverted.
+- Base: the batch needs nothing from the deferred stack; boundary untouched.
+- Bad: adding `providers/transform_codex_anthropic.rs` "just for one function",
+  which drags in the ~5.7k LOC base and reopens rulings that skipped its
+  transform layer.
+
+#### 6. Tests Required
+
+- A test that exercises the consumer path through the ported helper.
+- Mutation evidence recorded in the batch report / commit message.
+- Boundary re-verified after the batch: directory listing plus `mod` grep.
+
+#### 7. Wrong vs Correct
+
+##### Wrong
+
+```rust
+// providers/mod.rs
+pub mod transform_codex_anthropic; // "only need one fn from it"
+```
+
+##### Correct
+
+```rust
+// proxy/handlers.rs — private, single consumer, no module resurrection
+fn anthropic_sse_to_message_value(body: &str) -> Result<Value, ProxyError> { /* … */ }
+```
+
+---
+
+### Scenario: Commit-Range Porting — Target-Tag Existence & Cross-Layer Predicate Mirrors
+
+> Source: `feat-managed-oauth-accounts` (v3.20.0 sync, child 3). Two independent
+> planning defects cost a mid-batch scope rewrite and a reviewer escalation;
+> both are mechanical to prevent.
+
+#### 1. Scope / Trigger
+
+- Trigger: porting a **commit range** (`base..target`) rather than a single
+  commit, and/or porting a Rust policy that also has a frontend mirror.
+
+#### 2. Signatures (the two checks)
+
+```bash
+# (a) deliverable existence — against the TARGET TAG, not the source commit:
+git grep -n <symbol> v3.20.0        # empty ⇒ superseded downstream, do not port
+
+# (b) file existence — extension-wildcarded, never single-extension:
+find tests -name '*.test.ts*'      # or: git ls-tree -r --name-only <ref> -- tests/
+```
+
+#### 3. Contracts
+
+- A symbol introduced by an intermediate commit may be **deleted by a later
+  commit in the same range** (`migrate_legacy_codex_official_managed_binding`
+  was added by `a2e22f33` and deleted by `0455a92c`; zero hits at `v3.20.0`).
+  Porting it anyway is worse than dead code: it ran destructive data migration
+  the upstream deliberately abandoned. Every acceptance-criteria item must pass
+  check (a) **at planning time**, before it enters prd/implement.
+- A wrong-extension existence probe reports MISSING for an existing file and
+  can trigger an overwrite-style dispatch. Use wildcards; when a dispatch brief
+  says "create X", the implementer must still re-check with (b) and merge if it
+  exists (append-only), never overwrite.
+- When a Rust guard has a frontend capability mirror (e.g. Rust
+  `Provider::blocked_by_proxy_takeover` vs TS `supportsOfficialProxyTakeover`),
+  the mirror must be (1) a **single derivation** consumed by every UI surface
+  (card button, action hook, badge), and (2) pinned by tests on BOTH sides of
+  the boundary. The fork's first frontend copy returned `true` for unbound
+  native-login Official cards while Rust fail-closed them — doc claimed
+  alignment, behavior diverged, found only at W5 review. A mirror that drifts
+  turns a clear switch-time refusal into a runtime failure toast.
+- Deliberate upstream divergences in such mirrors must be recorded where the
+  next sync will collide: in-code comment + task doc + test name that states
+  the fork semantics ("blocks the unbound … during takeover" vs upstream's
+  "allows the native …").
+
+#### 4. Validation & Error Matrix
+
+- Deliverable absent at target tag -> remove from acceptance criteria & batch
+  plan; record the superseding implementation instead.
+- Existence probe with a single hard-coded extension -> reject the probe result;
+  re-run wildcarded before writing any plan line or dispatch brief.
+- Frontend mirror returning a looser answer than its Rust policy -> fix the
+  mirror, add a failing-test pin on the loose case, and annotate with the
+  Degradation Direction classification (authorization → fail-closed).
+
+#### 5. Good/Base/Bad Cases
+
+- Good: `git grep migrate_legacy… v3.20.0` empty ⇒ ruling recorded in PRD Q3,
+  replaced-acceptance written (`update_keeps_official_provider_id_…`).
+- Base: symbol exists at target but fork lacks prerequisites ⇒ classify per
+  hunk (port / prerequisite-first / drop) as usual.
+- Bad: planning from the single-commit diff only ⇒ mid-batch discovery, batch
+  re-plan, and a startup hook nearly shipped that would have moved the user's
+  current provider off the fixed id.
+
+#### 6. Tests Required
+
+- Both sides of any cross-layer predicate mirror: Rust test pinning the guard
+  matrix + frontend unit test asserting each identity class
+  (`managed_account` / `native_login` / api-key) under the mirror.
+- Mutation evidence for load-bearing mirrors: widen the predicate ⇒ named test
+  fails.
+
+#### 7. Wrong vs Correct
+
+##### Wrong
+
+```ts
+// doc says "aligned with the Rust takeover policy", but returns true for
+// native_login too — upstream's unreachable-true shape
+export function supportsOfficialProxyTakeover(appId, provider) {
+  return resolveCodexOfficialIdentity(appId, provider) !== null;
+}
+```
+
+##### Correct
+
+```ts
+// managed carve-out ONLY; unbound native-login stays blocked (fail-closed).
+// Do NOT widen: widening converts the explicit switch-time refusal into a
+// failing Codex session (see Provider::blocked_by_proxy_takeover in provider.rs).
+export function supportsOfficialProxyTakeover(appId, provider) {
+  return resolveCodexOfficialIdentity(appId, provider) === "managed_account";
+}
 ```
 
 ---

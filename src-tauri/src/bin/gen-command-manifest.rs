@@ -372,12 +372,12 @@ fn build_owner_map() -> OwnerMap {
 }
 
 fn classify_handler(fn_name: &str, owner_map: &OwnerMap) -> (String, String, String) {
-    if fn_name == "get_codex_oauth_models" {
-        return (
-            "auth".to_string(),
-            "GET".to_string(),
-            "/api/auth/get-codex-oauth-models".to_string(),
-        );
+    // The manifest is advisory, but explicit exceptions must mirror the Web
+    // command registry/Axum routes exactly. Name-based inference would classify
+    // models.dev config commands under /api/config and infer GET/PUT, while the
+    // established dual-runtime API intentionally exposes POST system routes.
+    if let Some((handler, method, path)) = command_route_override(fn_name) {
+        return (handler.to_string(), method.to_string(), path.to_string());
     }
 
     let lower = fn_name.to_lowercase();
@@ -393,6 +393,20 @@ fn classify_handler(fn_name: &str, owner_map: &OwnerMap) -> (String, String, Str
         "POST".to_string(),
         format!("/api/system/{}", fn_name),
     )
+}
+
+fn command_route_override(fn_name: &str) -> Option<(&'static str, &'static str, &'static str)> {
+    match fn_name {
+        "get_codex_oauth_models" => Some(("auth", "GET", "/api/auth/get-codex-oauth-models")),
+        "get_opencode_models" => Some(("config", "GET", "/api/config/get-opencode-models")),
+        "get_models_dev_sync_config" => {
+            Some(("system", "POST", "/api/system/get_models_dev_sync_config"))
+        }
+        "save_models_dev_sync_config" => {
+            Some(("system", "POST", "/api/system/save_models_dev_sync_config"))
+        }
+        _ => None,
+    }
 }
 
 fn owner_for_handler(handler: &str) -> String {
@@ -495,4 +509,45 @@ fn status_for(fn_name: &str, handler: &str) -> String {
         return "not_supported_in_web".into();
     }
     "pending".into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_owner_map, classify_handler};
+
+    #[test]
+    fn models_dev_config_commands_use_explicit_web_route_overrides() {
+        let owner_map = build_owner_map();
+
+        assert_eq!(
+            classify_handler("get_models_dev_sync_config", &owner_map),
+            (
+                "system".to_string(),
+                "POST".to_string(),
+                "/api/system/get_models_dev_sync_config".to_string(),
+            )
+        );
+        assert_eq!(
+            classify_handler("save_models_dev_sync_config", &owner_map),
+            (
+                "system".to_string(),
+                "POST".to_string(),
+                "/api/system/save_models_dev_sync_config".to_string(),
+            )
+        );
+    }
+
+    #[test]
+    fn opencode_runtime_models_use_config_route_override() {
+        let owner_map = build_owner_map();
+
+        assert_eq!(
+            classify_handler("get_opencode_models", &owner_map),
+            (
+                "config".to_string(),
+                "GET".to_string(),
+                "/api/config/get-opencode-models".to_string(),
+            )
+        );
+    }
 }

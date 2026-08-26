@@ -6,6 +6,7 @@ use crate::app_config::AppType;
 use crate::error::AppError;
 use crate::provider::{Provider, UsageData, UsageResult, UsageScript};
 use crate::proxy::providers::copilot_auth::CopilotAuthManager;
+use crate::proxy::providers::xai_oauth_auth::XaiOAuthManager;
 use crate::settings;
 use crate::store::AppState;
 use crate::usage_script;
@@ -19,9 +20,9 @@ pub(crate) const TEMPLATE_TYPE_OFFICIAL_SUBSCRIPTION: &str = "official_subscript
 const COPILOT_UNIT_PREMIUM: &str = "requests";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct UsageCredentials {
-    api_key: String,
-    base_url: String,
+pub(super) struct UsageCredentials {
+    pub(super) api_key: String,
+    pub(super) base_url: String,
     access_token: Option<String>,
     user_id: Option<String>,
 }
@@ -189,7 +190,10 @@ fn setting_base_url(settings: &Value, path: &[&str]) -> Option<String> {
     non_empty_base_url(Some(current))
 }
 
-fn extract_provider_usage_credentials(provider: &Provider, app_type: &AppType) -> UsageCredentials {
+pub(super) fn extract_provider_usage_credentials(
+    provider: &Provider,
+    app_type: &AppType,
+) -> UsageCredentials {
     let settings = &provider.settings_config;
 
     let (api_key, base_url) = match app_type {
@@ -244,15 +248,19 @@ fn extract_provider_usage_credentials(provider: &Provider, app_type: &AppType) -
                 .or_else(|| setting_base_url(settings, &["baseURL"])),
         ),
         AppType::GrokBuild => {
-            let (base_url, api_key) = settings
-                .get("config")
-                .and_then(Value::as_str)
+            // Resolve the endpoint independently from credentials. A declared
+            // `env_key` may be unavailable to the GUI/Web process; dropping the
+            // valid base URL with the missing key makes `{{baseUrl}}` relative
+            // and hides the actionable "missing credential" error.
+            let config_text = settings.get("config").and_then(Value::as_str);
+            let base_url = config_text
+                .and_then(crate::grok_config::extract_base_url)
+                .and_then(|url| non_empty_opt_base_url(Some(&url)));
+            let api_key = config_text
                 .and_then(crate::grok_config::extract_credentials)
-                .unwrap_or_default();
-            (
-                non_empty_opt_string(Some(&api_key)),
-                non_empty_opt_base_url(Some(&base_url)),
-            )
+                .map(|(_, key)| key)
+                .and_then(|key| non_empty_opt_string(Some(&key)));
+            (api_key, base_url)
         }
         AppType::OpenCode => (
             setting_string(settings, &["options", "apiKey"]),
@@ -301,6 +309,16 @@ fn extract_provider_usage_credentials(provider: &Provider, app_type: &AppType) -
 
             (api_key, base_url)
         }
+        AppType::Pi => (
+            // Pi custom providers use the native models.json field names:
+            // `apiKey` for credentials and `baseUrl` (or a model-level
+            // `baseUrl` fallback) for the endpoint, resolved via the
+            // shared `pi_config::provider_base_url` helper.
+            setting_string(settings, &["apiKey"]),
+            crate::pi_config::provider_base_url(settings)
+                .ok()
+                .and_then(|url| normalize_base_url(&url)),
+        ),
     };
 
     UsageCredentials {
@@ -634,9 +652,17 @@ pub async fn query_usage_with_templates(
     app_type: AppType,
     provider_id: &str,
     copilot_auth: Option<&RwLock<CopilotAuthManager>>,
+    xai_auth: Option<&RwLock<XaiOAuthManager>>,
     enforce_outbound_guard: bool,
 ) -> Result<UsageResult, AppError> {
-    let (template_type, credentials, coding_plan_routing, copilot_account_id) = {
+    let (
+        template_type,
+        credentials,
+        coding_plan_routing,
+        copilot_account_id,
+        xai_account_id,
+        is_xai_oauth,
+    ) = {
         let providers = state.db.get_all_providers(app_type.as_str())?;
         let provider = providers.get(provider_id).ok_or_else(|| {
             AppError::localized(
@@ -681,6 +707,11 @@ pub async fn query_usage_with_templates(
                 .meta
                 .as_ref()
                 .and_then(|m| m.managed_account_id_for(TEMPLATE_TYPE_GITHUB_COPILOT)),
+            provider
+                .meta
+                .as_ref()
+                .and_then(|m| m.managed_account_id_for("xai_oauth")),
+            provider.is_xai_oauth(),
         )
     };
 
@@ -712,11 +743,21 @@ pub async fn query_usage_with_templates(
         // enabled 已在上方统一校验（禁用脚本直接返回 usage disabled），
         // 与上游 query_provider_usage_inner 的深度防护等效。
         TEMPLATE_TYPE_OFFICIAL_SUBSCRIPTION => {
-            let quota = crate::services::subscription::get_subscription_quota(app_type.as_str())
-                .await
-                .map_err(|e| {
-                    AppError::Message(format!("Failed to query subscription quota: {e}"))
+            let quota = if is_xai_oauth {
+                let auth = xai_auth.ok_or_else(|| {
+                    AppError::Message("xAI OAuth auth manager is unavailable".to_string())
                 })?;
+                let manager = auth.read().await;
+                crate::services::xai_oauth::query_quota(&manager, xai_account_id.as_deref())
+                    .await
+                    .map_err(AppError::Message)?
+            } else {
+                crate::services::subscription::get_subscription_quota(app_type.as_str())
+                    .await
+                    .map_err(|e| {
+                        AppError::Message(format!("Failed to query subscription quota: {e}"))
+                    })?
+            };
 
             if !quota.success {
                 return Ok(UsageResult {
@@ -1170,6 +1211,32 @@ base_url = "https://azure.example/openai/"
 
         assert_eq!(credentials.api_key, "codex-key");
         assert_eq!(credentials.base_url, "https://azure.example/openai");
+    }
+
+    #[test]
+    fn extracts_grok_base_url_when_declared_env_key_is_unset() {
+        // The S2 credential hardening must not erase a valid endpoint merely
+        // because the GUI/Web process cannot resolve the declared env_key.
+        let provider = provider_with_config(json!({
+            "config": r#"
+[models]
+default = "grok-3"
+
+[model."grok-3"]
+model = "grok-3"
+base_url = "https://grok.example/v1"
+name = "Grok"
+env_key = "CC_SWITCH_TEST_GROK_KEY_THAT_IS_UNSET"
+api_backend = "openai"
+context_window = 131072
+"#
+        }));
+
+        let credentials =
+            resolve_usage_credentials(&provider, &AppType::GrokBuild, &usage_script());
+
+        assert!(credentials.api_key.is_empty());
+        assert_eq!(credentials.base_url, "https://grok.example/v1");
     }
 
     #[test]

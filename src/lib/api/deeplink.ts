@@ -28,7 +28,7 @@ export interface DeepLinkImportRequest {
   description?: string;
 
   // MCP fields
-  apps?: string; // "claude,codex,gemini,opencode,openclaw,hermes"
+  apps?: string; // Comma-separated application IDs
 
   // Skill fields
   repo?: string;

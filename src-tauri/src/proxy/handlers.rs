@@ -16,10 +16,14 @@ use super::{
     },
     handler_context::RequestContext,
     providers::{
-        get_adapter, get_claude_api_format, streaming::create_anthropic_sse_stream,
+        get_adapter, get_claude_api_format,
+        streaming::create_anthropic_sse_stream,
         streaming_gemini::create_anthropic_sse_stream_from_gemini,
-        streaming_responses::create_anthropic_sse_stream_from_responses, transform,
-        transform_gemini, transform_responses,
+        streaming_responses::{
+            create_anthropic_sse_stream_from_responses,
+            create_anthropic_sse_stream_from_responses_with_web_search_options,
+        },
+        transform, transform_gemini, transform_responses,
     },
     response_processor::{
         create_logged_passthrough_stream, create_usage_collector, process_response,
@@ -36,8 +40,10 @@ use super::{
 use crate::app_config::AppType;
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use bytes::Bytes;
+use futures::StreamExt;
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
 
 // ============================================================================
 // 健康检查和状态查询（简单端点）
@@ -294,6 +300,10 @@ async fn handle_claude_transform(
     };
     let tool_schema_hints = transform_gemini::extract_anthropic_tool_schema_hints(original_body);
     let tool_schema_hints = (!tool_schema_hints.is_empty()).then_some(tool_schema_hints);
+    let hosted_web_search_name =
+        transform_responses::anthropic_web_search_tool_name(original_body).map(ToString::to_string);
+    let hosted_web_search_max_uses =
+        transform_responses::anthropic_web_search_max_uses(original_body);
 
     if use_streaming {
         // 根据 api_format 选择流式转换器
@@ -301,7 +311,17 @@ async fn handle_claude_transform(
         let sse_stream: Box<
             dyn futures::Stream<Item = Result<Bytes, std::io::Error>> + Send + Unpin,
         > = if api_format == "openai_responses" {
-            Box::new(Box::pin(create_anthropic_sse_stream_from_responses(stream)))
+            if hosted_web_search_name.is_none() && hosted_web_search_max_uses.is_none() {
+                Box::new(Box::pin(create_anthropic_sse_stream_from_responses(stream)))
+            } else {
+                Box::new(Box::pin(
+                    create_anthropic_sse_stream_from_responses_with_web_search_options(
+                        stream,
+                        hosted_web_search_name.clone(),
+                        hosted_web_search_max_uses,
+                    ),
+                ))
+            }
         } else if api_format == "gemini_native" {
             Box::new(Box::pin(create_anthropic_sse_stream_from_gemini(
                 stream,
@@ -388,52 +408,87 @@ async fn handle_claude_transform(
         } else {
             std::time::Duration::ZERO
         };
-    let (mut response_headers, _status, body_bytes) =
-        read_decoded_body(response, ctx.tag, body_timeout).await?;
+    let enforce_codex_web_search_limit_while_aggregating =
+        aggregate_codex_oauth_responses_sse && hosted_web_search_max_uses.is_some();
+    let (mut response_headers, direct_anthropic_response, upstream_response) =
+        if enforce_codex_web_search_limit_while_aggregating {
+            if let Some(encoding) = get_content_encoding(response.headers()) {
+                // Transformed requests advertise `accept-encoding: identity`.
+                // If an upstream ignores that contract, fail closed rather than
+                // buffering a compressed stream and losing early cancellation.
+                return Err(ProxyError::TransformError(format!(
+                    "Cannot enforce Anthropic WebSearch max_uses on a compressed Codex SSE response ({encoding})"
+                )));
+            }
+            let response_headers = response.headers().clone();
+            let message = responses_sse_stream_to_anthropic_message(
+                response.bytes_stream(),
+                hosted_web_search_name.clone(),
+                hosted_web_search_max_uses,
+                body_timeout,
+            )
+            .await?;
+            (response_headers, Some(message), None)
+        } else {
+            let (response_headers, _status, body_bytes) =
+                read_decoded_body(response, ctx.tag, body_timeout).await?;
+            let body_str = String::from_utf8_lossy(&body_bytes);
+            let upstream_response: Value = if aggregate_codex_oauth_responses_sse {
+                responses_sse_to_response_value(&body_str)?
+            } else {
+                serde_json::from_slice(&body_bytes).map_err(|e| {
+                    // Privacy: log only body length and parse error — a malformed 2xx body
+                    // can be a full prompt/model response, so no content (not even a
+                    // truncated prefix) may reach the journal at `error!` level (visible
+                    // under the shipped `RUST_LOG=info` default).
+                    log::error!(
+                        "[Claude] 解析上游响应失败: {e}, body_bytes={}",
+                        body_bytes.len()
+                    );
+                    ProxyError::TransformError(format!("Failed to parse upstream response: {e}"))
+                })?
+            };
+            (response_headers, None, Some(upstream_response))
+        };
 
-    let body_str = String::from_utf8_lossy(&body_bytes);
-
-    let upstream_response: Value = if aggregate_codex_oauth_responses_sse {
-        responses_sse_to_response_value(&body_str)?
-    } else {
-        serde_json::from_slice(&body_bytes).map_err(|e| {
-            // Privacy: log only body length and parse error — a malformed 2xx body
-            // can be a full prompt/model response, so no content (not even a
-            // truncated prefix) may reach the journal at `error!` level (visible
-            // under the shipped `RUST_LOG=info` default).
-            log::error!(
-                "[Claude] 解析上游响应失败: {e}, body_bytes={}",
-                body_bytes.len()
-            );
-            ProxyError::TransformError(format!("Failed to parse upstream response: {e}"))
-        })?
-    };
-
-    // Preserve raw Responses usage so a post-upstream conversion failure still
-    // records the tokens already consumed by the successful upstream request.
-    let raw_usage_response = (api_format == "openai_responses").then(|| {
+    // Preserve usage so a post-upstream conversion failure still records tokens.
+    // The direct Anthropic branch below is already fully transformed and cannot
+    // enter the conversion-error path. Snapshot usage only for raw upstream
+    // responses that still need conversion; cloning the direct message would
+    // duplicate potentially large text and search-result content.
+    let raw_usage_response = upstream_response.as_ref().map(|response| {
         json!({
-            "id": upstream_response.get("id").cloned().unwrap_or(Value::Null),
-            "model": upstream_response.get("model").cloned().unwrap_or(Value::Null),
+            "id": response.get("id").cloned().unwrap_or(Value::Null),
+            "model": response.get("model").cloned().unwrap_or(Value::Null),
             "usage": transform_responses::build_anthropic_usage_from_responses(
-                upstream_response.get("usage")
+                response.get("usage")
             )
         })
     });
 
     // 根据 api_format 选择非流式转换器
-    let transform_result = if api_format == "openai_responses" {
-        transform_responses::responses_to_anthropic(upstream_response)
-    } else if api_format == "gemini_native" {
-        transform_gemini::gemini_to_anthropic_with_shadow_and_hints(
-            upstream_response,
-            Some(state.gemini_shadow.as_ref()),
-            Some(&ctx.provider.id),
-            Some(&ctx.session_id),
-            tool_schema_hints.as_ref(),
-        )
-    } else {
-        transform::openai_to_anthropic(upstream_response)
+    let transform_result = match (direct_anthropic_response, upstream_response) {
+        (Some(response), _) => Ok(response),
+        (None, Some(response)) if api_format == "openai_responses" => {
+            transform_responses::responses_to_anthropic_with_web_search_options(
+                response,
+                hosted_web_search_name.as_deref(),
+                hosted_web_search_max_uses,
+            )
+        }
+        (None, Some(response)) if api_format == "gemini_native" => {
+            transform_gemini::gemini_to_anthropic_with_shadow_and_hints(
+                response,
+                Some(state.gemini_shadow.as_ref()),
+                Some(&ctx.provider.id),
+                Some(&ctx.session_id),
+                tool_schema_hints.as_ref(),
+            )
+        }
+        (None, Some(response)) => transform::openai_to_anthropic(response),
+        (None, None) => Err(ProxyError::Internal(
+            "Missing upstream response after Claude format conversion".to_string(),
+        )),
     };
     let anthropic_response = match transform_result {
         Ok(response) => response,
@@ -719,6 +774,71 @@ pub async fn handle_responses_compact(
     request: axum::extract::Request,
 ) -> Result<axum::response::Response, ProxyError> {
     handle_responses_compact_for_app(state, request, AppType::Codex, "Codex", "codex").await
+}
+
+/// Handle Codex's standalone Alpha Search protocol as a semantic passthrough.
+///
+/// Recent Codex clients send web-search commands to a dedicated endpoint instead
+/// of embedding them in a Responses request. Keep this path out of the
+/// Responses-to-Chat/Anthropic bridges: those formats cannot represent the Alpha
+/// Search protocol.
+pub async fn handle_alpha_search(
+    State(state): State<ProxyState>,
+    request: axum::extract::Request,
+) -> Result<axum::response::Response, ProxyError> {
+    let (parts, req_body) = request.into_parts();
+    let method = parts.method.clone();
+    let uri = parts.uri;
+    let mut headers = parts.headers;
+    let extensions = parts.extensions;
+    let body_bytes = req_body
+        .collect()
+        .await
+        .map_err(|e| ProxyError::Internal(format!("Failed to read request body: {e}")))?
+        .to_bytes();
+    let body_bytes = decode_codex_request_body(&mut headers, body_bytes)?;
+    let body: Value = serde_json::from_slice(&body_bytes)
+        .map_err(|e| ProxyError::InvalidRequest(format!("Failed to parse request body: {e}")))?;
+
+    let mut ctx =
+        RequestContext::new(&state, &body, &headers, AppType::Codex, "Codex", "codex").await?;
+    let endpoint = endpoint_with_query(&uri, "/alpha/search");
+
+    let forwarder = ctx.create_forwarder(&state);
+    let mut result = match forwarder
+        .forward_with_retry(
+            &AppType::Codex,
+            method,
+            &endpoint,
+            body,
+            headers,
+            extensions,
+            ctx.get_providers(),
+            ctx.failover_enabled(),
+        )
+        .await
+    {
+        Ok(result) => result,
+        Err(mut err) => {
+            if let Some(provider) = err.provider.take() {
+                ctx.provider = provider;
+            }
+            log_forward_error(&state, &ctx, false, &err.error);
+            return build_codex_proxy_error_response(&ctx, &endpoint, &err.error);
+        }
+    };
+
+    let connection_guard = result.connection_guard.take();
+    ctx.provider = result.provider;
+
+    process_response(
+        result.response,
+        &ctx,
+        &state,
+        &CODEX_PARSER_CONFIG,
+        connection_guard,
+    )
+    .await
 }
 
 pub async fn handle_grokbuild_responses_compact(
@@ -1230,7 +1350,8 @@ fn codex_proxy_error_code(error: &ProxyError) -> &'static str {
         | ProxyError::NotRunning
         | ProxyError::BindFailed(_)
         | ProxyError::StopTimeout
-        | ProxyError::StopFailed(_) => "cc_switch_proxy_error",
+        | ProxyError::StopFailed(_)
+        | ProxyError::ResponseBodyTooLarge(_) => "cc_switch_proxy_error",
     }
 }
 
@@ -1336,6 +1457,300 @@ fn should_use_claude_transform_streaming(
     is_codex_oauth: bool,
 ) -> bool {
     requested_streaming || upstream_is_sse || (is_codex_oauth && api_format == "openai_responses")
+}
+
+async fn responses_sse_stream_to_anthropic_message(
+    stream: impl futures::Stream<Item = Result<Bytes, std::io::Error>> + Send + 'static,
+    hosted_web_search_name: Option<String>,
+    max_web_search_uses: Option<u64>,
+    body_timeout: std::time::Duration,
+) -> Result<Value, ProxyError> {
+    let collect = async move {
+        let converted = create_anthropic_sse_stream_from_responses_with_web_search_options(
+            stream,
+            hosted_web_search_name,
+            max_web_search_uses,
+        );
+        tokio::pin!(converted);
+
+        let mut body = Vec::new();
+        while let Some(chunk) = converted.next().await {
+            let chunk = chunk.map_err(|error| {
+                ProxyError::ForwardFailed(format!(
+                    "Failed to transform upstream Responses SSE: {error}"
+                ))
+            })?;
+            body.extend_from_slice(&chunk);
+        }
+        String::from_utf8(body).map_err(|error| {
+            ProxyError::TransformError(format!(
+                "Transformed Anthropic SSE was not valid UTF-8: {error}"
+            ))
+        })
+    };
+
+    let body = if body_timeout.is_zero() {
+        collect.await?
+    } else {
+        tokio::time::timeout(body_timeout, collect)
+            .await
+            .map_err(|_| {
+                ProxyError::Timeout(format!(
+                    "响应体读取超时: {}s（上游发完响应头后 body 未到达）",
+                    body_timeout.as_secs()
+                ))
+            })??
+    };
+
+    anthropic_sse_to_message_value(&body)
+}
+
+/// Aggregates an Anthropic Messages **SSE stream** back into a single Anthropic
+/// non-streaming message JSON.
+///
+/// Upstream keeps this helper in `providers::transform_codex_anthropic`, which this
+/// fork does not carry (the whole Codex Chat routing stack is deferred, see the
+/// task PRD Q1). Only this one function is needed here: the hosted-WebSearch
+/// non-streaming path must run the upstream Responses SSE through the streaming
+/// converter (so `max_uses` can stop the upstream mid-stream) and then fold the
+/// converted Anthropic SSE back into one message. Ported at upstream's
+/// post-`bdeaac75` state, i.e. `message_delta.usage` is merged as a whole object
+/// rather than only `output_tokens` — the Responses bridge reports final input
+/// tokens and `server_tool_use.web_search_requests` there.
+///
+/// It also tolerates the last event missing a trailing blank line (truncated
+/// stream): after looping over complete event blocks, it processes the residual
+/// buffer as the last event.
+fn anthropic_sse_to_message_value(body: &str) -> Result<Value, ProxyError> {
+    let mut message: Option<Value> = None;
+    // Collect blocks by content index along with the partial_json accumulator for their tool_use.
+    let mut blocks: BTreeMap<u64, Value> = BTreeMap::new();
+    let mut json_accum: BTreeMap<u64, String> = BTreeMap::new();
+    let mut stop_reason: Option<String> = None;
+    let mut delta_usage: Option<Value> = None;
+    let mut saw_message_stop = false;
+
+    let mut buffer = body.to_string();
+    let process_block = |block: &str,
+                         message: &mut Option<Value>,
+                         blocks: &mut BTreeMap<u64, Value>,
+                         json_accum: &mut BTreeMap<u64, String>,
+                         stop_reason: &mut Option<String>,
+                         delta_usage: &mut Option<Value>,
+                         saw_message_stop: &mut bool|
+     -> Result<(), ProxyError> {
+        let mut data = String::new();
+        for line in block.lines() {
+            if let Some(chunk) = strip_sse_field(line, "data") {
+                if !data.is_empty() {
+                    data.push('\n');
+                }
+                data.push_str(chunk);
+            }
+        }
+        if data.trim().is_empty() || data.trim() == "[DONE]" {
+            return Ok(());
+        }
+        let value: Value = match serde_json::from_str(data.trim()) {
+            Ok(v) => v,
+            Err(_) => return Ok(()), // Skip events that cannot be parsed (ping, etc.)
+        };
+        match value.get("type").and_then(|t| t.as_str()).unwrap_or("") {
+            "message_start" => {
+                // Only accept an object message; a malformed upstream could send a
+                // scalar/array here, and the later `message["content"] = …` index
+                // assignment would panic on a non-object Value.
+                if let Some(msg) = value.get("message").filter(|m| m.is_object()) {
+                    *message = Some(msg.clone());
+                }
+            }
+            "content_block_start" => {
+                if let Some(index) = value.get("index").and_then(|v| v.as_u64()) {
+                    // Sanitize to an object: any later index-assignment (`["text"]`,
+                    // `["signature"]`, `["input"]`) requires a JSON object, so a
+                    // malformed non-object block from the upstream cannot be stored
+                    // verbatim (it would panic on the next delta).
+                    //
+                    // The replacement carries `type: "text"` rather than being empty:
+                    // the deltas that follow are usually well-formed, and a block with
+                    // no `type` is silently dropped by the final conversion, which turns
+                    // a garbled block header into a `completed` response with empty
+                    // output — the client sees the model saying nothing and has no way to
+                    // tell that data was discarded. A text block recovers the common
+                    // case; a tool-use block still yields nothing, exactly as before.
+                    let block = match value.get("content_block") {
+                        Some(block) if block.is_object() => block.clone(),
+                        malformed => {
+                            if malformed.is_some() {
+                                log::warn!(
+                                    "Anthropic upstream sent a non-object content_block at index {index}; recovering it as a text block"
+                                );
+                            }
+                            json!({ "type": "text" })
+                        }
+                    };
+                    blocks.insert(index, block);
+                    json_accum.entry(index).or_default();
+                }
+            }
+            "content_block_delta" => {
+                if let Some(index) = value.get("index").and_then(|v| v.as_u64()) {
+                    let delta = value.get("delta").cloned().unwrap_or(json!({}));
+                    match delta.get("type").and_then(|t| t.as_str()).unwrap_or("") {
+                        "text_delta" => {
+                            if let Some(text) = delta.get("text").and_then(|t| t.as_str()) {
+                                append_str_field(
+                                    blocks.entry(index).or_insert(json!({})),
+                                    "text",
+                                    text,
+                                );
+                            }
+                        }
+                        "thinking_delta" => {
+                            if let Some(text) = delta.get("thinking").and_then(|t| t.as_str()) {
+                                append_str_field(
+                                    blocks.entry(index).or_insert(json!({})),
+                                    "thinking",
+                                    text,
+                                );
+                            }
+                        }
+                        "signature_delta" => {
+                            if let Some(sig) = delta.get("signature").and_then(|t| t.as_str()) {
+                                blocks.entry(index).or_insert(json!({}))["signature"] = json!(sig);
+                            }
+                        }
+                        "input_json_delta" => {
+                            if let Some(partial) =
+                                delta.get("partial_json").and_then(|t| t.as_str())
+                            {
+                                json_accum.entry(index).or_default().push_str(partial);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            "content_block_stop" => {
+                if let Some(index) = value.get("index").and_then(|v| v.as_u64()) {
+                    if let Some(accum) = json_accum.get(&index) {
+                        if !accum.trim().is_empty() {
+                            let parsed: Value =
+                                serde_json::from_str(accum).unwrap_or_else(|_| json!({}));
+                            if let Some(block) = blocks.get_mut(&index) {
+                                block["input"] = parsed;
+                            }
+                        }
+                    }
+                }
+            }
+            "message_delta" => {
+                if let Some(reason) = value.pointer("/delta/stop_reason").and_then(|v| v.as_str()) {
+                    *stop_reason = Some(reason.to_string());
+                }
+                if let Some(usage) = value.get("usage").and_then(Value::as_object) {
+                    let target = delta_usage.get_or_insert_with(|| json!({}));
+                    if let Some(target) = target.as_object_mut() {
+                        for (key, value) in usage {
+                            target.insert(key.clone(), value.clone());
+                        }
+                    }
+                }
+            }
+            "message_stop" => *saw_message_stop = true,
+            "error" => {
+                let msg = value
+                    .pointer("/error/message")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("upstream anthropic SSE error");
+                return Err(ProxyError::TransformError(format!(
+                    "anthropic SSE error event: {msg}"
+                )));
+            }
+            _ => {}
+        }
+        Ok(())
+    };
+
+    while let Some(block) = take_sse_block(&mut buffer) {
+        process_block(
+            &block,
+            &mut message,
+            &mut blocks,
+            &mut json_accum,
+            &mut stop_reason,
+            &mut delta_usage,
+            &mut saw_message_stop,
+        )?;
+    }
+    // Tolerate the last event missing a trailing blank line (truncated stream).
+    if !buffer.trim().is_empty() {
+        process_block(
+            &buffer.clone(),
+            &mut message,
+            &mut blocks,
+            &mut json_accum,
+            &mut stop_reason,
+            &mut delta_usage,
+            &mut saw_message_stop,
+        )?;
+    }
+
+    let mut message = message.ok_or_else(|| {
+        ProxyError::TransformError(
+            "anthropic SSE aggregation: missing message_start event".to_string(),
+        )
+    })?;
+
+    if !saw_message_stop && stop_reason.is_none() {
+        if blocks.is_empty() {
+            return Err(ProxyError::TransformError(
+                "anthropic SSE aggregation: stream ended before message_stop".to_string(),
+            ));
+        }
+        // Preserve partial content but make the truncation visible to the client
+        // instead of returning a normal completed response.
+        stop_reason = Some("max_tokens".to_string());
+    }
+
+    // Merge in the content blocks (ordered by index), stop_reason, and the
+    // cumulative message_delta usage. The Responses bridge reports final input
+    // tokens and server-tool counts there rather than in message_start.
+    let content: Vec<Value> = blocks.into_values().collect();
+    message["content"] = json!(content);
+    if let Some(reason) = stop_reason {
+        message["stop_reason"] = json!(reason);
+    }
+    if let Some(delta_usage) = delta_usage.and_then(|usage| usage.as_object().cloned()) {
+        if !message.get("usage").is_some_and(Value::is_object) {
+            message["usage"] = json!({});
+        }
+        if let Some(usage) = message.get_mut("usage").and_then(Value::as_object_mut) {
+            for (key, value) in delta_usage {
+                if value.as_u64() == Some(0)
+                    && usage
+                        .get(&key)
+                        .and_then(Value::as_u64)
+                        .is_some_and(|existing| existing > 0)
+                {
+                    continue;
+                }
+                usage.insert(key, value);
+            }
+        }
+    }
+
+    Ok(message)
+}
+
+/// Appends content to a string field of a JSON object (creating it if absent).
+fn append_str_field(block: &mut Value, field: &str, text: &str) {
+    let existing = block
+        .get(field)
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    block[field] = json!(format!("{existing}{text}"));
 }
 
 /// 把 OpenAI Responses SSE 流聚合成一个完整的 Responses JSON 对象，供下游转成 Anthropic
@@ -1474,7 +1889,7 @@ async fn log_usage(
         model
     };
 
-    let dedup_scope = (app_type != "claude").then_some((app_type, provider_id));
+    let dedup_scope = super::usage::parser::dedup_scope_for_app(app_type, provider_id);
     let request_id = usage.dedup_request_id(dedup_scope);
 
     if let Err(e) = logger.log_with_calculation(
@@ -1500,12 +1915,18 @@ async fn log_usage(
 #[cfg(test)]
 mod tests {
     use super::{
-        chat_error_to_response_error, codex_proxy_error_json, compact_error_message,
+        anthropic_sse_to_message_value, chat_error_to_response_error, codex_proxy_error_json,
+        compact_error_message, responses_sse_stream_to_anthropic_message,
         responses_sse_to_response_value, should_use_claude_transform_streaming,
     };
     use crate::proxy::error_mapper::get_error_message;
     use crate::proxy::ProxyError;
+    use bytes::Bytes;
     use serde_json::json;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
 
     #[test]
     fn upstream_error_body_is_truncated_before_db_persistence() {
@@ -1534,6 +1955,219 @@ mod tests {
             "openai_responses",
             true,
         ));
+    }
+
+    #[tokio::test]
+    async fn non_streaming_codex_web_search_limit_stops_polling_upstream() {
+        let chunks = vec![
+            concat!(
+                "event: response.created\n",
+                "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_limit\",\"model\":\"gpt-5.6\"}}\n\n",
+                "event: response.output_item.added\n",
+                "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"id\":\"ws_allowed\",\"type\":\"web_search_call\",\"status\":\"in_progress\"}}\n\n"
+            ),
+            concat!(
+                "event: response.output_item.added\n",
+                "data: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"id\":\"ws_over_limit\",\"type\":\"web_search_call\",\"status\":\"in_progress\"}}\n\n"
+            ),
+            concat!(
+                "event: response.output_text.delta\n",
+                "data: {\"type\":\"response.output_text.delta\",\"delta\":\"must never be polled\"}\n\n",
+                "event: response.completed\n",
+                "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_limit\",\"status\":\"completed\"}}\n\n"
+            ),
+        ];
+        let polls = Arc::new(AtomicUsize::new(0));
+        let upstream_polls = Arc::clone(&polls);
+        let upstream = futures::stream::unfold(
+            (chunks.into_iter(), upstream_polls),
+            |(mut chunks, polls)| async move {
+                chunks.next().map(|chunk| {
+                    polls.fetch_add(1, Ordering::SeqCst);
+                    (
+                        Ok::<_, std::io::Error>(Bytes::from_static(chunk.as_bytes())),
+                        (chunks, polls),
+                    )
+                })
+            },
+        );
+
+        let message = responses_sse_stream_to_anthropic_message(
+            upstream,
+            Some("web_search".to_string()),
+            Some(1),
+            std::time::Duration::ZERO,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(polls.load(Ordering::SeqCst), 2);
+        assert_eq!(message["stop_reason"], "end_turn");
+        assert_eq!(
+            message["usage"]["server_tool_use"]["web_search_requests"],
+            1
+        );
+        let content = message["content"].as_array().unwrap();
+        assert_eq!(content.len(), 4);
+        assert_eq!(content[0]["type"], "server_tool_use");
+        assert_eq!(content[1]["content"]["error_code"], "unavailable");
+        assert_eq!(content[2]["type"], "server_tool_use");
+        assert_eq!(content[3]["content"]["error_code"], "max_uses_exceeded");
+    }
+
+    // ==================== Anthropic SSE aggregation ====================
+    //
+    // Coverage for the fork-local `anthropic_sse_to_message_value`. Upstream keeps
+    // this helper (and these tests) in `providers::transform_codex_anthropic`, a
+    // module this fork does not carry. The three upstream cases that asserted
+    // through `anthropic_response_to_responses` assert on the aggregated message
+    // directly instead — that conversion lives in the same deferred module.
+
+    #[test]
+    fn anthropic_sse_aggregation_merges_message_delta_usage_as_a_whole_object() {
+        let sse = "event: message_start\n\
+data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude\",\"content\":[],\"stop_reason\":null,\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\n\
+event: content_block_start\n\
+data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n\
+event: content_block_delta\n\
+data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}\n\n\
+event: content_block_delta\n\
+data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" world\"}}\n\n\
+event: content_block_stop\n\
+data: {\"type\":\"content_block_stop\",\"index\":0}\n\n\
+event: message_delta\n\
+data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"input_tokens\":12,\"output_tokens\":7,\"server_tool_use\":{\"web_search_requests\":1}}}\n\n\
+event: message_stop\n\
+data: {\"type\":\"message_stop\"}\n\n";
+        let msg = anthropic_sse_to_message_value(sse).unwrap();
+        assert_eq!(msg["content"][0]["type"], "text");
+        assert_eq!(msg["content"][0]["text"], "Hello world");
+        assert_eq!(msg["stop_reason"], "end_turn");
+        // The whole `message_delta.usage` object is merged, not just output_tokens:
+        // the Responses WebSearch bridge reports final input tokens and the
+        // server-tool counter there, and both must survive aggregation.
+        assert_eq!(msg["usage"]["input_tokens"], 12);
+        assert_eq!(msg["usage"]["output_tokens"], 7);
+        assert_eq!(msg["usage"]["server_tool_use"]["web_search_requests"], 1);
+    }
+
+    #[test]
+    fn anthropic_sse_aggregation_keeps_nonzero_start_usage_over_zero_delta() {
+        let sse = concat!(
+            "data: {\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"content\":[],\"usage\":{\"input_tokens\":31,\"output_tokens\":0}}}\n\n",
+            "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"hi\"}}\n\n",
+            "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"input_tokens\":0,\"output_tokens\":5}}\n\n",
+            "data: {\"type\":\"message_stop\"}\n\n",
+        );
+        let msg = anthropic_sse_to_message_value(sse).unwrap();
+        // A zero in message_delta must not clobber a non-zero message_start value,
+        // otherwise a partial delta would erase already-billed input tokens.
+        assert_eq!(msg["usage"]["input_tokens"], 31);
+        assert_eq!(msg["usage"]["output_tokens"], 5);
+    }
+
+    #[test]
+    fn anthropic_sse_aggregation_tool_use_partial_json() {
+        let sse = "data: {\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"c\",\"content\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n\
+data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"call_1\",\"name\":\"get_weather\",\"input\":{}}}\n\n\
+data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"city\\\":\"}}\n\n\
+data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"\\\"Tokyo\\\"}\"}}\n\n\
+data: {\"type\":\"content_block_stop\",\"index\":0}\n\n\
+data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":3}}\n\n";
+        let msg = anthropic_sse_to_message_value(sse).unwrap();
+        assert_eq!(msg["content"][0]["type"], "tool_use");
+        assert_eq!(msg["content"][0]["name"], "get_weather");
+        assert_eq!(msg["content"][0]["input"]["city"], "Tokyo");
+        assert_eq!(msg["stop_reason"], "tool_use");
+    }
+
+    #[test]
+    fn anthropic_sse_aggregation_tool_use_input_only_in_start() {
+        // A gateway that carries the full tool `input` on content_block_start and
+        // emits NO input_json_delta must still resolve the same arguments (the
+        // empty-accum fallback keeps the start-carried input).
+        let sse = "data: {\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"c\",\"content\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n\
+data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"call_1\",\"name\":\"get_weather\",\"input\":{\"city\":\"Tokyo\"}}}\n\n\
+data: {\"type\":\"content_block_stop\",\"index\":0}\n\n\
+data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":3}}\n\n";
+        let msg = anthropic_sse_to_message_value(sse).unwrap();
+        assert_eq!(msg["content"][0]["type"], "tool_use");
+        assert_eq!(msg["content"][0]["name"], "get_weather");
+        // Identical to the deltas-only case above — neither path may drop start input.
+        assert_eq!(msg["content"][0]["input"]["city"], "Tokyo");
+        assert_eq!(msg["stop_reason"], "tool_use");
+    }
+
+    #[test]
+    fn anthropic_sse_aggregation_missing_message_start_errors() {
+        let sse = "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n";
+        assert!(anthropic_sse_to_message_value(sse).is_err());
+    }
+
+    #[test]
+    fn anthropic_sse_aggregation_error_event_errors() {
+        let sse = "data: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"overloaded\"}}\n\n";
+        assert!(anthropic_sse_to_message_value(sse).is_err());
+    }
+
+    #[test]
+    fn anthropic_sse_aggregation_tolerates_missing_trailing_blank_line() {
+        // The last event missing a trailing blank line (truncated stream) should still be processed.
+        let sse = "data: {\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"c\",\"content\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n\
+data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"hi\"}}\n\n\
+data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":2}}";
+        let msg = anthropic_sse_to_message_value(sse).unwrap();
+        assert_eq!(msg["stop_reason"], "end_turn");
+        assert_eq!(msg["usage"]["output_tokens"], 2);
+    }
+
+    #[test]
+    fn anthropic_sse_aggregation_truncated_output_is_marked_max_tokens() {
+        let sse = "data: {\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"content\":[]}}\n\n\
+data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"partial\"}}\n\n";
+        let msg = anthropic_sse_to_message_value(sse).unwrap();
+        // Partial content is preserved, but the truncation must be visible to the
+        // client rather than surfacing as a normal completed response.
+        assert_eq!(msg["content"][0]["text"], "partial");
+        assert_eq!(msg["stop_reason"], "max_tokens");
+    }
+
+    #[test]
+    fn anthropic_sse_aggregation_truncated_without_output_errors() {
+        let sse =
+            "data: {\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"content\":[]}}\n\n";
+        assert!(anthropic_sse_to_message_value(sse).is_err());
+    }
+
+    #[test]
+    fn anthropic_sse_aggregation_non_object_content_block_does_not_panic() {
+        // A malformed upstream can send a non-object `content_block`; the index
+        // assignment on the next delta would have panicked before the shape guard.
+        let sse = concat!(
+            "data: {\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"content\":[]}}\n\n",
+            "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":[1]}\n\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"x\"}}\n\n",
+            "data: {\"type\":\"message_stop\"}\n\n",
+        );
+        let msg = anthropic_sse_to_message_value(sse)
+            .expect("aggregation must not panic on a non-object content_block");
+        assert_eq!(msg["content"][0]["text"], json!("x"));
+        // Not panicking is only half of it: the sanitized block must still carry a
+        // `type`, because downstream consumers match on it and silently drop
+        // anything they do not recognise — the client would otherwise get an empty
+        // response with no indication that the text was thrown away.
+        assert_eq!(msg["content"][0]["type"], json!("text"));
+    }
+
+    #[test]
+    fn anthropic_sse_aggregation_non_object_message_errors_not_panic() {
+        // A malformed upstream can send a scalar `message`; the later
+        // `message["content"] = …` would have panicked before the shape guard.
+        let sse = concat!(
+            "data: {\"type\":\"message_start\",\"message\":\"oops\"}\n\n",
+            "data: {\"type\":\"message_stop\"}\n\n",
+        );
+        assert!(anthropic_sse_to_message_value(sse).is_err());
     }
 
     #[test]

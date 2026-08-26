@@ -5,6 +5,8 @@
 mod endpoints;
 mod gemini_auth;
 mod live;
+mod managed_codex;
+mod pi;
 mod usage;
 
 use indexmap::IndexMap;
@@ -31,18 +33,40 @@ pub use live::{
     update_toml_common_config_snippet,
 };
 
+pub fn import_pi_providers_from_live(state: &AppState) -> Result<usize, AppError> {
+    pi::import_from_live(state)
+}
+
 // Internal re-exports (pub(crate))
 pub(crate) use live::{
     build_effective_settings_with_common_config, normalize_provider_common_config_for_storage,
     provider_exists_in_live_config, sanitize_claude_settings_for_live,
     strip_common_config_from_live_settings, sync_current_provider_for_app_to_live,
-    write_live_with_common_config,
+    write_live_with_common_config_for_state,
+};
+
+// Re-exported for `ProxyService`, which resolves the Codex OAuth manager from the
+// injected proxy runtime context instead of holding an `AppState`.
+pub(crate) use live::{
+    build_effective_provider_for_live_with_codex_oauth_manager,
+    prepare_codex_managed_oauth_live_auth_switch_away,
+    write_live_with_common_config_for_codex_oauth_manager,
 };
 
 // Internal re-exports
 use live::{
     remove_hermes_provider_from_live, remove_openclaw_provider_from_live,
     remove_opencode_provider_from_live, write_gemini_live,
+};
+// Managed Codex OAuth transaction helpers. Imported unqualified so the managed
+// arms below stay line-for-line comparable with upstream, where these are
+// `Self::`-prefixed associated functions on `ProviderService`.
+use managed_codex::{
+    clear_outgoing_managed_codex_live_auth, ensure_outgoing_managed_codex_live_auth_unchanged,
+    managed_codex_add_transaction_error, managed_codex_oauth_account_id,
+    managed_codex_takeover_transaction_error, managed_codex_transaction_error,
+    outgoing_managed_codex_oauth_account_id, preflight_managed_codex_live,
+    prepare_outgoing_managed_codex_live_auth, write_preflighted_or_current_live,
 };
 use usage::validate_usage_script;
 
@@ -61,7 +85,10 @@ mod tests {
     use super::*;
     use crate::config::{get_claude_settings_path, read_json_file, write_json_file};
     use crate::database::Database;
-    use crate::provider::ProviderMeta;
+    use crate::provider::{AuthBinding, AuthBindingSource, ProviderMeta};
+    use crate::proxy::providers::codex_oauth_auth::CodexOAuthManager;
+    use crate::proxy::providers::copilot_auth::CopilotAuthManager;
+    use crate::proxy::providers::xai_oauth_auth::XaiOAuthManager;
     use crate::proxy::types::ProxyConfig;
     use crate::store::AppState;
     use serde_json::json;
@@ -263,6 +290,531 @@ mod tests {
         assert!(
             err.to_string().contains("auth"),
             "expected auth error, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn extract_gemini_common_config_strips_credentials_keeps_shareable() {
+        // Gemini 的共享片段会被 deep-merge 回**其它** Gemini 供应商的 env
+        // (live.rs::apply_common_config_to_settings)，因此任何凭据都不得进入片段。
+        // 之前这里只硬编码跳过 GEMINI_API_KEY/GOOGLE_GEMINI_BASE_URL，而
+        // GOOGLE_API_KEY 是 provider.rs 认可的一等 Gemini 凭据 → 会泄露到别的供应商。
+        let settings = json!({
+            "env": {
+                "GEMINI_API_KEY": "g-gem",
+                "GOOGLE_API_KEY": "g-legacy-real-key",
+                "GOOGLE_GEMINI_BASE_URL": "https://gemini.example",
+                "GOOGLE_APPLICATION_CREDENTIALS": "/path/creds.json",
+                "SOME_PROXY_AUTH_TOKEN": "tok-proxy",
+                // 可共享的非机密配置必须保留
+                "GEMINI_TIMEOUT_MS": "30000"
+            }
+        });
+
+        let snippet =
+            ProviderService::extract_gemini_common_config(&settings).expect("extract should work");
+        let value: Value = serde_json::from_str(&snippet).expect("snippet is valid JSON");
+
+        for leaked in [
+            "GEMINI_API_KEY",
+            "GOOGLE_API_KEY",
+            "GOOGLE_APPLICATION_CREDENTIALS",
+            "SOME_PROXY_AUTH_TOKEN",
+        ] {
+            assert!(
+                value.get(leaked).is_none(),
+                "credential {leaked} must not leak into the shared Gemini snippet"
+            );
+        }
+        assert_eq!(
+            value.get("GEMINI_TIMEOUT_MS").and_then(|v| v.as_str()),
+            Some("30000"),
+            "shareable non-secret config must be preserved"
+        );
+    }
+
+    /// 造一个「已被污染」的现场：片段里带 A 账号的凭据 + 一个合法可共享键。
+    #[test]
+    fn sensitive_key_matcher_covers_common_credential_namings() {
+        for key in [
+            // 裸 `_KEY`：最常见的写法，却曾被"只枚举 `_API_KEY` 这些子类"漏在外面
+            "OPENAI_KEY",
+            "GROQ_KEY",
+            "XAI_KEY",
+            // 不带分隔符的复合写法
+            "VOLC_ACCESSKEY",
+            "ALIYUN_SECRETKEY",
+            "SOME_APITOKEN",
+            // personal access token：既不含 TOKEN 也不含 KEY
+            "GITHUB_PAT",
+            "gitlab_pat",
+            // 口令类缩写
+            "MYSQL_PWD",
+            "DB_PASS",
+            "GPG_PASSPHRASE",
+            "AWS_CREDS",
+        ] {
+            assert!(
+                ProviderService::is_sensitive_config_key(key),
+                "{key} must be treated as a credential"
+            );
+        }
+
+        // 后缀必须带下划线，不能把正常配置一起卷进来
+        for key in [
+            "PATH",
+            "OLDPWD",
+            "GEMINI_COMPAT",
+            "SSL_BYPASS",
+            "GEMINI_TIMEOUT_MS",
+            "CLAUDE_CODE_MAX_OUTPUT_TOKENS",
+        ] {
+            assert!(
+                !ProviderService::is_sensitive_config_key(key),
+                "{key} is ordinary shareable config and must not be stripped"
+            );
+        }
+    }
+
+    fn seed_leaked_gemini_state(db: &Arc<Database>) {
+        db.set_config_snippet(
+            "gemini",
+            Some(
+                json!({
+                    "GOOGLE_API_KEY": "key-A-leaked",
+                    "SOME_PROXY_AUTH_TOKEN": "tok-A-leaked",
+                    "GEMINI_TIMEOUT_MS": "30000"
+                })
+                .to_string(),
+            ),
+        )
+        .expect("seed snippet");
+
+        // 受害者 B：泄漏的密钥已经被合并进它的 env
+        let victim = Provider::with_id(
+            "b".into(),
+            "Relay B".into(),
+            json!({ "env": {
+                "GOOGLE_GEMINI_BASE_URL": "https://relay-b.example",
+                "GOOGLE_API_KEY": "key-A-leaked",
+                "GEMINI_TIMEOUT_MS": "30000"
+            }}),
+            None,
+        );
+        db.save_provider("gemini", &victim).expect("save victim");
+
+        // 供应商 C：自己写了同名键但值不同，不能被误删
+        let unrelated = Provider::with_id(
+            "c".into(),
+            "Own Key C".into(),
+            json!({ "env": {
+                "GOOGLE_GEMINI_BASE_URL": "https://c.example",
+                "GOOGLE_API_KEY": "key-C-owned"
+            }}),
+            None,
+        );
+        db.save_provider("gemini", &unrelated).expect("save c");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn scrub_gemini_removes_leaked_credentials_from_snippet_and_providers() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+        let db = Arc::new(Database::memory().expect("init db"));
+        let state = AppState::new(db.clone());
+        seed_leaked_gemini_state(&db);
+
+        ProviderService::scrub_leaked_gemini_common_config(&state)
+            .await
+            .expect("scrub must succeed");
+
+        // 片段：凭据清掉，可共享配置保留
+        let snippet = db
+            .get_config_snippet("gemini")
+            .expect("read snippet")
+            .expect("snippet must still exist");
+        let snippet: Value = serde_json::from_str(&snippet).expect("valid json");
+        assert!(snippet.get("GOOGLE_API_KEY").is_none());
+        assert!(snippet.get("SOME_PROXY_AUTH_TOKEN").is_none());
+        assert_eq!(
+            snippet.get("GEMINI_TIMEOUT_MS").and_then(Value::as_str),
+            Some("30000"),
+            "shareable config must survive the scrub"
+        );
+
+        // 受害者 B：扩散过去的那一份被清掉
+        let providers = db.get_all_providers("gemini").expect("providers");
+        let victim_env = &providers["b"].settings_config["env"];
+        assert!(
+            victim_env.get("GOOGLE_API_KEY").is_none(),
+            "leaked key must be removed from the victim provider"
+        );
+        assert_eq!(
+            victim_env.get("GEMINI_TIMEOUT_MS").and_then(Value::as_str),
+            Some("30000"),
+            "non-credential config must not be touched"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn scrub_gemini_keeps_a_providers_own_differently_valued_key() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+        let db = Arc::new(Database::memory().expect("init db"));
+        let state = AppState::new(db.clone());
+        seed_leaked_gemini_state(&db);
+
+        ProviderService::scrub_leaked_gemini_common_config(&state)
+            .await
+            .expect("scrub must succeed");
+
+        // 这条最容易写错成「按键名一刀切」：C 自己的密钥值与片段不同，是它自己的凭据
+        let providers = db.get_all_providers("gemini").expect("providers");
+        assert_eq!(
+            providers["c"].settings_config["env"]
+                .get("GOOGLE_API_KEY")
+                .and_then(Value::as_str),
+            Some("key-C-owned"),
+            "a provider's own key must not be deleted by name matching"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn scrub_gemini_audit_records_key_names_but_never_values() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+        let db = Arc::new(Database::memory().expect("init db"));
+        let state = AppState::new(db.clone());
+        seed_leaked_gemini_state(&db);
+
+        ProviderService::scrub_leaked_gemini_common_config(&state)
+            .await
+            .expect("scrub must succeed");
+
+        let audit_text = db
+            .get_setting("gemini_common_config_scrub_audit_v1")
+            .expect("read audit")
+            .expect("an audit record must exist so the deletion is not silent");
+
+        // 值绝不能进这条记录：`settings` 会随 WebDAV/S3 同步上传，留值等于把一次
+        // 清除换成一份跨设备扩散、没有界面入口、永不过期的明文副本。
+        assert!(
+            !audit_text.contains("key-A-leaked") && !audit_text.contains("tok-A-leaked"),
+            "the audit record must never carry credential values: {audit_text}"
+        );
+
+        // 但必须说清楚删了什么、从哪删的，否则用户只能靠翻日志
+        let audit: Value = serde_json::from_str(&audit_text).expect("audit is JSON");
+        let removed: Vec<&str> = audit["removedFromSnippet"]
+            .as_array()
+            .expect("removedFromSnippet array")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        assert!(
+            removed.contains(&"GOOGLE_API_KEY") && removed.contains(&"SOME_PROXY_AUTH_TOKEN"),
+            "every key removed from the snippet must be named: {audit}"
+        );
+        let victim = audit["providers"]
+            .as_array()
+            .expect("providers array")
+            .iter()
+            .find(|entry| entry["id"] == json!("b"))
+            .expect("every provider whose config gets rewritten must be recorded");
+        assert_eq!(
+            victim["removedKeys"],
+            json!(["GOOGLE_API_KEY"]),
+            "the record must name what was taken from each provider: {audit}"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn scrub_gemini_never_overwrites_an_existing_audit_record() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+        let db = Arc::new(Database::memory().expect("init db"));
+        let state = AppState::new(db.clone());
+        seed_leaked_gemini_state(&db);
+
+        // 上一轮改到一半就中止的情形：完成标记没置位，下次启动会重跑，但那时
+        // 读到的"原始状态"已经残缺。无条件覆盖会拿残缺记录盖掉第一轮那份完整的。
+        db.set_setting(
+            "gemini_common_config_scrub_audit_v1",
+            "{\"from\":\"an earlier, complete run\"}",
+        )
+        .expect("seed an existing audit record");
+
+        ProviderService::scrub_leaked_gemini_common_config(&state)
+            .await
+            .expect("scrub must succeed");
+
+        assert_eq!(
+            db.get_setting("gemini_common_config_scrub_audit_v1")
+                .expect("read audit")
+                .as_deref(),
+            Some("{\"from\":\"an earlier, complete run\"}"),
+            "an audit record from an earlier run must survive a retry"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn scrub_gemini_cleans_the_live_env_without_a_current_provider() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+        let db = Arc::new(Database::memory().expect("init db"));
+        let state = AppState::new(db.clone());
+        seed_leaked_gemini_state(&db);
+
+        // 没有当前供应商——这正是 sync_current_provider_for_app 直接返回 Ok 而
+        // 根本不写文件的分支。此时 live 若清不掉，片段又已被清空，下次切换的
+        // backfill 就会把残留永久写进受害供应商的配置。
+        crate::gemini_config::write_gemini_env_atomic(&HashMap::from([
+            ("GOOGLE_API_KEY".to_string(), "key-A-leaked".to_string()),
+            ("GEMINI_TIMEOUT_MS".to_string(), "30000".to_string()),
+            // 只存在于 live 的手工修改：定向删除必须保住它，全量重投影会抹掉
+            (
+                "HTTPS_PROXY".to_string(),
+                "http://127.0.0.1:7890".to_string(),
+            ),
+        ]))
+        .expect("seed live env");
+
+        ProviderService::scrub_leaked_gemini_common_config(&state)
+            .await
+            .expect("scrub must succeed");
+
+        let live = crate::gemini_config::read_gemini_env().expect("read live env");
+        assert!(
+            !live.contains_key("GOOGLE_API_KEY"),
+            "the leaked credential must be gone from ~/.gemini/.env: {live:?}"
+        );
+        assert_eq!(
+            live.get("HTTPS_PROXY").map(String::as_str),
+            Some("http://127.0.0.1:7890"),
+            "a hand-added live-only var must survive targeted removal: {live:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn scrub_gemini_live_cleanup_preserves_the_rest_of_the_env_file() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+        let db = Arc::new(Database::memory().expect("init db"));
+        let state = AppState::new(db.clone());
+        seed_leaked_gemini_state(&db);
+
+        // 这是一次用户没主动触发的启动期清理，不该顺手重写与泄漏无关的内容。
+        // read→HashMap→write 的往返会把注释、空行、无法识别的行全丢掉并按键名重排。
+        let original = "\
+# my own notes
+GOOGLE_API_KEY=key-C-owned
+
+GOOGLE_API_KEY=key-A-leaked
+this line is not KEY=VALUE at all
+GEMINI_TIMEOUT_MS=30000
+";
+        crate::gemini_config::write_gemini_env_text_atomic(original).expect("seed live env");
+
+        ProviderService::scrub_leaked_gemini_common_config(&state)
+            .await
+            .expect("scrub must succeed");
+
+        let raw = std::fs::read_to_string(crate::gemini_config::get_gemini_env_path())
+            .expect("read live env");
+        assert!(
+            !raw.contains("key-A-leaked"),
+            "the leaked line must be gone: {raw:?}"
+        );
+        assert!(
+            raw.contains("# my own notes"),
+            "comments must survive a targeted removal: {raw:?}"
+        );
+        assert!(
+            raw.contains("this line is not KEY=VALUE at all"),
+            "unparseable lines must survive a targeted removal: {raw:?}"
+        );
+        // 被泄漏值遮住的那条重新生效——正是想要的结果，遮住它的恰恰是泄漏值
+        assert_eq!(
+            crate::gemini_config::read_gemini_env()
+                .expect("read live env")
+                .get("GOOGLE_API_KEY")
+                .map(String::as_str),
+            Some("key-C-owned"),
+            "only the matching line may be dropped: {raw:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn scrub_gemini_aborts_before_clearing_the_snippet_when_the_live_backup_fails() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+        let db = Arc::new(Database::memory().expect("init db"));
+        let state = AppState::new(db.clone());
+        seed_leaked_gemini_state(&db);
+
+        // 关代理时这份快照会被原样写回 live。若清不动它却照样清了片段、置了完成标记，
+        // 代理一停凭据就复活，而一次性标记保证不会再清第二次。
+        db.save_live_backup("gemini", "}not json{")
+            .await
+            .expect("seed backup");
+
+        let result = ProviderService::scrub_leaked_gemini_common_config(&state).await;
+        assert!(
+            result.is_err(),
+            "a backup that cannot be cleaned must abort the scrub"
+        );
+
+        // 片段是「该剥哪些键」的唯一知识来源，中止后必须原样留着，否则下次重试
+        // 会因为 poison 为空而直接短路，反倒把标记置上
+        let snippet = db
+            .get_config_snippet("gemini")
+            .expect("read snippet")
+            .expect("snippet must still exist");
+        assert!(
+            snippet.contains("key-A-leaked"),
+            "the snippet must be left intact so the next boot can retry: {snippet}"
+        );
+        assert!(
+            db.get_setting("gemini_common_config_credentials_scrubbed_v1")
+                .expect("read flag")
+                .is_none(),
+            "the one-shot flag must not be set when the scrub aborted"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn scrub_gemini_leaves_no_residue_for_backfill_to_persist() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+        let db = Arc::new(Database::memory().expect("init db"));
+        let state = AppState::new(db.clone());
+        seed_leaked_gemini_state(&db);
+
+        ProviderService::scrub_leaked_gemini_common_config(&state)
+            .await
+            .expect("scrub must succeed");
+
+        // 顺序陷阱回归：如果只清了片段，切走供应商时 remove_common_config_from_settings
+        // 就不再认识这个键，live 里的残留会被 backfill 永久写进供应商配置。
+        // 清理必须是原子的——清完之后，任何地方都不该再有那个值。
+        let snippet = db
+            .get_config_snippet("gemini")
+            .expect("read snippet")
+            .unwrap_or_default();
+        assert!(!snippet.contains("key-A-leaked"));
+
+        for (id, provider) in db.get_all_providers("gemini").expect("providers") {
+            assert!(
+                !provider
+                    .settings_config
+                    .to_string()
+                    .contains("key-A-leaked"),
+                "provider '{id}' still carries the leaked value"
+            );
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn scrub_gemini_is_idempotent_and_skips_on_second_run() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+        let db = Arc::new(Database::memory().expect("init db"));
+        let state = AppState::new(db.clone());
+        seed_leaked_gemini_state(&db);
+
+        ProviderService::scrub_leaked_gemini_common_config(&state)
+            .await
+            .expect("first run");
+
+        // 第二次必须是 no-op：用户清理后重新填的凭据不能被再抹一遍
+        db.set_config_snippet(
+            "gemini",
+            Some(json!({"GOOGLE_API_KEY": "restored"}).to_string()),
+        )
+        .expect("user re-adds a value");
+
+        ProviderService::scrub_leaked_gemini_common_config(&state)
+            .await
+            .expect("second run");
+
+        let snippet = db
+            .get_config_snippet("gemini")
+            .expect("read snippet")
+            .expect("snippet exists");
+        assert!(
+            snippet.contains("restored"),
+            "the one-shot flag must prevent a second scrub: {snippet}"
+        );
+    }
+
+    #[test]
+    fn extract_claude_common_config_strips_all_credentials_keeps_shareable() {
+        // env 混入多种凭据（Anthropic/OpenRouter/Google/OpenAI/Gemini + AWS/Vertex）
+        // 与可共享配置；顶层混入非标准的 apiKey/api_key 凭据与正常设置。
+        let settings = json!({
+            "env": {
+                "ANTHROPIC_API_KEY": "sk-ant",
+                "ANTHROPIC_AUTH_TOKEN": "tok-ant",
+                "OPENROUTER_API_KEY": "sk-or",
+                "GOOGLE_API_KEY": "g-key",
+                "OPENAI_API_KEY": "sk-oai",
+                "GEMINI_API_KEY": "g-gem",
+                "AWS_ACCESS_KEY_ID": "AKIA",
+                "AWS_SECRET_ACCESS_KEY": "secret",
+                "AWS_SESSION_TOKEN": "sess",
+                "GOOGLE_APPLICATION_CREDENTIALS": "/path/creds.json",
+                "AWS_BEARER_TOKEN_BEDROCK": "bedrock-tok",
+                "ANTHROPIC_BASE_URL": "https://example.com",
+                "ANTHROPIC_MODEL": "claude-x",
+                "CLAUDE_CODE_SUBAGENT_MODEL": "gpt-5.4-mini",
+                "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "400000",
+                "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "400000",
+                // 可共享、非机密配置（复数 _TOKENS 不应被误剥）
+                "ENABLE_TOOL_SEARCH": "true",
+                "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "8192"
+            },
+            "apiKey": "sk-top",
+            "api_key": "sk-top2",
+            "theme": "dark",
+            "includeCoAuthoredBy": false
+        });
+
+        let snippet = ProviderService::extract_claude_common_config(&settings)
+            .expect("extract should succeed");
+        let value: Value = serde_json::from_str(&snippet).expect("snippet is valid JSON");
+
+        // 所有凭据都不得出现在共享片段里
+        let env = value.get("env");
+        for leaked in [
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_AUTH_TOKEN",
+            "OPENROUTER_API_KEY",
+            "GOOGLE_API_KEY",
+            "OPENAI_API_KEY",
+            "GEMINI_API_KEY",
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+            "AWS_SESSION_TOKEN",
+            "GOOGLE_APPLICATION_CREDENTIALS",
+            "AWS_BEARER_TOKEN_BEDROCK",
+        ] {
+            assert!(
+                env.and_then(|e| e.get(leaked)).is_none(),
+                "credential {leaked} must not leak into common config"
+            );
+        }
+        assert!(
+            value.get("apiKey").is_none() && value.get("api_key").is_none(),
+            "top-level credentials must be stripped"
         );
     }
 
@@ -1571,6 +2123,1644 @@ providers:
             assert_eq!(rerun, 0, "no records still need cleaning");
         });
     }
+
+    /// [`with_test_home`] plus an injected proxy runtime context that holds a
+    /// real `CodexOAuthManager`, so the managed Codex transaction paths can
+    /// resolve a bound account.
+    ///
+    /// Upstream reaches the manager through `AppState::codex_oauth_manager`; the
+    /// fork keeps it in the proxy runtime context (the one lookup that works in
+    /// both the desktop and the web runtime), so tests must inject it the same
+    /// way `lib.rs` setup and `examples/server.rs` do. Without the context the
+    /// managed paths fail closed instead of exercising the transaction.
+    fn with_codex_oauth_test_home<T>(
+        test: impl FnOnce(&AppState, &Arc<tokio::sync::RwLock<CodexOAuthManager>>, &Path) -> T,
+    ) -> T {
+        with_test_home(|state, home| {
+            let data_dir = crate::config::get_app_config_dir();
+            let codex_oauth = Arc::new(tokio::sync::RwLock::new(CodexOAuthManager::new(
+                data_dir.clone(),
+            )));
+            state.proxy_service.set_runtime_ctx(
+                Arc::new(crate::runtime::NoopEventSink),
+                Arc::new(tokio::sync::RwLock::new(CopilotAuthManager::new(
+                    data_dir.clone(),
+                ))),
+                codex_oauth.clone(),
+                Arc::new(tokio::sync::RwLock::new(XaiOAuthManager::new(data_dir))),
+            );
+            test(state, &codex_oauth, home)
+        })
+    }
+
+    fn managed_codex_provider(id: &str, account_id: &str) -> Provider {
+        let mut provider = Provider::with_id(
+            id.to_string(),
+            format!("Managed {id}"),
+            json!({
+                "auth": {},
+                "config": ""
+            }),
+            None,
+        );
+        provider.category = Some("official".to_string());
+        provider.meta = Some(ProviderMeta {
+            auth_binding: Some(AuthBinding {
+                source: AuthBindingSource::ManagedAccount,
+                auth_provider: Some("codex_oauth".to_string()),
+                account_id: Some(account_id.to_string()),
+            }),
+            ..Default::default()
+        });
+        provider
+    }
+
+    #[test]
+    #[serial]
+    fn add_accepts_multiple_unbound_codex_official_cards() {
+        with_test_home(|state, _| {
+            crate::settings::reload_settings().expect("reload settings");
+            state
+                .db
+                .init_default_official_providers()
+                .expect("seed official providers");
+            let fixed_id = crate::database::CODEX_OFFICIAL_PROVIDER_ID;
+            state
+                .db
+                .set_current_provider(AppType::Codex.as_str(), fixed_id)
+                .expect("set database current");
+            crate::settings::set_current_provider(&AppType::Codex, Some(fixed_id))
+                .expect("set local current");
+
+            for id in ["follow-login-a", "follow-login-b"] {
+                let mut provider = Provider::with_id(
+                    id.to_string(),
+                    id.to_string(),
+                    json!({ "auth": {}, "config": "" }),
+                    None,
+                );
+                provider.category = Some("official".to_string());
+                ProviderService::add(state, AppType::Codex, provider, false)
+                    .expect("add unbound Official card");
+            }
+
+            let providers = state
+                .db
+                .get_all_providers(AppType::Codex.as_str())
+                .expect("read providers");
+            assert!(providers.contains_key("follow-login-a"));
+            assert!(providers.contains_key("follow-login-b"));
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn add_first_managed_codex_with_missing_account_leaves_no_provider_or_live_state() {
+        with_test_home(|state, _| {
+            crate::settings::reload_settings().expect("reload settings");
+            let provider = managed_codex_provider("managed-missing", "acct-missing");
+            let live_before = crate::codex_config::CodexLiveStateSnapshot::capture()
+                .expect("capture empty Codex live state");
+
+            ProviderService::add(state, AppType::Codex, provider.clone(), false)
+                .expect_err("missing managed account should fail before add commits");
+
+            assert!(
+                state
+                    .db
+                    .get_provider_by_id(&provider.id, AppType::Codex.as_str())
+                    .expect("query failed managed add")
+                    .is_none(),
+                "failed preflight must not leave an orphan provider row"
+            );
+            assert_eq!(
+                state
+                    .db
+                    .get_current_provider(AppType::Codex.as_str())
+                    .expect("read current after failed add"),
+                None
+            );
+            assert_eq!(
+                crate::codex_config::CodexLiveStateSnapshot::capture()
+                    .expect("capture Codex live after failed add"),
+                live_before,
+                "failed preflight must not mutate Codex live files"
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn add_first_managed_codex_with_reauth_required_account_is_rejected() {
+        with_codex_oauth_test_home(|state, codex_oauth, _| {
+            crate::settings::reload_settings().expect("reload settings");
+            futures::executor::block_on(async {
+                codex_oauth
+                    .read()
+                    .await
+                    .add_test_account_with_access_token("acct-legacy", "managed-token", None)
+                    .await
+                    .expect("seed legacy account without id_token");
+            });
+            let provider = managed_codex_provider("managed-legacy", "acct-legacy");
+
+            let error = ProviderService::add(state, AppType::Codex, provider.clone(), false)
+                .expect_err("reauth-required account must not be written to live auth");
+            assert!(
+                error.to_string().contains("id_token"),
+                "backend should require re-login even if the frontend gate is bypassed: {error}"
+            );
+            assert!(state
+                .db
+                .get_provider_by_id(&provider.id, AppType::Codex.as_str())
+                .expect("query provider")
+                .is_none());
+            assert!(!crate::codex_config::get_codex_auth_path().exists());
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn add_first_managed_codex_current_failure_rolls_back_provider_and_live_state() {
+        with_codex_oauth_test_home(|state, codex_oauth, _| {
+            crate::settings::reload_settings().expect("reload settings");
+            futures::executor::block_on(async {
+                codex_oauth
+                    .read()
+                    .await
+                    .add_test_account_with_access_token(
+                        "acct-managed",
+                        "managed-token",
+                        Some("managed-id-token"),
+                    )
+                    .await
+                    .expect("seed managed Codex OAuth account");
+            });
+
+            let provider = managed_codex_provider("managed-first", "acct-managed");
+            let live_before = crate::codex_config::CodexLiveStateSnapshot::capture()
+                .expect("capture empty Codex live state");
+            {
+                let conn = state.db.conn.lock().expect("lock database");
+                conn.execute_batch(
+                    "CREATE TRIGGER reject_first_managed_current_update
+                     BEFORE UPDATE OF is_current ON providers
+                     WHEN NEW.app_type = 'codex'
+                       AND NEW.id = 'managed-first'
+                       AND NEW.is_current = 1
+                     BEGIN
+                       SELECT RAISE(ABORT, 'forced first managed Codex current failure');
+                     END;",
+                )
+                .expect("install first-current failure trigger");
+            }
+
+            let error = ProviderService::add(state, AppType::Codex, provider.clone(), false)
+                .expect_err("DB current failure should abort managed add");
+            assert!(
+                error
+                    .to_string()
+                    .contains("forced first managed Codex current failure"),
+                "add should surface the DB current failure, got: {error}"
+            );
+            assert!(
+                state
+                    .db
+                    .get_provider_by_id(&provider.id, AppType::Codex.as_str())
+                    .expect("query rolled back provider")
+                    .is_none(),
+                "failed current commit must remove the newly inserted provider row"
+            );
+            assert_eq!(
+                state
+                    .db
+                    .get_current_provider(AppType::Codex.as_str())
+                    .expect("read current after rollback"),
+                None
+            );
+            assert_eq!(
+                crate::codex_config::CodexLiveStateSnapshot::capture()
+                    .expect("capture Codex live after rollback"),
+                live_before,
+                "failed current commit must exactly restore Codex live files"
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn update_keeps_official_provider_id_when_binding_and_unbinding() {
+        with_codex_oauth_test_home(|state, codex_oauth, _| {
+            crate::settings::reload_settings().expect("reload settings");
+            futures::executor::block_on(async {
+                codex_oauth
+                    .read()
+                    .await
+                    .add_test_account_with_access_token(
+                        "acct-managed",
+                        "managed-access-token",
+                        Some("managed-id-token"),
+                    )
+                    .await
+                    .expect("seed managed account");
+            });
+
+            let provider_id = crate::database::CODEX_OFFICIAL_PROVIDER_ID;
+            let mut unbound = Provider::with_id(
+                provider_id.to_string(),
+                "OpenAI Official".to_string(),
+                json!({ "auth": {}, "config": "" }),
+                None,
+            );
+            unbound.category = Some("official".to_string());
+            state
+                .db
+                .save_provider(AppType::Codex.as_str(), &unbound)
+                .expect("save unbound card");
+            state
+                .db
+                .set_current_provider(AppType::Codex.as_str(), provider_id)
+                .expect("set database current");
+            crate::settings::set_current_provider(&AppType::Codex, Some(provider_id))
+                .expect("set local current");
+
+            let mut bound = managed_codex_provider(provider_id, "acct-managed");
+            bound.name = unbound.name.clone();
+            ProviderService::update(state, AppType::Codex, Some(provider_id), bound)
+                .expect("bind managed account");
+
+            let saved_bound = state
+                .db
+                .get_provider_by_id(provider_id, AppType::Codex.as_str())
+                .expect("query bound card")
+                .expect("bound card should keep its ID");
+            assert_eq!(
+                managed_codex_oauth_account_id(&saved_bound).as_deref(),
+                Some("acct-managed")
+            );
+            assert_eq!(
+                state
+                    .db
+                    .get_current_provider(AppType::Codex.as_str())
+                    .expect("read database current")
+                    .as_deref(),
+                Some(provider_id)
+            );
+            assert_eq!(
+                crate::settings::get_current_provider(&AppType::Codex).as_deref(),
+                Some(provider_id)
+            );
+
+            // Upstream also injects a live-only "unified session bucket" route
+            // into `config` here and asserts the unbind strips it. That feature
+            // (`codex_config::inject_codex_unified_session_bucket` /
+            // `strip_codex_unified_session_bucket_from_settings`) predates this
+            // commit and does not exist in the fork, so the injection is dropped
+            // while the `config` assertion below is kept as-is.
+            ProviderService::update(state, AppType::Codex, Some(provider_id), unbound)
+                .expect("unbind managed account");
+
+            let saved_unbound = state
+                .db
+                .get_provider_by_id(provider_id, AppType::Codex.as_str())
+                .expect("query unbound card")
+                .expect("unbound card should keep its ID");
+            assert!(managed_codex_oauth_account_id(&saved_unbound).is_none());
+            assert_eq!(saved_unbound.settings_config["config"], json!(""));
+            assert_eq!(
+                state
+                    .db
+                    .get_current_provider(AppType::Codex.as_str())
+                    .expect("read database current")
+                    .as_deref(),
+                Some(provider_id)
+            );
+            assert_eq!(
+                crate::settings::get_current_provider(&AppType::Codex).as_deref(),
+                Some(provider_id)
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn managed_codex_direct_update_adopts_outgoing_cli_rotation_and_commits_target_binding() {
+        with_codex_oauth_test_home(|state, codex_oauth, _| {
+            crate::settings::reload_settings().expect("reload settings");
+            futures::executor::block_on(async {
+                codex_oauth
+                    .read()
+                    .await
+                    .add_test_account_with_access_token(
+                        "acct-a",
+                        "managed-access-a",
+                        Some("managed-id-a"),
+                    )
+                    .await
+                    .expect("seed account A");
+                codex_oauth
+                    .read()
+                    .await
+                    .add_test_account_with_access_token(
+                        "acct-b",
+                        "managed-access-b",
+                        Some("managed-id-b"),
+                    )
+                    .await
+                    .expect("seed account B");
+            });
+
+            let provider = managed_codex_provider("managed-official-a", "acct-a");
+            state
+                .db
+                .save_provider(AppType::Codex.as_str(), &provider)
+                .expect("save managed official provider");
+            ProviderService::switch(state, AppType::Codex, &provider.id)
+                .expect("activate managed account A");
+            assert!(
+                futures::executor::block_on(state.db.get_live_backup(AppType::Codex.as_str()))
+                    .expect("read initial live backup")
+                    .is_none(),
+                "direct update precondition requires no takeover backup"
+            );
+
+            write_json_file(
+                &crate::codex_config::get_codex_auth_path(),
+                &crate::codex_config::codex_managed_oauth_auth_value(
+                    "acct-a",
+                    "cli-access-a1",
+                    Some("cli-id-a1"),
+                    "cli-refresh-a1",
+                    "2099-03-01T00:00:00Z",
+                ),
+            )
+            .expect("simulate account A CLI rotation");
+
+            let mut updated = provider.clone();
+            updated.name = "OpenAI Official B".to_string();
+            updated
+                .meta
+                .as_mut()
+                .and_then(|meta| meta.auth_binding.as_mut())
+                .expect("managed binding")
+                .account_id = Some("acct-b".to_string());
+
+            ProviderService::update(state, AppType::Codex, None, updated.clone())
+                .expect("directly update managed binding from A to B");
+
+            assert_eq!(
+                futures::executor::block_on(async {
+                    codex_oauth
+                        .read()
+                        .await
+                        .test_refresh_token_for_account("acct-a")
+                        .await
+                })
+                .as_deref(),
+                Some("cli-refresh-a1"),
+                "direct update must adopt A's CLI generation before overwriting live auth"
+            );
+            let saved = state
+                .db
+                .get_provider_by_id(&provider.id, AppType::Codex.as_str())
+                .expect("read updated provider")
+                .expect("updated provider exists");
+            assert_eq!(saved.name, updated.name);
+            assert_eq!(
+                saved
+                    .meta
+                    .as_ref()
+                    .and_then(|meta| meta.managed_account_id_for("codex_oauth"))
+                    .as_deref(),
+                Some("acct-b")
+            );
+
+            let live_b: Value = read_json_file(&crate::codex_config::get_codex_auth_path())
+                .expect("read account B live auth");
+            assert_eq!(
+                live_b.pointer("/tokens/account_id").and_then(Value::as_str),
+                Some("acct-b")
+            );
+            assert!(
+                crate::codex_config::codex_auth_matches_recorded_managed_oauth(&live_b, "acct-b")
+                    .expect("check account B marker"),
+                "clearing outgoing account A must not remove account B's marker"
+            );
+            assert!(
+                futures::executor::block_on(state.db.get_live_backup(AppType::Codex.as_str()))
+                    .expect("read live backup after direct update")
+                    .is_none(),
+                "direct update must not create a takeover backup"
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn managed_codex_update_rechecks_current_after_waiting_for_switch_lock() {
+        with_codex_oauth_test_home(|state, codex_oauth, _| {
+            crate::settings::reload_settings().expect("reload settings");
+            futures::executor::block_on(async {
+                codex_oauth
+                    .read()
+                    .await
+                    .add_test_account_with_access_token(
+                        "acct-managed-a",
+                        "managed-token-a",
+                        Some("managed-id-a"),
+                    )
+                    .await
+                    .expect("seed managed account A");
+                codex_oauth
+                    .read()
+                    .await
+                    .add_test_account_with_access_token(
+                        "acct-managed-b",
+                        "managed-token-b",
+                        Some("managed-id-b"),
+                    )
+                    .await
+                    .expect("seed managed account B");
+            });
+
+            let mut official = Provider::with_id(
+                "managed-official-a".to_string(),
+                "OpenAI Official".to_string(),
+                json!({ "auth": {}, "config": "model = \"gpt-5.4\"\n" }),
+                None,
+            );
+            official.category = Some("official".to_string());
+            official.meta = Some(ProviderMeta {
+                auth_binding: Some(AuthBinding {
+                    source: AuthBindingSource::ManagedAccount,
+                    auth_provider: Some("codex_oauth".to_string()),
+                    account_id: Some("acct-managed-a".to_string()),
+                }),
+                ..Default::default()
+            });
+            state
+                .db
+                .save_provider(AppType::Codex.as_str(), &official)
+                .expect("save official A");
+            state
+                .db
+                .set_current_provider(AppType::Codex.as_str(), &official.id)
+                .expect("set official current");
+            crate::settings::set_current_provider(&AppType::Codex, Some(&official.id))
+                .expect("set local official current");
+
+            let mut third_party = Provider::with_id(
+                "third-party-current".to_string(),
+                "Third Party".to_string(),
+                json!({
+                    "auth": { "OPENAI_API_KEY": "sk-third" },
+                    "config": r#"model_provider = "third"
+[model_providers.third]
+name = "Third"
+base_url = "https://third.example/v1"
+wire_api = "responses"
+"#
+                }),
+                None,
+            );
+            third_party.category = Some("custom".to_string());
+            state
+                .db
+                .save_provider(AppType::Codex.as_str(), &third_party)
+                .expect("save third party");
+
+            let mut updated = official.clone();
+            updated
+                .meta
+                .as_mut()
+                .and_then(|meta| meta.auth_binding.as_mut())
+                .expect("managed binding")
+                .account_id = Some("acct-managed-b".to_string());
+
+            let switch_guard = futures::executor::block_on(
+                state
+                    .proxy_service
+                    .lock_switch_for_app(AppType::Codex.as_str()),
+            );
+            let (started_tx, started_rx) = std::sync::mpsc::channel();
+            let (update_result, live_after_switch) = std::thread::scope(|scope| {
+                let updater = scope.spawn(move || {
+                    started_tx.send(()).expect("signal updater start");
+                    ProviderService::update(state, AppType::Codex, None, updated)
+                });
+                started_rx.recv().expect("wait for updater");
+
+                // This emulates a switch that already owns the per-app lock and
+                // commits a different current target before the queued update is
+                // allowed to inspect current/existing state.
+                state
+                    .db
+                    .set_current_provider(AppType::Codex.as_str(), &third_party.id)
+                    .expect("switch DB current to third party");
+                crate::settings::set_current_provider(
+                    &AppType::Codex,
+                    Some(third_party.id.as_str()),
+                )
+                .expect("switch local current to third party");
+                write_live_with_common_config_for_state(state, &AppType::Codex, &third_party)
+                    .expect("write third-party live");
+                let live_after_switch = crate::codex_config::CodexLiveStateSnapshot::capture()
+                    .expect("capture third-party live");
+
+                drop(switch_guard);
+                let result = updater.join().expect("join managed updater");
+                (result, live_after_switch)
+            });
+
+            update_result.expect("save queued non-current managed row");
+            assert_eq!(
+                state
+                    .db
+                    .get_current_provider(AppType::Codex.as_str())
+                    .expect("read DB current")
+                    .as_deref(),
+                Some(third_party.id.as_str())
+            );
+            assert_eq!(
+                crate::codex_config::CodexLiveStateSnapshot::capture()
+                    .expect("capture live after queued update"),
+                live_after_switch,
+                "queued provider edit must not rewrite the newly switched current live"
+            );
+            let saved_official = state
+                .db
+                .get_provider_by_id(&official.id, AppType::Codex.as_str())
+                .expect("read saved official")
+                .expect("official exists");
+            assert_eq!(
+                saved_official
+                    .meta
+                    .as_ref()
+                    .and_then(|meta| meta.managed_account_id_for("codex_oauth")),
+                Some("acct-managed-b".to_string())
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn same_account_managed_codex_update_rejects_equal_timestamp_refresh_conflict() {
+        with_codex_oauth_test_home(|state, codex_oauth, _| {
+            crate::settings::reload_settings().expect("reload settings");
+            futures::executor::block_on(async {
+                codex_oauth
+                    .read()
+                    .await
+                    .add_test_account_with_access_token(
+                        "acct-managed",
+                        "managed-access",
+                        Some("managed-id"),
+                    )
+                    .await
+                    .expect("seed managed account");
+            });
+
+            let provider = managed_codex_provider("managed-same-account", "acct-managed");
+            state
+                .db
+                .save_provider(AppType::Codex.as_str(), &provider)
+                .expect("save managed provider");
+            ProviderService::switch(state, AppType::Codex, &provider.id)
+                .expect("activate managed provider");
+
+            // Different refresh material at the exact manager generation
+            // timestamp is ambiguous at millisecond precision. A same-account
+            // update has no outgoing-account guard, so its managed bundle
+            // preflight itself must refuse to overwrite this CLI generation.
+            futures::executor::block_on(async {
+                codex_oauth
+                    .read()
+                    .await
+                    .test_set_token_updated_at_ms("acct-managed", 1_700_000_000_000)
+                    .await
+            });
+            let cli_live_auth = crate::codex_config::codex_managed_oauth_auth_value(
+                "acct-managed",
+                "cli-access-r1",
+                Some("cli-id-r1"),
+                "cli-refresh-r1",
+                "2023-11-14T22:13:20Z",
+            );
+            write_json_file(&crate::codex_config::get_codex_auth_path(), &cli_live_auth)
+                .expect("seed equal-timestamp CLI generation");
+
+            let mut updated = provider.clone();
+            updated.name = "Managed updated".to_string();
+            let error = ProviderService::update(state, AppType::Codex, None, updated)
+                .expect_err("ambiguous same-account generation must block the live write");
+            assert!(
+                error
+                    .to_string()
+                    .contains("无法安全判断 refresh token 新旧"),
+                "update should explain the safe-write rejection: {error}"
+            );
+
+            let live_after: Value = read_json_file(&crate::codex_config::get_codex_auth_path())
+                .expect("read preserved CLI auth");
+            assert_eq!(
+                live_after, cli_live_auth,
+                "same-account managed update must not overwrite ambiguous CLI token material"
+            );
+            assert_eq!(
+                futures::executor::block_on(async {
+                    codex_oauth
+                        .read()
+                        .await
+                        .test_refresh_token_for_account("acct-managed")
+                        .await
+                })
+                .as_deref(),
+                Some("test-refresh-token"),
+                "ambiguous CLI material must not replace the manager generation either"
+            );
+            assert_eq!(
+                state
+                    .db
+                    .get_provider_by_id(&provider.id, AppType::Codex.as_str())
+                    .expect("read provider after rejected update")
+                    .expect("provider remains present")
+                    .name,
+                provider.name,
+                "rejected preflight must leave the provider row unchanged"
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn switch_to_managed_codex_official_with_unresolvable_account_keeps_current_unchanged() {
+        // The runtime context is injected on purpose: the failure under test is
+        // "bound account cannot be resolved", not "no manager available".
+        with_codex_oauth_test_home(|state, _codex_oauth, _| {
+            crate::settings::reload_settings().expect("reload settings");
+
+            // 基线：一个普通第三方 provider，可正常切换，作为初始 current。
+            let mut baseline = Provider::with_id(
+                "baseline".to_string(),
+                "Baseline".to_string(),
+                json!({ "auth": { "OPENAI_API_KEY": "sk-baseline" }, "config": "" }),
+                None,
+            );
+            baseline.category = Some("custom".to_string());
+
+            // 托管 official provider，绑定一个 manager 中不存在的账号：切换预检
+            // 取 token 必然失败。
+            let mut managed = Provider::with_id(
+                "managed-official".to_string(),
+                "Managed Official".to_string(),
+                json!({ "auth": {}, "config": "" }),
+                None,
+            );
+            managed.category = Some("official".to_string());
+            managed.meta = Some(ProviderMeta {
+                auth_binding: Some(AuthBinding {
+                    source: AuthBindingSource::ManagedAccount,
+                    auth_provider: Some("codex_oauth".to_string()),
+                    account_id: Some("acct-missing".to_string()),
+                }),
+                ..Default::default()
+            });
+
+            state
+                .db
+                .save_provider(AppType::Codex.as_str(), &baseline)
+                .expect("save baseline");
+            state
+                .db
+                .save_provider(AppType::Codex.as_str(), &managed)
+                .expect("save managed");
+
+            ProviderService::switch(state, AppType::Codex, "baseline").expect("switch to baseline");
+
+            // 切到绑定了不存在账号的托管 provider：预检失败 → 返回 Err。
+            let result = ProviderService::switch(state, AppType::Codex, "managed-official");
+            assert!(
+                result.is_err(),
+                "switch must fail when the managed OAuth token cannot be resolved"
+            );
+
+            // current 必须仍是 baseline：预检在提交 current 之前失败，不留下
+            // 「DB/UI 指向新 provider、但 live 仍是旧 provider」的不一致状态。
+            let current =
+                crate::settings::get_effective_current_provider(&state.db, &AppType::Codex)
+                    .expect("read current");
+            assert_eq!(
+                current.as_deref(),
+                Some("baseline"),
+                "a failed managed switch must not move current off the previous provider"
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn switch_from_managed_codex_official_to_unbound_clears_live_without_backfilling_token() {
+        with_codex_oauth_test_home(|state, codex_oauth, _| {
+            crate::settings::reload_settings().expect("reload settings");
+            futures::executor::block_on(async {
+                codex_oauth
+                    .read()
+                    .await
+                    .add_test_account_with_access_token(
+                        "acct-managed",
+                        "managed-token",
+                        Some("managed-id-token"),
+                    )
+                    .await
+                    .expect("seed managed Codex OAuth account");
+            });
+
+            let mut managed = Provider::with_id(
+                "managed-official".to_string(),
+                "Managed Official".to_string(),
+                json!({
+                    "auth": {},
+                    "config": ""
+                }),
+                None,
+            );
+            managed.category = Some("official".to_string());
+            managed.meta = Some(ProviderMeta {
+                auth_binding: Some(AuthBinding {
+                    source: AuthBindingSource::ManagedAccount,
+                    auth_provider: Some("codex_oauth".to_string()),
+                    account_id: Some("acct-managed".to_string()),
+                }),
+                ..Default::default()
+            });
+
+            let mut unbound = Provider::with_id(
+                "unbound-official".to_string(),
+                "Unbound Official".to_string(),
+                json!({
+                    "auth": {},
+                    "config": ""
+                }),
+                None,
+            );
+            unbound.category = Some("official".to_string());
+
+            state
+                .db
+                .save_provider(AppType::Codex.as_str(), &managed)
+                .expect("save managed provider");
+            state
+                .db
+                .save_provider(AppType::Codex.as_str(), &unbound)
+                .expect("save unbound provider");
+
+            ProviderService::switch(state, AppType::Codex, "managed-official")
+                .expect("switch to managed official");
+            let live_auth: Value = read_json_file(&crate::codex_config::get_codex_auth_path())
+                .expect("read managed live auth");
+            assert_eq!(
+                live_auth
+                    .pointer("/tokens/access_token")
+                    .and_then(Value::as_str),
+                Some("managed-token"),
+                "managed switch should write the selected ChatGPT token to live auth"
+            );
+
+            // Simulate a bare Codex CLI self-refresh. The app marker still
+            // describes the pre-refresh write, while both access and refresh
+            // token material on disk have rotated.
+            let rotated_live_auth = crate::codex_config::codex_managed_oauth_auth_value(
+                "acct-managed",
+                "cli-rotated-access",
+                Some("cli-rotated-id"),
+                "cli-rotated-refresh",
+                "2099-01-02T03:04:05Z",
+            );
+            write_json_file(
+                &crate::codex_config::get_codex_auth_path(),
+                &rotated_live_auth,
+            )
+            .expect("simulate Codex CLI token rotation");
+
+            ProviderService::switch(state, AppType::Codex, "unbound-official")
+                .expect("switch to unbound official");
+
+            assert!(
+                !crate::codex_config::get_codex_auth_path().exists(),
+                "switching to an unbound official provider should clear the recorded managed live auth"
+            );
+            assert_eq!(
+                futures::executor::block_on(async {
+                    codex_oauth
+                        .read()
+                        .await
+                        .test_refresh_token_for_account("acct-managed")
+                        .await
+                })
+                .as_deref(),
+                Some("cli-rotated-refresh"),
+                "switch-away must adopt the CLI-rotated refresh token before deleting live auth"
+            );
+
+            let saved_managed = state
+                .db
+                .get_provider_by_id("managed-official", AppType::Codex.as_str())
+                .expect("query managed provider")
+                .expect("managed provider should exist");
+            assert_eq!(
+                saved_managed.settings_config.get("auth"),
+                Some(&json!({})),
+                "switch-away backfill must not persist the managed access token into provider storage"
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn managed_codex_switch_adopts_outgoing_cli_rotation_before_account_or_key_overwrite() {
+        with_codex_oauth_test_home(|state, codex_oauth, _| {
+            crate::settings::reload_settings().expect("reload settings");
+            futures::executor::block_on(async {
+                codex_oauth
+                    .read()
+                    .await
+                    .add_test_account_with_access_token(
+                        "acct-a",
+                        "managed-access-a",
+                        Some("managed-id-a"),
+                    )
+                    .await
+                    .expect("seed account A");
+                codex_oauth
+                    .read()
+                    .await
+                    .add_test_account_with_access_token(
+                        "acct-b",
+                        "managed-access-b",
+                        Some("managed-id-b"),
+                    )
+                    .await
+                    .expect("seed account B");
+            });
+
+            let provider_a = managed_codex_provider("managed-a", "acct-a");
+            let provider_b = managed_codex_provider("managed-b", "acct-b");
+            let mut third_party = Provider::with_id(
+                "third-party".to_string(),
+                "Third Party".to_string(),
+                json!({
+                    "auth": { "OPENAI_API_KEY": "sk-third-party" },
+                    "config": r#"model_provider = "third"
+[model_providers.third]
+name = "Third"
+base_url = "https://third.example/v1"
+wire_api = "responses"
+"#
+                }),
+                None,
+            );
+            third_party.category = Some("custom".to_string());
+            for provider in [&provider_a, &provider_b, &third_party] {
+                state
+                    .db
+                    .save_provider(AppType::Codex.as_str(), provider)
+                    .expect("save provider");
+            }
+
+            ProviderService::switch(state, AppType::Codex, &provider_a.id)
+                .expect("activate managed A");
+            write_json_file(
+                &crate::codex_config::get_codex_auth_path(),
+                &crate::codex_config::codex_managed_oauth_auth_value(
+                    "acct-a",
+                    "cli-access-a1",
+                    Some("cli-id-a1"),
+                    "cli-refresh-a1",
+                    "2099-01-02T00:00:00Z",
+                ),
+            )
+            .expect("rotate account A live auth");
+
+            ProviderService::switch(state, AppType::Codex, &provider_b.id)
+                .expect("switch managed A to managed B");
+            assert_eq!(
+                futures::executor::block_on(async {
+                    codex_oauth
+                        .read()
+                        .await
+                        .test_refresh_token_for_account("acct-a")
+                        .await
+                })
+                .as_deref(),
+                Some("cli-refresh-a1"),
+                "A's CLI generation must be adopted before B overwrites auth.json"
+            );
+            let live_b: Value =
+                read_json_file(&crate::codex_config::get_codex_auth_path()).expect("read B auth");
+            assert_eq!(
+                live_b.pointer("/tokens/account_id").and_then(Value::as_str),
+                Some("acct-b")
+            );
+
+            write_json_file(
+                &crate::codex_config::get_codex_auth_path(),
+                &crate::codex_config::codex_managed_oauth_auth_value(
+                    "acct-b",
+                    "cli-access-b1",
+                    Some("cli-id-b1"),
+                    "cli-refresh-b1",
+                    "2099-01-03T00:00:00Z",
+                ),
+            )
+            .expect("rotate account B live auth");
+
+            ProviderService::switch(state, AppType::Codex, &third_party.id)
+                .expect("switch managed B to API-key provider");
+            assert_eq!(
+                futures::executor::block_on(async {
+                    codex_oauth
+                        .read()
+                        .await
+                        .test_refresh_token_for_account("acct-b")
+                        .await
+                })
+                .as_deref(),
+                Some("cli-refresh-b1"),
+                "B's CLI generation must be adopted before third-party auth overwrites auth.json"
+            );
+            let live_third_party: Value =
+                read_json_file(&crate::codex_config::get_codex_auth_path())
+                    .expect("read third-party auth");
+            assert_eq!(
+                live_third_party
+                    .get("OPENAI_API_KEY")
+                    .and_then(Value::as_str),
+                Some("sk-third-party")
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn managed_codex_switch_db_current_failure_restores_live_bundle_and_current() {
+        with_codex_oauth_test_home(|state, codex_oauth, _| {
+            crate::settings::reload_settings().expect("reload settings");
+            futures::executor::block_on(async {
+                codex_oauth
+                    .read()
+                    .await
+                    .add_test_account_with_access_token(
+                        "acct-managed-a",
+                        "managed-token-a",
+                        Some("managed-id-token-a"),
+                    )
+                    .await
+                    .expect("seed first managed Codex OAuth account");
+                codex_oauth
+                    .read()
+                    .await
+                    .add_test_account_with_access_token(
+                        "acct-managed-b",
+                        "managed-token-b",
+                        Some("managed-id-token-b"),
+                    )
+                    .await
+                    .expect("seed second managed Codex OAuth account");
+            });
+
+            let managed_provider = |id: &str, account_id: &str, model: &str| {
+                let mut provider = Provider::with_id(
+                    id.to_string(),
+                    format!("Managed {id}"),
+                    json!({
+                        "auth": {},
+                        "config": format!("model = \"{model}\"\n"),
+                        "modelCatalog": {
+                            "models": [{ "model": model }]
+                        }
+                    }),
+                    None,
+                );
+                provider.category = Some("official".to_string());
+                provider.meta = Some(ProviderMeta {
+                    auth_binding: Some(AuthBinding {
+                        source: AuthBindingSource::ManagedAccount,
+                        auth_provider: Some("codex_oauth".to_string()),
+                        account_id: Some(account_id.to_string()),
+                    }),
+                    ..Default::default()
+                });
+                provider
+            };
+
+            let provider_a = managed_provider("managed-a", "acct-managed-a", "gpt-5.4-managed-a");
+            let provider_b = managed_provider("managed-b", "acct-managed-b", "gpt-5.4-managed-b");
+            state
+                .db
+                .save_provider(AppType::Codex.as_str(), &provider_a)
+                .expect("save first managed provider");
+            state
+                .db
+                .save_provider(AppType::Codex.as_str(), &provider_b)
+                .expect("save second managed provider");
+
+            ProviderService::switch(state, AppType::Codex, &provider_a.id)
+                .expect("activate first managed provider");
+            let auth_before: Value = read_json_file(&crate::codex_config::get_codex_auth_path())
+                .expect("read first managed auth");
+            assert!(
+                crate::codex_config::get_codex_config_path().exists(),
+                "baseline must include config.toml"
+            );
+            assert!(
+                crate::codex_config::get_codex_model_catalog_path().exists(),
+                "baseline must include the generated model catalog"
+            );
+            assert!(
+                crate::codex_config::codex_auth_matches_recorded_managed_oauth(
+                    &auth_before,
+                    "acct-managed-a",
+                )
+                .expect("check first managed auth marker"),
+                "baseline must include a marker owned by the first managed account"
+            );
+            let live_before = crate::codex_config::CodexLiveStateSnapshot::capture()
+                .expect("capture auth/config/catalog/marker before failed switch");
+
+            {
+                let conn = state.db.conn.lock().expect("lock database");
+                conn.execute_batch(
+                    "CREATE TRIGGER reject_managed_b_current_update
+                     BEFORE UPDATE OF is_current ON providers
+                     WHEN NEW.app_type = 'codex'
+                       AND NEW.id = 'managed-b'
+                       AND NEW.is_current = 1
+                     BEGIN
+                       SELECT RAISE(ABORT, 'forced managed Codex current failure');
+                     END;",
+                )
+                .expect("install current-provider failure trigger");
+            }
+
+            let error = ProviderService::switch(state, AppType::Codex, &provider_b.id)
+                .expect_err("DB current failure should abort managed switch");
+            assert!(
+                error
+                    .to_string()
+                    .contains("forced managed Codex current failure"),
+                "switch should surface the DB commit failure, got: {error}"
+            );
+
+            let live_after = crate::codex_config::CodexLiveStateSnapshot::capture()
+                .expect("capture auth/config/catalog/marker after rollback");
+            assert_eq!(
+                live_after, live_before,
+                "failed switch must exactly restore auth, config, catalog, and managed marker"
+            );
+            assert_eq!(
+                crate::settings::get_current_provider(&AppType::Codex).as_deref(),
+                Some(provider_a.id.as_str()),
+                "failed switch must restore the device-local current provider"
+            );
+            assert_eq!(
+                state
+                    .db
+                    .get_current_provider(AppType::Codex.as_str())
+                    .expect("read DB current after rollback")
+                    .as_deref(),
+                Some(provider_a.id.as_str()),
+                "failed switch must keep the DB current provider unchanged"
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn switch_away_rejects_legacy_refresh_conflict_on_every_retry() {
+        with_codex_oauth_test_home(|state, codex_oauth, _| {
+            crate::settings::reload_settings().expect("reload settings");
+            futures::executor::block_on(async {
+                codex_oauth
+                    .read()
+                    .await
+                    .add_test_account_with_access_token(
+                        "acct-legacy",
+                        "managed-access",
+                        Some("managed-id"),
+                    )
+                    .await
+                    .expect("seed managed account");
+            });
+
+            let managed = managed_codex_provider("managed-legacy", "acct-legacy");
+            let mut unbound = Provider::with_id(
+                "unbound-official".to_string(),
+                "Unbound Official".to_string(),
+                json!({
+                    "auth": {},
+                    "config": ""
+                }),
+                None,
+            );
+            unbound.category = Some("official".to_string());
+            for provider in [&managed, &unbound] {
+                state
+                    .db
+                    .save_provider(AppType::Codex.as_str(), provider)
+                    .expect("save provider");
+            }
+            ProviderService::switch(state, AppType::Codex, &managed.id)
+                .expect("activate managed provider");
+
+            futures::executor::block_on(async {
+                codex_oauth
+                    .read()
+                    .await
+                    .test_set_token_updated_at_ms("acct-legacy", 0)
+                    .await
+            });
+            let cli_live_auth = crate::codex_config::codex_managed_oauth_auth_value(
+                "acct-legacy",
+                "cli-access-r1",
+                Some("cli-id-r1"),
+                "cli-refresh-r1",
+                "2023-11-14T22:13:20Z",
+            );
+            write_json_file(&crate::codex_config::get_codex_auth_path(), &cli_live_auth)
+                .expect("seed CLI generation against legacy manager state");
+
+            for attempt in 1..=2 {
+                let error = ProviderService::switch(state, AppType::Codex, &unbound.id)
+                    .expect_err("legacy conflict must block every switch-away retry");
+                assert!(
+                    error
+                        .to_string()
+                        .contains("无法安全判断 refresh token 新旧"),
+                    "attempt {attempt} should remain ambiguous: {error}"
+                );
+                let live_after: Value = read_json_file(&crate::codex_config::get_codex_auth_path())
+                    .expect("read preserved CLI auth");
+                assert_eq!(
+                    live_after, cli_live_auth,
+                    "attempt {attempt} must not overwrite or delete the CLI generation"
+                );
+                assert_eq!(
+                    state
+                        .db
+                        .get_current_provider(AppType::Codex.as_str())
+                        .expect("read current provider")
+                        .as_deref(),
+                    Some(managed.id.as_str()),
+                    "attempt {attempt} must not commit the target provider"
+                );
+            }
+
+            assert_eq!(
+                futures::executor::block_on(async {
+                    codex_oauth
+                        .read()
+                        .await
+                        .test_refresh_token_for_account("acct-legacy")
+                        .await
+                })
+                .as_deref(),
+                Some("test-refresh-token"),
+                "ambiguous legacy retries must keep manager material unchanged"
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn codex_auth_center_remove_and_logout_clear_live_credentials_and_marker() {
+        with_codex_oauth_test_home(|state, codex_oauth, _| {
+            crate::settings::reload_settings().expect("reload settings");
+            futures::executor::block_on(async {
+                codex_oauth
+                    .read()
+                    .await
+                    .add_test_account_with_access_token(
+                        "acct-managed",
+                        "managed-access",
+                        Some("managed-id"),
+                    )
+                    .await
+                    .expect("seed managed account");
+            });
+            let provider = managed_codex_provider("managed-auth-center", "acct-managed");
+            state
+                .db
+                .save_provider(AppType::Codex.as_str(), &provider)
+                .expect("save managed provider");
+            ProviderService::switch(state, AppType::Codex, &provider.id)
+                .expect("activate managed provider");
+            assert!(crate::codex_config::get_codex_auth_path().exists());
+            assert!(crate::codex_config::codex_managed_oauth_live_auth_marker_exists());
+
+            futures::executor::block_on(async {
+                codex_oauth
+                    .read()
+                    .await
+                    .remove_account("acct-managed")
+                    .await
+            })
+            .expect("remove managed account");
+            assert!(
+                !crate::codex_config::get_codex_auth_path().exists(),
+                "removing the active account must delete its refreshable live auth"
+            );
+            assert!(
+                !crate::codex_config::codex_managed_oauth_live_auth_marker_exists(),
+                "removing the active account must delete its marker"
+            );
+            assert_eq!(
+                state
+                    .db
+                    .get_provider_by_id(&provider.id, AppType::Codex.as_str())
+                    .expect("read provider")
+                    .and_then(|provider| provider.meta)
+                    .and_then(|meta| meta.managed_account_id_for("codex_oauth"))
+                    .as_deref(),
+                Some("acct-managed"),
+                "the binding is retained so re-login with the same account can recover it"
+            );
+
+            futures::executor::block_on(async {
+                codex_oauth
+                    .read()
+                    .await
+                    .add_test_account_with_access_token(
+                        "acct-managed",
+                        "managed-access-2",
+                        Some("managed-id-2"),
+                    )
+                    .await
+                    .expect("re-login managed account");
+            });
+            ProviderService::switch(state, AppType::Codex, &provider.id)
+                .expect("reactivate managed provider after re-login");
+            assert!(crate::codex_config::get_codex_auth_path().exists());
+
+            futures::executor::block_on(async { codex_oauth.read().await.clear_auth().await })
+                .expect("logout all managed accounts");
+            assert!(!crate::codex_config::get_codex_auth_path().exists());
+            assert!(!crate::codex_config::codex_managed_oauth_live_auth_marker_exists());
+            assert!(futures::executor::block_on(async {
+                codex_oauth.read().await.list_accounts().await
+            })
+            .is_empty());
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn codex_auth_center_removal_waits_for_provider_switch_lock() {
+        with_codex_oauth_test_home(|state, codex_oauth, _| {
+            crate::settings::reload_settings().expect("reload settings");
+            futures::executor::block_on(async {
+                codex_oauth
+                    .read()
+                    .await
+                    .add_test_account_with_access_token(
+                        "acct-managed",
+                        "managed-access",
+                        Some("managed-id"),
+                    )
+                    .await
+                    .expect("seed managed account");
+            });
+
+            let switch_guard = futures::executor::block_on(
+                state
+                    .proxy_service
+                    .lock_switch_for_app(AppType::Codex.as_str()),
+            );
+            let (started_tx, started_rx) = std::sync::mpsc::channel();
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
+            std::thread::scope(|scope| {
+                scope.spawn(|| {
+                    started_tx.send(()).expect("signal removal start");
+                    let result = futures::executor::block_on(
+                        crate::proxy::runtime_ctx::remove_managed_account_serialized(
+                            &state.proxy_service,
+                            codex_oauth,
+                            "acct-managed",
+                        ),
+                    );
+                    done_tx.send(result).expect("send removal result");
+                });
+                started_rx.recv().expect("wait for removal task");
+                assert!(
+                    done_rx
+                        .recv_timeout(std::time::Duration::from_millis(100))
+                        .is_err(),
+                    "Auth Center removal must wait while a provider transaction owns the Codex lock"
+                );
+                drop(switch_guard);
+                done_rx
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .expect("removal should finish after lock release")
+                    .expect("remove managed account");
+            });
+            assert!(futures::executor::block_on(async {
+                codex_oauth.read().await.list_accounts().await
+            })
+            .is_empty());
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn codex_auth_center_logout_waits_for_provider_switch_lock() {
+        with_codex_oauth_test_home(|state, codex_oauth, _| {
+            crate::settings::reload_settings().expect("reload settings");
+            futures::executor::block_on(async {
+                codex_oauth
+                    .read()
+                    .await
+                    .add_test_account_with_access_token(
+                        "acct-managed",
+                        "managed-access",
+                        Some("managed-id"),
+                    )
+                    .await
+                    .expect("seed managed account");
+            });
+            let provider = managed_codex_provider("managed-logout-lock", "acct-managed");
+            state
+                .db
+                .save_provider(AppType::Codex.as_str(), &provider)
+                .expect("save managed provider");
+            ProviderService::switch(state, AppType::Codex, &provider.id)
+                .expect("activate managed provider");
+            assert!(crate::codex_config::get_codex_auth_path().exists());
+            assert!(crate::codex_config::codex_managed_oauth_live_auth_marker_exists());
+
+            let switch_guard = futures::executor::block_on(
+                state
+                    .proxy_service
+                    .lock_switch_for_app(AppType::Codex.as_str()),
+            );
+            let (started_tx, started_rx) = std::sync::mpsc::channel();
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
+            std::thread::scope(|scope| {
+                scope.spawn(|| {
+                    started_tx.send(()).expect("signal logout start");
+                    let result = futures::executor::block_on(
+                        crate::proxy::runtime_ctx::clear_managed_auth_serialized(
+                            &state.proxy_service,
+                            codex_oauth,
+                        ),
+                    );
+                    done_tx.send(result).expect("send logout result");
+                });
+                started_rx.recv().expect("wait for logout task");
+                assert!(
+                    done_rx
+                        .recv_timeout(std::time::Duration::from_millis(100))
+                        .is_err(),
+                    "Auth Center logout must wait while a provider transaction owns the Codex lock"
+                );
+                drop(switch_guard);
+                done_rx
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .expect("logout should finish after lock release")
+                    .expect("logout managed accounts");
+            });
+
+            assert!(futures::executor::block_on(async {
+                codex_oauth.read().await.list_accounts().await
+            })
+            .is_empty());
+            assert!(
+                !crate::codex_config::get_codex_auth_path().exists(),
+                "logout must clear the active managed live auth"
+            );
+            assert!(
+                !crate::codex_config::codex_managed_oauth_live_auth_marker_exists(),
+                "logout must clear the managed live auth marker"
+            );
+        });
+    }
+
+    /// `codex_oauth` is a **Claude**-side provider type too, so a Claude
+    /// provider can carry `meta.authBinding[codex_oauth]`. Switching *within*
+    /// Claude must not run any part of the Codex managed transaction: the
+    /// switch-away preparation fails closed without a proxy runtime context, and
+    /// its clearing half only runs inside the Codex-gated transaction.
+    ///
+    /// Deliberately uses the plain harness (no runtime context injected) so a
+    /// regression shows up as a failed Claude switch rather than a silent one.
+    #[test]
+    #[serial]
+    fn claude_switch_off_a_codex_oauth_bound_provider_never_touches_codex_live() {
+        with_test_home(|state, _| {
+            crate::settings::reload_settings().expect("reload settings");
+
+            let mut bound = Provider::with_id(
+                "claude-codex-oauth".to_string(),
+                "Claude via Codex OAuth".to_string(),
+                json!({ "env": { "ANTHROPIC_BASE_URL": "https://api.a.example" } }),
+                None,
+            );
+            bound.meta = Some(ProviderMeta {
+                provider_type: Some("codex_oauth".to_string()),
+                auth_binding: Some(AuthBinding {
+                    source: AuthBindingSource::ManagedAccount,
+                    auth_provider: Some("codex_oauth".to_string()),
+                    account_id: Some("acct-managed".to_string()),
+                }),
+                ..Default::default()
+            });
+            let target = Provider::with_id(
+                "claude-plain".to_string(),
+                "Claude plain".to_string(),
+                json!({ "env": { "ANTHROPIC_API_KEY": "token-b" } }),
+                None,
+            );
+            for provider in [&bound, &target] {
+                state
+                    .db
+                    .save_provider(AppType::Claude.as_str(), provider)
+                    .expect("save claude provider");
+            }
+            state
+                .db
+                .set_current_provider(AppType::Claude.as_str(), &bound.id)
+                .expect("set database current");
+            crate::settings::set_current_provider(&AppType::Claude, Some(&bound.id))
+                .expect("set local current");
+
+            ProviderService::switch(state, AppType::Claude, &target.id)
+                .expect("a Claude switch must not depend on the Codex OAuth manager");
+
+            assert_eq!(
+                crate::settings::get_current_provider(&AppType::Claude).as_deref(),
+                Some(target.id.as_str())
+            );
+            assert!(
+                !crate::codex_config::get_codex_auth_path().exists(),
+                "a Claude switch must never write or clear Codex live auth"
+            );
+        });
+    }
+
+    /// Upstream's replacement for W2's interim fail-closed test, now that the
+    /// takeover branch is real: a DB failure at the end of the managed takeover
+    /// transaction must restore the Live backup row, the whole `~/.codex` bundle
+    /// and the previous account binding.
+    ///
+    /// Fork adaptations: `futures::executor::block_on` (C2) and the managed
+    /// account manager comes from the injected proxy runtime context instead of
+    /// `AppState::codex_oauth_manager`.
+    #[test]
+    #[serial]
+    fn managed_codex_takeover_update_db_failure_restores_backup_live_and_binding() {
+        with_codex_oauth_test_home(|state, codex_oauth, _| {
+            crate::settings::reload_settings().expect("reload settings");
+            futures::executor::block_on(async {
+                let manager = codex_oauth.read().await;
+                manager
+                    .add_test_account_with_access_token(
+                        "acct-managed-a",
+                        "managed-token-a",
+                        Some("managed-id-a"),
+                    )
+                    .await
+                    .expect("seed managed account A");
+                manager
+                    .add_test_account_with_access_token(
+                        "acct-managed-b",
+                        "managed-token-b",
+                        Some("managed-id-b"),
+                    )
+                    .await
+                    .expect("seed managed account B");
+            });
+
+            let mut provider = Provider::with_id(
+                "managed-official-a".to_string(),
+                "OpenAI Official A".to_string(),
+                json!({
+                    "auth": {},
+                    "config": "model = \"gpt-5.4\"\n"
+                }),
+                None,
+            );
+            provider.category = Some("official".to_string());
+            provider.meta = Some(ProviderMeta {
+                auth_binding: Some(AuthBinding {
+                    source: AuthBindingSource::ManagedAccount,
+                    auth_provider: Some("codex_oauth".to_string()),
+                    account_id: Some("acct-managed-a".to_string()),
+                }),
+                ..Default::default()
+            });
+            state
+                .db
+                .save_provider(AppType::Codex.as_str(), &provider)
+                .expect("save official provider A");
+            state
+                .db
+                .set_current_provider(AppType::Codex.as_str(), &provider.id)
+                .expect("set DB current");
+            crate::settings::set_current_provider(&AppType::Codex, Some(&provider.id))
+                .expect("set local current");
+
+            futures::executor::block_on(async {
+                state
+                    .db
+                    .update_proxy_config(ProxyConfig {
+                        listen_port: 15_721,
+                        ..Default::default()
+                    })
+                    .await
+                    .expect("set proxy port");
+                state
+                    .db
+                    .save_live_backup(
+                        AppType::Codex.as_str(),
+                        &serde_json::to_string(&json!({
+                            "config": "model = \"gpt-5.4\"\n"
+                        }))
+                        .expect("serialize baseline backup"),
+                    )
+                    .await
+                    .expect("save baseline backup");
+                state
+                    .proxy_service
+                    .sync_codex_live_from_provider_while_proxy_active(&provider)
+                    .await
+                    .expect("seed managed takeover live");
+            });
+
+            let backup_before =
+                futures::executor::block_on(state.db.get_live_backup(AppType::Codex.as_str()))
+                    .expect("read baseline backup")
+                    .expect("baseline backup exists");
+            let live_before = crate::codex_config::CodexLiveStateSnapshot::capture()
+                .expect("capture managed takeover live");
+
+            {
+                let conn = state.db.conn.lock().expect("lock database");
+                conn.execute_batch(
+                    "CREATE TRIGGER reject_managed_takeover_provider_update
+                     BEFORE UPDATE ON providers
+                     WHEN NEW.app_type = 'codex'
+                       AND NEW.id = 'managed-official-a'
+                       AND NEW.name = 'OpenAI Official B'
+                     BEGIN
+                       SELECT RAISE(ABORT, 'forced managed takeover provider failure');
+                     END;",
+                )
+                .expect("install provider failure trigger");
+            }
+
+            let mut updated = provider.clone();
+            updated.name = "OpenAI Official B".to_string();
+            updated
+                .meta
+                .as_mut()
+                .and_then(|meta| meta.auth_binding.as_mut())
+                .expect("managed binding")
+                .account_id = Some("acct-managed-b".to_string());
+
+            let error = ProviderService::update(state, AppType::Codex, None, updated)
+                .expect_err("DB failure should abort takeover update");
+            assert!(
+                error
+                    .to_string()
+                    .contains("forced managed takeover provider failure"),
+                "update should surface DB failure: {error}"
+            );
+
+            let saved = state
+                .db
+                .get_provider_by_id(&provider.id, AppType::Codex.as_str())
+                .expect("read provider after rollback")
+                .expect("provider still exists");
+            assert_eq!(saved.name, "OpenAI Official A");
+            assert_eq!(
+                saved
+                    .meta
+                    .as_ref()
+                    .and_then(|meta| meta.managed_account_id_for("codex_oauth")),
+                Some("acct-managed-a".to_string())
+            );
+
+            let backup_after =
+                futures::executor::block_on(state.db.get_live_backup(AppType::Codex.as_str()))
+                    .expect("read backup after rollback")
+                    .expect("backup still exists");
+            assert_eq!(backup_after.original_config, backup_before.original_config);
+            assert_eq!(
+                crate::codex_config::CodexLiveStateSnapshot::capture()
+                    .expect("capture live after rollback"),
+                live_before,
+                "failed takeover update must restore auth/config/catalog/marker exactly"
+            );
+        });
+    }
 }
 
 impl ProviderService {
@@ -1609,6 +3799,66 @@ impl ProviderService {
             .meta
             .get_or_insert_with(Default::default)
             .live_config_managed = Some(managed);
+    }
+
+    fn normalize_usage_script_credential_overrides(app_type: &AppType, provider: &mut Provider) {
+        // Reuse the fork's existing per-app credential resolver
+        // (`extract_provider_usage_credentials`) instead of a parallel path:
+        // it already handles every AppType arm identically to the frontend's
+        // `getProviderCredentials`. `normalize` needs the *provider-native*
+        // credentials (not the override-applied `resolve_usage_credentials`
+        // free fn) so a script override equal to the provider's own value can
+        // be dropped as a no-op duplicate.
+        let current_credentials = usage::extract_provider_usage_credentials(provider, app_type);
+
+        let Some(usage_script) = provider
+            .meta
+            .as_mut()
+            .and_then(|meta| meta.usage_script.as_mut())
+        else {
+            return;
+        };
+
+        if usage_script.template_type.as_deref() == Some("token_plan") {
+            return;
+        }
+
+        if usage_script.api_key.as_deref().is_some_and(|api_key| {
+            Self::should_clear_usage_api_key_override(api_key, &current_credentials.api_key)
+        }) {
+            usage_script.api_key = None;
+        }
+
+        if usage_script.base_url.as_deref().is_some_and(|base_url| {
+            Self::should_clear_usage_base_url_override(base_url, &current_credentials.base_url)
+        }) {
+            usage_script.base_url = None;
+        }
+    }
+
+    fn should_clear_usage_api_key_override(script_api_key: &str, provider_api_key: &str) -> bool {
+        let candidate = script_api_key.trim();
+        if candidate.is_empty() {
+            return true;
+        }
+        let provider_key = provider_api_key.trim();
+        !provider_key.is_empty() && provider_key == candidate
+    }
+
+    fn should_clear_usage_base_url_override(
+        script_base_url: &str,
+        provider_base_url: &str,
+    ) -> bool {
+        let candidate = Self::normalize_usage_base_url_for_compare(script_base_url);
+        if candidate.is_empty() {
+            return true;
+        }
+        let provider = Self::normalize_usage_base_url_for_compare(provider_base_url);
+        !provider.is_empty() && provider == candidate
+    }
+
+    fn normalize_usage_base_url_for_compare(base_url: &str) -> String {
+        base_url.trim().trim_end_matches('/').to_string()
     }
 
     /// One-shot cleanup of legacy `_cc_source` / `provider_key` markers
@@ -1661,6 +3911,9 @@ impl ProviderService {
         state: &AppState,
         app_type: AppType,
     ) -> Result<IndexMap<String, Provider>, AppError> {
+        if app_type == AppType::Pi {
+            return pi::list(state);
+        }
         let mut providers = state.db.get_all_providers(app_type.as_str())?;
         if matches!(app_type, AppType::Hermes) {
             Self::reconcile_hermes_runtime_markers(&mut providers);
@@ -1730,6 +3983,9 @@ impl ProviderService {
         provider: Provider,
         add_to_live: bool,
     ) -> Result<bool, AppError> {
+        if app_type == AppType::Pi {
+            return pi::add(state, provider, add_to_live);
+        }
         let mut provider = provider;
         // Normalize Claude model keys
         Self::normalize_provider_if_claude(&app_type, &mut provider);
@@ -1742,6 +3998,68 @@ impl ProviderService {
         normalize_provider_common_config_for_storage(state.db.as_ref(), &app_type, &mut provider)?;
         if app_type.is_additive_mode() {
             Self::set_provider_live_config_managed(&mut provider, add_to_live);
+        }
+
+        let is_managed_codex_add = matches!(app_type, AppType::Codex)
+            && managed_codex_oauth_account_id(&provider).is_some();
+        let _managed_codex_add_guard = if is_managed_codex_add {
+            Some(futures::executor::block_on(
+                state.proxy_service.lock_switch_for_app(app_type.as_str()),
+            ))
+        } else {
+            None
+        };
+
+        if is_managed_codex_add {
+            let effective_current =
+                crate::settings::get_effective_current_provider(&state.db, &app_type)?;
+
+            // Adding a non-current managed provider only mutates its DB row. Keep
+            // the same switch lock until that row is committed so a waiting switch
+            // cannot observe a partially saved binding.
+            if effective_current.is_some() {
+                state.db.save_provider(app_type.as_str(), &provider)?;
+                return Ok(true);
+            }
+
+            // For the first managed Codex provider, resolve the complete live
+            // bundle before mutating DB state. Then commit Live -> provider row ->
+            // current under one switch lock. A failure restores both files and the
+            // provider row, avoiding a visible but unusable orphan provider.
+            let previous_provider = state
+                .db
+                .get_provider_by_id(&provider.id, app_type.as_str())?;
+            let preflighted_provider = preflight_managed_codex_live(state, &app_type, &provider)?;
+            let snapshot = crate::codex_config::CodexLiveStateSnapshot::capture()?;
+            let mut provider_saved = false;
+            let commit_result = (|| {
+                write_preflighted_or_current_live(
+                    state,
+                    &app_type,
+                    &provider,
+                    preflighted_provider.as_ref(),
+                )?;
+                state.db.save_provider(app_type.as_str(), &provider)?;
+                provider_saved = true;
+                state
+                    .db
+                    .set_current_provider(app_type.as_str(), &provider.id)?;
+                Ok::<(), AppError>(())
+            })();
+
+            if let Err(error) = commit_result {
+                return Err(managed_codex_add_transaction_error(
+                    state,
+                    "新增首个托管 Codex provider",
+                    error,
+                    &provider,
+                    previous_provider.as_ref(),
+                    provider_saved,
+                    &snapshot,
+                ));
+            }
+
+            return Ok(true);
         }
 
         // Save to database
@@ -1760,7 +4078,7 @@ impl ProviderService {
             if !add_to_live {
                 return Ok(true);
             }
-            write_live_with_common_config(state.db.as_ref(), &app_type, &provider)?;
+            write_live_with_common_config_for_state(state, &app_type, &provider)?;
             if matches!(app_type, AppType::Hermes) {
                 crate::hermes_config::apply_switch_defaults(
                     &provider.id,
@@ -1773,11 +4091,12 @@ impl ProviderService {
         // For other apps: Check if sync is needed (if this is current provider, or no current provider)
         let current = state.db.get_current_provider(app_type.as_str())?;
         if current.is_none() {
-            // No current provider, set as current and sync
+            // No current provider, set as current and sync. Managed Codex adds
+            // use the transactional path above because token resolution can fail.
             state
                 .db
                 .set_current_provider(app_type.as_str(), &provider.id)?;
-            write_live_with_common_config(state.db.as_ref(), &app_type, &provider)?;
+            write_live_with_common_config_for_state(state, &app_type, &provider)?;
         }
 
         Ok(true)
@@ -1790,9 +4109,25 @@ impl ProviderService {
         original_id: Option<&str>,
         provider: Provider,
     ) -> Result<bool, AppError> {
+        if app_type == AppType::Pi {
+            return pi::update(state, original_id, provider);
+        }
         let mut provider = provider;
         let original_id = original_id.unwrap_or(provider.id.as_str()).to_string();
         let provider_id_changed = original_id != provider.id;
+        // Serialize the read/decide/commit window for every Codex update. We do
+        // not yet know whether the stored row is managed (the request may be an
+        // unbind), so the existing row and effective current must both be read
+        // only after this lock is held. Non-managed Codex updates release it
+        // before entering the legacy path, whose proxy helpers take the lock
+        // themselves.
+        let codex_update_switch_guard = if matches!(app_type, AppType::Codex) {
+            Some(futures::executor::block_on(
+                state.proxy_service.lock_switch_for_app(app_type.as_str()),
+            ))
+        } else {
+            None
+        };
         let existing_provider = state
             .db
             .get_provider_by_id(&original_id, app_type.as_str())?;
@@ -1931,17 +4266,183 @@ impl ProviderService {
             if !live_config_managed {
                 return Ok(true);
             }
-            write_live_with_common_config(state.db.as_ref(), &app_type, &provider)?;
+            write_live_with_common_config_for_state(state, &app_type, &provider)?;
             return Ok(true);
         }
-
-        // Save to database
-        state.db.save_provider(app_type.as_str(), &provider)?;
 
         // For other apps: Check if this is current provider (use effective current, not just DB)
         let effective_current =
             crate::settings::get_effective_current_provider(&state.db, &app_type)?;
         let is_current = effective_current.as_deref() == Some(provider.id.as_str());
+
+        let existing_managed_codex_account_id = existing_provider
+            .as_ref()
+            .and_then(managed_codex_oauth_account_id);
+        let target_managed_codex_account_id = managed_codex_oauth_account_id(&provider);
+        let outgoing_managed_codex_account_id = outgoing_managed_codex_oauth_account_id(
+            &app_type,
+            existing_provider.as_ref(),
+            &provider,
+        );
+        let managed_codex_update = matches!(app_type, AppType::Codex)
+            && (existing_managed_codex_account_id.is_some()
+                || target_managed_codex_account_id.is_some());
+
+        if managed_codex_update {
+            // A non-current managed row still commits under the same lock: once
+            // the row is saved, a waiting switch observes the new binding. If we
+            // released first, a switch could activate the old binding and leave
+            // DB current/live inconsistent with the subsequent save.
+            if !is_current {
+                state.db.save_provider(app_type.as_str(), &provider)?;
+                return Ok(true);
+            }
+
+            let outgoing_live_refresh_token = prepare_outgoing_managed_codex_live_auth(
+                state,
+                outgoing_managed_codex_account_id.as_deref(),
+            )?;
+
+            // The lock acquired before reading existing/current spans the
+            // complete direct/takeover transaction. Backup update and takeover
+            // Live sync therefore cannot expose a gap to concurrent hot-switch.
+            let previous_backup =
+                futures::executor::block_on(state.db.get_live_backup(app_type.as_str()))?;
+            let has_live_backup = previous_backup.is_some();
+            let live_taken_over = state
+                .proxy_service
+                .detect_takeover_in_live_config_for_app(&app_type);
+            let preflighted_provider = preflight_managed_codex_live(state, &app_type, &provider)?;
+            // Capture after preflight: a legitimate refresh may have advanced
+            // auth.json, and rollback must never restore the older generation.
+            let snapshot = crate::codex_config::CodexLiveStateSnapshot::capture()?;
+
+            if !has_live_backup && !live_taken_over {
+                let commit_result = (|| {
+                    ensure_outgoing_managed_codex_live_auth_unchanged(
+                        outgoing_managed_codex_account_id.as_deref(),
+                        outgoing_live_refresh_token.as_deref(),
+                    )?;
+                    write_preflighted_or_current_live(
+                        state,
+                        &app_type,
+                        &provider,
+                        preflighted_provider.as_ref(),
+                    )?;
+                    clear_outgoing_managed_codex_live_auth(
+                        outgoing_managed_codex_account_id.as_deref(),
+                        outgoing_live_refresh_token.as_deref(),
+                    )?;
+                    state.db.save_provider(app_type.as_str(), &provider)?;
+                    Ok::<(), AppError>(())
+                })();
+                if let Err(error) = commit_result {
+                    return Err(managed_codex_transaction_error(
+                        "更新托管 Codex provider",
+                        error,
+                        &snapshot,
+                        None,
+                    ));
+                }
+
+                if let Err(err) = McpService::sync_enabled_for_app(state, &app_type) {
+                    log::warn!(
+                        "保存供应商后重投影 {app_type:?} MCP 失败（将在下次同步时自愈）: {err}"
+                    );
+                }
+                return Ok(true);
+            }
+
+            let commit_result = (|| {
+                ensure_outgoing_managed_codex_live_auth_unchanged(
+                    outgoing_managed_codex_account_id.as_deref(),
+                    outgoing_live_refresh_token.as_deref(),
+                )?;
+                futures::executor::block_on(
+                    state.proxy_service.update_live_backup_from_provider_inner(
+                        app_type.as_str(),
+                        &provider,
+                        outgoing_managed_codex_account_id.as_deref(),
+                    ),
+                )
+                .map_err(|error| AppError::Message(format!("更新 Live 备份失败: {error}")))?;
+
+                if live_taken_over {
+                    futures::executor::block_on(
+                        state
+                            .proxy_service
+                            .sync_codex_live_from_provider_while_proxy_active_guarded(
+                                &provider,
+                                outgoing_managed_codex_account_id.as_deref(),
+                                outgoing_live_refresh_token.as_deref(),
+                            ),
+                    )
+                    .map_err(|error| {
+                        AppError::Message(format!("同步 Codex Live 配置失败: {error}"))
+                    })?;
+                } else {
+                    // A backup without a takeover marker is a recoverable
+                    // half-takeover state. Keep the actual Live bundle aligned
+                    // with the edited current provider as well as the backup.
+                    //
+                    // This is deliberately *not* the non-managed convention a few
+                    // hundred lines below ("a backup alone means Live is owned by
+                    // takeover, so only the backup is updated"). A managed card's
+                    // Live auth is the bound account's bundle: leaving it stale
+                    // would keep serving the previous account after the binding
+                    // changed, which is the very state this transaction exists to
+                    // make atomic. Upstream draws the same line here.
+                    ensure_outgoing_managed_codex_live_auth_unchanged(
+                        outgoing_managed_codex_account_id.as_deref(),
+                        outgoing_live_refresh_token.as_deref(),
+                    )?;
+                    write_preflighted_or_current_live(
+                        state,
+                        &app_type,
+                        &provider,
+                        preflighted_provider.as_ref(),
+                    )?;
+                }
+
+                clear_outgoing_managed_codex_live_auth(
+                    outgoing_managed_codex_account_id.as_deref(),
+                    outgoing_live_refresh_token.as_deref(),
+                )?;
+
+                // DB is the final commit. Every fallible side effect above can be
+                // restored exactly while the previous provider row is untouched.
+                state.db.save_provider(app_type.as_str(), &provider)?;
+                Ok::<(), AppError>(())
+            })();
+            if let Err(error) = commit_result {
+                return Err(managed_codex_takeover_transaction_error(
+                    state,
+                    "更新接管中的 Codex provider",
+                    error,
+                    &snapshot,
+                    previous_backup.as_ref(),
+                    None,
+                ));
+            }
+
+            // Same warn-only reconciliation as the direct managed branch above and
+            // the non-managed path below. This branch rewrote Codex live, where MCP
+            // servers are only carried over verbatim
+            // (`ProxyService::preserve_toml_mcp_servers_from_existing_config`), so
+            // orphaned entries need the DB-authoritative pass (ADR 0004). Upstream
+            // omits it here; that asymmetry would leave orphans until the next
+            // switch self-heals.
+            if let Err(err) = McpService::sync_enabled_for_app(state, &app_type) {
+                log::warn!("保存供应商后重投影 {app_type:?} MCP 失败（将在下次同步时自愈）: {err}");
+            }
+
+            return Ok(true);
+        }
+
+        drop(codex_update_switch_guard);
+
+        // Save to database
+        state.db.save_provider(app_type.as_str(), &provider)?;
 
         if is_current {
             // 如果 Claude 代理接管处于激活状态，并且代理服务正在运行：
@@ -1992,7 +4493,7 @@ impl ProviderService {
                     }
                 }
             } else {
-                write_live_with_common_config(state.db.as_ref(), &app_type, &provider)?;
+                write_live_with_common_config_for_state(state, &app_type, &provider)?;
                 // The provider save and live rewrite already succeeded. Project
                 // only this app; unrelated broken live files must not turn that
                 // success into a false failure. Projection errors are warnings
@@ -2013,6 +4514,9 @@ impl ProviderService {
     /// 同时检查本地 settings 和数据库的当前供应商，防止删除任一端正在使用的供应商。
     /// 对于累加模式应用（OpenCode, OpenClaw），可以随时删除任意供应商，同时从 live 配置中移除。
     pub fn delete(state: &AppState, app_type: AppType, id: &str) -> Result<(), AppError> {
+        if app_type == AppType::Pi {
+            return pi::delete(state, id);
+        }
         // Additive mode apps - no current provider concept
         if app_type.is_additive_mode() {
             // Single DB read shared across all additive-mode sub-paths below.
@@ -2084,6 +4588,9 @@ impl ProviderService {
         app_type: AppType,
         id: &str,
     ) -> Result<(), AppError> {
+        if app_type == AppType::Pi {
+            return pi::remove(state, id);
+        }
         match app_type {
             AppType::OpenCode => {
                 let provider_category = state
@@ -2148,6 +4655,9 @@ impl ProviderService {
     ///    d. Write target provider config to live files
     ///    e. Sync MCP configuration
     pub fn switch(state: &AppState, app_type: AppType, id: &str) -> Result<SwitchResult, AppError> {
+        if app_type == AppType::Pi {
+            return pi::enable(state, id);
+        }
         // Check if provider exists
         let providers = state.db.get_all_providers(app_type.as_str())?;
         let _provider = providers
@@ -2196,8 +4706,12 @@ impl ProviderService {
         let should_hot_switch = is_app_taken_over || live_taken_over;
 
         // Block switching to official providers when proxy takeover is active.
-        // Using a proxy with official APIs (Anthropic/OpenAI/Google) may cause account bans.
-        if should_hot_switch && _provider.category.as_deref() == Some("official") {
+        // Using a proxy with official APIs (Anthropic/OpenAI/Google) may cause
+        // account bans. Single definition shared with the proxy command, the
+        // hot-switch path, the tray and the takeover-enable warning:
+        // `Provider::blocked_by_proxy_takeover` (see its doc for the consumer
+        // table; managed Codex Official cards are the only carve-out).
+        if should_hot_switch && _provider.blocked_by_proxy_takeover(app_type.as_str()) {
             return Err(AppError::localized(
                 "switch.official_blocked_by_proxy",
                 "代理接管模式下不能切换到官方供应商，使用代理访问官方 API 可能导致账号被封禁。请先关闭代理接管，或选择第三方供应商。",
@@ -2266,7 +4780,15 @@ impl ProviderService {
         // Backfill: Backfill current live config to current provider
         // Use effective current provider (validated existence) to ensure backfill targets valid provider
         let current_id = crate::settings::get_effective_current_provider(&state.db, &app_type)?;
-
+        // Hold the outgoing provider itself: the backfill block below consumes
+        // `current_id`, while the managed-transaction bookkeeping needs the row
+        // after it.
+        let outgoing_provider = current_id
+            .as_deref()
+            .and_then(|current_id| providers.get(current_id));
+        let current_managed_codex_account_id =
+            outgoing_provider.and_then(managed_codex_oauth_account_id);
+        let mut backfill_completed = false;
         if let Some(current_id) = current_id {
             if current_id != id {
                 // Additive mode apps - all providers coexist in the same file,
@@ -2300,6 +4822,8 @@ impl ProviderService {
                                 result
                                     .warnings
                                     .push(format!("backfill_failed:{current_id}"));
+                            } else {
+                                backfill_completed = true;
                             }
                         }
                     }
@@ -2308,16 +4832,134 @@ impl ProviderService {
         }
 
         // Additive mode apps skip setting is_current (no such concept)
-        if !app_type.is_additive_mode() {
-            // Update local settings (device-level, takes priority)
-            crate::settings::set_current_provider(&app_type, Some(id))?;
+        let target_managed_codex_account_id = managed_codex_oauth_account_id(provider);
+        // One definition of the "which account is being left behind" rule, shared
+        // with `update`. Upstream recomputes it inline here; routing it through
+        // the helper also puts the `AppType::Codex` gate in one place, which
+        // matters in the fork: `codex_oauth` is a **Claude**-side provider type
+        // too (`Provider::is_codex_oauth`, `proxy/providers/claude.rs`), so a
+        // Claude provider can carry `authBinding[codex_oauth]`. Ungated, a Claude
+        // switch would run the Codex switch-away preparation — which fails closed
+        // in the fork when the proxy runtime context is absent — while the
+        // clearing half stays behind the Codex-gated transaction below, leaving an
+        // adopted CLI refresh generation that nothing finishes.
+        let outgoing_managed_codex_account_id =
+            outgoing_managed_codex_oauth_account_id(&app_type, outgoing_provider, provider);
+        let outgoing_live_refresh_token = prepare_outgoing_managed_codex_live_auth(
+            state,
+            outgoing_managed_codex_account_id.as_deref(),
+        )?;
 
-            // Update database is_current (as default for new devices)
-            state.db.set_current_provider(app_type.as_str(), id)?;
+        // 提交 current 前预检托管 Codex token（见 preflight_managed_codex_live）。
+        let preflighted_provider = preflight_managed_codex_live(state, &app_type, provider)?;
+        let use_managed_codex_transaction = matches!(app_type, AppType::Codex)
+            && (current_managed_codex_account_id.is_some()
+                || target_managed_codex_account_id.is_some());
+
+        if use_managed_codex_transaction {
+            // auth/config/catalog/marker form one logical live commit. Write them
+            // before current, then restore the exact four-file snapshot on any
+            // failure so native logins and CLI-rotated tokens are not reconstructed
+            // from a stale provider row.
+            let snapshot = crate::codex_config::CodexLiveStateSnapshot::capture()?;
+            let live_result = (|| {
+                ensure_outgoing_managed_codex_live_auth_unchanged(
+                    outgoing_managed_codex_account_id.as_deref(),
+                    outgoing_live_refresh_token.as_deref(),
+                )?;
+                write_preflighted_or_current_live(
+                    state,
+                    &app_type,
+                    provider,
+                    preflighted_provider.as_ref(),
+                )?;
+                clear_outgoing_managed_codex_live_auth(
+                    outgoing_managed_codex_account_id.as_deref(),
+                    outgoing_live_refresh_token.as_deref(),
+                )?;
+                Ok::<(), AppError>(())
+            })();
+            if let Err(error) = live_result {
+                return Err(managed_codex_transaction_error(
+                    "写入 Codex Live",
+                    error,
+                    &snapshot,
+                    None,
+                ));
+            }
+
+            let previous_local_current = crate::settings::get_current_provider(&app_type);
+            if let Err(error) = crate::settings::set_current_provider(&app_type, Some(id)) {
+                return Err(managed_codex_transaction_error(
+                    "更新本地 current",
+                    error,
+                    &snapshot,
+                    Some((&app_type, previous_local_current.as_deref())),
+                ));
+            }
+            if let Err(error) = state.db.set_current_provider(app_type.as_str(), id) {
+                return Err(managed_codex_transaction_error(
+                    "更新数据库 current",
+                    error,
+                    &snapshot,
+                    Some((&app_type, previous_local_current.as_deref())),
+                ));
+            }
+        } else {
+            if !app_type.is_additive_mode() {
+                // Update local settings (device-level, takes priority)
+                crate::settings::set_current_provider(&app_type, Some(id))?;
+
+                // Update database is_current (as default for new devices)
+                state.db.set_current_provider(app_type.as_str(), id)?;
+            }
+
+            // Sync to live (write_gemini_live handles security flag internally for Gemini)
+            write_preflighted_or_current_live(
+                state,
+                &app_type,
+                provider,
+                preflighted_provider.as_ref(),
+            )?;
         }
 
-        // Sync to live (write_gemini_live handles security flag internally for Gemini)
-        write_live_with_common_config(state.db.as_ref(), &app_type, provider)?;
+        // A material-less official Codex provider gets a config-only live
+        // write, which can leave the previous third-party key in
+        // ~/.codex/auth.json and strand the user on a 401 with no login
+        // screen. Only clean up after a successful backfill — the DB copy
+        // made above is what keeps that key recoverable. Failures degrade to
+        // a log entry: config.toml and is_current are already committed, so
+        // failing the switch here would report a switch that in fact happened.
+        //
+        // A managed account card is exempt: its live auth **is** the selected
+        // account's bundle that was just written, so cleaning "stale" auth here
+        // would delete the credential this switch installed.
+        //
+        // Upstream widens the first condition with `is_codex_official_provider`,
+        // which also shape-detects an official provider whose `category` is not
+        // `"official"`. The fork deliberately does not carry that predicate (W1
+        // consolidated on the domain methods instead), and
+        // `Provider::is_codex_official_card` is strictly *narrower* than
+        // `category == Some("official")` — adding it as a disjunct would be a dead
+        // condition. The shape-detected widening is therefore not ported; this
+        // cleanup only logs on failure and self-heals on the next switch.
+        if matches!(app_type, AppType::Codex)
+            && backfill_completed
+            && provider.category.as_deref() == Some("official")
+            && target_managed_codex_account_id.is_none()
+        {
+            let db_auth = provider.settings_config.get("auth");
+            match crate::codex_config::clear_stale_codex_live_auth_after_official_switch(
+                db_auth.unwrap_or(&serde_json::Value::Null),
+            ) {
+                Ok(true) => log::info!(
+                    "Removed stale third-party auth.json after switching to official Codex provider '{}'",
+                    provider.id
+                ),
+                Ok(false) => {}
+                Err(e) => log::warn!("Failed to clean stale Codex auth.json: {e}"),
+            }
+        }
 
         // Hermes is additive, so "switching" doesn't overwrite a live config file
         // — we instead update the top-level `model:` section to point at this
@@ -2633,6 +5275,7 @@ impl ProviderService {
             AppType::OpenCode => Self::extract_opencode_common_config(&provider.settings_config),
             AppType::OpenClaw => Self::extract_openclaw_common_config(&provider.settings_config),
             AppType::Hermes => Ok(String::new()), // Hermes doesn't use common config snippets
+            AppType::Pi => Ok(String::new()),
         }
     }
 
@@ -2649,7 +5292,76 @@ impl ProviderService {
             AppType::OpenCode => Self::extract_opencode_common_config(settings_config),
             AppType::OpenClaw => Self::extract_openclaw_common_config(settings_config),
             AppType::Hermes => Ok(String::new()), // Hermes doesn't use common config snippets
+            AppType::Pi => Ok(String::new()),
         }
+    }
+
+    /// 判断一个 env / 顶层配置键名是否为凭据/机密：凡命中一律不得写入共享的
+    /// 通用配置片段。**故意从严**——多剥一个非机密键只是它不被共享（可恢复的小
+    /// 不便），漏剥一个凭据则会把密钥注入到每个供应商（不可恢复的泄漏）。因此用
+    /// 模式匹配覆盖整类，而非枚举具体名字（枚举永远会漏掉下一个 `*_API_KEY`）。
+    ///
+    /// 覆盖：Anthropic / OpenRouter / Google / OpenAI / Gemini 等 `*_API_KEY`
+    /// （Claude provider 的用量凭据解析见 `services/provider/usage.rs`，确实支持
+    /// `OPENROUTER_API_KEY` / `GOOGLE_API_KEY` 等回退）、各类 `*_AUTH_TOKEN` /
+    /// 单数 `*_TOKEN`、AWS Bedrock / Vertex 凭据、以及通用 secret / password /
+    /// 私钥命名。
+    pub(crate) fn is_sensitive_config_key(name: &str) -> bool {
+        let upper = name.to_ascii_uppercase();
+
+        // 单数 `_TOKEN` 命中 AWS_SESSION_TOKEN 等，但**不**误伤复数 `_TOKENS`
+        // （CLAUDE_CODE_MAX_OUTPUT_TOKENS / MAX_THINKING_TOKENS 是正常可共享配置）。
+        const SENSITIVE_SUFFIXES: &[&str] = &[
+            // 裸 `_KEY` 是最常见的凭据写法（OPENAI_KEY / GROQ_KEY / XAI_KEY…），
+            // 必须单列：只枚举 `_API_KEY` / `_ACCESS_KEY` 这些子类，等于把最普通
+            // 的那一种漏在外面。下面几条 `_*_KEY` 被它蕴含，保留是为了说明覆盖面。
+            "_KEY",
+            "_API_KEY",
+            "_ACCESS_KEY",
+            "_ACCESS_KEY_ID",
+            "_KEY_ID",
+            "_PRIVATE_KEY",
+            // 不带分隔符的复合写法各走各的后缀：`_KEY` 够不着 `..._APIKEY`
+            // （倒数第四个字符是 I 不是下划线）。VOLC_ACCESSKEY 是火山引擎文档
+            // 里的正式变量名，本仓库就实现了火山 AK/SK 用量查询。
+            "_APIKEY",
+            "_ACCESSKEY",
+            "_SECRETKEY",
+            "_APITOKEN",
+            "_AUTH_TOKEN",
+            "_TOKEN",
+            // GITHUB_PAT / GITLAB_PAT 等 personal access token 的惯用写法，
+            // 既不含 TOKEN 也不含 KEY，前面每一条规则都够不着。
+            "_PAT",
+            // 口令类的常见缩写。`_PASS` 不会误伤 `*_BYPASS`（那个以 `_BYPASS`
+            // 结尾），`_PWD` 也不会误伤 shell 的 PWD / OLDPWD。
+            "_PWD",
+            "_PASS",
+            "_PASSPHRASE",
+            "_CREDS",
+        ];
+        const SENSITIVE_EXACT: &[&str] = &[
+            "APIKEY",
+            "API_KEY",
+            "TOKEN",
+            "SECRET",
+            "PASSWORD",
+            "CREDENTIALS",
+        ];
+        // contains：覆盖 AWS_SECRET_ACCESS_KEY / *_CLIENT_SECRET /
+        // GOOGLE_APPLICATION_CREDENTIALS / AWS_BEARER_TOKEN_BEDROCK 等变体。
+        const SENSITIVE_CONTAINS: &[&str] = &[
+            "SECRET",
+            "PASSWORD",
+            "PASSWD",
+            "CREDENTIAL",
+            "PRIVATE_KEY",
+            "BEARER_TOKEN",
+        ];
+
+        SENSITIVE_EXACT.contains(&upper.as_str())
+            || SENSITIVE_SUFFIXES.iter().any(|s| upper.ends_with(s))
+            || SENSITIVE_CONTAINS.iter().any(|c| upper.contains(c))
     }
 
     /// Extract common config for Claude (JSON format)
@@ -2691,22 +5403,28 @@ impl ProviderService {
             "smallFastModel",
         ];
 
-        // Remove env fields
+        // Remove provider-specific fields and every credential-shaped key.
+        // The explicit list covers Claude model/endpoint fields; the shared
+        // predicate prevents credentials such as OPENROUTER_API_KEY or a
+        // future *_API_KEY variant from leaking into every provider.
         if let Some(env) = config.get_mut("env").and_then(|v| v.as_object_mut()) {
             for key in ENV_EXCLUDES {
                 env.remove(*key);
             }
+            env.retain(|key, _| !Self::is_sensitive_config_key(key));
             // If env is empty after removal, remove the env object itself
             if env.is_empty() {
                 config.as_object_mut().map(|obj| obj.remove("env"));
             }
         }
 
-        // Remove top-level fields
+        // Remove top-level fields and credential-shaped aliases (for example
+        // legacy `apiKey` / `api_key` fields) using the same security predicate.
         if let Some(obj) = config.as_object_mut() {
             for key in TOP_LEVEL_EXCLUDES {
                 obj.remove(*key);
             }
+            obj.retain(|key, _| !Self::is_sensitive_config_key(key));
         }
 
         // `ui.displayName` mirrors the provider's own name (written per-provider
@@ -2827,7 +5545,13 @@ impl ProviderService {
         let mut snippet = serde_json::Map::new();
         if let Some(env) = env {
             for (key, value) in env {
-                if key == "GOOGLE_GEMINI_BASE_URL" || key == "GEMINI_API_KEY" {
+                // 端点按名剥离（它不是凭据，模式匹配够不着）；凭据全部交给
+                // `is_sensitive_config_key` 统一模式匹配（与 Claude 提取器一致）。
+                // 只列固定名单会漏掉下一个 `*_API_KEY` —— 例如 `GOOGLE_API_KEY`
+                // （provider.rs 认可的一等 Gemini 凭据），而共享片段会被 deep-merge
+                // 回其它 Gemini 供应商，漏剥即等于把 A 账号的密钥写进 B 供应商并
+                // 发往 B 的 base_url。`GEMINI_API_KEY` 不必单列：`_KEY` 后缀已覆盖。
+                if key == "GOOGLE_GEMINI_BASE_URL" || Self::is_sensitive_config_key(key) {
                     continue;
                 }
                 let Value::String(v) = value else {
@@ -2846,6 +5570,221 @@ impl ProviderService {
 
         serde_json::to_string_pretty(&Value::Object(snippet))
             .map_err(|e| AppError::Message(format!("Serialization failed: {e}")))
+    }
+
+    /// 一次性清理：把历史泄漏进 Gemini 共享片段的凭据从所有存储位置抹掉。
+    ///
+    /// 背景：`extract_gemini_common_config` 曾只剥离两个固定键名，`GOOGLE_API_KEY`
+    /// 等一等凭据会进入共享片段，再被 `apply_common_config_to_settings` 深合并进
+    /// **其它** Gemini 供应商的 env，随请求发往对方的 base_url。
+    ///
+    /// 光修提取器不够：Gemini 的片段一旦生成就**永不自动重提取**（启动期
+    /// auto-extract 与导入后补提取都要求 `snippet.is_none()`，切换时的回写又只对
+    /// Claude / Codex 生效），所以存量片段会一直带着密钥继续注入。
+    ///
+    /// 两个关键约束：
+    ///
+    /// 1. **不能只清片段**。合并与剥离是一对靠「值相等」严格抵消的操作：切走供应商时
+    ///    `remove_common_config_from_settings` 依据片段内容把注入的键删掉。片段里一旦
+    ///    没了这个键，backfill 就会把 live 中残留的密钥原样写进受害供应商的
+    ///    `settings_config`——泄漏从瞬时污染变成永久污染。所以片段、各供应商配置、
+    ///    live 文件必须一起清。
+    /// 2. **按值相等定向删除，不按键名一刀切**。复用 `remove_common_config_from_settings`
+    ///    可以只清掉扩散出去的那一份，保留某个供应商自己写的、值不同的同名键。
+    ///
+    /// 步骤顺序本身是安全属性的一部分：**清片段必须排在最后**。片段是
+    /// `remove_common_config_from_settings` 唯一的"该剥哪些键"来源，一旦清空，任何
+    /// 残留（live 文件里的、下一轮重试要处理的）都再也无法被识别和剥离。所以所有
+    /// 可能失败的步骤都排在它前面，失败即带错返回，让下次启动能原样重来。
+    ///
+    /// 清理后部分供应商会显示缺少 API Key，需用户重填——这是正确行为：那把密钥本就
+    /// 不属于它们。（受害者原有的同名键在合并时已被覆盖，无法恢复。）动手前会往
+    /// settings 的 `gemini_common_config_scrub_audit_v1` 写一条审计记录，内容是
+    /// **键名与受影响的供应商 id，不含值**：`settings` 会随 WebDAV/S3 同步上传，
+    /// 而这里处理的正是必须销毁的凭据，留值等于把一次清除换成一份跨设备扩散、
+    /// 没有界面入口、永不过期的明文副本。
+    pub async fn scrub_leaked_gemini_common_config(state: &AppState) -> Result<(), AppError> {
+        const FLAG: &str = "gemini_common_config_credentials_scrubbed_v1";
+        const AUDIT_KEY: &str = "gemini_common_config_scrub_audit_v1";
+        let app = AppType::Gemini;
+
+        if state.db.get_bool_flag(FLAG).unwrap_or(false) {
+            return Ok(());
+        }
+
+        let Some(snippet_text) = state.db.get_config_snippet(app.as_str())? else {
+            state.db.set_setting(FLAG, "true")?;
+            return Ok(());
+        };
+
+        // 片段解析不了就不动它，只标记完成——乱改用户数据比留着更糟
+        let Ok(Value::Object(entries)) = serde_json::from_str::<Value>(&snippet_text) else {
+            state.db.set_setting(FLAG, "true")?;
+            return Ok(());
+        };
+
+        let mut poison = serde_json::Map::new();
+        let mut clean = serde_json::Map::new();
+        for (key, value) in entries {
+            if Self::is_sensitive_config_key(&key) {
+                poison.insert(key, value);
+            } else {
+                clean.insert(key, value);
+            }
+        }
+
+        if poison.is_empty() {
+            state.db.set_setting(FLAG, "true")?;
+            return Ok(());
+        }
+
+        log::warn!(
+            "检测到 {} 个凭据键残留在 Gemini 通用配置片段中，开始一次性清理",
+            poison.len()
+        );
+
+        let poison_keys: Vec<String> = poison.keys().cloned().collect();
+        let poison_value = Value::Object(poison);
+        let poison_text = serde_json::to_string(&poison_value)
+            .map_err(|e| AppError::Message(format!("Serialization failed: {e}")))?;
+
+        // 1) 先算出各供应商清理后的配置，但**先不落库**
+        let providers = state.db.get_all_providers(app.as_str())?;
+        let mut pending: Vec<(String, Provider, Value)> = Vec::new();
+        for (id, provider) in providers {
+            let cleaned = match live::remove_common_config_from_settings(
+                &app,
+                &provider.settings_config,
+                &poison_text,
+            ) {
+                Ok(cleaned) => cleaned,
+                Err(err) => {
+                    log::warn!("清理供应商 '{id}' 的泄漏凭据失败: {err}");
+                    continue;
+                }
+            };
+            if cleaned != provider.settings_config {
+                pending.push((id, provider, cleaned));
+            }
+        }
+
+        // 2) 落库前留一份审计记录：**只记键名与受影响的供应商，不记值**。
+        //
+        //    「按值相等定向删除」在一种合法场景下也会命中：用户有意在多个供应商里
+        //    复用同一把 key。所以必须留下"删了什么、从哪删的"，否则用户只能靠翻
+        //    日志。但不能留值——`settings` 表不在 `SYNC_SKIP_TABLES` 里，会随
+        //    WebDAV/S3 同步上传，而这里处理的恰恰是必须销毁的泄漏凭据：留值等于
+        //    把一次清除换成一份没有界面入口、永不过期、还会跨设备扩散的明文副本。
+        //    密钥本来就该轮换，可恢复性不值这个代价。
+        let removed_env_keys = |before: &Value, after: &Value| -> Vec<String> {
+            let before_env = before.get("env").and_then(Value::as_object);
+            let after_env = after.get("env").and_then(Value::as_object);
+            match (before_env, after_env) {
+                (Some(before_env), Some(after_env)) => before_env
+                    .keys()
+                    .filter(|key| !after_env.contains_key(*key))
+                    .cloned()
+                    .collect(),
+                (Some(before_env), None) => before_env.keys().cloned().collect(),
+                _ => Vec::new(),
+            }
+        };
+        let audit = serde_json::json!({
+            "removedFromSnippet": poison_keys,
+            "providers": pending
+                .iter()
+                .map(|(id, provider, cleaned)| serde_json::json!({
+                    "id": id,
+                    "removedKeys": removed_env_keys(&provider.settings_config, cleaned),
+                }))
+                .collect::<Vec<_>>(),
+        });
+        let audit_text = serde_json::to_string(&audit)
+            .map_err(|e| AppError::Message(format!("Serialization failed: {e}")))?;
+        // 只在没有记录时写。provider 的写入不是一个事务（每次 save_provider 各自
+        // 提交），上一轮可能改到一半就中止；此时完成标记没置位，下次启动会重跑，
+        // 而重跑看到的"原始状态"已经残缺。无条件 INSERT OR REPLACE 会拿这份残缺
+        // 记录盖掉第一轮那份完整的。
+        if state.db.get_setting(AUDIT_KEY)?.is_none() {
+            state.db.set_setting(AUDIT_KEY, &audit_text)?;
+        }
+
+        // 3) 各供应商 settings_config：按值相等定向删除扩散出去的副本
+        for (id, provider, cleaned) in pending {
+            let mut updated = provider;
+            updated.settings_config = cleaned;
+            state.db.save_provider(app.as_str(), &updated)?;
+            log::info!("已从 Gemini 供应商 '{id}' 中清除泄漏的共享凭据");
+        }
+
+        // 4) 代理接管中的 live 快照里也可能有一份副本。这一步的失败**必须传播**：
+        //
+        //    关代理时 `restore_live_config_for_app_with_fallback_inner`（proxy.rs:869）
+        //    会把这份快照原样写回 `~/.gemini/.env`。若它仍带毒而我们照样清了片段、置了
+        //    完成标记，那么代理一停凭据就当场复活，而一次性标记又保证不会再清第二次；
+        //    此后片段里已没有这个键，下一次切换的 backfill 就把它永久写进受害供应商的
+        //    配置——还是本函数开头那个顺序陷阱，只是换了扇门进来。
+        //
+        //    带错返回是安全的失败方式：调用方（lib.rs:1189）只记 warn 不中断启动，
+        //    片段和标记都原样留着，下次启动照原样重来。
+        if let Some(backup) = state.db.get_live_backup(app.as_str()).await? {
+            let original: Value = serde_json::from_str(&backup.original_config)
+                .map_err(|e| AppError::Message(format!("解析 Gemini 代理接管备份失败: {e}")))?;
+            let cleaned = live::remove_common_config_from_settings(&app, &original, &poison_text)?;
+            if cleaned != original {
+                let text = serde_json::to_string(&cleaned)
+                    .map_err(|e| AppError::Message(format!("Serialization failed: {e}")))?;
+                state.db.save_live_backup(app.as_str(), &text).await?;
+                log::info!("已从 Gemini 代理接管备份中清除泄漏的共享凭据");
+            }
+        }
+
+        // 5) `~/.gemini/.env`：**定向**删除，且必须在清片段之前做，失败即中止。
+        //
+        //    为什么不用 `sync_current_provider_for_app` 重投影：它在没有当前供应商
+        //    时直接返回 Ok 而根本不写文件，泄漏值会原样留在 live 里；等片段被清空
+        //    之后，下次切换时 `remove_common_config_from_settings` 再也认不出这个
+        //    键，backfill 就把它永久写进受害供应商的配置——正是本函数开头说的那个
+        //    顺序陷阱，只是由"没修"变成"修了一半更糟"。定向删除还顺带保住了只存在
+        //    于 live、与供应商无关的手工 env（重投影会把它们抹掉）。
+        //
+        //    删除走 `remove_gemini_env_entries` 的**保序**实现而不是 read→HashMap→
+        //    write 往返：后者会顺手抹掉注释、空行和无法识别的行，并按键名重排整个
+        //    文件。全量投影时那无所谓，但这里是一次用户没主动触发的启动期清理，不该
+        //    连带改写与泄漏无关的内容。
+        //
+        //    失败就带着错误返回：片段此刻还留着毒键，完成标记也没置位，下次启动能
+        //    照原样重来。清片段是不可逆的一步，必须排在所有会失败的步骤之后。
+        let poison_env: HashMap<String, String> = poison_value
+            .as_object()
+            .map(|map| {
+                map.iter()
+                    .filter_map(|(key, value)| {
+                        value.as_str().map(|text| (key.clone(), text.to_string()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        if crate::gemini_config::remove_gemini_env_entries(&poison_env)? {
+            log::info!("已从 ~/.gemini/.env 中清除泄漏的共享凭据");
+        }
+
+        // 6) 片段本身：保留可共享的部分。全部清空时删行而不是写 "{}"——留着空行会让
+        //    should_auto_extract_config_snippet 永远为 false，用户的合法共享配置再也
+        //    重建不回来。同理绝不置 cleared 标记。
+        if clean.is_empty() {
+            state.db.set_config_snippet(app.as_str(), None)?;
+        } else {
+            let cleaned_snippet = serde_json::to_string_pretty(&Value::Object(clean))
+                .map_err(|e| AppError::Message(format!("Serialization failed: {e}")))?;
+            state
+                .db
+                .set_config_snippet(app.as_str(), Some(cleaned_snippet))?;
+        }
+
+        state.db.set_setting(FLAG, "true")?;
+        log::info!("Gemini 通用配置凭据清理完成");
+        Ok(())
     }
 
     /// Extract common config for OpenCode (JSON format)
@@ -3140,6 +6079,9 @@ impl ProviderService {
         copilot_auth: Option<
             &tokio::sync::RwLock<crate::proxy::providers::copilot_auth::CopilotAuthManager>,
         >,
+        xai_auth: Option<
+            &tokio::sync::RwLock<crate::proxy::providers::xai_oauth_auth::XaiOAuthManager>,
+        >,
         enforce_outbound_guard: bool,
     ) -> Result<UsageResult, AppError> {
         usage::query_usage_with_templates(
@@ -3147,6 +6089,7 @@ impl ProviderService {
             app_type,
             provider_id,
             copilot_auth,
+            xai_auth,
             enforce_outbound_guard,
         )
         .await
@@ -3185,6 +6128,14 @@ impl ProviderService {
             enforce_outbound_guard,
         )
         .await
+    }
+
+    pub(crate) fn update_pi_usage_script(
+        state: &AppState,
+        id: &str,
+        script: crate::provider::UsageScript,
+    ) -> Result<bool, AppError> {
+        pi::update_usage_script(state, id, script)
     }
 
     pub(crate) fn write_gemini_live(provider: &Provider) -> Result<(), AppError> {
@@ -3301,6 +6252,9 @@ impl ProviderService {
                         "Hermes configuration must be a JSON object",
                     ));
                 }
+            }
+            AppType::Pi => {
+                crate::pi_config::validate_provider_node(&provider.id, &provider.settings_config)?;
             }
         }
 
@@ -3501,8 +6455,8 @@ impl ProviderService {
 
                 Ok((api_key, base_url))
             }
-            AppType::OpenClaw | AppType::Hermes => {
-                // OpenClaw/Hermes use apiKey and baseUrl directly on the object
+            AppType::OpenClaw | AppType::Hermes | AppType::Pi => {
+                // OpenClaw/Hermes/Pi use apiKey and baseUrl directly on the object
                 let api_key = provider
                     .settings_config
                     .get("apiKey")

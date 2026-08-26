@@ -2,7 +2,17 @@
 //!
 //! 提供 Tauri 命令，供前端在供应商表单中获取可用模型列表。
 
-use crate::services::model_fetch::{self, FetchedModel};
+use crate::services::model_fetch::{self, FetchedModel, OpenCodeModelRef};
+use std::collections::BTreeMap;
+
+/// 获取 OpenCode 当前运行时可用的模型。
+///
+/// 复用工具更新页的 CLI 定位逻辑执行 `opencode models`，因此会包含 OpenCode
+/// 已加载的 OAuth 模型与 Zen 免费模型，而不是只读取 opencode.json。
+#[tauri::command]
+pub async fn get_opencode_models() -> Result<Vec<OpenCodeModelRef>, String> {
+    model_fetch::get_opencode_models().await
+}
 
 /// 获取供应商的可用模型列表
 ///
@@ -14,12 +24,23 @@ pub async fn fetch_models_for_config(
     api_key: String,
     is_full_url: Option<bool>,
     models_url: Option<String>,
+    custom_user_agent: Option<String>,
+    api_format: Option<String>,
+    request_headers: Option<BTreeMap<String, String>>,
 ) -> Result<Vec<FetchedModel>, String> {
+    // 与转发 / 检测路径共用自定义 UA：非法 UA 静默忽略（不阻断取模型）。
+    let user_agent = custom_user_agent
+        .as_deref()
+        .map(reqwest::header::HeaderValue::from_str)
+        .and_then(|result| result.ok());
     model_fetch::fetch_models(
         &base_url,
         &api_key,
         is_full_url.unwrap_or(false),
         models_url.as_deref(),
+        user_agent,
+        api_format.as_deref(),
+        request_headers.as_ref(),
     )
     .await
 }

@@ -12,6 +12,7 @@ const authRemoveAccountMock = vi.fn();
 const authSetDefaultAccountMock = vi.fn();
 const openExternalMock = vi.fn();
 const copyTextMock = vi.fn();
+const toastSuccessMock = vi.fn();
 
 vi.mock("@/lib/api", () => ({
   authApi: {
@@ -30,6 +31,12 @@ vi.mock("@/lib/api", () => ({
 
 vi.mock("@/lib/clipboard", () => ({
   copyText: (...args: unknown[]) => copyTextMock(...args),
+}));
+
+vi.mock("sonner", () => ({
+  toast: {
+    success: (...args: unknown[]) => toastSuccessMock(...args),
+  },
 }));
 
 function createWrapper() {
@@ -55,6 +62,7 @@ describe("useManagedAuth", () => {
     authSetDefaultAccountMock.mockReset();
     openExternalMock.mockReset();
     copyTextMock.mockReset();
+    toastSuccessMock.mockReset();
 
     authGetStatusMock.mockResolvedValue({
       provider: "github_copilot",
@@ -128,5 +136,47 @@ describe("useManagedAuth", () => {
     expect(result.current.error).not.toBe("[object Object]");
     expect(copyTextMock).toHaveBeenCalledWith("CODE-1234");
     expect(openExternalMock).toHaveBeenCalledWith("https://example.com/device");
+  });
+
+  // Ported from upstream a2e22f33 (tests/hooks/useManagedAuth.test.tsx, +86).
+  // Upstream created that path as a new file; this fork already had its own
+  // suite here, so the upstream case is appended rather than replacing it.
+  it("shows a success toast after removing an account", async () => {
+    authGetStatusMock.mockResolvedValue({
+      provider: "codex_oauth",
+      authenticated: true,
+      default_account_id: "acct-1",
+      accounts: [
+        {
+          id: "acct-1",
+          provider: "codex_oauth",
+          login: "user@example.com",
+          avatar_url: null,
+          authenticated_at: 1,
+          is_default: true,
+          github_domain: "",
+          reauth_required: false,
+          requires_reauth: false,
+        },
+      ],
+    });
+    authRemoveAccountMock.mockResolvedValue(undefined);
+
+    const { result } = renderHook(() => useManagedAuth("codex_oauth"), {
+      wrapper: createWrapper(),
+    });
+    await waitFor(() => expect(result.current.isStatusSuccess).toBe(true));
+
+    act(() => result.current.removeAccount("acct-1"));
+
+    await waitFor(() =>
+      expect(authRemoveAccountMock).toHaveBeenCalledWith(
+        "codex_oauth",
+        "acct-1",
+      ),
+    );
+    await waitFor(() =>
+      expect(toastSuccessMock).toHaveBeenCalledWith("账号已移除"),
+    );
   });
 });

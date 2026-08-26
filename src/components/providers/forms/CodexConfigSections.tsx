@@ -8,10 +8,11 @@ import React, {
 import { useTranslation } from "react-i18next";
 import JsonEditor from "@/components/JsonEditor";
 import {
-  isCodexGoalModeEnabled,
+  extractCodexTopLevelInt,
   isCodexRemoteCompactionEnabled,
-  setCodexGoalMode,
+  removeCodexTopLevelField,
   setCodexRemoteCompaction,
+  setCodexTopLevelInt,
 } from "@/utils/providerConfigUtils";
 
 interface CodexAuthSectionProps {
@@ -71,7 +72,7 @@ export const CodexAuthSection: React.FC<CodexAuthSectionProps> = ({
         onChange={handleChange}
         placeholder={t("codexConfig.authJsonPlaceholder")}
         darkMode={isDarkMode}
-        rows={6}
+        rows={3}
         showValidation={true}
         language="json"
       />
@@ -157,21 +158,9 @@ export const CodexConfigSection: React.FC<CodexConfigSectionProps> = ({
     [onChange],
   );
 
-  const goalModeEnabled = useMemo(
-    () => isCodexGoalModeEnabled(localValue),
-    [localValue],
-  );
-
   const remoteCompactionEnabled = useMemo(
     () => isCodexRemoteCompactionEnabled(localValue),
     [localValue],
-  );
-
-  const handleGoalModeToggle = useCallback(
-    (checked: boolean) => {
-      handleLocalChange(setCodexGoalMode(localValueRef.current || "", checked));
-    },
-    [handleLocalChange],
   );
 
   const handleRemoteCompactionToggle = useCallback(
@@ -187,6 +176,74 @@ export const CodexConfigSection: React.FC<CodexConfigSectionProps> = ({
     [handleLocalChange, providerName],
   );
 
+  // Parse toggle states from TOML text
+  const toggleStates = useMemo(() => {
+    const contextWindow = extractCodexTopLevelInt(
+      localValue,
+      "model_context_window",
+    );
+    const compactLimit = extractCodexTopLevelInt(
+      localValue,
+      "model_auto_compact_token_limit",
+    );
+    return {
+      contextWindow1M: contextWindow === 1000000,
+      compactLimit: compactLimit ?? 900000,
+    };
+  }, [localValue]);
+
+  // Debounce timer for compact limit input
+  const compactTimerRef = useRef<ReturnType<typeof setTimeout>>();
+
+  const handleContextWindowToggle = useCallback(
+    (checked: boolean) => {
+      let toml = localValueRef.current || "";
+      if (checked) {
+        toml = setCodexTopLevelInt(toml, "model_context_window", 1000000);
+        // Auto-set compact limit if not already present
+        if (
+          extractCodexTopLevelInt(toml, "model_auto_compact_token_limit") ===
+          undefined
+        ) {
+          toml = setCodexTopLevelInt(
+            toml,
+            "model_auto_compact_token_limit",
+            900000,
+          );
+        }
+      } else {
+        toml = removeCodexTopLevelField(toml, "model_context_window");
+        toml = removeCodexTopLevelField(toml, "model_auto_compact_token_limit");
+      }
+      handleLocalChange(toml);
+    },
+    [handleLocalChange],
+  );
+
+  const handleCompactLimitChange = useCallback(
+    (inputValue: string) => {
+      clearTimeout(compactTimerRef.current);
+      compactTimerRef.current = setTimeout(() => {
+        const num = parseInt(inputValue, 10);
+        if (!Number.isNaN(num) && num > 0) {
+          handleLocalChange(
+            setCodexTopLevelInt(
+              localValueRef.current || "",
+              "model_auto_compact_token_limit",
+              num,
+            ),
+          );
+        }
+      }, 500);
+    },
+    [handleLocalChange],
+  );
+
+  // Cleanup debounce timer
+  useEffect(() => {
+    return () => clearTimeout(compactTimerRef.current);
+  }, []);
+
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -198,16 +255,6 @@ export const CodexConfigSection: React.FC<CodexConfigSectionProps> = ({
         </label>
 
         <div className="flex flex-wrap items-center justify-end gap-x-4 gap-y-1">
-          <label className="inline-flex cursor-pointer items-center gap-2 text-sm text-muted-foreground">
-            <input
-              type="checkbox"
-              checked={goalModeEnabled}
-              onChange={(e) => handleGoalModeToggle(e.target.checked)}
-              className="w-4 h-4 text-blue-500 bg-white dark:bg-gray-800 border-border-default rounded focus:ring-blue-500 dark:focus:ring-blue-400 focus:ring-2"
-            />
-            {t("codexConfig.enableGoalMode")}
-          </label>
-
           {showRemoteCompaction && (
             <label
               className="inline-flex cursor-pointer items-center gap-2 text-sm text-muted-foreground"
@@ -251,12 +298,37 @@ export const CodexConfigSection: React.FC<CodexConfigSectionProps> = ({
         </p>
       )}
 
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+        <label className="inline-flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
+          <input
+            type="checkbox"
+            checked={toggleStates.contextWindow1M}
+            onChange={(e) => handleContextWindowToggle(e.target.checked)}
+            className="w-4 h-4 text-blue-500 bg-white dark:bg-gray-800 border-border-default rounded focus:ring-blue-500 dark:focus:ring-blue-400 focus:ring-2"
+          />
+          <span>{t("codexConfig.contextWindow1M")}</span>
+        </label>
+        <label className="inline-flex items-center gap-2 text-sm text-muted-foreground">
+          <span>{t("codexConfig.autoCompactLimit")}:</span>
+          <input
+            type="text"
+            inputMode="numeric"
+            pattern="[0-9]*"
+            key={toggleStates.compactLimit}
+            defaultValue={toggleStates.compactLimit}
+            disabled={!toggleStates.contextWindow1M}
+            onChange={(e) => handleCompactLimitChange(e.target.value)}
+            className="w-28 h-7 px-2 text-sm rounded border border-border bg-background text-foreground disabled:opacity-50 disabled:cursor-not-allowed"
+          />
+        </label>
+      </div>
+
       <JsonEditor
         value={localValue}
         onChange={handleLocalChange}
         placeholder=""
         darkMode={isDarkMode}
-        rows={8}
+        rows={3}
         showValidation={false}
         language="javascript"
       />

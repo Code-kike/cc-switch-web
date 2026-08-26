@@ -144,6 +144,13 @@ vi.mock("@/components/usage/PricingEditModal", () => ({
   },
 }));
 
+// ModelsDevAutoSyncPanel has its own focused query/provider coverage. Keep this
+// parent suite scoped to pricing defaults and CRUD instead of booting the
+// child's React Query/API lifecycle in every test.
+vi.mock("@/components/usage/ModelsDevAutoSyncPanel", () => ({
+  ModelsDevAutoSyncPanel: () => <div data-testid="models-dev-auto-sync" />,
+}));
+
 vi.mock("@/lib/query/usage", () => ({
   useModelPricing: () => ({
     data: pricingState.pricing,

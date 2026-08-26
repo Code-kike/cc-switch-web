@@ -14,7 +14,7 @@ const CSP: &str = "default-src 'self'; \
 img-src 'self' data:; \
 style-src 'self' 'unsafe-inline'; \
 script-src 'self' 'unsafe-inline'; \
-connect-src 'self'; \
+connect-src 'self' https://models.dev; \
 frame-ancestors 'none'; \
 form-action 'self'; \
 base-uri 'self'";
@@ -48,4 +48,18 @@ pub async fn add_security_headers(req: Request<Body>, next: Next) -> Response<Bo
         );
     }
     response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CSP;
+
+    #[test]
+    fn csp_allows_only_the_fixed_models_dev_external_connect_origin() {
+        // The desktop CSP already permits HTTPS requests. The Web server uses
+        // a stricter header, so admit only the compile-time-fixed catalog host;
+        // never widen this to a generic `https:` source.
+        assert!(CSP.contains("connect-src 'self' https://models.dev"));
+        assert!(!CSP.contains("connect-src 'self' https:;"));
+    }
 }

@@ -501,6 +501,137 @@ requires_openai_auth = true
 }
 
 #[test]
+fn provider_service_switch_codex_official_clears_stale_third_party_auth() {
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let _home = ensure_test_home();
+
+    let third_party_config = r#"model_provider = "aihubmix"
+model = "gpt-5.4"
+
+[model_providers.aihubmix]
+name = "AiHubMix"
+base_url = "https://aihubmix.example/v1"
+wire_api = "responses"
+requires_openai_auth = true
+"#;
+    write_codex_live_atomic(
+        &json!({ "OPENAI_API_KEY": "stale-live-key" }),
+        Some(third_party_config),
+    )
+    .expect("seed third-party live config");
+
+    let mut initial_config = MultiAppConfig::default();
+    {
+        let manager = initial_config
+            .get_manager_mut(&AppType::Codex)
+            .expect("codex manager");
+        manager.current = "third-party".to_string();
+        manager.providers.insert(
+            "third-party".to_string(),
+            Provider::with_id(
+                "third-party".to_string(),
+                "AiHubMix".to_string(),
+                json!({
+                    "auth": {"OPENAI_API_KEY": "old-db-key"},
+                    "config": third_party_config
+                }),
+                None,
+            ),
+        );
+        let mut official = Provider::with_id(
+            "official-provider".to_string(),
+            "OpenAI Official".to_string(),
+            json!({ "auth": {}, "config": "" }),
+            None,
+        );
+        official.category = Some("official".to_string());
+        manager
+            .providers
+            .insert("official-provider".to_string(), official);
+    }
+
+    let state = create_test_state_with_config(&initial_config).expect("create test state");
+    ProviderService::switch(&state, AppType::Codex, "official-provider")
+        .expect("switch to official provider");
+
+    assert!(
+        !cc_switch_lib::get_codex_auth_path().exists(),
+        "material-less official switch should remove stale third-party auth"
+    );
+    let providers = state
+        .db
+        .get_all_providers(AppType::Codex.as_str())
+        .expect("read providers");
+    assert_eq!(
+        providers["third-party"]
+            .settings_config
+            .pointer("/auth/OPENAI_API_KEY")
+            .and_then(|value| value.as_str()),
+        Some("stale-live-key"),
+        "the outgoing provider must retain the backfilled key before cleanup"
+    );
+}
+
+#[test]
+fn provider_service_reswitch_current_official_keeps_live_auth() {
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let _home = ensure_test_home();
+    write_codex_live_atomic(&json!({ "OPENAI_API_KEY": "residue-key" }), Some(""))
+        .expect("seed live config");
+
+    let mut initial_config = MultiAppConfig::default();
+    {
+        let manager = initial_config
+            .get_manager_mut(&AppType::Codex)
+            .expect("codex manager");
+        manager.current = "official-provider".to_string();
+        let mut official = Provider::with_id(
+            "official-provider".to_string(),
+            "OpenAI Official".to_string(),
+            json!({ "auth": {}, "config": "" }),
+            None,
+        );
+        official.category = Some("official".to_string());
+        manager
+            .providers
+            .insert("official-provider".to_string(), official);
+    }
+
+    let state = create_test_state_with_config(&initial_config).expect("create test state");
+    ProviderService::switch(&state, AppType::Codex, "official-provider")
+        .expect("reselect official provider");
+
+    let auth: serde_json::Value =
+        read_json_file(&cc_switch_lib::get_codex_auth_path()).expect("auth survives");
+    assert_eq!(
+        auth.get("OPENAI_API_KEY").and_then(|value| value.as_str()),
+        Some("residue-key")
+    );
+}
+
+#[test]
+fn read_codex_live_settings_tolerates_missing_auth_when_config_file_exists() {
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let _home = ensure_test_home();
+
+    assert!(cc_switch_lib::read_codex_live_settings().is_err());
+    let config_path = cc_switch_lib::get_codex_config_path();
+    std::fs::create_dir_all(config_path.parent().expect("codex dir")).expect("create codex dir");
+    std::fs::write(&config_path, "").expect("write empty config.toml");
+
+    let live = cc_switch_lib::read_codex_live_settings()
+        .expect("an existing empty config must count as a live install");
+    assert_eq!(live.get("auth"), Some(&json!({})));
+    assert_eq!(
+        live.get("config").and_then(|value| value.as_str()),
+        Some("")
+    );
+}
+
+#[test]
 fn sync_current_provider_for_app_keeps_live_takeover_and_updates_restore_backup() {
     let _guard = test_mutex().lock().expect("acquire test mutex");
     reset_test_fs();

@@ -1,0 +1,9 @@
+{"file": ".trellis/tasks/08-18-sync-upstream-v3.20.0/prd.md", "reason": "本任务目标边界 v3.20.0、grilling 11 条裁定、父/子任务结构与 65+4 提交清单的权威定义"}
+{"file": ".trellis/tasks/08-18-sync-upstream-v3.20.0/design.md", "reason": "移植方法、双运行时边界、DB 迁移/定价/Windows/CI 适配契约与批次依赖"}
+{"file": ".trellis/tasks/08-18-sync-upstream-v3.20.0/implement.md", "reason": "S1–S8 有序批次清单、门禁命令、review gates 与回滚点"}
+{"file": ".trellis/tasks/archive/2026-08/08-08-sync-upstream-latest/batch-plan.md", "reason": "上次 v3.19.2 同步的批次模式与 Web 适配语义先例（selective port、安全边界、SQL-restore 锁测试口径）"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "双运行时（Tauri command ↔ Web API 路由）移植时的跨层数据流思考清单"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "移植上游代码时优先复用 fork 既有适配层（path-adapter/web-commands/backup 锁）而非重复实现"}
+{"file": ".trellis/spec/frontend/index.md", "reason": "前端规范索引；S5 UI/refactor 与 S4 codex provider UI 适配时按需下钻"}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "新增 UI 状态（routing activation 动画、provider 表单）需符合 fork 状态管理约定"}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "新增命令/路由的 TS 类型契约要求"}

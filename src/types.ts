@@ -159,6 +159,8 @@ export interface ProviderMeta {
   promptCacheKey?: string;
   // Codex OAuth FAST mode: injects service_tier="priority" on ChatGPT Codex requests
   codexFastMode?: boolean;
+  // 是否已投影到某个累加模式应用的 live 配置（后端 provider.rs 写入）
+  liveConfigManaged?: boolean;
   // 供应商类型（用于识别 Copilot 等特殊供应商）
   providerType?: string;
   // GitHub Copilot 关联账号 ID（旧字段，保留兼容读取）
@@ -197,6 +199,14 @@ export interface CodexCatalogModel {
   supportsParallelToolCalls?: boolean;
   inputModalities?: string[];
   baseInstructions?: string;
+  // Per-model reasoning effort levels exposed in the generated Codex catalog
+  // (e.g. ["none", "low", "medium", "high", "xhigh", "max"]). When omitted the
+  // backend keeps the template's conservative none/high default.
+  reasoningLevels?: string[];
+  // Per-model default reasoning effort. Only meaningful together with
+  // reasoningLevels; when omitted the backend keeps the template default if it
+  // is still in the list, otherwise the highest declared level.
+  defaultReasoningLevel?: string;
 }
 
 // Claude 认证字段类型
@@ -211,6 +221,7 @@ export interface VisibleApps {
   opencode: boolean;
   openclaw: boolean;
   hermes: boolean;
+  pi: boolean;
 }
 
 // WebDAV 同步状态
@@ -327,6 +338,8 @@ export interface Settings {
   openclawConfigDir?: string;
   // 覆盖 Hermes 配置目录（可选）
   hermesConfigDir?: string;
+  // 覆盖 Pi 配置目录（可选，默认 ~/.pi/agent）
+  piConfigDir?: string;
 
   // ===== 当前供应商 ID（设备级）=====
   // 当前 Claude 供应商 ID（优先于数据库 is_current）

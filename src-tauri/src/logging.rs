@@ -48,7 +48,7 @@ const MIN_KNOWN_SECRET_LEN: usize = 8;
 
 /// 唯一的密钥脱敏原语：把字符串里出现的、我们确切握有的密钥值替换为 [REDACTED]。
 /// 不做任何“看起来像密钥”的形状猜测——只隐藏已知值，天然收敛、不误伤正常路径。
-fn redact_known_secrets(text: &str, known_secrets: &[String]) -> String {
+pub(crate) fn redact_known_secrets(text: &str, known_secrets: &[String]) -> String {
     let mut output = text.to_string();
     for secret in known_secrets {
         if secret.chars().count() >= MIN_KNOWN_SECRET_LEN {

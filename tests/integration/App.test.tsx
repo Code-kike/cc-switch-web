@@ -2,6 +2,7 @@ import {
   Suspense,
   type ComponentType,
   forwardRef,
+  useEffect,
   useImperativeHandle,
 } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -42,6 +43,8 @@ const mcpOpenAddMock = vi.fn();
 const skillsOpenRestoreFromBackupMock = vi.fn();
 const skillsOpenInstallFromZipMock = vi.fn();
 const skillsOpenImportMock = vi.fn();
+const skillsCheckUpdatesMock = vi.fn();
+const skillsOpenDiscoveryMock = vi.fn();
 const deepLinkOpenManualImportMock = vi.fn();
 
 vi.mock("@/lib/api/event-adapter", () => ({
@@ -232,11 +235,21 @@ vi.mock("@/components/mcp/UnifiedMcpPanel", () => ({
 }));
 
 vi.mock("@/components/skills/UnifiedSkillsPanel", () => ({
-  default: forwardRef((_props: any, ref) => {
+  default: forwardRef(({ onCheckUpdatesStateChange }: any, ref) => {
+    useEffect(() => {
+      onCheckUpdatesStateChange?.({ isChecking: false, hasSkills: true });
+      return () =>
+        onCheckUpdatesStateChange?.({
+          isChecking: false,
+          hasSkills: false,
+        });
+    }, [onCheckUpdatesStateChange]);
     useImperativeHandle(ref, () => ({
       openRestoreFromBackup: () => skillsOpenRestoreFromBackupMock(),
       openInstallFromZip: () => skillsOpenInstallFromZipMock(),
       openImport: () => skillsOpenImportMock(),
+      openDiscovery: () => skillsOpenDiscoveryMock(),
+      checkUpdates: () => skillsCheckUpdatesMock(),
     }));
     return <div data-testid="unified-skills-panel">unified-skills-panel</div>;
   }),
@@ -293,6 +306,8 @@ describe("App integration with MSW", () => {
     skillsOpenRestoreFromBackupMock.mockReset();
     skillsOpenInstallFromZipMock.mockReset();
     skillsOpenImportMock.mockReset();
+    skillsCheckUpdatesMock.mockReset();
+    skillsOpenDiscoveryMock.mockReset();
     deepLinkOpenManualImportMock.mockReset();
     localStorage.clear();
     sessionStorage.clear();
@@ -670,6 +685,42 @@ describe("App integration with MSW", () => {
     expect(skillsOpenRestoreFromBackupMock).toHaveBeenCalledTimes(1);
     expect(skillsOpenInstallFromZipMock).toHaveBeenCalledTimes(1);
     expect(skillsOpenImportMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("hosts the Skills check-update action in the App toolbar", async () => {
+    const { default: App } = await import("@/App");
+    renderApp(App);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("provider-list")).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByTitle("skills.manage"));
+
+    const checkUpdatesButton = await screen.findByRole("button", {
+      name: "skills.checkUpdates",
+    });
+    await waitFor(() => expect(checkUpdatesButton).toBeEnabled());
+    fireEvent.click(checkUpdatesButton);
+
+    expect(skillsCheckUpdatesMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("routes the Skills discover toolbar action through the panel guard", async () => {
+    const { default: App } = await import("@/App");
+    renderApp(App);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("provider-list")).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByTitle("skills.manage"));
+    await screen.findByTestId("unified-skills-panel");
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "skills.discover" }),
+    );
+
+    expect(skillsOpenDiscoveryMock).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("unified-skills-panel")).toBeInTheDocument();
   });
 
   it("routes the web deeplink import toolbar action through the dialog handle", async () => {

@@ -2,7 +2,13 @@ import { useCallback } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
-import { providersApi, settingsApi, openclawApi, type AppId } from "@/lib/api";
+import {
+  providersApi,
+  settingsApi,
+  openclawApi,
+  piApi,
+  type AppId,
+} from "@/lib/api";
 import type {
   Provider,
   UsageScript,
@@ -18,6 +24,7 @@ import {
   useSwitchProviderMutation,
 } from "@/lib/query";
 import { extractErrorMessage } from "@/utils/errorUtils";
+import { isOfficialBlockedByTakeover } from "@/utils/providerCapabilities";
 import { openclawKeys } from "@/hooks/useOpenClaw";
 import { usageKeys } from "@/lib/query/usage";
 import { providerNeedsRouting } from "@/utils/providerCapabilities";
@@ -74,6 +81,7 @@ export function useProviderActions(
         providerKey?: string;
         suggestedDefaults?: OpenClawSuggestedDefaults;
         addToLive?: boolean;
+        ensureClaudeDesktopOfficialSeed?: boolean;
         ensureGrokBuildOfficialSeed?: boolean;
       },
     ) => {
@@ -224,8 +232,13 @@ export function useProviderActions(
         );
       }
 
-      // Block official providers when proxy takeover is active
-      if (isProxyTakeover && provider.category === "official") {
+      // Only a Codex Official card bound to a managed OAuth account can use
+      // local routing: the forwarder resolves that account's token server-side.
+      // Unbound native-login Official cards have no server-side credential and
+      // stay blocked (fail-closed), as do other apps' official providers.
+      // Shared definition with ProviderCard; mirrors Rust
+      // `Provider::blocked_by_proxy_takeover`.
+      if (isOfficialBlockedByTakeover(activeApp, provider, isProxyTakeover)) {
         toast.error(
           t("notifications.officialBlockedByProxy", {
             defaultValue:
@@ -305,7 +318,11 @@ export function useProviderActions(
           },
         };
 
-        await providersApi.update(updatedProvider, activeApp);
+        if (activeApp === "pi") {
+          await piApi.updateProviderUsageScript(provider.id, script);
+        } else {
+          await providersApi.update(updatedProvider, activeApp);
+        }
         await queryClient.invalidateQueries({
           queryKey: ["providers", activeApp],
         });
@@ -337,7 +354,7 @@ export function useProviderActions(
 
   // Set provider as default model (OpenClaw only)
   const setAsDefaultModel = useCallback(
-    async (provider: Provider) => {
+    async (provider: Provider, modelId?: string) => {
       const config = provider.settingsConfig as OpenClawProviderConfig;
       if (!config.models || config.models.length === 0) {
         toast.error(
@@ -348,12 +365,31 @@ export function useProviderActions(
         return;
       }
 
-      const model: OpenClawDefaultModel = {
-        primary: `${provider.id}/${config.models[0].id}`,
-        fallbacks: config.models.slice(1).map((m) => `${provider.id}/${m.id}`),
-      };
+      const selectedModel = modelId
+        ? config.models.find((model) => model.id === modelId)
+        : config.models[0];
+      if (!selectedModel) {
+        toast.error(
+          t("notifications.openclawModelNotFound", {
+            defaultValue: "所选模型已不存在，请刷新后重试",
+          }),
+        );
+        return;
+      }
 
       try {
+        const primary = `${provider.id}/${selectedModel.id}`;
+        const existingDefault = await openclawApi.getDefaultModel();
+        const model: OpenClawDefaultModel = {
+          ...(existingDefault ?? {}),
+          primary,
+        };
+        if (existingDefault?.fallbacks) {
+          model.fallbacks = existingDefault.fallbacks.filter(
+            (fallback) => fallback !== primary,
+          );
+        }
+
         await openclawApi.setDefaultModel(model);
         await queryClient.invalidateQueries({
           queryKey: openclawKeys.defaultModel,

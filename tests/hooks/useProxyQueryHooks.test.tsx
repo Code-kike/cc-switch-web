@@ -85,6 +85,35 @@ describe("proxy query hooks", () => {
     });
   });
 
+  it("preserves the dedicated failover toggle when saving app config", async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
+    });
+    queryClient.setQueryData(["autoFailoverEnabled", "claude"], true);
+    updateProxyConfigForAppMock.mockResolvedValueOnce(undefined);
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    );
+    const { result } = renderHook(() => useUpdateAppProxyConfig(), { wrapper });
+
+    await act(async () => {
+      await result.current.mutateAsync({
+        appType: "claude",
+        autoFailoverEnabled: false,
+      } as never);
+    });
+
+    expect(updateProxyConfigForAppMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        appType: "claude",
+        autoFailoverEnabled: true,
+      }),
+    );
+  });
+
   it("shows structured detail when saving app proxy config fails", async () => {
     updateProxyConfigForAppMock.mockRejectedValueOnce({
       detail: "app save failed",

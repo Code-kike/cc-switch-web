@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::fs;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use crate::error::AppError;
 
@@ -45,6 +45,58 @@ pub fn get_claude_config_dir() -> PathBuf {
 /// 默认 Claude MCP 配置文件路径 (~/.claude.json)
 pub fn get_default_claude_mcp_path() -> PathBuf {
     get_home_dir().join(".claude.json")
+}
+
+fn normalize_path_lexically(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !normalized.pop() {
+                    normalized.push(component.as_os_str());
+                }
+            }
+            Component::Normal(part) => normalized.push(part),
+            Component::RootDir | Component::Prefix(_) => normalized.push(component.as_os_str()),
+        }
+    }
+
+    normalized
+}
+
+fn comparable_path_key(path: &Path) -> String {
+    let mut key = normalize_path_lexically(path).to_string_lossy().to_string();
+
+    #[cfg(windows)]
+    {
+        key = key.replace('\\', "/");
+    }
+
+    while key.len() > 1 && key.ends_with('/') {
+        key.pop();
+    }
+
+    #[cfg(windows)]
+    {
+        key.make_ascii_lowercase();
+    }
+
+    key
+}
+
+/// Returns true when `path` is lexically contained within `base`.
+///
+/// Both paths are normalized lexically without touching the filesystem, so this
+/// also works for paths that do not exist. This is not a symlink defense: callers
+/// that open an existing path must canonicalize it and re-check containment.
+/// Windows comparisons are case-insensitive.
+pub(crate) fn path_is_within(base: &Path, path: &Path) -> bool {
+    let base_key = comparable_path_key(base);
+    let path_key = comparable_path_key(path);
+
+    path_key == base_key || path_key.starts_with(&format!("{base_key}/"))
 }
 
 fn derive_mcp_path_from_override(dir: &Path) -> Option<PathBuf> {
@@ -179,6 +231,14 @@ fn sort_json_keys(value: &Value) -> Value {
 
 /// 写入 JSON 配置文件（键按字母排序，确保确定性输出）
 pub fn write_json_file<T: Serialize>(path: &Path, data: &T) -> Result<(), AppError> {
+    write_json_file_with_contents(path, data).map(|_| ())
+}
+
+/// 写入 JSON 配置文件并返回实际写入的字节。
+pub fn write_json_file_with_contents<T: Serialize>(
+    path: &Path,
+    data: &T,
+) -> Result<Vec<u8>, AppError> {
     write_json_file_with_mode(path, data, AtomicWriteMode::RejectFinalSymlink)
 }
 
@@ -186,6 +246,14 @@ pub fn write_json_file<T: Serialize>(path: &Path, data: &T) -> Result<(), AppErr
 ///
 /// 若最终路径是一个现有且有效的文件符号链接，则原子替换其解析后的目标，保留链接本身。
 pub fn write_json_file_managed<T: Serialize>(path: &Path, data: &T) -> Result<(), AppError> {
+    write_json_file_managed_with_contents(path, data).map(|_| ())
+}
+
+/// 写入由外部应用拥有的 JSON 配置文件，并返回实际写入的字节。
+pub fn write_json_file_managed_with_contents<T: Serialize>(
+    path: &Path,
+    data: &T,
+) -> Result<Vec<u8>, AppError> {
     write_json_file_with_mode(path, data, AtomicWriteMode::FollowManagedSymlink)
 }
 
@@ -193,7 +261,7 @@ fn write_json_file_with_mode<T: Serialize>(
     path: &Path,
     data: &T,
     mode: AtomicWriteMode,
-) -> Result<(), AppError> {
+) -> Result<Vec<u8>, AppError> {
     // 确保目录存在
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| AppError::io(parent, e))?;
@@ -204,7 +272,9 @@ fn write_json_file_with_mode<T: Serialize>(
     let json = serde_json::to_string_pretty(&sorted_value)
         .map_err(|e| AppError::JsonSerialize { source: e })?;
 
-    atomic_write_with_mode(path, json.as_bytes(), mode)
+    let contents = json.into_bytes();
+    atomic_write_with_mode(path, &contents, mode)?;
+    Ok(contents)
 }
 
 /// 原子写入文本文件（用于 TOML/纯文本）
@@ -281,6 +351,18 @@ pub fn atomic_write_managed(path: &Path, data: &[u8]) -> Result<(), AppError> {
     atomic_write_with_mode(path, data, AtomicWriteMode::FollowManagedSymlink)
 }
 
+/// Resolve where a managed write to `path` actually lands (ADR 0003).
+///
+/// Callers that need more than "replace the contents" — e.g. the Codex auth
+/// no-clobber transaction, which claims the file by renaming it aside and only
+/// re-installs while the path is still vacant — must run their rename/hard-link
+/// protocol against the *resolved* target. Running it against a managed symlink
+/// would move or replace the link itself and destroy the user's dotfiles layout,
+/// which is exactly what [`atomic_write_managed`] exists to prevent.
+pub(crate) fn resolve_managed_write_path(path: &Path) -> Result<PathBuf, AppError> {
+    resolve_atomic_write_path(path, AtomicWriteMode::FollowManagedSymlink)
+}
+
 /// Ensure a write target resolves inside the effective allowed root.
 ///
 /// The root itself may be a user-managed directory symlink. Existing targets
@@ -334,13 +416,12 @@ fn atomic_write_resolved(path: &Path, data: &[u8]) -> Result<(), AppError> {
     let parent = path
         .parent()
         .ok_or_else(|| AppError::Config("无效的路径".to_string()))?;
-    let mut tmp = parent.to_path_buf();
     let file_name = path
         .file_name()
         .ok_or_else(|| AppError::Config("无效的文件名".to_string()))?
         .to_string_lossy()
         .to_string();
-    tmp.push(format!("{file_name}.tmp.{}", uuid::Uuid::new_v4().simple()));
+    let tmp = parent.join(format!("{file_name}.tmp.{}", uuid::Uuid::new_v4().simple()));
 
     #[cfg(unix)]
     let existing_mode = {
@@ -393,14 +474,80 @@ fn atomic_write_resolved(path: &Path, data: &[u8]) -> Result<(), AppError> {
 
     #[cfg(windows)]
     {
-        // Windows 上 rename 目标存在会失败，先移除再重命名（尽量接近原子性）
-        if path.exists() {
-            let _ = fs::remove_file(path);
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::{
+            Foundation::ERROR_NOT_SUPPORTED, Storage::FileSystem::ReplaceFileW,
+        };
+
+        let replaced: Vec<u16> = path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let replacement: Vec<u16> = tmp
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let mut completed = false;
+        let mut last_error = None;
+
+        for _ in 0..3 {
+            // SAFETY: both path buffers are NUL-terminated UTF-16 and remain alive for the
+            // duration of the call. Backup, exclusion, and reserved pointers are intentionally null.
+            let replaced_ok = unsafe {
+                ReplaceFileW(
+                    replaced.as_ptr(),
+                    replacement.as_ptr(),
+                    std::ptr::null(),
+                    0,
+                    std::ptr::null(),
+                    std::ptr::null(),
+                )
+            };
+            if replaced_ok != 0 {
+                completed = true;
+                break;
+            }
+
+            let replace_error = std::io::Error::last_os_error();
+            // WSL UNC paths reject ReplaceFileW with ERROR_NOT_SUPPORTED (50).
+            // std::fs::rename uses a different replace-existing API on Windows.
+            let replace_not_supported =
+                replace_error.raw_os_error() == Some(ERROR_NOT_SUPPORTED as i32);
+            if replace_error.kind() != std::io::ErrorKind::NotFound && !replace_not_supported {
+                last_error = Some(replace_error);
+                break;
+            }
+
+            match fs::rename(&tmp, path) {
+                Ok(()) => {
+                    completed = true;
+                    break;
+                }
+                Err(source)
+                    if matches!(
+                        source.kind(),
+                        std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::PermissionDenied
+                    ) =>
+                {
+                    last_error = Some(source);
+                }
+                Err(source) => {
+                    last_error = Some(source);
+                    break;
+                }
+            }
         }
-        fs::rename(&tmp, path).map_err(|e| AppError::IoContext {
-            context: format!("原子替换失败: {} -> {}", tmp.display(), path.display()),
-            source: e,
-        })?;
+
+        if !completed {
+            let source = last_error.unwrap_or_else(std::io::Error::last_os_error);
+            let _ = fs::remove_file(&tmp);
+            return Err(AppError::IoContext {
+                context: format!("原子替换失败: {} -> {}", tmp.display(), path.display()),
+                source,
+            });
+        }
     }
 
     #[cfg(not(windows))]
@@ -419,6 +566,29 @@ fn atomic_write_resolved(path: &Path, data: &[u8]) -> Result<(), AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn atomic_write_preserves_destination_when_windows_replace_fails() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(&path, b"old contents").unwrap();
+        let held_file = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(&path)
+            .unwrap();
+
+        let result = atomic_write(&path, b"new contents");
+
+        assert!(result.is_err());
+        drop(held_file);
+        assert_eq!(std::fs::read(&path).unwrap(), b"old contents");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
 
     #[test]
     fn derive_mcp_path_from_override_preserves_folder_name() {
@@ -592,6 +762,32 @@ mod tests {
         assert_eq!(
             fs::metadata(&target).unwrap().permissions().mode() & 0o777,
             0o640
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_json_write_returns_exact_bytes_and_preserves_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("managed.json");
+        let link = dir.path().join("config.json");
+        fs::write(&target, "old").unwrap();
+        symlink("managed.json", &link).unwrap();
+
+        let contents =
+            write_json_file_managed_with_contents(&link, &serde_json::json!({"z": 1, "a": 2}))
+                .unwrap();
+
+        assert!(fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(fs::read(&target).unwrap(), contents);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&contents).unwrap(),
+            serde_json::json!({"a": 2, "z": 1})
         );
     }
 

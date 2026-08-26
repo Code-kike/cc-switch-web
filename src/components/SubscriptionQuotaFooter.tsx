@@ -34,6 +34,8 @@ export const TIER_I18N_KEYS: Record<string, string> = {
   gemini_flash_lite: "subscription.geminiFlashLite",
   // Token Plan（five_hour 已在上方官方映射中）
   weekly_limit: "subscription.sevenDay",
+  monthly: "subscription.monthly",
+  credits: "subscription.credits",
   // GitHub Copilot
   premium: "subscription.copilotPremium",
 };
@@ -419,7 +421,8 @@ const SubscriptionQuotaFooter: React.FC<SubscriptionQuotaFooterProps> = ({
       quota={quota}
       loading={loading}
       refetch={refetch}
-      appIdForExpiredHint={appId}
+      // Grok Build's CLI command is `grok`, not the internal app id.
+      appIdForExpiredHint={appId === "grokbuild" ? "grok" : appId}
       inline={inline}
     />
   );

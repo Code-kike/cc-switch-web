@@ -32,6 +32,7 @@ import {
 } from "@/utils/providerConfigUtils";
 import {
   buildGrokBuildConfig,
+  GROK_BUILD_DEFAULT_API_BACKEND,
   parseGrokBuildConfig,
   updateGrokBuildConfig,
   validateGrokBuildConfig,
@@ -53,11 +54,6 @@ const grokPresetEntries: Array<{
     preset,
   })),
 ];
-
-export const grokApiBackendFromApiFormat = (format: CodexApiFormat): string => {
-  if (format === "openai_chat") return "chat_completions";
-  return "responses";
-};
 
 export function GrokBuildProviderForm({
   providerId,
@@ -95,7 +91,6 @@ export function GrokBuildProviderForm({
   );
   const [baseUrl, setBaseUrl] = useState(initialConfig.baseUrl);
   const [apiKey, setApiKey] = useState(initialConfig.apiKey);
-  const [apiBackend, setApiBackend] = useState(initialConfig.apiBackend);
   const [contextWindow, setContextWindow] = useState(
     String(initialConfig.contextWindow),
   );
@@ -178,7 +173,7 @@ export function GrokBuildProviderForm({
       baseUrl,
       name: form.getValues("name") || initialConfig.name,
       apiKey,
-      apiBackend,
+      apiBackend: GROK_BUILD_DEFAULT_API_BACKEND,
       contextWindow: Number.parseInt(contextWindow, 10),
       ...overrides,
     };
@@ -221,7 +216,6 @@ export function GrokBuildProviderForm({
       "auth" in preset && typeof preset.auth?.OPENAI_API_KEY === "string"
         ? preset.auth.OPENAI_API_KEY
         : "";
-    const presetApiBackend = grokApiBackendFromApiFormat(presetApiFormat);
 
     form.setValue("name", presetName);
     form.setValue("websiteUrl", preset.websiteUrl ?? "");
@@ -234,7 +228,6 @@ export function GrokBuildProviderForm({
     setApiKey(presetApiKey);
     setUpstreamModel(presetModel);
     setApiFormat(presetApiFormat);
-    setApiBackend(presetApiBackend);
     setPresetEndpoints(preset.endpointCandidates ?? []);
     setRawConfig(
       buildGrokBuildConfig({
@@ -243,7 +236,7 @@ export function GrokBuildProviderForm({
         baseUrl: presetBaseUrl,
         name: presetName,
         apiKey: presetApiKey,
-        apiBackend: presetApiBackend,
+        apiBackend: GROK_BUILD_DEFAULT_API_BACKEND,
         contextWindow: Number.parseInt(contextWindow, 10),
       }),
     );
@@ -257,7 +250,6 @@ export function GrokBuildProviderForm({
     setUpstreamModel(parsed.upstreamModel ?? parsed.model);
     setBaseUrl(parsed.baseUrl);
     setApiKey(parsed.apiKey);
-    setApiBackend(parsed.apiBackend);
     setApiFormat(
       parsed.apiBackend === "chat_completions"
         ? "openai_chat"
@@ -315,7 +307,7 @@ export function GrokBuildProviderForm({
       baseUrl,
       name,
       apiKey,
-      apiBackend,
+      apiBackend: GROK_BUILD_DEFAULT_API_BACKEND,
       contextWindow: parsedContextWindow,
     });
     const configError = validateGrokBuildConfig(finalConfig);
@@ -370,7 +362,7 @@ export function GrokBuildProviderForm({
       <form
         id="provider-form"
         onSubmit={form.handleSubmit(handleSubmit)}
-        className="space-y-6"
+        className="space-y-6 glass rounded-xl p-6 border border-white/10"
       >
         {!initialData && (
           <ProviderPresetSelector
@@ -386,7 +378,7 @@ export function GrokBuildProviderForm({
 
         {category !== "official" && (
           <>
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
               <FormItem>
                 <FormLabel htmlFor="grokbuild-profile">
                   {t("grokBuild.profile", { defaultValue: "客户端模型档位" })}
@@ -400,23 +392,6 @@ export function GrokBuildProviderForm({
                     syncStructuredConfig({ model: value });
                   }}
                   placeholder="grok-4.5"
-                  autoComplete="off"
-                />
-              </FormItem>
-
-              <FormItem>
-                <FormLabel htmlFor="grokbuild-api-backend">
-                  {t("grokBuild.apiBackend", { defaultValue: "API Backend" })}
-                </FormLabel>
-                <Input
-                  id="grokbuild-api-backend"
-                  value={apiBackend}
-                  onChange={(event) => {
-                    const value = event.target.value;
-                    setApiBackend(value);
-                    syncStructuredConfig({ apiBackend: value });
-                  }}
-                  placeholder="responses"
                   autoComplete="off"
                 />
               </FormItem>
@@ -485,7 +460,7 @@ export function GrokBuildProviderForm({
                 onChange={handleRawConfigChange}
                 placeholder=""
                 darkMode={isDarkMode}
-                rows={12}
+                rows={3}
                 showValidation={false}
                 language="javascript"
               />

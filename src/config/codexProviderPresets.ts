@@ -27,8 +27,9 @@ export interface CodexProviderPreset {
   iconColor?: string; // 图标颜色
   // Codex API 格式
   apiFormat?: CodexApiFormat;
-  // 托管账号预设：目前仅 xAI OAuth（本地代理按请求注入 token）
-  providerType?: "xai_oauth";
+  // 托管账号预设：本地代理按请求注入 token（xAI OAuth）或按绑定账号解析（Codex
+  // Official managed OAuth，即 ChatGPT Plus/Pro 反代）
+  providerType?: "xai_oauth" | "codex_oauth";
   // OAuth 预设隐藏 API Key，并要求保存前已有可用托管账号
   requiresOAuth?: boolean;
   // Codex 模型目录，保存为 settingsConfig.modelCatalog.models
@@ -50,7 +51,7 @@ export function generateThirdPartyAuth(apiKey: string): Record<string, any> {
 export function generateThirdPartyConfig(
   providerName: string,
   baseUrl: string,
-  modelName = "gpt-5.5",
+  modelName = "gpt-5.6-sol",
 ): string {
   // 清理供应商名称，确保符合TOML键名规范
   const cleanProviderName =
@@ -108,6 +109,7 @@ export const codexProviderPresets: CodexProviderPreset[] = [
     websiteUrl: "https://chatgpt.com/codex",
     isOfficial: true,
     category: "official",
+    providerType: "codex_oauth",
     auth: {},
     config: ``,
     theme: {
@@ -127,7 +129,7 @@ export const codexProviderPresets: CodexProviderPreset[] = [
     config: generateThirdPartyConfig(
       "shengsuanyun",
       "https://router.shengsuanyun.com/api/v1",
-      "openai/gpt-5.5",
+      "openai/gpt-5.6-sol",
     ),
     category: "aggregator",
     isPartner: true,
@@ -143,12 +145,113 @@ export const codexProviderPresets: CodexProviderPreset[] = [
     config: generateThirdPartyConfig(
       "patewayai",
       "https://api.pateway.ai/v1",
-      "gpt-5.5",
+      "gpt-5.6-sol",
     ),
     endpointCandidates: ["https://api.pateway.ai/v1"],
     isPartner: true,
     partnerPromotionKey: "patewayai",
     icon: "pateway",
+  },
+  {
+    name: "火山 Agent Plan",
+    websiteUrl:
+      "https://www.volcengine.com/activity/agentplan?ac=MMAP8JTTCAQ2&rc=6J6FV5N2&utm_source=OWO&utm_medium=devrel-1&utm_campaign=hw&utm_term=ccswitch&utm_content=hw",
+    apiKeyUrl:
+      "https://www.volcengine.com/activity/agentplan?ac=MMAP8JTTCAQ2&rc=6J6FV5N2&utm_source=OWO&utm_medium=devrel-1&utm_campaign=hw&utm_term=ccswitch&utm_content=hw",
+    auth: generateThirdPartyAuth(""),
+    config: generateThirdPartyConfig(
+      "ark_agentplan",
+      "https://ark.cn-beijing.volces.com/api/plan/v3",
+      "ark-code-latest",
+    ),
+    // ⚠️ 计费红线（官方 warning）：Agent Plan 必须走 /api/plan/v3；
+    // 按量端点 /api/v3 不消耗套餐额度、按量另计费，Coding Plan 的
+    // /api/coding/v3 是另一份订阅——两者都绝不能混入候选
+    endpointCandidates: ["https://ark.cn-beijing.volces.com/api/plan/v3"],
+    // 官方 Codex 文档（volcengine.com/docs/82379/2556056，2026-07 更新）：
+    // Agent Plan /api/plan/v3 与 Coding Plan /api/coding/v3 均已支持
+    // Responses API（wire_api=responses），无需路由接管转换
+    apiFormat: "openai_responses",
+    modelCatalog: modelCatalog([
+      {
+        model: "ark-code-latest",
+        displayName: "Ark Code Latest",
+        contextWindow: 256000,
+      },
+    ]),
+    category: "cn_official",
+    isPartner: true,
+    partnerPromotionKey: "volcengine_agentplan",
+    icon: "huoshan",
+    iconColor: "#3370FF",
+  },
+  {
+    name: "火山 Coding Plan",
+    websiteUrl:
+      "https://www.volcengine.com/activity/codingplan?ac=MMAP8JTTCAQ2&rc=6J6FV5N2&utm_campaign=hw&utm_content=ccswitch&utm_medium=devrel_tool_web&utm_source=OWO&utm_term=ccswitch",
+    apiKeyUrl:
+      "https://www.volcengine.com/activity/codingplan?ac=MMAP8JTTCAQ2&rc=6J6FV5N2&utm_campaign=hw&utm_content=ccswitch&utm_medium=devrel_tool_web&utm_source=OWO&utm_term=ccswitch",
+    auth: generateThirdPartyAuth(""),
+    config: generateThirdPartyConfig(
+      "ark_codingplan",
+      "https://ark.cn-beijing.volces.com/api/coding/v3",
+      "ark-code-latest",
+    ),
+    // ⚠️ 计费红线（官方 warning）：Coding Plan 必须走 /api/coding/v3；
+    // 按量端点 /api/v3 不消耗套餐额度、按量另计费，Agent Plan 的
+    // /api/plan/v3 是另一份订阅——两者都绝不能混入候选
+    endpointCandidates: ["https://ark.cn-beijing.volces.com/api/coding/v3"],
+    // 官方 Codex 文档（volcengine.com/docs/82379/2556056，2026-07 更新）：
+    // Coding Plan /api/coding/v3 已支持 Responses API（wire_api=responses），
+    // 无需路由接管转换
+    apiFormat: "openai_responses",
+    modelCatalog: modelCatalog([
+      {
+        model: "ark-code-latest",
+        displayName: "Ark Code Latest",
+        contextWindow: 256000,
+      },
+    ]),
+    category: "cn_official",
+    isPartner: true,
+    partnerPromotionKey: "volcengine_codingplan",
+    icon: "huoshan",
+    iconColor: "#3370FF",
+  },
+  {
+    name: "Tencent Hunyuan",
+    websiteUrl: "https://cloud.tencent.com/product/tokenhub",
+    apiKeyUrl: "https://console.cloud.tencent.com/tokenhub/apikey",
+    auth: generateThirdPartyAuth(""),
+    config: generateThirdPartyConfig(
+      "hy3_tokenhub",
+      "https://tokenhub.tencentmaas.com/v1",
+      "hy3",
+    ),
+    // The international TokenHub uses region-specific credentials and is not
+    // interchangeable with these mainland endpoints.
+    endpointCandidates: [
+      "https://tokenhub.tencentmaas.com/v1",
+      "https://tokenhub.tencentmaas.cn/v1",
+    ],
+    apiFormat: "openai_responses",
+    modelCatalog: modelCatalog([
+      {
+        model: "hy3",
+        displayName: "Hy3",
+        contextWindow: 256000,
+        inputModalities: ["text"],
+      },
+      {
+        model: "hy3-preview",
+        displayName: "Hy3 Preview",
+        contextWindow: 256000,
+        inputModalities: ["text"],
+      },
+    ]),
+    category: "cn_official",
+    icon: "hunyuan",
+    iconColor: "#0055E9",
   },
   {
     name: "Azure OpenAI",
@@ -158,7 +261,7 @@ export const codexProviderPresets: CodexProviderPreset[] = [
     isOfficial: true,
     auth: generateThirdPartyAuth(""),
     config: `model_provider = "azure"
-model = "gpt-5.5"
+model = "gpt-5.6-sol"
 model_reasoning_effort = "high"
 disable_response_storage = true
 
@@ -177,6 +280,36 @@ requires_openai_auth = true`,
     },
     icon: "azure",
     iconColor: "#0078D4",
+  },
+  {
+    name: "DeepSeek",
+    websiteUrl: "https://platform.deepseek.com",
+    apiKeyUrl: "https://platform.deepseek.com/api_keys",
+    auth: generateThirdPartyAuth(""),
+    config: generateThirdPartyConfig(
+      "deepseek",
+      "https://api.deepseek.com",
+      "deepseek-v4-flash",
+    ),
+    endpointCandidates: ["https://api.deepseek.com"],
+    // DeepSeek's native Responses gateway publishes an official Codex catalog;
+    // the backend mirrors its harness and freeform apply_patch declaration.
+    apiFormat: "openai_responses",
+    modelCatalog: modelCatalog([
+      {
+        model: "deepseek-v4-flash",
+        displayName: "DeepSeek V4 Flash",
+        contextWindow: 1048576,
+      },
+      {
+        model: "deepseek-v4-pro",
+        displayName: "DeepSeek V4 Pro",
+        contextWindow: 1048576,
+      },
+    ]),
+    category: "cn_official",
+    icon: "deepseek",
+    iconColor: "#1E88E5",
   },
   {
     name: "xAI (Grok)",
@@ -232,7 +365,7 @@ requires_openai_auth = true`,
     config: generateThirdPartyConfig(
       "aihubmix",
       "https://aihubmix.com/v1",
-      "gpt-5.5",
+      "gpt-5.6-sol",
     ),
     endpointCandidates: [
       "https://aihubmix.com/v1",
@@ -249,7 +382,7 @@ requires_openai_auth = true`,
     config: generateThirdPartyConfig(
       "cherryin",
       "https://open.cherryin.net/v1",
-      "openai/gpt-5.5",
+      "openai/gpt-5.6-sol",
     ),
     endpointCandidates: ["https://open.cherryin.net/v1"],
     category: "aggregator",
@@ -263,7 +396,7 @@ requires_openai_auth = true`,
     config: generateThirdPartyConfig(
       "dmxapi",
       "https://www.dmxapi.cn/v1",
-      "gpt-5.5",
+      "gpt-5.6-sol",
     ),
     endpointCandidates: ["https://www.dmxapi.cn/v1"],
     isPartner: true, // 合作伙伴
@@ -271,18 +404,21 @@ requires_openai_auth = true`,
   },
   {
     name: "PackyCode",
-    websiteUrl: "https://www.packyapi.com",
-    apiKeyUrl: "https://www.packyapi.com/register?aff=cc-switch",
+    websiteUrl: "https://www.packyapi.ai",
+    apiKeyUrl: "https://www.packyapi.ai/register?aff=cc-switch",
     category: "third_party",
     auth: generateThirdPartyAuth(""),
     config: generateThirdPartyConfig(
       "packycode",
-      "https://www.packyapi.com/v1",
-      "gpt-5.5",
+      "https://www.packyapi.ai/v1",
+      "gpt-5.6-sol",
     ),
     endpointCandidates: [
-      "https://www.packyapi.com/v1",
-      "https://api-slb.packyapi.com/v1",
+      "https://www.packyapi.ai/v1",
+      "https://api-slb.packyapi.ai/v1",
+      "https://cf.api.fan",
+      "https://slb-v1.api.fan",
+      "https://www.packyapi.com",
     ],
     isPartner: true, // 合作伙伴
     partnerPromotionKey: "packycode", // 促销信息 i18n key
@@ -297,7 +433,7 @@ requires_openai_auth = true`,
     config: generateThirdPartyConfig(
       "claudecn",
       "https://claudecn.top/v1",
-      "gpt-5.5",
+      "gpt-5.6-sol",
     ),
     isPartner: true,
     partnerPromotionKey: "claudecn",
@@ -305,15 +441,16 @@ requires_openai_auth = true`,
   },
   {
     name: "RunAPI",
-    websiteUrl: "https://runapi.co",
-    apiKeyUrl: "https://runapi.co",
+    websiteUrl: "https://runapi.host",
+    apiKeyUrl: "https://runapi.host",
     category: "aggregator",
     auth: generateThirdPartyAuth(""),
     config: generateThirdPartyConfig(
       "runapi",
-      "https://runapi.co/v1",
-      "gpt-5.5",
+      "https://runapi.host/v1",
+      "gpt-5.6-sol",
     ),
+    endpointCandidates: ["https://runapi.host/v1", "https://runapi.co/v1"],
     isPartner: true,
     partnerPromotionKey: "runapi",
     icon: "runapi",
@@ -327,7 +464,7 @@ requires_openai_auth = true`,
     config: generateThirdPartyConfig(
       "relaxycode",
       "https://www.relaxycode.com/v1",
-      "gpt-5.5",
+      "gpt-5.6-sol",
     ),
     icon: "relaxcode",
   },
@@ -339,7 +476,7 @@ requires_openai_auth = true`,
     config: generateThirdPartyConfig(
       "cubence",
       "https://api.cubence.com/v1",
-      "gpt-5.5",
+      "gpt-5.6-sol",
     ),
     endpointCandidates: [
       "https://api.cubence.com/v1",
@@ -355,16 +492,16 @@ requires_openai_auth = true`,
   },
   {
     name: "AIGoCode",
-    websiteUrl: "https://aigocode.com",
-    apiKeyUrl: "https://aigocode.com/invite/CC-SWITCH",
+    websiteUrl: "https://aigocode.app",
+    apiKeyUrl: "https://aigocode.app/invite/CC-SWITCH",
     category: "third_party",
     auth: generateThirdPartyAuth(""),
     config: generateThirdPartyConfig(
       "aigocode",
-      "https://api.aigocode.com",
-      "gpt-5.5",
+      "https://api.aigocode.app",
+      "gpt-5.6-sol",
     ),
-    endpointCandidates: ["https://api.aigocode.com"],
+    endpointCandidates: ["https://api.aigocode.app"],
     isPartner: true, // 合作伙伴
     partnerPromotionKey: "aigocode", // 促销信息 i18n key
     icon: "aigocode",
@@ -372,13 +509,13 @@ requires_openai_auth = true`,
   },
   {
     name: "RightCode",
-    websiteUrl: "https://www.right.codes",
-    apiKeyUrl: "https://www.right.codes/register?aff=CCSWITCH",
+    websiteUrl: "https://www.rightapi.ai",
+    apiKeyUrl: "https://www.rightapi.ai/register?aff=CCSWITCH",
     auth: generateThirdPartyAuth(""),
     config: generateThirdPartyConfig(
       "rightcode",
-      "https://right.codes/codex/v1",
-      "gpt-5.5",
+      "https://www.rightapi.ai/codex/v1",
+      "gpt-5.6-sol",
     ),
     category: "third_party",
     isPartner: true,
@@ -388,17 +525,16 @@ requires_openai_auth = true`,
   },
   {
     name: "AICodeMirror",
-    websiteUrl: "https://www.aicodemirror.com",
-    apiKeyUrl: "https://www.aicodemirror.com/register?invitecode=9915W3",
+    websiteUrl: "https://www.aicodemirror.ai",
+    apiKeyUrl: "https://www.aicodemirror.ai/register?invitecode=9915W3",
     auth: generateThirdPartyAuth(""),
     config: generateThirdPartyConfig(
       "aicodemirror",
-      "https://api.aicodemirror.com/api/codex/backend-api/codex",
-      "gpt-5.5",
+      "https://api.aicodemirror.ai/api/codex/backend-api/codex",
+      "gpt-5.6-sol",
     ),
     endpointCandidates: [
-      "https://api.aicodemirror.com/api/codex/backend-api/codex",
-      "https://api.claudecode.net.cn/api/codex/backend-api/codex",
+      "https://api.aicodemirror.ai/api/codex/backend-api/codex",
     ],
     isPartner: true,
     partnerPromotionKey: "aicodemirror",
@@ -407,15 +543,15 @@ requires_openai_auth = true`,
   },
   {
     name: "AICoding",
-    websiteUrl: "https://aicoding.sh",
-    apiKeyUrl: "https://aicoding.sh/i/CCSWITCH",
+    websiteUrl: "https://aicoding.inc",
+    apiKeyUrl: "https://aicoding.inc/i/CCSWITCH",
     auth: generateThirdPartyAuth(""),
     config: generateThirdPartyConfig(
       "aicoding",
-      "https://api.aicoding.sh",
-      "gpt-5.5",
+      "https://api.aicoding.inc",
+      "gpt-5.6-sol",
     ),
-    endpointCandidates: ["https://api.aicoding.sh"],
+    endpointCandidates: ["https://api.aicoding.inc"],
     isPartner: true,
     partnerPromotionKey: "aicoding",
     icon: "aicoding",
@@ -429,7 +565,7 @@ requires_openai_auth = true`,
     config: generateThirdPartyConfig(
       "crazyrouter",
       "https://cn.crazyrouter.com/v1",
-      "gpt-5.5",
+      "gpt-5.6-sol",
     ),
     endpointCandidates: ["https://cn.crazyrouter.com/v1"],
     isPartner: true,
@@ -445,7 +581,7 @@ requires_openai_auth = true`,
     config: generateThirdPartyConfig(
       "sssaicode",
       "https://node-hk.sssaicodeapi.com/api/v1",
-      "gpt-5.5",
+      "gpt-5.6-sol",
     ),
     endpointCandidates: [
       "https://node-hk.sssaicodeapi.com/api/v1",
@@ -468,7 +604,7 @@ requires_openai_auth = true`,
     config: generateThirdPartyConfig(
       "compshare",
       "https://api.modelverse.cn/v1",
-      "gpt-5.5",
+      "gpt-5.6-sol",
     ),
     endpointCandidates: ["https://api.modelverse.cn/v1"],
     category: "aggregator",
@@ -487,7 +623,7 @@ requires_openai_auth = true`,
     config: generateThirdPartyConfig(
       "compshare_coding",
       "https://cp.compshare.cn/v1",
-      "gpt-5.5",
+      "gpt-5.6-sol",
     ),
     endpointCandidates: ["https://cp.compshare.cn/v1"],
     category: "aggregator",
@@ -504,7 +640,7 @@ requires_openai_auth = true`,
     config: generateThirdPartyConfig(
       "micu",
       "https://www.micuapi.ai/v1",
-      "gpt-5.5",
+      "gpt-5.6-sol",
     ),
     endpointCandidates: ["https://www.micuapi.ai/v1"],
     category: "third_party",
@@ -521,7 +657,7 @@ requires_openai_auth = true`,
     config: generateThirdPartyConfig(
       "ctok",
       "https://api.ctok.ai/v1",
-      "gpt-5.5",
+      "gpt-5.6-sol",
     ),
     endpointCandidates: ["https://api.ctok.ai/v1"],
     category: "third_party",
@@ -537,7 +673,7 @@ requires_openai_auth = true`,
     config: generateThirdPartyConfig(
       "lionccapi",
       "https://vibecodingapi.ai/v1",
-      "gpt-5.5",
+      "gpt-5.6-sol",
     ),
     category: "third_party",
     isPartner: true,
@@ -552,7 +688,7 @@ requires_openai_auth = true`,
       OPENAI_API_KEY: "",
     },
     config: `model_provider = "e-flowcode"
-model = "gpt-5.5"
+model = "gpt-5.6-sol"
 model_reasoning_effort = "high"
 disable_response_storage = true
 personality = "pragmatic"
@@ -578,7 +714,7 @@ model_auto_compact_token_limit = 9000000`,
     config: generateThirdPartyConfig(
       "lemondata",
       "https://api.lemondata.cc/v1",
-      "gpt-5.5",
+      "gpt-5.6-sol",
     ),
     endpointCandidates: ["https://api.lemondata.cc/v1"],
     isPartner: true,
@@ -593,7 +729,7 @@ model_auto_compact_token_limit = 9000000`,
       OPENAI_API_KEY: "",
     },
     config: `model_provider = "custom"
-model = "gpt-5.5"
+model = "gpt-5.6-sol"
 model_reasoning_effort = "medium"
 disable_response_storage = true
 
@@ -614,7 +750,7 @@ base_url = "https://cc-api.pipellm.ai/v1"`,
     config: generateThirdPartyConfig(
       "openrouter",
       "https://openrouter.ai/api/v1",
-      "gpt-5.5",
+      "gpt-5.6-sol",
     ),
     category: "aggregator",
     icon: "openrouter",
@@ -639,5 +775,90 @@ base_url = "https://cc-api.pipellm.ai/v1"`,
         displayName: "GPT-5.3 Codex",
       },
     ]),
+  },
+  {
+    name: "A6API",
+    websiteUrl: "https://www.a6api.com",
+    apiKeyUrl: "https://a6api.com/register?aff=AqNr",
+    category: "aggregator",
+    auth: generateThirdPartyAuth(""),
+    config: generateThirdPartyConfig(
+      "a6api",
+      "https://api.a6api.com/v1",
+      "gpt-5.6-sol",
+    ),
+    endpointCandidates: ["https://api.a6api.com/v1"],
+    isPartner: true,
+    partnerPromotionKey: "a6api",
+    icon: "a6api",
+  },
+  {
+    name: "PPIO",
+    websiteUrl: "https://ppio.com",
+    apiKeyUrl: "https://ppio.com/activity/ccswitch",
+    auth: generateThirdPartyAuth(""),
+    config: generateThirdPartyConfig(
+      "ppio",
+      "https://api.ppio.com/openai/v1",
+      "deepseek/deepseek-v4-flash-0731",
+    ),
+    endpointCandidates: ["https://api.ppio.com/openai/v1"],
+    apiFormat: "openai_chat",
+    modelCatalog: modelCatalog([
+      {
+        model: "deepseek/deepseek-v4-flash-0731",
+        displayName: "Deepseek V4 Flash 0731",
+        contextWindow: 1048576,
+        inputModalities: ["text"],
+      },
+    ]),
+    category: "aggregator",
+    isPartner: true,
+    partnerPromotionKey: "ppio",
+    icon: "ppio",
+    iconColor: "#2874FF",
+  },
+  {
+    name: "JieKou AI",
+    websiteUrl: "https://jiekou.ai/#model-library",
+    apiKeyUrl: "https://jiekou.ai/settings/key-management",
+    auth: generateThirdPartyAuth(""),
+    config: generateThirdPartyConfig(
+      "jiekou",
+      "https://api.jiekou.ai/openai/v1",
+      "claude-fable-5",
+    ),
+    endpointCandidates: ["https://api.jiekou.ai/openai/v1"],
+    apiFormat: "openai_chat",
+    modelCatalog: modelCatalog([
+      {
+        model: "claude-fable-5",
+        displayName: "Claude Fable 5",
+        contextWindow: 1000000,
+        inputModalities: ["text", "image"],
+      },
+    ]),
+    category: "aggregator",
+    icon: "jiekou",
+    iconColor: "#000000",
+  },
+  {
+    name: "XycAi",
+    websiteUrl: "https://xycai.us",
+    apiKeyUrl: "https://xycai.us/register?aff=Uhu9",
+    category: "aggregator",
+    auth: generateThirdPartyAuth(""),
+    config: generateThirdPartyConfig(
+      "xycai",
+      "https://apicdn.xycai.us/v1",
+      "gpt-5.6-sol",
+    ),
+    endpointCandidates: [
+      "https://apicdn.xycai.us/v1",
+      "https://apicdn.xyc.ai/v1",
+    ],
+    isPartner: true,
+    partnerPromotionKey: "xycai",
+    icon: "xycai",
   },
 ];

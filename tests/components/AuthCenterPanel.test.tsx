@@ -12,6 +12,9 @@ const copilotState = {
   defaultAccountId: null as string | null,
   migrationError: null as string | null,
   hasAnyAccount: false,
+  isAuthenticated: false,
+  isStatusSuccess: true,
+  isStatusError: false,
   pollingState: "idle" as "idle" | "polling" | "success" | "error",
   deviceCode: null as null | {
     user_code: string;
@@ -33,6 +36,9 @@ const codexState = {
   accounts: [] as Array<{ id: string; login: string }>,
   defaultAccountId: null as string | null,
   hasAnyAccount: false,
+  isAuthenticated: false,
+  isStatusSuccess: true,
+  isStatusError: false,
   pollingState: "idle" as "idle" | "polling" | "success" | "error",
   deviceCode: null as null | {
     user_code: string;
@@ -62,6 +68,8 @@ const xaiState = {
   defaultAccountId: null as string | null,
   hasAnyAccount: false,
   isAuthenticated: false,
+  isStatusSuccess: true,
+  isStatusError: false,
   pollingState: "idle" as "idle" | "polling" | "success" | "error",
   deviceCode: null as null | {
     user_code: string;
@@ -133,6 +141,12 @@ vi.mock("@/components/ui/select", () => ({
 
 vi.mock("@/components/BrandIcons", () => ({
   CodexIcon: () => <span>codex-icon</span>,
+}));
+
+vi.mock("@/components/CodexOauthAccountQuota", () => ({
+  default: ({ accountId }: { accountId: string }) => (
+    <div data-account-quota={accountId} />
+  ),
 }));
 
 vi.mock("@/components/providers/forms/hooks/useCopilotAuth", () => ({

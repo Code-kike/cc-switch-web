@@ -43,6 +43,15 @@ use serde::{Deserialize, Serialize};
 pub const CHATGPT_CODEX_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
 pub const XAI_API_BASE_URL: &str = "https://api.x.ai/v1";
 
+// ChatGPT Codex 后端按 originator+version 组合做模型 cohort 路由：非官方身份会把
+// gpt-5.6-luna 解析到未部署的内部引擎（HTTP 404 Model not found，openai/codex#31967，
+// 本机 A/B 实测确认）。两个头必须成对发送，缺一即 404；version 需 ≥ 目标模型
+// catalog 的 minimal_client_version（luna=0.144.0），新模型抬门槛时同步 bump。
+// Shared by ClaudeAdapter (Claude-side codex_oauth preset) and CodexAdapter
+// (managed Official cards); do not duplicate these literals in either file.
+pub const CODEX_OAUTH_ORIGINATOR: &str = "codex_cli_rs";
+pub const CODEX_OAUTH_CLIENT_VERSION: &str = "0.144.1";
+
 // 公开导出
 pub use adapter::ProviderAdapter;
 pub use auth::{AuthInfo, AuthStrategy};
@@ -196,7 +205,9 @@ impl ProviderType {
                 ProviderType::Gemini
             }
             AppType::GrokBuild => ProviderType::Codex,
-            AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => ProviderType::Codex,
+            AppType::OpenCode | AppType::OpenClaw | AppType::Hermes | AppType::Pi => {
+                ProviderType::Codex
+            }
         }
     }
 
@@ -250,7 +261,9 @@ pub fn get_adapter(app_type: &AppType) -> Box<dyn ProviderAdapter> {
         AppType::Codex => Box::new(CodexAdapter::new()),
         AppType::Gemini => Box::new(GeminiAdapter::new()),
         AppType::GrokBuild => Box::new(CodexAdapter::new()),
-        AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => Box::new(CodexAdapter::new()),
+        AppType::OpenCode | AppType::OpenClaw | AppType::Hermes | AppType::Pi => {
+            Box::new(CodexAdapter::new())
+        }
     }
 }
 

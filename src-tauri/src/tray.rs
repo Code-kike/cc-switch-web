@@ -18,7 +18,11 @@ const W_TIER_NAMES: &[&str] = &[
     crate::services::subscription::TIER_SEVEN_DAY_OPUS,
     crate::services::subscription::TIER_SEVEN_DAY_SONNET,
 ];
-const M_TIER_NAMES: &[&str] = &[crate::services::subscription::TIER_THIRTY_DAY];
+const M_TIER_NAMES: &[&str] = &[
+    crate::services::subscription::TIER_MONTHLY,
+    crate::services::subscription::TIER_THIRTY_DAY,
+];
+const CREDITS_TIER_NAMES: &[&str] = &[crate::services::subscription::TIER_CREDITS];
 const GEMINI_PRO_TIER_NAMES: &[&str] = &[crate::services::subscription::TIER_GEMINI_PRO];
 const GEMINI_FLASH_TIER_NAMES: &[&str] = &[crate::services::subscription::TIER_GEMINI_FLASH];
 const GEMINI_FLASH_LITE_TIER_NAMES: &[&str] =
@@ -27,6 +31,7 @@ const TIER_LABEL_GROUPS: &[(&str, &[&str])] = &[
     ("h", H_TIER_NAMES),
     ("w", W_TIER_NAMES),
     ("m", M_TIER_NAMES),
+    ("c", CREDITS_TIER_NAMES),
     ("p", GEMINI_PRO_TIER_NAMES),
     ("f", GEMINI_FLASH_TIER_NAMES),
     ("l", GEMINI_FLASH_LITE_TIER_NAMES),
@@ -246,6 +251,15 @@ fn format_script_summary(result: &crate::provider::UsageResult) -> Option<String
 }
 
 fn provider_uses_official_subscription(provider: &crate::provider::Provider) -> bool {
+    // Managed Codex quota is account-scoped in the native footer; the tray's
+    // app-wide subscription cache cannot represent it safely.
+    if provider.id != crate::database::CODEX_OFFICIAL_PROVIDER_ID
+        && provider.category.as_deref() == Some("official")
+        && provider.managed_codex_oauth_account_id().is_some()
+    {
+        return false;
+    }
+
     provider
         .meta
         .as_ref()
@@ -449,7 +463,17 @@ fn handle_auto_click(app: &tauri::AppHandle, app_type: &AppType) -> Result<(), A
 
         // 强一致语义：Auto 模式开启后立即切到队列 P1（P1→P2→...）
         // 若队列为空，则尝试把“当前供应商”自动加入队列作为 P1，避免用户陷入无法开启的死锁。
-        let mut queue = app_state.db.get_failover_queue(app_type_str)?;
+        let all_providers = app_state.db.get_all_providers(app_type_str)?;
+        let mut queue = app_state
+            .db
+            .get_failover_queue(app_type_str)?
+            .into_iter()
+            .filter(|item| {
+                all_providers
+                    .get(&item.provider_id)
+                    .is_some_and(|provider| provider.supports_failover(app_type_str))
+            })
+            .collect::<Vec<_>>();
         if queue.is_empty() {
             let current_id =
                 crate::settings::get_effective_current_provider(&app_state.db, app_type)?;
@@ -458,10 +482,28 @@ fn handle_auto_click(app: &tauri::AppHandle, app_type: &AppType) -> Result<(), A
                     "故障转移队列为空，且未设置当前供应商，无法启用 Auto 模式".to_string(),
                 ));
             };
+            let current = app_state
+                .db
+                .get_provider_by_id(&current_id, app_type_str)?
+                .ok_or_else(|| AppError::Message(format!("供应商不存在: {current_id}")))?;
+            if !current.supports_failover(app_type_str) {
+                return Err(AppError::Message(
+                    "Codex Official 账号卡不支持自动故障转移".to_string(),
+                ));
+            }
             app_state
                 .db
                 .add_to_failover_queue(app_type_str, &current_id)?;
-            queue = app_state.db.get_failover_queue(app_type_str)?;
+            queue = app_state
+                .db
+                .get_failover_queue(app_type_str)?
+                .into_iter()
+                .filter(|item| {
+                    all_providers
+                        .get(&item.provider_id)
+                        .is_some_and(|provider| provider.supports_failover(app_type_str))
+                })
+                .collect();
         }
 
         let p1_provider_id = queue
@@ -650,8 +692,12 @@ pub fn create_tray_menu(
 
             for (id, provider) in sort_providers(&providers) {
                 let is_current = current_id == *id;
+                // Same rule as the switch-refusal guards, from one definition:
+                // `Provider::blocked_by_proxy_takeover` (see its doc for the full
+                // consumer table). The tray used to inline
+                // `category == "official"` and could drift.
                 let is_official_blocked =
-                    is_app_taken_over && provider.category.as_deref() == Some("official");
+                    is_app_taken_over && provider.blocked_by_proxy_takeover(app_type_str);
                 let label = if is_official_blocked {
                     format!("{} \u{26D4}", &provider.name) // ⛔ emoji
                 } else {
@@ -1015,6 +1061,7 @@ pub(crate) async fn refresh_all_usage_in_tray(app: &tauri::AppHandle) {
             let app_clone = app.clone();
             let state = app.state::<AppState>();
             let copilot_state = app.state::<CopilotAuthState>();
+            let xai_state = app.state::<crate::commands::XaiOAuthState>();
             let provider_id = current_id.clone();
             let app_str = app_type_str.to_string();
             script_futures.push(async move {
@@ -1022,6 +1069,7 @@ pub(crate) async fn refresh_all_usage_in_tray(app: &tauri::AppHandle) {
                     app_clone,
                     state,
                     copilot_state,
+                    xai_state,
                     provider_id.clone(),
                     app_str,
                 )
@@ -1038,9 +1086,12 @@ pub(crate) async fn refresh_all_usage_in_tray(app: &tauri::AppHandle) {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_script_summary, format_subscription_summary, TRAY_ID, TRAY_SECTIONS};
+    use super::{
+        format_script_summary, format_subscription_summary, provider_uses_official_subscription,
+        TRAY_ID, TRAY_SECTIONS,
+    };
     use crate::app_config::AppType;
-    use crate::provider::{UsageData, UsageResult};
+    use crate::provider::{Provider, UsageData, UsageResult};
     use crate::services::subscription::{
         CredentialStatus, QuotaTier, SubscriptionQuota, TIER_FIVE_HOUR, TIER_GEMINI_FLASH,
         TIER_GEMINI_FLASH_LITE, TIER_GEMINI_PRO, TIER_SEVEN_DAY, TIER_SEVEN_DAY_OPUS,
@@ -1051,6 +1102,37 @@ mod tests {
     fn tray_id_is_unique_to_app() {
         assert_eq!(TRAY_ID, "cc-switch");
         assert_ne!(TRAY_ID, "main");
+    }
+
+    #[test]
+    fn managed_codex_quota_stays_out_of_the_app_wide_tray_cache() {
+        let provider = |account_id: Option<&str>| -> Provider {
+            serde_json::from_value(serde_json::json!({
+                "id": "managed-codex",
+                "name": "Managed Codex",
+                "settingsConfig": {},
+                "category": "official",
+                "meta": {
+                    "authBinding": account_id.map(|id| serde_json::json!({
+                        "source": "managed_account",
+                        "authProvider": "codex_oauth",
+                        "accountId": id
+                    })),
+                    "usage_script": {
+                        "enabled": true,
+                        "language": "javascript",
+                        "code": "",
+                        "templateType": "official_subscription"
+                    }
+                }
+            }))
+            .unwrap()
+        };
+
+        assert!(!provider_uses_official_subscription(&provider(Some(
+            "account-1"
+        ))));
+        assert!(provider_uses_official_subscription(&provider(None)));
     }
 
     #[test]

@@ -1,0 +1,5 @@
+{"file": ".trellis/tasks/08-18-sync-upstream-v3.20.0/prd.md", "reason": "验收标准与 carry-forward 裁定是 check 的判定依据"}
+{"file": ".trellis/tasks/08-18-sync-upstream-v3.20.0/design.md", "reason": "Web API parity、安全边界、DB/定价/Windows/CI 适配契约的 check 清单"}
+{"file": ".trellis/tasks/archive/2026-08/08-08-sync-upstream-latest/batch-plan.md", "reason": "上次同步的语义适配结果（SQL allow-list、2s deadline、heap/stack 上限、SSRF/no-auth）作为本次 check 的回归基线"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "跨层数据流 check：新命令 web-commands 注册 + check:web-routes + dual_runtime_parity"}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "前端质量标准与禁止模式 check"}

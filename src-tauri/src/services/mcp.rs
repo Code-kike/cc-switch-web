@@ -83,6 +83,56 @@ impl McpService {
         apps
     }
 
+    fn rollback_toggle_and_compensate(
+        state: &AppState,
+        id: &str,
+        app: &AppType,
+        previous_enabled: bool,
+        projection_error: AppError,
+    ) -> AppError {
+        let mut recovery_errors = Vec::new();
+
+        let restored = match state
+            .db
+            .update_mcp_server_app_enabled(id, app, previous_enabled)
+        {
+            Ok(Some((_, server))) => Some(server),
+            Ok(None) => {
+                recovery_errors
+                    .push("database rollback failed: MCP server no longer exists".into());
+                None
+            }
+            Err(error) => {
+                recovery_errors.push(format!("database rollback failed: {error}"));
+                None
+            }
+        };
+
+        if let Some(server) = restored {
+            let compensation = if matches!(app, AppType::Codex) {
+                Self::sync_enabled_for_app(state, app)
+            } else if previous_enabled {
+                Self::sync_server_to_app(state, &server, app)
+            } else {
+                Self::remove_server_from_app(state, id, app)
+            };
+
+            if let Err(error) = compensation {
+                log::warn!("MCP compensation projection to {app:?} failed: {error}");
+                recovery_errors.push(format!("{} compensation failed: {error}", app.as_str()));
+            }
+        }
+
+        if recovery_errors.is_empty() {
+            projection_error
+        } else {
+            AppError::Message(format!(
+                "MCP live projection failed: {projection_error}; recovery incomplete: {}",
+                recovery_errors.join("; ")
+            ))
+        }
+    }
+
     /// 获取所有 MCP 服务器（统一结构）
     pub fn get_all_servers(state: &AppState) -> Result<IndexMap<String, McpServer>, AppError> {
         state.db.get_all_mcp_servers()
@@ -165,26 +215,23 @@ impl McpService {
         app: AppType,
         enabled: bool,
     ) -> Result<(), AppError> {
-        let mut servers = state.db.get_all_mcp_servers()?;
-
-        if let Some(server) = servers.get_mut(server_id) {
-            let previous = server.clone();
-            server.apps.set_enabled_for(&app, enabled);
-            state.db.save_mcp_server(server)?;
-
+        if let Some((previous_enabled, server)) = state
+            .db
+            .update_mcp_server_app_enabled(server_id, &app, enabled)?
+        {
             let projection = if matches!(app, AppType::Codex) {
                 Self::sync_enabled_for_app(state, &app)
             } else if enabled {
-                Self::sync_server_to_app(state, server, &app)
+                Self::sync_server_to_app(state, &server, &app)
             } else {
                 Self::remove_server_from_app(state, server_id, &app)
             };
             if let Err(error) = projection {
-                return Err(Self::rollback_and_compensate(
+                return Err(Self::rollback_toggle_and_compensate(
                     state,
                     server_id,
-                    Some(&previous),
-                    std::slice::from_ref(&app),
+                    &app,
+                    previous_enabled,
                     error,
                 ));
             }
@@ -249,6 +296,7 @@ impl McpService {
             AppType::Hermes => {
                 mcp::sync_single_server_to_hermes(&Default::default(), &server.id, &server.server)?;
             }
+            AppType::Pi => {}
         }
         Ok(())
     }
@@ -286,6 +334,7 @@ impl McpService {
             AppType::Hermes => {
                 mcp::remove_server_from_hermes(id)?;
             }
+            AppType::Pi => {}
         }
         Ok(())
     }
@@ -329,7 +378,7 @@ impl McpService {
         servers: &IndexMap<String, McpServer>,
         app: &AppType,
     ) -> Result<(), AppError> {
-        if matches!(app, AppType::OpenClaw) {
+        if matches!(app, AppType::OpenClaw | AppType::Pi) {
             return Ok(());
         }
         if matches!(app, AppType::Codex) {
