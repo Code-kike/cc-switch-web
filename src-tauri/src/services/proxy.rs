@@ -1114,12 +1114,20 @@ impl ProxyService {
 
             self.refresh_active_target_from_current_provider(&app).await;
 
-            // 8) Warn if the current provider is official (risk of account ban via proxy)
+            // 8) Warn if the current provider is official (risk of account ban via proxy).
+            // Same rule as the four switch-time enforcement points, from one
+            // definition: `Provider::blocked_by_proxy_takeover`. A managed Codex
+            // Official card is a deliberately supported routing path in this fork
+            // (the proxy resolves its bound account server-side), so it must NOT
+            // receive a ban-risk warning — warning on a path we ourselves serve
+            // would train users to ignore the warning. Do not re-inline
+            // `category == "official"` here: that is exactly how the tray drifted
+            // from the service layer before the predicate was consolidated.
             if let Ok(Some(current_id)) =
                 crate::settings::get_effective_current_provider(&self.db, &app)
             {
                 if let Ok(Some(provider)) = self.db.get_provider_by_id(&current_id, app_type_str) {
-                    if provider.category.as_deref() == Some("official") {
+                    if provider.blocked_by_proxy_takeover(app_type_str) {
                         if let Some(ctx) = self.runtime_ctx.read().await.as_ref() {
                             ctx.emit_json(
                                 "proxy-official-warning",
@@ -4175,6 +4183,33 @@ mod tests {
         codex_oauth
     }
 
+    /// Inject a recording sink so tests can assert which UI events a service
+    /// path emits. Mirrors `inject_codex_oauth_runtime_ctx` but keeps the
+    /// receiver, which is the only way to observe `emit_json`.
+    fn inject_recording_runtime_ctx(
+        service: &ProxyService,
+    ) -> (
+        tokio::sync::broadcast::Receiver<crate::runtime::EventEnvelope>,
+        Arc<tokio::sync::RwLock<CodexOAuthManager>>,
+    ) {
+        let data_dir = crate::config::get_app_config_dir();
+        let (sink, rx) = crate::runtime::ChannelEventSink::new(64);
+        let codex_oauth = Arc::new(tokio::sync::RwLock::new(CodexOAuthManager::new(
+            data_dir.clone(),
+        )));
+        service.set_runtime_ctx(
+            Arc::new(sink),
+            Arc::new(tokio::sync::RwLock::new(CopilotAuthManager::new(
+                data_dir.clone(),
+            ))),
+            codex_oauth.clone(),
+            Arc::new(tokio::sync::RwLock::new(
+                crate::proxy::providers::xai_oauth_auth::XaiOAuthManager::new(data_dir),
+            )),
+        );
+        (rx, codex_oauth)
+    }
+
     #[test]
     #[serial]
     fn guarded_codex_restore_rejects_a_changed_auth_file() {
@@ -5895,6 +5930,105 @@ wire_api = "responses"
 
         crate::settings::update_settings(crate::settings::AppSettings::default())
             .expect("reset settings");
+    }
+
+    /// The takeover ban-risk warning must use the same predicate as the four
+    /// switch-time enforcement points. A managed Codex Official card is a path
+    /// this fork deliberately serves (the proxy resolves its bound account
+    /// server-side), so warning on it would train users to ignore the warning;
+    /// every other Official card still warns. Regression for a fifth inlined
+    /// `category == "official"` site that drifted from
+    /// `Provider::blocked_by_proxy_takeover`.
+    #[tokio::test]
+    #[serial]
+    async fn takeover_warning_skips_managed_codex_official_but_fires_for_other_official() {
+        async fn warned_for(provider: Provider) -> bool {
+            let db = Arc::new(Database::memory().expect("init db"));
+            use_ephemeral_proxy_port(&db).await;
+            let service = ProxyService::new(db.clone());
+            let (mut rx, codex_oauth) = inject_recording_runtime_ctx(&service);
+            if let Some(account_id) = provider
+                .meta
+                .as_ref()
+                .and_then(|m| m.managed_account_id_for("codex_oauth"))
+            {
+                codex_oauth
+                    .read()
+                    .await
+                    .add_test_account_with_access_token(
+                        &account_id,
+                        "managed-token",
+                        Some("managed-id-token"),
+                    )
+                    .await
+                    .expect("seed managed account so the live write can succeed");
+            }
+
+            let app_type = "codex";
+            // Takeover reads the live Codex config first; seed a minimal one so
+            // the path reaches the warning step under test.
+            seed_codex_model_template();
+            crate::codex_config::write_codex_live_atomic(
+                &json!({ "OPENAI_API_KEY": "seed-key" }),
+                Some("model = \"gpt-5.5\"\n"),
+            )
+            .expect("seed codex live config");
+            db.save_provider(app_type, &provider)
+                .expect("save provider");
+            db.set_current_provider(app_type, &provider.id)
+                .expect("set db current provider");
+            crate::settings::set_current_provider(&AppType::Codex, Some(&provider.id))
+                .expect("set local current provider");
+
+            service
+                .set_takeover_for_app(app_type, true)
+                .await
+                .expect("enable takeover");
+
+            let mut warned = false;
+            while let Ok(env) = rx.try_recv() {
+                if env.event == "proxy-official-warning" {
+                    warned = true;
+                }
+            }
+            let _ = service.set_takeover_for_app(app_type, false).await;
+            warned
+        }
+
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+
+        let mut managed = Provider::with_id(
+            "managed-official".to_string(),
+            "OpenAI Official".to_string(),
+            json!({ "auth": {}, "config": "" }),
+            None,
+        );
+        managed.category = Some("official".to_string());
+        managed.meta = Some(ProviderMeta {
+            auth_binding: Some(AuthBinding {
+                source: AuthBindingSource::ManagedAccount,
+                auth_provider: Some("codex_oauth".to_string()),
+                account_id: Some("acct-managed".to_string()),
+            }),
+            ..Default::default()
+        });
+        assert!(
+            !warned_for(managed).await,
+            "a managed Codex Official card is served by this fork; it must not get a ban-risk warning"
+        );
+
+        let mut unbound = Provider::with_id(
+            crate::database::CODEX_OFFICIAL_PROVIDER_ID.to_string(),
+            "OpenAI Official".to_string(),
+            json!({ "auth": {}, "config": "" }),
+            None,
+        );
+        unbound.category = Some("official".to_string());
+        assert!(
+            warned_for(unbound).await,
+            "an unbound native-login Official card still carries the account-ban risk"
+        );
     }
 
     #[tokio::test]

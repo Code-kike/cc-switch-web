@@ -194,6 +194,34 @@ web-server example 警告 67 → **69**（+2 为 oauth 新增的 shim 侧 dead c
 已改：四个文件加「新特性」小节（三特性各一条，含 fork 特有裁定），「子任务范围之外」改写为
 「三个新特性的补充说明」，S2/S4 的「子任务前置/移交」措辞改为指向同版内小节。
 
+### review 后修正：第五处未收敛的 official 判定（架构审阅指出）
+
+`services/proxy.rs:1122` 是接管**开启**时的封禁风险警告（`proxy-official-warning`），仍内联
+`category == "official"` —— 托管 Codex Official 卡现在是 fork 官方支持的路由路径（代理在服务端解析
+其绑定账号），却照样收到「建议切换到第三方供应商」的警告。这与 `provider.rs` doc 里记录的
+「tray 曾内联导致漂移」是同一模式：**对我们自己提供服务的路径发警告，会训练用户忽略警告**。
+
+已改为 `provider.blocked_by_proxy_takeover(app_type_str)`，与四处切换期执行点同源（现为五处）。
+新增回归 `takeover_warning_skips_managed_codex_official_but_fires_for_other_official`：托管卡不告警、
+未绑定原生登录 Official 卡仍告警。**变异验证**：改回内联即该用例 FAILED（"a managed Codex Official
+card is served by this fork; it must not get a ban-risk warning"），恢复后通过。
+测试台新增 `inject_recording_runtime_ctx`（`ChannelEventSink` + 返回 manager 以便种入托管账号）——
+这是观测 `emit_json` 的唯一途径，此前测试模块没有录制型 sink。
+
+**其余 6 处内联逐处定性为不同语义，保留**（审阅要求的逐处判定）：
+
+| 位置 | 语义 | 结论 |
+|---|---|---|
+| `proxy.rs:1385` | 保证 official 行的 auth 为空（凭据卫生） | 更宽即 fail-safe，已有 in-code 注释 → 保留 |
+| `tray.rs:257` | `provider_uses_official_subscription`：app-wide 订阅缓存能否表示该卡 | **已显式对 managed Codex 返回 false** → 保留 |
+| `tray.rs:282` / `1056` | 用量脚本/缓存优先级，均委派上者 | 同上 → 保留 |
+| `provider/mod.rs:4947` | stale live auth 清理 | 已带 W2 注释 + `target_managed_codex_account_id.is_none()` 托管豁免 → 保留 |
+| `provider/mod.rs:6217` | Grok Build TOML 校验严格度 | 与 Codex/接管无关 → 保留 |
+| `stream_check.rs:88` | 不对 official 端点做未认证探测 | 更宽即 fail-safe → 保留 |
+
+门禁复跑：`cargo test --lib` **2290** passed / 5 ignored（+1 新用例）；`proxy::` **1154**（+1）；
+parity **38**；web-routes **292/280/0**；locales **2664**；fmt / web-server example check 全绿。
+
 ### 非阻塞跟进项（不影响合 main）
 
 - pi 徽章统一后遗留三个无引用 locale 键（`claudeCode.noRoutingSupport` / `codex.noRoutingSupport` /
