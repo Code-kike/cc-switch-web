@@ -210,15 +210,28 @@ card is served by this fork; it must not get a ban-risk warning"），恢复后�
 
 **其余内联判定点逐处定性为不同语义，保留**（审阅要求的逐处判定）。
 
-> **普查模式更正（grounded-reviewer 指正）**：首次普查用 `== Some("official")` 匹配，漏掉否定式与
-> 非 `as_deref` 形态三处（`codex_config.rs:1412` / `:2647` / `live.rs:805`），把总数误记为 6。
-> 正确模式是 **`category[^=]*(==|!=)\s*Some\("official"\)`**（含 `!=` 与 `category == Some(..)`），
-> 排除赋值 / 测试 fixture 后 Rust 生产侧共 **12 处**：1 处已收敛（本次修正的 `proxy.rs:1130`）+ 11 处保留。
-> 下次同步排查务必用此模式，勿沿用窄模式。
+> **普查模式与计数两次更正（grounded-reviewer 指正）**
+>
+> 一次：首次普查用 `== Some("official")` 匹配，漏掉否定式与非 `as_deref` 形态三处
+> （`codex_config.rs:1412` / `:2647` / `live.rs:805`）。正确模式是
+> **`category[^=]*(==|!=)\s*Some\("official"\)`**。
+>
+> 二次：改用正确模式后计数仍有两处差账 ——（a）`codex_config.rs:2647` 与 `:2648` 是
+> **独立两处**（`==` 与 `!=` 分属 `should_write_auth` 的两个析取项），被并成一行表格；
+> （b）`provider.rs` 的 4 处命中被 `rg -v` 整文件排除而**未说明理由**。
+>
+> **实测口径（下次同步照此核对）**：模式全命中 17 行 → 去 1 行注释
+> （`provider/mod.rs:4943`）= 16 处代码 → 去 `provider.rs` 4 处**谓词自身定义**
+> （`is_managed_codex_official_account_card`:120 / `is_codex_official_card`:133 /
+> `codex_official_login_is_live_owned`:162 / `blocked_by_proxy_takeover`:221 ——
+> 这些**就是**单一定义的实现体，不是待收敛的消费点）= **12 处消费侧，全部保留**。
+>
+> 本次收敛的 `proxy.rs:1130` 改用 `blocked_by_proxy_takeover(..)` 后**已不再匹配该模式**，
+> 故不出现在 12 之内；下表仍列它以记录改动，但计数时它属"谓词调用"而非"内联判定"。
 
 | 位置 | 所在函数 | 语义 | 结论 |
 |---|---|---|---|
-| `proxy.rs:1130` | `set_takeover_for_app` | 接管开启时的封禁风险警告 | **已改用谓词**（本次修正） |
+| `proxy.rs:1130` | `set_takeover_for_app` | 接管开启时的封禁风险警告 | **已改用谓词**（本次修正；已不匹配内联模式） |
 | `proxy.rs:1393` | `sync_live_config_to_provider` | 保证 official 行的 auth 为空（凭据卫生） | 更宽即 fail-safe，已有 in-code 注释 → 保留 |
 | `tray.rs:257` | `provider_uses_official_subscription` | app-wide 订阅缓存能否表示该卡 | **已显式对 managed Codex 返回 false** → 保留 |
 | `tray.rs:282` | `format_usage_suffix` | 用量后缀优先级，委派上者 | → 保留 |
@@ -226,10 +239,17 @@ card is served by this fork; it must not get a ban-risk warning"），恢复后�
 | `provider/mod.rs:4948` | `switch_normal` | stale live auth 清理 | 已带 W2 注释 + `target_managed_codex_account_id.is_none()` 托管豁免 → 保留 |
 | `provider/mod.rs:6218` | `validate_provider_settings` | Grok Build TOML 校验严格度 | 与 Codex/接管无关 → 保留 |
 | `codex_config.rs:1412` | `should_restore_codex_provider_token_for_backfill` | backfill 是否回填 token | 不同语义 → 保留 |
-| `codex_config.rs:2647-2648` | `write_codex_live_for_provider` | live auth 写入路由（`==` 与 `!=` 成对） | 不同语义 → 保留 |
+| `codex_config.rs:2647` | `write_codex_live_for_provider` | live auth 写入路由，第一析取项（`==` + 有登录材料） | 不同语义 → 保留 |
+| `codex_config.rs:2648` | `write_codex_live_for_provider` | 同上，第二析取项（`!=`，非 official 行的写入分支） | 不同语义 → 保留 |
 | `live.rs:805` | `apply_codex_managed_oauth_auth` | managed OAuth apply 的早返回；**其后紧接托管账号判定** | 不同语义、无漂移 → 保留 |
 | `grok_config.rs:382` | `write_grok_provider_live` | Grok live 写入 | 与 Codex/接管无关 → 保留 |
 | `stream_check.rs:88` | `stream_check_all_providers` | 不对 official 端点做未认证探测 | 更宽即 fail-safe → 保留 |
+
+**排除项（命中模式但不属消费点）**：`provider.rs:120/133/162/221` —— 分别是
+`is_managed_codex_official_account_card` / `is_codex_official_card` /
+`codex_official_login_is_live_owned` / `blocked_by_proxy_takeover` 的实现体。
+它们是这套语义的**单一定义所在**，收敛的目标就是让消费点调用它们；把它们计入
+"待收敛内联"会自相矛盾。
 
 前端镜像 `providerCapabilities.ts::isOfficialBlockedByTakeover` 的 doc 已补「Rust 侧为权威、含完整消费者表」
 的交叉引用；`provider.rs` 的 doc 由「四处执行点 / 切换必须被拒绝」改写为**分类谓词 + 五消费者表格**
