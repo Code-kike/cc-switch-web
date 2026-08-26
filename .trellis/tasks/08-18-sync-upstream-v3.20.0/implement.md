@@ -130,11 +130,78 @@ cargo test --manifest-path src-tauri/Cargo.toml web_proxy_lifecycle::
 
 ## 子任务编排（父职责，非父直接实现）
 
-- [ ] 确认子任务 `feat-pi-native-agent` 规划完成并启动（S2 落地后无前置阻塞）
-- [ ] 确认子任务 `feat-codex-alpha-websearch` 规划完成（S2/F 组落地后启动）
-- [ ] 确认子任务 `feat-managed-oauth-accounts` 规划完成（**依赖 S2 `d2b070c9` 落地**）
-- [ ] 各子任务归档后，父做跨子任务集成 review
-- [ ] 统一版本/changelog，合入 `main`
+- [x] 确认子任务 `feat-pi-native-agent` 规划完成并启动（S2 落地后无前置阻塞）—— 已归档 `7d839ed8`
+- [x] 确认子任务 `feat-codex-alpha-websearch` 规划完成（S2/F 组落地后启动）—— 已归档 `b6f02cfc`
+- [x] 确认子任务 `feat-managed-oauth-accounts` 规划完成（**依赖 S2 `d2b070c9` 落地**）—— 已归档 `e1b88f48`
+- [x] 各子任务归档后，父做跨子任务集成 review —— 见下「跨子任务集成 review 结果」
+- [x] 统一版本/changelog，补入三子任务结果（CHANGELOG + 三语 release notes）
+- [ ] 合入 `main`（待用户确认）
+
+## 跨子任务集成 review 结果（2026-08-26，HEAD 14b8416e）
+
+### 改动面与交集（契约三项之一：相互无冲突）
+
+父主体 = `25e34700..cb6a1229`（38 commit，112 生产文件）。三子任务顺序落在其后：
+pi `cb6a1229..7d839ed8`（127 文件）、alpha `7d839ed8..b6f02cfc`（6 文件）、oauth `b6f02cfc..HEAD`（62 文件）。
+
+| 交集 | 文件数 | 结论 |
+|---|---|---|
+| pi ∩ alpha | 0 | 无冲突面 |
+| alpha ∩ oauth | 0 | 无冲突面 |
+| **pi ∩ oauth** | **15** | 逐文件核验：pi 建立的行零丢失。唯一变化是 `ProviderCard.tsx` 的徽章条件加 `&& !supportsOfficialRouting`（oauth 对可路由的托管卡抑制徽章，是对 pi 徽章统一的**有意收窄**，非回退） |
+| **父主体 ∩ pi** | **24** | 见下符号存活核验 |
+| **父主体 ∩ oauth** | **23** | 同上 |
+| 父主体 ∩ alpha | 0 | alpha 只碰 proxy 转译面 |
+
+### 父主体语义无回退（契约第三项，经审阅补测）
+
+- **Rust**：父主体 28 个实现类 commit 新增的**全部** `fn` 在 HEAD 存活 —— 脚本化核验零缺失。
+- **前端**：父主体新增的全部 `export` 符号在 HEAD 存活 —— 零缺失。
+- **S2 `d2b070c9` never-clobber**（最高风险，落点 `services/proxy.rs` 被 oauth W3 净移植）：
+  helper `preserve_codex_oauth_login_on_restore` + 6 个回归用例（`restore_keeps_*` / `restore_writes_*` /
+  `restore_prefers_*` / `simple_restore_path_keeps_codex_oauth_login`）全部存活。
+- **i18n**：父主体 2506 键 → HEAD 2664，父主体键**零丢失**；S1 删除的 `officialPartner` 未被复活。
+- **定价面**：三子任务零触碰 pricing seed（S3 的 FE↔Rust 一致性不受影响）。
+- **`codexProviderPresets.ts`**（父 S1 与 oauth 都改）：oauth 仅扩宽 `providerType` union + 给 OpenAI Official
+  加该字段，未动 S1 的预设数据。
+
+### Web API parity / 安全边界 / schema（契约第一、二项）
+
+- `check:web-routes` **292/280/0**（wildcard 20 / unsupported 29 / parityExact 5）—— 与基线逐项相同。
+  pi 的 9 个新命令仍注册于 `web-commands.ts` + `web_api/handlers/pi.rs` + `lib.rs`；alpha/oauth 零新命令。
+- 三子任务各自的守卫互不削弱：alpha 的 `strip_suffix` fail-closed URL 推导（oauth 未碰 `forwarder.rs`）；
+  oauth 的 `Provider::blocked_by_proxy_takeover` 四处分发点单一定义 + 前端 `isOfficialBlockedByTakeover`
+  单一派生；pi 的 18 个 skill 安全 helper（含不跟随符号链接的 `collect_tree_entries`）。
+- carry-forward 上限全部原值：128 MiB / 2s / 16 MiB / 256 KiB / 32 MiB + 五个 `MAX_CITATION_DEDUP_*`。
+- `SCHEMA_VERSION` **17**；pi 的 `migrate_v16_to_v17` + `idx_session_usage_dedup_semantic` +
+  `SQL_RESTORE_INDEXES` 条目完整；冒烟中新库走完 v15→v16→v17。
+- 缺席项：延期 Codex Chat 栈四文件、zh-TW、ClaudeDesktop 表单、`migrate_legacy_codex_official_managed_binding`。
+
+### 门禁（集成 review 全量跑）
+
+`cargo test --lib` **2289** passed / 0 failed / 5 ignored；`proxy::` **1153**；Rust parity **38**；
+test:unit **177 files / 1089**；test:integration **50/54**（恰 4 个白名单 fixture flake）；
+locales **2664** parity；web-routes **292/280/0**；build:web 与 smoke:web-server 均 exit 0
+（124 探针，8 个有意非 2xx：6 个 desktop-only 501 + 2 个预期 400）。
+web-server example 警告 67 → **69**（+2 为 oauth 新增的 shim 侧 dead code，非产品路径）。
+
+### 唯一阻塞项（已修）
+
+发布文档滞后于实际范围：`CHANGELOG.md` 与三语 release notes 写于 `857779a7`（子任务落地前），
+仍称三特性「拆分为独立子任务，单独落地」并保留「子任务范围之外」章节，en L31 还说 Pi 是
+「fork 尚未承载的 provider」—— 而三者都是 HEAD 祖先且同版本 3.20.0 发布。属**已交付能力被声明为未交付**，
+违反 PRD「版本与 fork 自有发布说明反映实际移植范围」与 S8「三子任务结果待归档后由父集成 review 补入」。
+已改：四个文件加「新特性」小节（三特性各一条，含 fork 特有裁定），「子任务范围之外」改写为
+「三个新特性的补充说明」，S2/S4 的「子任务前置/移交」措辞改为指向同版内小节。
+
+### 非阻塞跟进项（不影响合 main）
+
+- pi 徽章统一后遗留三个无引用 locale 键（`claudeCode.noRoutingSupport` / `codex.noRoutingSupport` /
+  `claudeCode.needsRouting`）—— 三语齐备故 `check:locales` 绿，纯冗余。
+- `README.md` L5/L17/L41 枚举 5 个应用，`AppId` 实为 8 个：`grokbuild`/`hermes` 是**既有**漂移、`pi` 是本版新增。
+  只补 pi 会留下不一致，故整体留作独立 README 任务。
+- `useProviderActions.ts` / `ProviderCard.tsx` / `providerCapabilities.ts` 的 Official-takeover 谓词与上游
+  有意分歧（fork 无 inbound Authorization passthrough），下次同步这三个文件会冲突，须按 in-code 注释取据判定。
 
 ## 验证命令汇总
 
