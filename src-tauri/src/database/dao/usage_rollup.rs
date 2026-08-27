@@ -146,7 +146,7 @@ impl Database {
                     COALESCE(SUM(l.output_tokens), 0) as new_out,
                     COALESCE(SUM(l.cache_read_tokens), 0) as new_cr,
                     COALESCE(SUM(l.cache_creation_tokens), 0) as new_cc,
-                    COALESCE(SUM(CAST(l.total_cost_usd AS REAL)), 0) as new_cost,
+                    COALESCE(SUM(CASE WHEN l.status_code >= 200 AND l.status_code < 300 THEN CAST(l.total_cost_usd AS REAL) ELSE 0 END), 0) as new_cost,
                     COALESCE(AVG(l.latency_ms), 0) as new_lat
                 FROM proxy_request_logs l
                 WHERE l.created_at < ?1 AND l.pricing_missing = 0 AND {effective_filter}
@@ -285,6 +285,48 @@ mod tests {
                 row.get(0)
             })?;
         assert_eq!(remaining, 3);
+        Ok(())
+    }
+
+    #[test]
+    fn test_rollup_excludes_failed_request_cost() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        let now = chrono::Utc::now().timestamp();
+        let old_ts = now - 40 * 86400;
+
+        {
+            let conn = crate::database::lock_conn!(db.conn);
+            conn.execute(
+                "INSERT INTO proxy_request_logs (
+                    request_id, provider_id, app_type, model,
+                    input_tokens, output_tokens, total_cost_usd,
+                    latency_ms, status_code, created_at
+                ) VALUES (?1, 'p1', 'claude', 'claude-3', 100, 50, '0.01', 100, 200, ?2)",
+                rusqlite::params!["ok", old_ts],
+            )?;
+            conn.execute(
+                "INSERT INTO proxy_request_logs (
+                    request_id, provider_id, app_type, model,
+                    input_tokens, output_tokens, total_cost_usd,
+                    latency_ms, status_code, created_at
+                ) VALUES (?1, 'p1', 'claude', 'claude-3', 10, 5, '0.20', 50, 500, ?2)",
+                rusqlite::params!["fail", old_ts + 1],
+            )?;
+        }
+
+        assert_eq!(db.rollup_and_prune(30)?, 2);
+
+        let conn = crate::database::lock_conn!(db.conn);
+        let (requests, successes, cost): (i64, i64, String) = conn.query_row(
+            "SELECT request_count, success_count, total_cost_usd
+             FROM usage_daily_rollups WHERE app_type = 'claude'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        assert_eq!((requests, successes), (2, 1));
+        // Fail-closed cost: the failed(500) row keeps its detail cost out of the
+        // aggregated spend, exactly like success_count keeps it out of the count.
+        assert_eq!(cost, "0.01");
         Ok(())
     }
 

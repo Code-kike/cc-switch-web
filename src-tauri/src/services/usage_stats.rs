@@ -625,7 +625,7 @@ impl Database {
             FROM
                 (SELECT
                     COUNT(*) as total_requests,
-                    COALESCE(SUM(CAST(l.total_cost_usd AS REAL)), 0) as total_cost,
+                    COALESCE(SUM(CASE WHEN l.status_code >= 200 AND l.status_code < 300 THEN CAST(l.total_cost_usd AS REAL) ELSE 0 END), 0) as total_cost,
                     COALESCE(SUM({fresh_input_detail}), 0) as total_input_tokens,
                     COALESCE(SUM(l.output_tokens), 0) as total_output_tokens,
                     COALESCE(SUM(l.cache_creation_tokens), 0) as total_cache_creation_tokens,
@@ -734,7 +734,7 @@ impl Database {
             FROM (
                 SELECT l.app_type,
                     COUNT(*) as request_count,
-                    COALESCE(SUM(CAST(l.total_cost_usd AS REAL)), 0) as total_cost,
+                    COALESCE(SUM(CASE WHEN l.status_code >= 200 AND l.status_code < 300 THEN CAST(l.total_cost_usd AS REAL) ELSE 0 END), 0) as total_cost,
                     COALESCE(SUM({fresh_input_detail}), 0) as input_tokens,
                     COALESCE(SUM(l.output_tokens), 0) as output_tokens,
                     COALESCE(SUM(l.cache_creation_tokens), 0) as cache_creation_tokens,
@@ -858,7 +858,7 @@ impl Database {
                 "SELECT
                     CAST((l.created_at - ?1) / ?3 AS INTEGER) as bucket_idx,
                     COUNT(*) as request_count,
-                    COALESCE(SUM(CAST(l.total_cost_usd AS REAL)), 0) as total_cost,
+                    COALESCE(SUM(CASE WHEN l.status_code >= 200 AND l.status_code < 300 THEN CAST(l.total_cost_usd AS REAL) ELSE 0 END), 0) as total_cost,
                     COALESCE(SUM({fresh_input} + l.output_tokens), 0) as total_tokens,
                     COALESCE(SUM({fresh_input}), 0) as total_input_tokens,
                     COALESCE(SUM(l.output_tokens), 0) as total_output_tokens,
@@ -948,7 +948,7 @@ impl Database {
             "SELECT
                 date(l.created_at, 'unixepoch', 'localtime') as bucket_date,
                 COUNT(*) as request_count,
-                COALESCE(SUM(CAST(l.total_cost_usd AS REAL)), 0) as total_cost,
+                COALESCE(SUM(CASE WHEN l.status_code >= 200 AND l.status_code < 300 THEN CAST(l.total_cost_usd AS REAL) ELSE 0 END), 0) as total_cost,
                 COALESCE(SUM({fresh_input} + l.output_tokens), 0) as total_tokens,
                 COALESCE(SUM({fresh_input}), 0) as total_input_tokens,
                 COALESCE(SUM(l.output_tokens), 0) as total_output_tokens,
@@ -1167,7 +1167,7 @@ impl Database {
                     {detail_pname} as provider_name,
                     COUNT(*) as request_count,
                     COALESCE(SUM({fresh_input_detail} + l.output_tokens), 0) as total_tokens,
-                    COALESCE(SUM(CAST(l.total_cost_usd AS REAL)), 0) as total_cost,
+                    COALESCE(SUM(CASE WHEN l.status_code >= 200 AND l.status_code < 300 THEN CAST(l.total_cost_usd AS REAL) ELSE 0 END), 0) as total_cost,
                     COALESCE(SUM(CASE WHEN l.status_code >= 200 AND l.status_code < 300 THEN 1 ELSE 0 END), 0) as success_count,
                     COALESCE(SUM(l.latency_ms), 0) as latency_sum
                 FROM proxy_request_logs l
@@ -1286,7 +1286,7 @@ impl Database {
                 SELECT l.model,
                     COUNT(*) as request_count,
                     COALESCE(SUM({fresh_input_detail} + l.output_tokens), 0) as total_tokens,
-                    COALESCE(SUM(CAST(l.total_cost_usd AS REAL)), 0) as total_cost
+                    COALESCE(SUM(CASE WHEN l.status_code >= 200 AND l.status_code < 300 THEN CAST(l.total_cost_usd AS REAL) ELSE 0 END), 0) as total_cost
                 FROM proxy_request_logs l
                 {detail_where}
                 GROUP BY l.model
@@ -2255,6 +2255,39 @@ mod tests {
         let summary = db.get_usage_summary(None, None, None)?;
         assert_eq!(summary.total_requests, 2);
         assert_eq!(summary.success_rate, 100.0);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_usage_summary_excludes_failed_request_cost() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        {
+            let conn = lock_conn!(db.conn);
+            conn.execute(
+                "INSERT INTO proxy_request_logs (
+                    request_id, provider_id, app_type, model,
+                    input_tokens, output_tokens, total_cost_usd,
+                    latency_ms, status_code, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                params!["ok", "p1", "claude", "claude-3", 100, 50, "0.01", 100, 200, 1000],
+            )?;
+            conn.execute(
+                "INSERT INTO proxy_request_logs (
+                    request_id, provider_id, app_type, model,
+                    input_tokens, output_tokens, total_cost_usd,
+                    latency_ms, status_code, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                params!["fail", "p1", "claude", "claude-3", 10, 5, "0.20", 50, 500, 1000],
+            )?;
+        }
+
+        let summary = db.get_usage_summary(None, None, None)?;
+        assert_eq!(summary.total_requests, 2);
+        assert_eq!(summary.success_rate, 50.0);
+        // Failed/aborted detail rows no longer fold their cost into total spend;
+        // the aggregation gates cost on status_code 2xx, the same gate as success_count.
+        assert_eq!(summary.total_cost, "0.010000");
 
         Ok(())
     }
