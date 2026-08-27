@@ -1284,3 +1284,37 @@ systemctl --user restart cc-switch-web.service
 ### Status
 
 [OK] **Review complete**（review 交付完成；用户症状待补充）
+
+---
+
+## 2026-08-27 — 3.20.0 文档目标「所有代码」系统性 review（goal 8f418e5e）
+
+范围锚定：3.20.0 建造任务 = 父主体 S1–S8（`25e34700..cb6a1229`）+ 三子任务（`cb6a1229..HEAD`），
+`git diff --name-only 25e34700..HEAD -- src src-tauri` = **206 文件**。
+
+### 覆盖矩阵（与上一 goal 合起来 = 全量）
+
+| 域 | 处置 |
+|---|---|
+| pi 后端 8 新文件 | 逐读/安全扫：128 MiB session cap、500k entry、1 MiB 文件、canonicalize 根、slug 可移植校验 |
+| managed_codex.rs | 逐读：事务回滚 + `restore_preserving_newer_same_account_auth` 保持 never-clobber |
+| session_usage_pi.rs | 全文读：去重账本/append 增量/快照边界/symlink 拒绝，13 测试 |
+| pi_prompt_files.rs | 全文读：revision 冲突检测/原子写/rename 回滚 |
+| alpha websearch | 5 个 MAX_CITATION_DEDUP_* 上限 + `strip_suffix` fail-closed URL 推导（非长度切片）均已落地 |
+| 全 diff 缺陷扫描 | `todo!/unimplemented!/panic!/unsafe` 无问题；`unwrap/expect` 全为测试 fixture + 1 处闭集局部不变量；无非 UTF-8 边界裸切片 |
+| 运行时 | 服务 health、迁移 16→17、定价幂等、成本核算、端口架构 |
+
+### 权威门禁（review 收口复证）
+
+fmt OK；typecheck OK；web-routes **292/280/0**；locales **2664** parity；`cargo test --lib`
+**2290 passed / 0 failed / 5 ignored**（test:unit 177/1089 于合并期已证，review 期无 src 改动）。
+
+### 结论
+
+3.20.0 建造任务落地的 206 文件经系统 review **未发现需修复的 cc-switch 代码缺陷**；发现并记录的两个问题是
+(a) 失败/中止但带 cost 的请求计入「总花费」——未钉住语义的产品决策（待裁），(b) 非 3.20.0 引入的
+CODEX-SYNC 日志洪水。用户 pi 报错源头为其 AxonHub(8090) 中继，非 cc-switch 代理（代理 enabled=0 / 15721 未监听）。
+
+### Status
+
+[OK] **Review complete**（全量覆盖 + 门禁复证）
