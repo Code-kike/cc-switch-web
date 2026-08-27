@@ -1231,3 +1231,49 @@ systemctl --user restart cc-switch-web.service
 ### Status
 
 [OK] **Completed** —— 部署完成，服务健康，回滚物料就位。
+
+---
+
+## 2026-08-27 — v3.20.0 部署后全面代码 review（goal 4a6c75e6）
+
+触发：用户「部署使用存在问题」+「全面 review 3.20.0 trellis 建造任务所有代码」。无具体症状提供。
+
+### 结论（每条独立证据）
+
+1. **服务健康（事实，非判无 bug）**：active / NRestarts=0；RSS 稳态 47 MB（无泄漏）；近 2h 无 error 级日志。
+2. **schema 迁移正确**：16→17 纯新增 `session_usage_dedup`，`integrity_check ok`。
+3. **定价幂等**：191 行 191 唯一，重启重插不覆写用户自定义。
+4. **新代码零 panic 面**：9 个新增文件 fn 体内 unwrap/expect/panic 全 0；安全常数到位
+   （pi 128 MiB/500k entry/1 MiB，canonicalize 根解析，slug 跨平台校验）。
+5. **`cargo test --lib` 2290 passed**；test:unit 177 文件 / 1089（合并期已证，此后无 src 改动）。
+6. **pi 的 743 条「500」不是 cc-switch 代理失败**（四层证据，纠正过两次错误 grep）：
+   - `proxy_config.enabled=0` 全 app（路由代理关闭）
+   - 代理端口 15721 未监听（`ss` 无）
+   - pi `baseUrl=127.0.0.1:8090`（`ah-` 前缀 = AxonHub 中继；8090 进程持有者在 orion 权限外）
+   - pi DB 行 `data_source` 全 `pi_session`（session 文件导入），零代理日志
+   → 失败是 Pi↔AxonHub(8090) 之间，cc-switch 只是把 session 里的 stopReason=error 原样
+   导入用量面板展示。
+
+### 曾被我下错、被审阅连着推翻的结论（记录教训）
+
+- 「`Stream ended without finish_reason` 不在 cc-switch 源码」—— 搜带空格串漏了
+  `streaming.rs:1278` 的 snake_case 测试名；该场景确为 cc-switch 一等处理（流无 finish_reason
+  时静默丢弃终止事件，不发 message_delta/message_stop）。字符串本身非 cc-switch 产出，
+  但「据此排除 cc-switch」证据不足 —— 只能靠端口/数据源/进程三重事实排除。
+- 「服务健康、非我方问题」—— 在未拿到用户症状前就是越界结论。
+
+### 查过但判定非 bug 的点
+
+- 成本核算：失败请求中仅 42/750 带非零成本（=生成中途截断、确已计费），拒绝型失败成本为 0；
+  `success_count` 过滤 status、`total_cost` 不过滤，语义一致，非 bug。
+- CODEX-SYNC 启动刷数百条「找不到父 rollout」WARN：v3.19.2 S6b 既有行为（父链 dedup），非 3.20.0 回归；
+  属日志噪声 + 历史 session 永久 defer，可作后续独立清理项。
+
+### 未决
+
+用户具体症状从未提供（两度询问未答）。「全面 review」可完成；「修用户的特定错误」需其可复现
+报错/操作才能继续。若后续提供症状，从 AxonHub(8090) 中继与 pi 配置两条线入手复现。
+
+### Status
+
+[OK] **Review complete**（review 交付完成；用户症状待补充）
