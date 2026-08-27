@@ -1262,10 +1262,17 @@ systemctl --user restart cc-switch-web.service
   但「据此排除 cc-switch」证据不足 —— 只能靠端口/数据源/进程三重事实排除。
 - 「服务健康、非我方问题」—— 在未拿到用户症状前就是越界结论。
 
-### 查过但判定非 bug 的点
+### 审阅纠偏：成本核算这条我下错了结论
 
-- 成本核算：失败请求中仅 42/750 带非零成本（=生成中途截断、确已计费），拒绝型失败成本为 0；
-  `success_count` 过滤 status、`total_cost` 不过滤，语义一致，非 bug。
+- 事实（已读 usage_stats.rs:628/633/637 与 session_usage_pi.rs:475-540 确认）：`total_cost` =
+  `SUM(CAST(total_cost_usd AS REAL))` **无 status 过滤**；`total_requests` 用 `COUNT(*)`（含失败）；`success_count`
+  才过滤 2xx；`success_rate = success_count / total_requests`。所以**失败(500)/中止(499)但 session 带 cost 的
+  pi 请求会被计入「总花费」，成功数不算它们**（实测 42/750 失败 + 3/59 中止带非零成本，合计约 $7.92）。
+- 我此前「语义一致、非 bug」是错的、且无证据：全库**没有测试/注释钉住**「失败成本是否应计入总花费」这个语义。
+  两种语义都说得通（计=钱确实被上游扣了；不计=失败请求不是有效用量）。这是一个**未钉住的产品决策**，不是
+  可以随口判 non-bug 的实现细节。
+- `effective_usage_log_filter` 只做 session↔proxy 去重，且不涉及 `pi_session`（pi 不经代理，无需去重）。
+- 待用户裁定："总花费"是否只统计成功(2xx)请求；若裁「是」，需统一 detail/rollup 两侧 SUM 加 status 过滤并补回归。
 - CODEX-SYNC 启动刷数百条「找不到父 rollout」WARN：v3.19.2 S6b 既有行为（父链 dedup），非 3.20.0 回归；
   属日志噪声 + 历史 session 永久 defer，可作后续独立清理项。
 
