@@ -96,3 +96,47 @@ Claude/Pi 正常。`proxy_request_logs` 中 Codex 最新记录停在 **2026-08-1
 S4/S5 provider 表单细节、Alpha WebSearch 与 Managed OAuth 的逐 hunk 复核）。
 这些面由现有回归测试覆盖（`cargo test --lib` 2296、test:unit 177/1089、parity 38、
 integration、smoke 全绿），但未做本轮的人工语义复核。
+
+---
+
+## F3 [P0 · 已修复] LAN HTTP 访问下 Pi 编辑弹窗整页崩溃
+
+**用户报障**：Pi 页编辑 axonhub-国产 渠道即显示「界面遇到了问题 / 重新加载界面」。
+
+**根因**：`crypto.randomUUID` 仅在 secure context（HTTPS/localhost）下存在。用户经
+LAN IP `http://100.75.197.120:3010`（非 secure）访问时其为 undefined；而
+`PiProviderForm.tsx:272/292`（model draft）与 `StructuredOptionsEditor.tsx:108`
+（addOption）绕过既有 `utils/uuid.ts` 的 `generateUUID()`（已含 getRandomValues
+兜底）裸调 `crypto.randomUUID()`，渲染期抛出 → ErrorBoundary 整页接管。
+
+日志佐证：`~/.cc-switch/logs/frontend.log` 的 error_boundary 记录与堆栈精确
+指向 `index-*.js` useMemo + Array.map（model draft）。
+
+**修复**：三处改调 `generateUUID()`，不新建 helper（code-reuse 指南）。
+
+**变异验证**：`tests/components/PiProviderForm.insecureContext.test.tsx` 删除
+`crypto.randomUUID` 后渲染编辑表单 —— 修复前 TypeError（红），修复后渲染通过（绿）。
+`tests/utils/uuid.test.ts` 钉住 fallback 的 UUID v4 形状 + 原生路径回归。
+
+**部署终验（关键：非 127.0.0.1）**：在 LAN IP `100.75.197.120:3010` 上核实
+`isSecureContext=false` 且 `randomUUID` 不存在；Pi 页 Edit axonhub-国产 →
+表单正常渲染、Add header / Add compatibility 子组件正常、Save PUT 200。
+服务侧 `frontend.log` 自部署后无新 error_boundary 记录。
+
+**Commit**：`571257bd`（前端修复）+ 前置 `b1677ac7`（dao 搬迁收尾）。
+
+### Side note — 已验证无缺陷
+
+- `navigator.clipboard` 链路已有兜底：`lib/clipboard.ts` 先走后端 copy_text_to_clipboard，
+  失败回退 navigator.clipboard（非 secure 下同样可用）。本问题未波及。
+
+## CODEX DAO 分层搬迁（architecture-review 驱动收尾）
+
+按 implement.md C1 补完「纯搬迁 commit」：`reset_codex_usage`（含 SAVEPOINT 事务）/
+`load_codex_sync_cursors`/`insert_codex_session_row_on_conn`/`is_rollout_filename`/
+`is_codex_cursor_path` 收入 `database/dao/session_usage_codex.rs`，`impl Database` 块
+移回 dao（符合 database/mod.rs 架构注释「持久化归 dao/」）。服务层保留 scanner /
+parser / replay 与账务推导，成本计算以参数传入 DAO。行为锁定测试（2296）原样通过，
+无任何断言改动。pricing lookup（find_codex_pricing）有意留在 service 层——它是定价
+域匹配策略，待与 gemini/pi/session-usage 的相似查询收拢为 model_pricing 共享 helper
+时再统一（下一独立小 commit）。

@@ -1390,3 +1390,9 @@ DB 佐证：Codex 最新记录停在 2026-08-14，Claude/Pi 为当日。
 [OK] 门禁：cargo test --lib **2296**、test:unit **177/1089**、integration **50/54**（恰 4 白名单 flake）、
 web-routes **292/280/0**、locales parity、build:web + smoke exit 0、schema 17、integrity ok。
 [OK] 已部署，服务 active / NRestarts=0。
+
+## 2026-08-30 — F3 收尾
+
+- Pi 编辑崩溃：非安全上下文下 crypto.randomUUID 缺失，三处裸调用已统一走 generateUUID
+  兜底（xd 非 secure context 上的 LAN IP 验证通过）。回归测试带红绿対。
+- CODEX DAO 搬迁收尾完成（reset/cursor/insert SQL 收入 dao，行为测试无一变动通过）。
