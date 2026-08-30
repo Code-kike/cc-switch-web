@@ -273,10 +273,6 @@ struct CodexReplayCaches {
     parent_timelines: HashMap<PathBuf, CachedParentTimeline>,
     replay_prefixes: HashMap<PathBuf, CachedReplayPrefix>,
     pending: HashMap<PathBuf, PendingEntry>,
-    /// Number of deferral warnings actually emitted. A deferral whose reason has
-    /// not changed must not log again, so this stays flat while a file keeps
-    /// deferring for the same reason.
-    deferral_warnings: u64,
 }
 
 static CODEX_REPLAY_CACHES: OnceLock<Mutex<CodexReplayCaches>> = OnceLock::new();
@@ -690,6 +686,9 @@ struct CodexFileSyncResult {
     skipped: u32,
     suspected_duplicates: u32,
     deferred: bool,
+    /// Whether this deferral actually logged. A deferral whose reason has not
+    /// changed stays silent, so this is false on every retry of the same state.
+    deferral_warned: bool,
 }
 
 /// 同步 Codex 使用数据（从 JSONL 会话日志）
@@ -708,6 +707,9 @@ pub fn sync_codex_usage(db: &Database) -> Result<SessionSyncResult, AppError> {
         errors: vec![],
     };
 
+    // Deferrals that logged this pass. A steady-state deferral stays silent, so a
+    // non-zero value means the deferral set actually changed.
+    let mut newly_warned: u32 = 0;
     for file_path in &files {
         match sync_single_codex_file(db, file_path, &rollout_index, &mut pass) {
             Ok(file_result) => {
@@ -718,6 +720,9 @@ pub fn sync_codex_usage(db: &Database) -> Result<SessionSyncResult, AppError> {
                     .saturating_add(file_result.suspected_duplicates);
                 if file_result.deferred {
                     result.deferred_files = result.deferred_files.saturating_add(1);
+                }
+                if file_result.deferral_warned {
+                    newly_warned = newly_warned.saturating_add(1);
                 }
             }
             Err(e) => {
@@ -730,10 +735,11 @@ pub fn sync_codex_usage(db: &Database) -> Result<SessionSyncResult, AppError> {
 
     if result.imported > 0 || result.deferred_files > 0 {
         log::info!(
-            "[CODEX-SYNC] 同步完成: 导入 {} 条, 跳过 {} 条, deferred {} 个, 扫描 {} 个文件",
+            "[CODEX-SYNC] 同步完成: 导入 {} 条, 跳过 {} 条, deferred {} 个（本轮新告警 {} 个）, 扫描 {} 个文件",
             result.imported,
             result.skipped,
             result.deferred_files,
+            newly_warned,
             result.files_scanned
         );
     }
@@ -1157,9 +1163,6 @@ fn mark_deferred(
         .as_ref()
         != Some(&entry);
     if should_warn {
-        if let Ok(mut caches) = replay_caches().lock() {
-            caches.deferral_warnings = caches.deferral_warnings.saturating_add(1);
-        }
         let reason = match &entry.reason {
             PendingReason::MissingParent(parent) => format!("找不到父 rollout {parent}"),
             PendingReason::Stable(reason) | PendingReason::Retryable(reason) => reason.clone(),
@@ -1168,6 +1171,7 @@ fn mark_deferred(
     }
     CodexFileSyncResult {
         deferred: true,
+        deferral_warned: should_warn,
         ..CodexFileSyncResult::default()
     }
 }
@@ -2740,16 +2744,17 @@ mod tests {
 
         let first = sync_test_file(&db, &child, &[&parent, &child])?;
         assert!(first.deferred);
-        let warnings_after_first = replay_caches().lock().unwrap().deferral_warnings;
-        assert_eq!(warnings_after_first, 1);
+        assert!(first.deferral_warned, "the first deferral must be reported");
 
         // Nothing about the child or the parent changed, so the retry must stay
         // silent. Dropping the pending entry before retrying made every cycle
         // look like a first-time deferral and re-logged the same line forever.
         let second = sync_test_file(&db, &child, &[&parent, &child])?;
         assert!(second.deferred);
-        let warnings_after_second = replay_caches().lock().unwrap().deferral_warnings;
-        assert_eq!(warnings_after_second, warnings_after_first);
+        assert!(
+            !second.deferral_warned,
+            "an unchanged deferral must not log again"
+        );
         Ok(())
     }
 

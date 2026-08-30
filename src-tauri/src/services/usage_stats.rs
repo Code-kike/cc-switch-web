@@ -1728,13 +1728,20 @@ impl Database {
         log.cache_creation_cost_usd = format!("{cache_creation_cost:.6}");
         log.total_cost_usd = format!("{total_cost:.6}");
 
+        // Pricing resolved (the `None` arm above returns early), so this row is no
+        // longer "priced at 0 because we had no rate". Clearing the flag is what
+        // makes the M4 contract in `usage_rollup::rollup_and_prune` hold: that
+        // query gates BOTH aggregation and pruning on `pricing_missing = 0`, so a
+        // row backfilled with a real cost would otherwise keep its now-correct cost
+        // out of every rollup and stay in the detail table forever.
         conn.execute(
             "UPDATE proxy_request_logs
              SET input_cost_usd = ?1,
                  output_cost_usd = ?2,
                  cache_read_cost_usd = ?3,
                  cache_creation_cost_usd = ?4,
-                 total_cost_usd = ?5
+                 total_cost_usd = ?5,
+                 pricing_missing = 0
              WHERE request_id = ?6",
             params![
                 log.input_cost_usd,
@@ -2185,6 +2192,60 @@ mod tests {
             .collect::<Result<Vec<_>, _>>()?;
         assert_eq!(request_ids, vec!["desktop-proxy"]);
 
+        Ok(())
+    }
+
+    /// M4 contract (`usage_rollup::rollup_and_prune`): a row parked at cost 0
+    /// because pricing was unknown survives so it can be recomputed once pricing
+    /// exists. That query gates BOTH aggregation and pruning on
+    /// `pricing_missing = 0`, so backfilling the cost without clearing the flag
+    /// keeps the now-correct cost out of every rollup and pins the row in the
+    /// detail table forever.
+    #[test]
+    fn test_backfill_clears_pricing_missing_so_the_row_rejoins_rollups() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        {
+            let conn = lock_conn!(db.conn);
+            insert_usage_log(
+                &conn,
+                "priced-later",
+                "codex",
+                "_codex_session",
+                "gpt-5",
+                "codex_session",
+                1000,
+                700,
+                100,
+                0,
+                0,
+                200,
+                "0",
+            )?;
+            // Logged while the model had no pricing row.
+            conn.execute(
+                "UPDATE proxy_request_logs SET pricing_missing = 1 WHERE request_id = 'priced-later'",
+                [],
+            )?;
+        }
+
+        // Query-time lazy backfill runs here; `gpt-5` is a seeded model.
+        let detail = db
+            .get_request_detail("priced-later")?
+            .expect("row should be queryable");
+        assert_ne!(detail.total_cost_usd, "0", "cost should be backfilled");
+
+        let still_missing: i64 = {
+            let conn = lock_conn!(db.conn);
+            conn.query_row(
+                "SELECT pricing_missing FROM proxy_request_logs WHERE request_id = 'priced-later'",
+                [],
+                |row| row.get(0),
+            )?
+        };
+        assert_eq!(
+            still_missing, 0,
+            "a row that now has a real cost must rejoin rollup aggregation and pruning"
+        );
         Ok(())
     }
 
