@@ -66,6 +66,7 @@ import { useDarkMode } from "@/hooks/useDarkMode";
 import { providerSchema, type ProviderFormData } from "@/lib/schemas/provider";
 import type { ProviderCategory } from "@/types";
 import { translatePiProviderMutationError } from "@/utils/errorUtils";
+import { generateUUID } from "@/utils/uuid";
 
 const PI_API_FORMATS = [
   { value: "openai-completions", label: "OpenAI Chat Completions" },
@@ -269,7 +270,7 @@ function modelDraft(
 ): PiModelDraft {
   const model = asObject(value);
   return {
-    key: options.key ?? crypto.randomUUID(),
+    key: options.key ?? generateUUID(),
     id: optionalText(model.id),
     name: optionalText(model.name),
     hasName: hasOwn(model, "name"),
@@ -289,7 +290,7 @@ function modelDraft(
 
 function newModel(): PiModelDraft {
   return {
-    key: crypto.randomUUID(),
+    key: generateUUID(),
     id: "",
     name: "",
     hasName: true,
