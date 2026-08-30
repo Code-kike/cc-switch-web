@@ -37,6 +37,10 @@ pub(crate) use dao::proxy::{
     validate_cost_multiplier, validate_pricing_source, PRICING_SOURCE_REQUEST,
     PRICING_SOURCE_RESPONSE,
 };
+pub(crate) use dao::session_usage_codex::{
+    insert_codex_session_row_on_conn, load_codex_sync_cursors, reset_codex_usage_on_conn,
+    CodexSessionInsert,
+};
 pub use dao::FailoverQueueItem;
 pub use dao::Profile;
 

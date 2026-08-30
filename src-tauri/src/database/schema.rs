@@ -1578,7 +1578,7 @@ impl Database {
     /// schema migration already owns the Database connection mutex.
     fn migrate_v15_to_v16(conn: &Connection) -> Result<(), AppError> {
         let codex_dir = crate::codex_config::get_codex_config_dir();
-        crate::services::session_usage_codex::reset_codex_usage_on_conn(conn, &codex_dir)
+        crate::database::reset_codex_usage_on_conn(conn, &codex_dir)
     }
 
     /// v16 -> v17: preserve session request identities after detail rollup.

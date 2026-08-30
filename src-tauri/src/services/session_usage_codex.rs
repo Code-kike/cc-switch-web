@@ -14,7 +14,10 @@
 //! - `event_msg` (type=token_count) → 提取累计 token 用量，计算 delta
 
 use crate::codex_config::get_codex_config_dir;
-use crate::database::{lock_conn, Database};
+use crate::database::{
+    insert_codex_session_row_on_conn, load_codex_sync_cursors, lock_conn, CodexSessionInsert,
+    Database,
+};
 use crate::error::AppError;
 use crate::proxy::usage::calculator::{CostCalculator, ModelPricing};
 use crate::proxy::usage::parser::TokenUsage;
@@ -287,138 +290,6 @@ pub(crate) fn clear_codex_replay_caches() {
     }
 }
 
-fn is_rollout_filename(file_name: &str) -> bool {
-    if !file_name.starts_with("rollout-") || !file_name.ends_with(".jsonl") {
-        return false;
-    }
-    let stem = file_name.trim_end_matches(".jsonl");
-    stem.get(stem.len().saturating_sub(36)..)
-        .is_some_and(|candidate| uuid::Uuid::parse_str(candidate).is_ok())
-}
-
-fn is_codex_cursor_path(file_path: &str, codex_dir: &Path) -> bool {
-    let path = Path::new(file_path);
-    let file_name = file_path.rsplit(['/', '\\']).next().unwrap_or_default();
-    if !is_rollout_filename(file_name) {
-        return false;
-    }
-
-    if path.starts_with(codex_dir.join("sessions"))
-        || path.starts_with(codex_dir.join("archived_sessions"))
-    {
-        return true;
-    }
-
-    // 兼容用户改过 CODEX_HOME 后遗留、且源文件已不存在的 cursor。只接受
-    // 明确目录段 + Codex rollout UUID 文件名，避免宽 codex_dir 误删其他 importer。
-    file_path
-        .replace('\\', "/")
-        .split('/')
-        .any(|segment| matches!(segment, "sessions" | "archived_sessions"))
-}
-
-fn sqlite_table_exists(conn: &rusqlite::Connection, table: &str) -> Result<bool, AppError> {
-    conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
-        [table],
-        |row| row.get(0),
-    )
-    .map_err(|error| AppError::Database(format!("查询表 {table} 失败: {error}")))
-}
-
-fn sqlite_column_exists(
-    conn: &rusqlite::Connection,
-    table: &str,
-    column: &str,
-) -> Result<bool, AppError> {
-    conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM pragma_table_info(?1) WHERE name = ?2)",
-        rusqlite::params![table, column],
-        |row| row.get(0),
-    )
-    .map_err(|error| AppError::Database(format!("查询列 {table}.{column} 失败: {error}")))
-}
-
-pub(crate) fn reset_codex_usage_on_conn(
-    conn: &rusqlite::Connection,
-    codex_dir: &Path,
-) -> Result<(), AppError> {
-    if sqlite_table_exists(conn, "proxy_request_logs")?
-        && sqlite_column_exists(conn, "proxy_request_logs", "data_source")?
-    {
-        conn.execute(
-            "DELETE FROM proxy_request_logs WHERE data_source = 'codex_session'",
-            [],
-        )
-        .map_err(|error| AppError::Database(format!("清理 Codex 会话明细失败: {error}")))?;
-    }
-    if sqlite_table_exists(conn, "usage_daily_rollups")?
-        && sqlite_column_exists(conn, "usage_daily_rollups", "provider_id")?
-    {
-        conn.execute(
-            "DELETE FROM usage_daily_rollups WHERE provider_id = '_codex_session'",
-            [],
-        )
-        .map_err(|error| AppError::Database(format!("清理 Codex 用量汇总失败: {error}")))?;
-    }
-    if sqlite_table_exists(conn, "session_log_sync")?
-        && sqlite_column_exists(conn, "session_log_sync", "file_path")?
-    {
-        let paths = {
-            let mut statement = conn
-                .prepare("SELECT file_path FROM session_log_sync")
-                .map_err(|error| {
-                    AppError::Database(format!("读取会话同步 cursor 失败: {error}"))
-                })?;
-            let paths = statement
-                .query_map([], |row| row.get::<_, String>(0))
-                .map_err(|error| AppError::Database(format!("查询会话同步 cursor 失败: {error}")))?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|error| {
-                    AppError::Database(format!("解析会话同步 cursor 失败: {error}"))
-                })?;
-            paths
-        };
-        for file_path in paths
-            .into_iter()
-            .filter(|path| is_codex_cursor_path(path, codex_dir))
-        {
-            conn.execute(
-                "DELETE FROM session_log_sync WHERE file_path = ?1",
-                [file_path],
-            )
-            .map_err(|error| AppError::Database(format!("清理 Codex 同步 cursor 失败: {error}")))?;
-        }
-    }
-    Ok(())
-}
-
-impl Database {
-    pub(crate) fn reset_codex_usage(&self) -> Result<(), AppError> {
-        let codex_dir = get_codex_config_dir();
-        let conn = lock_conn!(self.conn);
-        conn.execute("SAVEPOINT reset_codex_usage", [])
-            .map_err(|error| AppError::Database(format!("开启 Codex 重建事务失败: {error}")))?;
-        let result = reset_codex_usage_on_conn(&conn, &codex_dir);
-        match result {
-            Ok(()) => {
-                conn.execute("RELEASE reset_codex_usage", [])
-                    .map_err(|error| {
-                        AppError::Database(format!("提交 Codex 重建事务失败: {error}"))
-                    })?;
-                drop(conn);
-                clear_codex_replay_caches();
-                Ok(())
-            }
-            Err(error) => {
-                conn.execute("ROLLBACK TO reset_codex_usage", []).ok();
-                conn.execute("RELEASE reset_codex_usage", []).ok();
-                Err(error)
-            }
-        }
-    }
-}
-
 fn non_empty_string(value: Option<&serde_json::Value>) -> Option<String> {
     value
         .and_then(serde_json::Value::as_str)
@@ -512,21 +383,8 @@ struct CodexSyncPass {
 
 impl CodexSyncPass {
     fn load(db: &Database) -> Result<Self, AppError> {
-        let conn = lock_conn!(db.conn);
-        let mut stmt = conn
-            .prepare("SELECT file_path, last_modified, last_line_offset FROM session_log_sync")
-            .map_err(|e| AppError::Database(format!("预载同步游标失败: {e}")))?;
-        let cursors = stmt
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    (row.get::<_, i64>(1)?, row.get::<_, i64>(2)?),
-                ))
-            })
-            .and_then(|rows| rows.collect::<Result<HashMap<_, _>, _>>())
-            .map_err(|e| AppError::Database(format!("预载同步游标失败: {e}")))?;
         Ok(Self {
-            cursors,
+            cursors: load_codex_sync_cursors(db)?,
             pricing: HashMap::new(),
         })
     }
@@ -1512,47 +1370,23 @@ fn insert_codex_session_entry_on_conn(
         ),
     };
 
-    let inserted_rows = conn
-        .prepare_cached(
-            "INSERT OR IGNORE INTO proxy_request_logs (
-            request_id, provider_id, app_type, model, request_model, pricing_model,
-            input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
-            input_cost_usd, output_cost_usd, cache_read_cost_usd, cache_creation_cost_usd, total_cost_usd,
-            latency_ms, first_token_ms, status_code, error_message, session_id,
-            provider_type, is_streaming, cost_multiplier, created_at, data_source, pricing_missing
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)",
-        )
-        .and_then(|mut stmt| stmt.execute(rusqlite::params![
-                request_id,
-                "_codex_session",    // provider_id
-                "codex",             // app_type
-                model,
-                model,               // request_model = model
-                model,               // pricing_model = model
-                delta.input,
-                delta.output,
-                delta.cached_input,
-                0i64,                // cache_creation_tokens: Codex 日志无此数据
-                input_cost,
-                output_cost,
-                cache_read_cost,
-                cache_creation_cost,
-                total_cost,
-                0i64,                // latency_ms
-                Option::<i64>::None, // first_token_ms
-                200i64,              // status_code
-                Option::<String>::None, // error_message
-                session_id.map(|s| s.to_string()),
-                Some("codex_session"), // provider_type
-                1i64,                // is_streaming
-                "1.0",               // cost_multiplier
-                created_at,
-                "codex_session",     // data_source
-                pricing_missing,     // pricing_missing
-            ]))
-        .map_err(|e| AppError::Database(format!("插入 Codex 会话日志失败: {e}")))?;
-
-    Ok(inserted_rows > 0)
+    let row = CodexSessionInsert {
+        request_id: request_id.to_string(),
+        model: model.to_string(),
+        session_id: session_id.map(|s| s.to_string()),
+        created_at,
+        input_tokens: delta.input,
+        output_tokens: delta.output,
+        cache_read_tokens: delta.cached_input,
+        cache_creation_tokens: 0,
+        input_cost_usd: input_cost,
+        output_cost_usd: output_cost,
+        cache_read_cost_usd: cache_read_cost,
+        cache_creation_cost_usd: cache_creation_cost,
+        total_cost_usd: total_cost,
+        pricing_missing: pricing_missing == 1,
+    };
+    insert_codex_session_row_on_conn(conn, &row)
 }
 
 /// 查找 Codex 模型定价（带归一化）
@@ -3061,7 +2895,7 @@ mod tests {
                 )?;
             }
 
-            reset_codex_usage_on_conn(&conn, wide_dir)?;
+            crate::database::reset_codex_usage_on_conn(&conn, wide_dir)?;
             let codex_rows: i64 = conn.query_row(
                 "SELECT COUNT(*) FROM proxy_request_logs WHERE data_source = 'codex_session'",
                 [],
