@@ -1339,3 +1339,54 @@ CODEX-SYNC 日志洪水。用户 pi 报错源头为其 AxonHub(8090) 中继，�
 ### Status
 
 [OK] **cost 修复 = 新数据生效 + 历史泄漏已量化记账**（重部署完成，服务 active，schema 17 不变）
+
+---
+
+## 2026-08-30 — v3.20.0 Web 回归审阅：两个用量链路缺陷（已修复并部署）
+
+用户报「web 端很多 bug、无法使用」。以运行中的服务、真实数据库与浏览器为事实源复查，
+定位并修复两个**真实且可复现**的缺陷，均属用量链路。
+
+### F1 Codex 会话用量自 8/14 起永久停止导入（P0）
+
+线上症状：每分钟扫 518 文件、重复 118 条 deferred WARN、导入 0；Claude/Pi 正常。
+DB 佐证：Codex 最新记录停在 2026-08-14，Claude/Pi 为当日。
+
+根因是把**永久状态误判为暂态**：`signatures_before` 用「父 rollout 的 max_timestamp
+< child fork cutoff」判断父文件尚未写到 fork 时刻，但无法区分「仍在写」与「早已完结」。
+`codex resume` 旧会话正是后者（实测父文件最后一行 07-29，子会话 fork 于 08-29）。
+另有告警放大：重试分支先 `pending.remove()` 再让 `mark_deferred` 重新 insert，
+去重基线被自己摧毁。
+
+修法：120s 静默期视为父文件已定型（远高于同步周期，避免提前接受导致 replay prefix
+变短而**重复计费**）；重试不再清除 pending。两处均经变异验证。
+线上：首轮导入 271 条，Codex 用量恢复当日；告警由「每分钟」变为「首轮一次」。
+
+### F2 回填成本后未清 `pricing_missing`（P1）
+
+`usage_rollup` 用 `pricing_missing = 0` 同时门控聚合与清理，M4 注释承诺「补齐定价后重算」。
+重算确实发生，但 UPDATE 只写成本列 → 刚被正确定价的行仍被永久排除出 rollup 且永不清理。
+实测 `claude-opus-5` 232 行成本 $0 而种子早已存在。修复后生产库 still_flagged 232 → 0，
+恢复计入 $1351.41。
+
+### 方法论记录
+
+- **"通过"不等于"有效"**：F1 的第一版去重测试只看周期末状态，变异验证显示它是**空断言**
+  （remove+reinsert 后末状态相同）。改为让 `mark_deferred` 把决策随 `CodexFileSyncResult`
+  返回并汇入 pass 汇总日志后，变异才真正 FAILED。凡是"防重复"类断言，必须观测事件本身。
+- **架构审阅的分层纠偏成立**：为测试可观测性在生产缓存上加只写计数器是污染；
+  既有逐文件结果通道就是正确出口，且顺带让运维看到「本轮新告警 N 个」。
+- **不伪造修复**：`gpt-5.4-xhigh-px`（7880 万 tokens）无种子，成本确实未知，
+  保持排除是对的；92 个 `MissingParent` 的父文件在磁盘上确不存在，fail-closed 保留。
+
+### 覆盖诚实说明
+
+深审并取证的是 session usage 全链、浏览器全部应用/工具页、Web API 契约、部署运行时。
+302 文件基线的其余部分（S2 backup/sync 深审、S4/S5 表单细节、Alpha/OAuth 逐 hunk）
+本轮**未做人工语义复核**，仅由既有回归覆盖。
+
+### Status
+
+[OK] 门禁：cargo test --lib **2296**、test:unit **177/1089**、integration **50/54**（恰 4 白名单 flake）、
+web-routes **292/280/0**、locales parity、build:web + smoke exit 0、schema 17、integrity ok。
+[OK] 已部署，服务 active / NRestarts=0。

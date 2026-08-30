@@ -1,0 +1,5 @@
+{"type":"spec","path":".trellis/spec/frontend/quality-guidelines.md","why":"verify contracts not weakened by fixes"}
+{"type":"gate","cmd":"cargo test --manifest-path src-tauri/Cargo.toml --lib","why":"full rust lib regression"}
+{"type":"gate","cmd":"pnpm test:unit","why":"frontend unit regression"}
+{"type":"gate","cmd":"pnpm check:web-routes","why":"292/280/0 parity is a hard constraint"}
+{"type":"gate","cmd":"pnpm smoke:web-server","why":"real web server boot + probes"}

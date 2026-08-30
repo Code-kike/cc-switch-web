@@ -1,0 +1,9 @@
+{"type":"spec","path":".trellis/spec/frontend/quality-guidelines.md","why":"executable contracts: web command method/body, pricing lookup, usage last-good, canonical SQL restore, pi AGENTS activation, degradation direction, deferred-stack exception"}
+{"type":"spec","path":".trellis/spec/guides/cross-layer-thinking-guide.md","why":"identity/ownership/projection/compensation checklist for multi-layer fixes"}
+{"type":"spec","path":".trellis/spec/guides/code-reuse-thinking-guide.md","why":"single-source-of-truth before adding helpers/constants"}
+{"type":"contract","path":".trellis/tasks/archive/2026-08/08-18-sync-upstream-v3.20.0/implement.md","why":"parent S1-S8 per-commit disposition + integration review results"}
+{"type":"contract","path":".trellis/tasks/archive/2026-08/08-18-feat-pi-native-agent/implement.md","why":"pi additive wiring checklist and P3.5 skill safety helpers"}
+{"type":"contract","path":".trellis/tasks/archive/2026-08/08-18-feat-codex-alpha-websearch/implement.md","why":"alpha search fail-closed + citation dedup caps"}
+{"type":"contract","path":".trellis/tasks/archive/2026-08/08-18-feat-managed-oauth-accounts/implement.md","why":"managed oauth W0-W5 decisions, takeover carve-out, ADR 0003 write rules"}
+{"type":"code","path":"src-tauri/src/services/session_usage_codex.rs","why":"reproduced defect: 118 deferred, 518 rescans/min, 0 imports"}
+{"type":"code","path":"src-tauri/src/database/mod.rs","why":"dao layering contract for the SQL extraction"}
