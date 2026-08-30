@@ -139,6 +139,38 @@ fn windows_file_identity(file: &fs::File) -> Option<(u64, [u8; 16])> {
     ))
 }
 
+/// A parent rollout that has not been appended to for this long is treated as
+/// final: no further line can still arrive at or before a child's fork cutoff.
+///
+/// The `max_timestamp < cutoff` guard in [`ParentTokenTimeline::signatures_before`]
+/// exists to catch a *live* parent whose writes have not yet reached the fork
+/// moment. On its own it cannot tell that apart from a parent that simply ended
+/// long before the child resumed it — resuming an old session forks a child whose
+/// cutoff is hours or months after the parent's last line. Without this escape
+/// hatch such children defer **forever**: their usage is never imported and every
+/// sync cycle re-parses them and re-warns.
+///
+/// The window is deliberately much larger than the sync cadence so a genuinely
+/// live parent is never declared settled mid-write (that would under-count the
+/// replay prefix and double-count replayed tokens).
+const PARENT_SETTLED_AFTER_NANOS: i64 = 120_000_000_000;
+
+/// Whether the parent rollout has been quiet long enough that its timeline is final.
+///
+/// A missing stamp means we could not read the parent's metadata, so we must not
+/// claim it is settled.
+fn parent_stamp_is_settled(stamp: Option<ParentFileStamp>) -> bool {
+    let Some(stamp) = stamp else {
+        return false;
+    };
+    let now_nanos = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .ok()
+        .map(|elapsed| elapsed.as_nanos().min(i64::MAX as u128) as i64)
+        .unwrap_or(0);
+    now_nanos.saturating_sub(stamp.modified_nanos) > PARENT_SETTLED_AFTER_NANOS
+}
+
 #[derive(Debug)]
 struct ParentTokenTimeline {
     events: Vec<TimestampedTokenSignature>,
@@ -151,6 +183,7 @@ impl ParentTokenTimeline {
         &self,
         parent_path: &Path,
         cutoff: DateTime<Utc>,
+        parent_settled: bool,
     ) -> Result<Vec<TokenUsageSignature>, String> {
         if self.has_token_without_timestamp {
             return Err(format!(
@@ -158,9 +191,13 @@ impl ParentTokenTimeline {
                 parent_path.display()
             ));
         }
-        if self
-            .max_timestamp
-            .is_none_or(|timestamp| timestamp < cutoff)
+        // Only a parent that may still be written can be "not yet at the fork
+        // moment". Once it is settled its timeline is complete, and every event it
+        // will ever have is already at or before the cutoff.
+        if !parent_settled
+            && self
+                .max_timestamp
+                .is_none_or(|timestamp| timestamp < cutoff)
         {
             return Err(format!(
                 "父 rollout {} 尚未写到 child fork 时刻",
@@ -236,6 +273,10 @@ struct CodexReplayCaches {
     parent_timelines: HashMap<PathBuf, CachedParentTimeline>,
     replay_prefixes: HashMap<PathBuf, CachedReplayPrefix>,
     pending: HashMap<PathBuf, PendingEntry>,
+    /// Number of deferral warnings actually emitted. A deferral whose reason has
+    /// not changed must not log again, so this stays flat while a file keeps
+    /// deferring for the same reason.
+    deferral_warnings: u64,
 }
 
 static CODEX_REPLAY_CACHES: OnceLock<Mutex<CodexReplayCaches>> = OnceLock::new();
@@ -976,6 +1017,7 @@ fn parent_signatures_before(
     let file = fs::File::open(parent_path)
         .map_err(|error| format!("无法打开父 rollout {}: {error}", parent_path.display()))?;
     let stamp = ParentFileStamp::from_file(&file);
+    let parent_settled = parent_stamp_is_settled(stamp);
     let cached_timeline = stamp.and_then(|stamp| {
         replay_caches().lock().ok().and_then(|caches| {
             caches
@@ -986,7 +1028,7 @@ fn parent_signatures_before(
         })
     });
     if let Some(timeline) = cached_timeline {
-        return timeline.signatures_before(parent_path, cutoff);
+        return timeline.signatures_before(parent_path, cutoff, parent_settled);
     }
 
     let mut events = Vec::new();
@@ -1040,7 +1082,7 @@ fn parent_signatures_before(
         max_timestamp,
         has_token_without_timestamp,
     });
-    let result = timeline.signatures_before(parent_path, cutoff);
+    let result = timeline.signatures_before(parent_path, cutoff, parent_settled);
     if let (Some(stamp), Ok(mut caches)) = (stamp, replay_caches().lock()) {
         caches.parent_timelines.insert(
             parent_path.to_path_buf(),
@@ -1115,6 +1157,9 @@ fn mark_deferred(
         .as_ref()
         != Some(&entry);
     if should_warn {
+        if let Ok(mut caches) = replay_caches().lock() {
+            caches.deferral_warnings = caches.deferral_warnings.saturating_add(1);
+        }
         let reason = match &entry.reason {
             PendingReason::MissingParent(parent) => format!("找不到父 rollout {parent}"),
             PendingReason::Stable(reason) | PendingReason::Retryable(reason) => reason.clone(),
@@ -1155,7 +1200,7 @@ fn sync_single_codex_file(
         return Ok(CodexFileSyncResult::default());
     }
 
-    if let Ok(mut caches) = replay_caches().lock() {
+    if let Ok(caches) = replay_caches().lock() {
         if let Some(pending) = caches.pending.get(file_path).cloned() {
             if pending.modified == file_modified && pending.size == file_size {
                 match &pending.reason {
@@ -1171,12 +1216,12 @@ fn sync_single_codex_file(
                             ..CodexFileSyncResult::default()
                         });
                     }
-                    PendingReason::Retryable(_) => {
-                        caches.pending.remove(file_path);
-                    }
-                    _ => {
-                        caches.pending.remove(file_path);
-                    }
+                    // Retry, but keep the pending entry: `mark_deferred` compares it
+                    // against the new one to decide whether to warn. Dropping it here
+                    // made every retry look like a first-time deferral, so a deferral
+                    // whose reason never changed re-logged on every sync cycle.
+                    PendingReason::Retryable(_) => {}
+                    _ => {}
                 }
             }
         }
@@ -2615,6 +2660,96 @@ mod tests {
         );
         let recovered = sync_test_file(&db, &child, &[&parent, &child])?;
         assert_eq!((recovered.imported, recovered.deferred), (1, false));
+        Ok(())
+    }
+
+    fn set_modified_secs_ago(path: &Path, secs: u64) {
+        let handle = fs::OpenOptions::new().write(true).open(path).unwrap();
+        let when = SystemTime::now() - std::time::Duration::from_secs(secs);
+        handle
+            .set_times(fs::FileTimes::new().set_modified(when))
+            .unwrap();
+    }
+
+    fn parent_and_forked_child(temp: &Path) -> (PathBuf, PathBuf) {
+        let parent = rollout_path(temp, PARENT_ID);
+        let child = rollout_path(temp, CHILD_A_ID);
+        write_jsonl(
+            &parent,
+            &[
+                session_meta(PARENT_ID),
+                token_count_at(100, 50, 10, "2026-07-10T03:00:01Z"),
+            ],
+        );
+        write_jsonl(
+            &child,
+            &[
+                session_meta_at(CHILD_A_ID, Some(PARENT_ID), None, "2026-07-10T03:00:05Z"),
+                token_count_at(200, 100, 20, "2026-07-10T03:00:06Z"),
+            ],
+        );
+        (parent, child)
+    }
+
+    /// Resuming an old session forks a child whose cutoff is far after the parent's
+    /// last line. The parent can never gain a record at that fork moment, so
+    /// deferring on that condition alone drops the child's usage permanently and
+    /// re-parses the file on every sync cycle.
+    #[test]
+    #[serial_test::serial]
+    fn test_settled_parent_without_fork_moment_record_imports_instead_of_deferring(
+    ) -> Result<(), AppError> {
+        clear_codex_replay_caches();
+        let db = Database::memory()?;
+        let temp = tempdir().unwrap();
+        let (parent, child) = parent_and_forked_child(temp.path());
+        // The parent ended long ago: nothing will ever be appended at the cutoff.
+        set_modified_secs_ago(&parent, 600);
+
+        let result = sync_test_file(&db, &child, &[&parent, &child])?;
+        assert_eq!((result.imported, result.deferred), (1, false));
+        Ok(())
+    }
+
+    /// The settle escape hatch must not fire for a parent that is still being
+    /// written: accepting a half-flushed parent would shorten the replay prefix
+    /// and double-count the replayed tokens.
+    #[test]
+    #[serial_test::serial]
+    fn test_live_parent_without_fork_moment_record_still_defers() -> Result<(), AppError> {
+        clear_codex_replay_caches();
+        let db = Database::memory()?;
+        let temp = tempdir().unwrap();
+        let (parent, child) = parent_and_forked_child(temp.path());
+
+        let result = sync_test_file(&db, &child, &[&parent, &child])?;
+        assert_eq!((result.imported, result.deferred), (0, true));
+        Ok(())
+    }
+
+    /// A retried deferral must keep its pending entry, otherwise `mark_deferred`
+    /// sees no previous entry and re-logs the identical warning every sync cycle.
+    #[test]
+    #[serial_test::serial]
+    fn test_unchanged_retryable_deferral_keeps_its_warning_dedup_baseline() -> Result<(), AppError>
+    {
+        clear_codex_replay_caches();
+        let db = Database::memory()?;
+        let temp = tempdir().unwrap();
+        let (parent, child) = parent_and_forked_child(temp.path());
+
+        let first = sync_test_file(&db, &child, &[&parent, &child])?;
+        assert!(first.deferred);
+        let warnings_after_first = replay_caches().lock().unwrap().deferral_warnings;
+        assert_eq!(warnings_after_first, 1);
+
+        // Nothing about the child or the parent changed, so the retry must stay
+        // silent. Dropping the pending entry before retrying made every cycle
+        // look like a first-time deferral and re-logged the same line forever.
+        let second = sync_test_file(&db, &child, &[&parent, &child])?;
+        assert!(second.deferred);
+        let warnings_after_second = replay_caches().lock().unwrap().deferral_warnings;
+        assert_eq!(warnings_after_second, warnings_after_first);
         Ok(())
     }
 
