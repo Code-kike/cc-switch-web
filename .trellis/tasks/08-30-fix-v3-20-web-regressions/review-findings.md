@@ -140,3 +140,45 @@ parser / replay 与账务推导，成本计算以参数传入 DAO。行为锁定
 无任何断言改动。pricing lookup（find_codex_pricing）有意留在 service 层——它是定价
 域匹配策略，待与 gemini/pi/session-usage 的相似查询收拢为 model_pricing 共享 helper
 时再统一（下一独立小 commit）。
+
+---
+
+## Pi 页面功能可用性全面验证（2026-08-30，用户驱动）
+
+用户要求：不仅 bug 测试通过，每一项功能在 Web 端真实可用。验证环境为
+**LAN IP（非安全上下文，与用户实际访问路径一致）+ 真实 DB/models.json（备份后操作）**。
+
+### 功能清单与结果
+
+| # | 功能 | 验证方式 | 结果 |
+|---|---|---|---|
+| 1 | Provider 列表渲染 | 4 卡实时检查：名称/Live Config 徽章/30 天用量/URL | ✅ |
+| 2 | Edit 对话框（含模型/headers/compat/Config JSON） | 非安全上下文打开全部 4 卡（含非 ASCII id） | ✅（F3 修复后） |
+| 3 | Edit→Save 持久化 | PUT update-provider 200 + models.json 原子写 + DB notes 落库 | ✅ |
+| 4 | Remove（从 models.json 移除） | 全往返：确认对话框→enabledProviderIds 减少→卡片转 Enable/DB Only | ✅ |
+| 5 | Enable（添加回 models.json） | 往返恢复：enabledProviderIds 恢复 4 项→Live Config 徽章回归 | ✅ |
+| 6 | Duplicate | 副本创建（providerKey 唯一化 + addToLive=false 只进 DB） | ✅ |
+| 7 | Delete | 确认对话框（含 provider 名警示）+ 按 DB id 删除 + 列表刷新 | ✅ |
+| 8 | 测试模型 | 真实请求 + SSRF ip_guard 正确 fail-closed（拒内网地址） | ✅ |
+| 9 | Configure usage query | 全屏面板完整：Enable switch/Test script/Format/Save config | ✅ |
+| 10 | Prompts（Pi 专属三标签） | Global prompts/Global system prompt/Prompt templates + 搜索 + 空态 | ✅ |
+| 11 | Sessions | 85 会话列表 + Pi 筛选器 + 会话内容渲染 | ✅ |
+| 12 | Skills | Skills Management 全套操作按钮 + Pi app 上下文 | ✅ |
+| 13 | models.json 数据完整性 | Remove/Enable 往返后内容逐键比对一致（仅键序变化，Pi 按 key 读不受影响） | ✅ |
+| 14 | 非安全上下文整页 | 全程零 error_boundary 崩溃 | ✅ |
+
+### 验证中发现并处理的非缺陷事项
+
+1. **测试残留清理**：早前会话 Save 测试把 `lan-save-probe` 写进 axonhub-国产 的
+   notes（DB 字段）。已清空恢复。该字段按上游设计会覆盖卡片 URL 显示位
+   （`extractApiUrl` 中 notes 优先，来自上游 #251）——用户填 notes 即自定义显示文本，
+   属既有设计而非缺陷，但已记入此处避免后续误报。
+2. **Duplicate 副本命名**：`<id>-copy`，若占用则 `-copy-2` 递增；副本 addToLive=false
+   只进 DB 不写 models.json —— 与 additive 语义一致。
+3. **删除测试产生的两条副本**（一条早前会话残留 + 一条本轮验证产生），已清理，
+   DB 恢复 4 provider 原始状态。
+
+### 结论
+
+Pi 页面 14 项功能全部在 Web 端验证可用，包括此前崩溃的编辑链路（F3 修复）与
+从未被端到端验证过的 Remove/Enable 往返（models.json 原子读写联动）。
