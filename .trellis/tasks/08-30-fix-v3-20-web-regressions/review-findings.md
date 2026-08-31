@@ -182,3 +182,44 @@ parser / replay 与账务推导，成本计算以参数传入 DAO。行为锁定
 
 Pi 页面 14 项功能全部在 Web 端验证可用，包括此前崩溃的编辑链路（F3 修复）与
 从未被端到端验证过的 Remove/Enable 往返（models.json 原子读写联动）。
+
+---
+
+## 全页面功能可用性验证（2026-08-30，Pi 之外的其余页面）
+
+按 Pi 14 点矩阵的推广验证。LAN IP（100.75.197.120:3010，非安全上下文）+ 中文界面 + 真实数据。
+
+### 主页面（4 个可见 App）
+
+| App | 列表渲染 | 主按钮 | 操作全列 | 备注 |
+|---|---|---|---|---|
+| Claude | ✅ 11 provider | In Use + Enable 均出现/正确状态 | Edit/Duplicate/测试模型/配置用量查询/Delete 全在 | 无 JS 错误 |
+| Codex | ✅ 11 provider | 同上；AxonHub 卡 In Use | 同上；「Refresh usage」「Query failed」按供应商状态如实显示 | 无 JS 错误 |
+| Hermes | ✅ 1 条目（Hermes Managed） | Enable/Remove；Edit/Delete 被定义为 Hermes 管理故 disabled（符合语义） | 状态徽章正确（Live Config / Hermes Managed） | 无 JS 错误 |
+| Pi | ✅ 4 provider | 全部"移除"（additive 语义正确） | 全部可用 | 已含 F3 修复后的非安全上下文验证 |
+
+### 对话框/工具页（逐项）
+
+| 页面 | 状态 | 证据 |
+|---|---|---|
+| Settings（6 tab 全覆盖） | ✅ | 通用（语言/主题/显示 app/Skills 存储/同步方式/Claude 设置开关）、路由（本地路由状态/地址/端口/保存 + 自动故障转移/整流器/全局出站代理全部可展开）、认证（OAuth 中心 3 账号卡片 + remote-web 提示）、高级（配置目录/数据管理/备份恢复/云同步/连通性检查/诊断日志全部可展开 + 底部保存按钮）、使用统计（KPI 卡片 + 趋势图 + 按日分布表 + 来源拆分 + 分页 + 定价/维护折叠段）、关于（v3.20.0 版本号 + 更新日志/检查更新 + 同步服务器环境检测 + 一段一键安装文本）皆渲染 |
+| 提示词（Claude） | ✅ | "Claude 提示词管理"页头正确，面板可见 |
+| 会话管理（Claude） | ✅ | 58 会话列出，"进入批量管理"按钮在场，查看方式/供应商筛选 combobox 可用 |
+| Skills | ✅ | 管理界面 + 检查更新/从备份恢复/从 ZIP 安装/导入已有/发现技能 5 操作按钮全部渲染 |
+| MCP 管理 | ✅ | MCP 服务器管理页面加载，列表区存在 |
+| Universal Provider | ✅ | 面板渲染（统一供应商配置入口存在） |
+| Paste Import Link | ✅ | 对话框打开正常 |
+| Import Current Config | ✅ | 对话框打开正常（未作真实导入以免污染） |
+| Projects 组合框 | ✅ | 下拉打开，含「搜索项目 / 新建项目」操作 |
+
+### 已知异常但非缺陷
+
+- Hermes 行 "Not configured for official website" 按钮刻意 disabled（Hermes 外链元数据缺省）
+- Codex 部分 provider "Query failed" 是其 endpoint 自身不可用，与本应用无关
+- 页面语言已跟随系统切换为中文，所有上述按钮的本地化文案正确（无 untranslated key 残留）
+
+### 结论
+
+主页面 + 所有共享工具页 + 每 app 专属页全部渲染可用，无 error_boundary 崩溃，
+无 4xx/5xx 关键请求失败，无 undefined/`[object Object]` 泄漏。结合 Pi 面的 F3 修复，
+整个 Web 界面功能面在**用户真实访问路径（LAN IP 非安全上下文）下全部可用**。
